@@ -1,0 +1,122 @@
+[workspace]
+members  = ["core", "cli", "plugin"]
+resolver = "2"
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.74"
+license      = "MIT"
+repository   = "https://github.com/physshell/griff"
+homepage     = "https://github.com/physshell/griff"
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+strip         = true
+
+# ---------------------------------------------------------------------------
+# Workspace-wide lint policy.  Every member opts in via `[lints] workspace = true`.
+# Groups are denied wholesale; a curated allow-list covers legitimate patterns.
+# Anything outside the allow-list must be fixed or annotated with a local
+# `#[allow(...)]` accompanied by a reason comment.
+# ---------------------------------------------------------------------------
+[workspace.lints.rust]
+unsafe_code                   = "forbid"
+missing_debug_implementations = "warn"
+missing_copy_implementations  = "warn"
+unreachable_pub               = "warn"
+trivial_casts                 = "warn"
+trivial_numeric_casts         = "warn"
+unused_import_braces          = "warn"
+unused_lifetimes              = "warn"
+unused_qualifications         = "warn"
+keyword_idents                = { level = "warn", priority = -1 }
+let_underscore_drop           = "warn"
+macro_use_extern_crate        = "warn"
+meta_variable_misuse          = "warn"
+non_ascii_idents              = "warn"
+single_use_lifetimes          = "warn"
+variant_size_differences      = "warn"
+rust_2018_idioms              = { level = "warn", priority = -1 }
+future_incompatible           = { level = "warn", priority = -1 }
+nonstandard_style             = { level = "warn", priority = -1 }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links       = "warn"
+private_intra_doc_links      = "warn"
+invalid_codeblock_attributes = "warn"
+bare_urls                    = "warn"
+
+[workspace.lints.clippy]
+# Whole groups denied.  `priority = -1` lets per-lint entries below override.
+all         = { level = "deny", priority = -1 }
+pedantic    = { level = "deny", priority = -1 }
+nursery     = { level = "deny", priority = -1 }
+cargo       = { level = "deny", priority = -1 }
+complexity  = { level = "deny", priority = -1 }
+perf        = { level = "deny", priority = -1 }
+style       = { level = "deny", priority = -1 }
+suspicious  = { level = "deny", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+
+# Restriction lints — explicitly opted in.
+absolute_paths                 = "warn"
+arithmetic_side_effects        = "warn"
+assertions_on_result_states    = "warn"
+as_underscore                  = "warn"
+clone_on_ref_ptr               = "warn"
+dbg_macro                      = "warn"
+empty_drop                     = "warn"
+empty_structs_with_brackets    = "warn"
+exit                           = "warn"
+expect_used                    = "warn"
+filetype_is_file               = "warn"
+float_cmp_const                = "warn"
+fn_to_numeric_cast_any         = "warn"
+get_unwrap                     = "warn"
+if_then_some_else_none         = "warn"
+indexing_slicing               = "warn"
+let_underscore_must_use        = "warn"
+lossy_float_literal            = "warn"
+mem_forget                     = "warn"
+missing_assert_message         = "warn"
+mixed_read_write_in_expression = "warn"
+mod_module_files               = "warn"
+multiple_inherent_impl         = "warn"
+mutex_atomic                   = "warn"
+panic                          = "warn"
+rc_buffer                      = "warn"
+rc_mutex                       = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+same_name_method               = "warn"
+shadow_unrelated               = "warn"
+str_to_string                  = "warn"
+string_add                     = "warn"
+string_slice                   = "warn"
+suspicious_xor_used_as_pow     = "warn"
+todo                           = "warn"
+try_err                        = "warn"
+undocumented_unsafe_blocks     = "warn"
+unimplemented                  = "warn"
+unnecessary_safety_doc         = "warn"
+unnecessary_self_imports       = "warn"
+unneeded_field_pattern         = "warn"
+unwrap_in_result               = "warn"
+unwrap_used                    = "warn"
+verbose_file_reads             = "warn"
+
+# Targeted opt-outs (with rationale).
+# `module_name_repetitions` — idiomatic Rust often pairs module and type names.
+module_name_repetitions = "allow"
+# `multiple_crate_versions` — transitive duplicates we cannot control.
+multiple_crate_versions = "allow"
+# Doc-comment completeness — overkill for internal crates at this stage.
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
+must_use_candidate      = "allow"
+# CLI legitimately writes to stdout/stderr.
+print_stdout            = "allow"
+print_stderr            = "allow"
+# Explicit `pub(crate)` visibility is intentional throughout.
+redundant_pub_crate     = "allow"
