@@ -7,4 +7,5 @@
 pub mod event;
 pub mod feature;
 pub mod generate;
+pub mod midi;
 pub mod slice;

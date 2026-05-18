@@ -14,5 +14,9 @@ categories.workspace   = true
 name = "griff"
 path = "src/main.rs"
 
+[dependencies]
+griff-core = { path = "../core" }
+clap       = { workspace = true }
+
 [lints]
 workspace = true

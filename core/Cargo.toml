@@ -10,5 +10,9 @@ readme.workspace       = true
 keywords.workspace     = true
 categories.workspace   = true
 
+[dependencies]
+midly     = { workspace = true }
+thiserror = { workspace = true }
+
 [lints]
 workspace = true

@@ -13,6 +13,11 @@ readme       = "README.md"
 keywords     = ["guitar", "midi", "music", "composition"]
 categories   = ["multimedia::audio", "command-line-utilities"]
 
+[workspace.dependencies]
+midly     = "0.5"
+thiserror = "2"
+clap      = { version = "4", features = ["derive"] }
+
 [profile.release]
 lto           = "thin"
 codegen-units = 1
