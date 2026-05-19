@@ -1,0 +1,10 @@
+== tempo_change ==
+ppqn 480 tracks 1
+summary idx=0 name=Lead ch=0 bars=4 notes=12
+track 0 name=Lead ch=0 bars=4
+  bar 0 4/4 100.0bpm notes=4 class=Breakdown vel=88 span=5
+  bar 1 4/4 150.0bpm notes=4 class=Breakdown vel=88 span=5
+  bar 2 4/4 150.0bpm notes=4 class=Breakdown vel=88 span=5
+  bar 3 4/4 150.0bpm notes=0 class=Unknown vel=0 span=0
+features[0] bars=4 events=13 notes=12 rests=1 artic=0 dur=7680 pitch=45..50 vel=88..88
+timed[0] count=13 first@0 last@5760

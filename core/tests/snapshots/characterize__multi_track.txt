@@ -1,0 +1,14 @@
+== multi_track ==
+ppqn 480 tracks 2
+summary idx=0 name=Clean ch=2 bars=2 notes=8
+summary idx=1 name=Solo ch=3 bars=2 notes=6
+track 0 name=Clean ch=2 bars=2
+  bar 0 4/4 90.0bpm notes=8 class=Clean vel=50 span=7
+  bar 1 4/4 90.0bpm notes=0 class=Unknown vel=0 span=0
+track 1 name=Solo ch=3 bars=2
+  bar 0 4/4 90.0bpm notes=6 class=Solo vel=90 span=36
+  bar 1 4/4 90.0bpm notes=0 class=Unknown vel=0 span=0
+features[0] bars=2 events=9 notes=8 rests=1 artic=0 dur=3840 pitch=55..62 vel=50..50
+timed[0] count=9 first@0 last@1920
+features[1] bars=2 events=7 notes=6 rests=1 artic=0 dur=3840 pitch=40..76 vel=90..90
+timed[1] count=7 first@0 last@1920
