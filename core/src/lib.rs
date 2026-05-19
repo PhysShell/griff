@@ -4,6 +4,7 @@
 //! MIDI bytes are produced and consumed only at the import/export boundary;
 //! the rest of the codebase works exclusively with these structured types.
 
+pub mod classify;
 pub mod event;
 pub mod feature;
 pub mod generate;
