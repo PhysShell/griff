@@ -1,5 +1,9 @@
 [workspace]
 members  = ["core", "cli", "plugin"]
+# `fuzz/` is an isolated nightly cargo-fuzz crate (ADR-0010); it is
+# deliberately not a workspace member so stable `--workspace` builds,
+# clippy, and tests never touch it.
+exclude  = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

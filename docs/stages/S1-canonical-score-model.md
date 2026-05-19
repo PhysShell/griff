@@ -2,7 +2,7 @@
 
 Status: planned
 Depends on: S0
-ADRs: ADR-0002
+ADRs: ADR-0002, ADR-0010
 
 ## Goal
 
@@ -22,6 +22,9 @@ Introduce the canonical score model without breaking public behavior.
 - `Voice`/`EventGroup` carry polyphony, chords, arpeggio/strum/tuplet/grace.
 - `SourceMeta` holds string/fret, technique evidence, importer warnings.
 - Provide `Phrase`/`Bar` as a projection/view over the new model.
+- Once the canonical types exist, add the P1 `score_projection` fuzz target
+  (structure-aware via `arbitrary`, ADR-0010): projection / slicing /
+  feature extraction never panic; ranges stay ordered; no silent overflow.
 
 ## Acceptance criteria
 
@@ -39,3 +42,4 @@ Introduce the canonical score model without breaking public behavior.
 
 - [`../adr/0002-canonical-score-model.md`](../adr/0002-canonical-score-model.md)
 - [`../glossary.md`](../glossary.md) §1
+- [`../fuzzing.md`](../fuzzing.md) (`score_projection`, P1)

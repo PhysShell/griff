@@ -1,0 +1,5 @@
+# cargo-fuzz / libFuzzer require nightly. This override applies only inside
+# `fuzz/`; the workspace root stays pinned to stable (ADR-0010, ADR-0004).
+[toolchain]
+channel    = "nightly"
+components = ["rustfmt", "clippy"]

@@ -22,3 +22,11 @@ Architectural decisions go to [`adr/`](adr/) instead.
   an audit doc and canonical numbering forward, and against rewriting history,
   to achieve honesty without destabilizing a published branch, accepting that
   old commit messages stay wrong (reconciled in `docs/audit/`).
+
+- 2026-05-19 — In the context of the fuzzing-strategy planning branch, facing
+  a freshly discovered `group_into_bars` hang/OOM (finding F-001), we decided
+  for committing it unfixed as the first regression corpus seed plus an
+  `#[ignore]`d root-cause repro test, and against fixing it on a planning
+  branch, to achieve a permanent reproducer without an untested behavior
+  change, accepting that the bug stays live until S0/S2 fix it behind a
+  characterization test.

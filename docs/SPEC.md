@@ -51,6 +51,11 @@ a later stage until its acceptance criterion is met and documented.
    warnings`, and the full test suite must be green at every stage boundary.
 10. **Repository text is English.** Glossary, specs, ADRs, stage docs, code,
     comments, commit messages — English only.
+11. **Fuzzing is a mandatory robustness layer.** External format adapters
+    (MIDI, Guitar Pro, …) and selected canonical transformations must have
+    fuzz targets per ADR-0010 and [`fuzzing.md`](fuzzing.md). Bounded smoke
+    fuzzing plus the regression corpus is a blocking CI gate; deep fuzzing
+    runs scheduled and non-blocking.
 
 ## Current state (pre-canonical baseline)
 
@@ -66,5 +71,6 @@ and are reconciled in
 
 - [`glossary.md`](glossary.md) — the constitution.
 - [`adr/README.md`](adr/README.md) — decision index.
+- [`fuzzing.md`](fuzzing.md) — fuzz-testing policy (ADR-0010).
 - [`stages/`](stages/) — S0 … S12.
 - [`decisions.log.md`](decisions.log.md) — small decisions, append-only.

@@ -15,6 +15,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0007](0007-clap-first-plugin-target.md) | CLAP is the plugin target; MIDI-out only; nih-plug | Accepted |
 | [0008](0008-heuristic-phrase-detection-before-ml.md) | Explainable heuristic phrase detection before any ML | Accepted |
 | [0009](0009-use-nygard-adr-format.md) | Use the Nygard ADR format, stored in-repo, append-only | Accepted |
+| [0010](0010-fuzz-format-adapters-and-core-invariants.md) | Fuzz-test format adapters and core invariants | Accepted |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
