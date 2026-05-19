@@ -6,10 +6,17 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
 
 [[bin]]
 name = "griff"
 path = "src/main.rs"
+
+[dependencies]
+griff-core = { path = "../core" }
+clap       = { workspace = true }
 
 [lints]
 workspace = true

@@ -9,6 +9,14 @@ rust-version = "1.74"
 license      = "MIT"
 repository   = "https://github.com/physshell/griff"
 homepage     = "https://github.com/physshell/griff"
+readme       = "README.md"
+keywords     = ["guitar", "midi", "music", "composition"]
+categories   = ["multimedia::audio", "command-line-utilities"]
+
+[workspace.dependencies]
+midly     = "0.5"
+thiserror = "2"
+clap      = { version = "4", features = ["derive"] }
 
 [profile.release]
 lto           = "thin"

@@ -5,3 +5,7 @@
 //! the rest of the codebase works exclusively with these structured types.
 
 pub mod event;
+pub mod feature;
+pub mod generate;
+pub mod midi;
+pub mod slice;
