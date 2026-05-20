@@ -598,7 +598,7 @@ pub fn summarise(song: &MidiSong) -> MidiSummary {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{bar_ticks, export, import, tempo_to_micros, MidiSong, MidiTrack, Ppqn};
+    use super::{bar_ticks, export, import, tempo_to_micros, MidiSong, MidiTrack, Ppqn, Smf};
     use crate::event::{
         Bar, Event, Note, Phrase, Pitch, Rest, Tempo, Ticks, TimeSignature, Velocity,
     };
@@ -691,5 +691,72 @@ mod tests {
             .filter(|e| matches!(e, Event::Note(_)))
             .count();
         assert_eq!(note_count, 1, "roundtrip bar must contain exactly one note");
+    }
+
+    /// Bytes of `fuzz/corpus/midi_import/valid_minimal.mid`: a 50-byte
+    /// well-formed SMF (PPQN=480, 4/4, one note). Kept in sync by hand.
+    const VALID_MINIMAL_MID: &[u8] = &[
+        0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0xE0, 0x4D,
+        0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x1C, //
+        0x00, 0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08, //
+        0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, //
+        0x00, 0x90, 0x3C, 0x64, //
+        0x83, 0x60, 0x80, 0x3C, 0x00, //
+        0x00, 0xFF, 0x2F, 0x00,
+    ];
+
+    #[test]
+    fn import_valid_minimal_corpus_seed_succeeds() {
+        let song = import(VALID_MINIMAL_MID).expect("valid_minimal seed must import");
+        assert_eq!(song.ppqn, Ppqn(480), "seed PPQN must be 480");
+        let track = song
+            .tracks
+            .first()
+            .expect("seed has one note-bearing track");
+        let note_count = track
+            .phrase
+            .bars
+            .iter()
+            .flat_map(|b| &b.events)
+            .filter(|e| matches!(e, Event::Note(_)))
+            .count();
+        assert_eq!(note_count, 1, "seed must import exactly one note");
+    }
+
+    /// Regression reproducer for finding F-001 (see `docs/fuzzing.md`):
+    /// a PPQN=1 / 1-8 SMF makes `bar_ticks` integer-divide to zero, so
+    /// `group_into_bars`' `while bar_start <= end_tick` loop never advances
+    /// (infinite loop + unbounded `bars` growth). The root cause is asserted
+    /// directly; `import` is intentionally NOT called here because it does
+    /// not return. The byte sequence is mirrored in
+    /// `fuzz/corpus/midi_import/hang_ppqn1_eighth.mid`, the first regression
+    /// corpus seed; libFuzzer's `-timeout` turns the hang into a crash.
+    #[test]
+    #[ignore = "F-001: import() hangs/OOMs on this input; no fix on the planning branch (docs/fuzzing.md)"]
+    fn regression_zero_bar_ticks_hang_repro() {
+        let degenerate = TimeSignature {
+            numerator: 1,
+            denominator: 8,
+        };
+        assert!(
+            matches!(bar_ticks(degenerate, Ppqn(1)), Ok(0)),
+            "1/8 at PPQN=1 must integer-divide to zero bar ticks (the hang trigger)",
+        );
+
+        let hang_mid: &[u8] = &[
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x1B, //
+            0x00, 0xFF, 0x58, 0x04, 0x01, 0x03, 0x18, 0x08, //
+            0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20, //
+            0x00, 0x90, 0x3C, 0x64, //
+            0x01, 0x80, 0x3C, 0x00, //
+            0x00, 0xFF, 0x2F, 0x00,
+        ];
+        let smf = Smf::parse(hang_mid).expect("F-001 reproducer is a well-formed SMF");
+        assert_eq!(
+            smf.tracks.len(),
+            1,
+            "F-001 reproducer has exactly one track"
+        );
     }
 }

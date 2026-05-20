@@ -2,7 +2,7 @@
 
 Status: planned
 Depends on: S5
-ADRs: ADR-0005
+ADRs: ADR-0005, ADR-0010
 
 ## Goal
 
@@ -30,6 +30,9 @@ swancore-like riffs.
 - Deterministic for a fixed seed (property test).
 - Density within corpus mean ± 1σ; syncopation ≥ corpus lower quartile.
 - 10 generated riffs: ≥ 60% judged "swancore-like" in a blind listen.
+- P2 `generation_request` fuzz target (structure-aware, ADR-0010):
+  arbitrary requests never panic; output duration == requested; all notes
+  in range; fixed seed stays deterministic.
 
 ## Open questions
 
@@ -38,3 +41,4 @@ swancore-like riffs.
 ## See also
 
 - [`../glossary.md`](../glossary.md) §8
+- [`../fuzzing.md`](../fuzzing.md) (`generation_request`, P2)
