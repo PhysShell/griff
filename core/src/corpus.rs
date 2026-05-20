@@ -93,6 +93,41 @@ pub enum SwancoreTag {
     Interlude,
 }
 
+impl SwancoreTag {
+    /// All variants in display order, used by the curation CLI.
+    pub const fn all_variants() -> &'static [Self] {
+        &[
+            Self::CleanRiff,
+            Self::SyncopatedRiff,
+            Self::TappingPassage,
+            Self::LegatoPassage,
+            Self::Maj7,
+            Self::Min7,
+            Self::Sus2,
+            Self::Add9,
+            Self::SlashChord,
+            Self::PowerChord,
+            Self::HammerOn,
+            Self::PullOff,
+            Self::Slide,
+            Self::Bend,
+            Self::Vibrato,
+            Self::PalmMute,
+            Self::NaturalHarmonic,
+            Self::ArtificialHarmonic,
+            Self::Syncopated,
+            Self::TripletFeel,
+            Self::Polyrhythm,
+            Self::Intro,
+            Self::Verse,
+            Self::Chorus,
+            Self::Bridge,
+            Self::Outro,
+            Self::Interlude,
+        ]
+    }
+}
+
 // ── quality and curation ──────────────────────────────────────────────────────
 
 /// Quality flags recorded during curation.

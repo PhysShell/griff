@@ -3,19 +3,20 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
-    clippy::missing_assert_message
+    clippy::missing_assert_message,
+    clippy::absolute_paths
 )]
 
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
 
 /// Locate the compiled `griff` binary.
-fn griff_bin() -> std::path::PathBuf {
+fn griff_bin() -> PathBuf {
     // When running under `cargo test`, CARGO_BIN_EXE_griff is set.
-    std::env::var_os("CARGO_BIN_EXE_griff")
-        .map(Into::into)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug/griff")
-        })
+    std::env::var_os("CARGO_BIN_EXE_griff").map_or_else(
+        // absolute path ok in test
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug/griff"),
+        Into::into,
+    )
 }
 
 #[test]
