@@ -1,6 +1,6 @@
 # S2: MIDI transport refactor
 
-Status: planned
+Status: done
 Depends on: S1
 ADRs: ADR-0003, ADR-0010
 
