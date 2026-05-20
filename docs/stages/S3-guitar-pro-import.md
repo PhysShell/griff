@@ -1,6 +1,6 @@
 # S3: Guitar Pro import
 
-Status: planned
+Status: done
 Depends on: S1, S2
 ADRs: ADR-0002, ADR-0003, ADR-0010
 
