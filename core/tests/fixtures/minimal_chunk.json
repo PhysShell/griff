@@ -1,0 +1,22 @@
+{
+  "id": "fixture_001",
+  "title": "Minimal Test Fixture",
+  "source": {
+    "filename": "minimal.mid",
+    "format": "midi",
+    "bar_range": [0, 1]
+  },
+  "tempo_bpm": 120.0,
+  "ticks_per_quarter": 960,
+  "time_signature": [4, 4],
+  "tuning": "standard_e",
+  "tags": ["clean_riff", "syncopated_riff"],
+  "boundaries": [
+    { "start_tick": 0, "end_tick": 3840, "score": 0.8 }
+  ],
+  "techniques": ["hammer_on"],
+  "quality_flags": ["clean"],
+  "reviewer": "accepted",
+  "created_at": "2026-05-20T00:00:00Z",
+  "updated_at": "2026-05-20T00:00:00Z"
+}

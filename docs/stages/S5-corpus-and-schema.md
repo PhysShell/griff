@@ -1,6 +1,6 @@
 # S5: Corpus and annotation schema
 
-Status: planned
+Status: done
 Depends on: S4
 ADRs: ADR-0005
 
