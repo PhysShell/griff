@@ -11,6 +11,7 @@ pub mod event;
 pub mod feature;
 pub mod generate;
 pub mod gp;
+pub mod graph;
 pub mod midi;
 pub mod score;
 pub mod slice;

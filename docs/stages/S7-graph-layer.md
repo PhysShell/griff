@@ -1,6 +1,6 @@
 # S7: Graph layer (late)
 
-Status: planned (deliberately late)
+Status: done
 Depends on: S6 acceptance
 ADRs: —
 

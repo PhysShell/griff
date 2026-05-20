@@ -9,6 +9,7 @@
     clippy::missing_const_for_fn
 )]
 
+use griff_core::event::{Pitch, Ticks};
 use griff_core::{
     feature::PhraseFeatures,
     generate::GenerationSeed,
@@ -18,7 +19,6 @@ use griff_core::{
         NodeFeatureVec, NodeId, PhraseGraph, PhraseNode, RhythmCellNode, WalkRequest,
     },
 };
-use griff_core::event::{Pitch, Ticks};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -144,7 +144,10 @@ fn cosine_identical_vectors_returns_one() {
     let a = feature_vec(vec![1.0, 0.0, 0.0]);
     let b = feature_vec(vec![1.0, 0.0, 0.0]);
     let s = cosine_similarity(&a, &b);
-    assert!((s - 1.0).abs() < 1e-10, "identical vectors: similarity must be 1.0, got {s}");
+    assert!(
+        (s - 1.0).abs() < 1e-10,
+        "identical vectors: similarity must be 1.0, got {s}"
+    );
 }
 
 #[test]
@@ -152,7 +155,10 @@ fn cosine_orthogonal_vectors_returns_zero() {
     let a = feature_vec(vec![1.0, 0.0]);
     let b = feature_vec(vec![0.0, 1.0]);
     let s = cosine_similarity(&a, &b);
-    assert!(s.abs() < 1e-10, "orthogonal vectors: similarity must be 0.0, got {s}");
+    assert!(
+        s.abs() < 1e-10,
+        "orthogonal vectors: similarity must be 0.0, got {s}"
+    );
 }
 
 #[test]
@@ -160,7 +166,10 @@ fn cosine_antiparallel_vectors_returns_minus_one() {
     let a = feature_vec(vec![1.0, 0.0]);
     let b = feature_vec(vec![-1.0, 0.0]);
     let s = cosine_similarity(&a, &b);
-    assert!((s + 1.0).abs() < 1e-10, "antiparallel vectors: similarity must be -1.0, got {s}");
+    assert!(
+        (s + 1.0).abs() < 1e-10,
+        "antiparallel vectors: similarity must be -1.0, got {s}"
+    );
 }
 
 #[test]
@@ -168,7 +177,10 @@ fn cosine_zero_vector_returns_zero() {
     let a = feature_vec(vec![0.0, 0.0]);
     let b = feature_vec(vec![1.0, 1.0]);
     let s = cosine_similarity(&a, &b);
-    assert_eq!(s, 0.0, "zero magnitude vector: similarity must be 0.0");
+    assert!(
+        s.abs() < 1e-10,
+        "zero magnitude vector: similarity must be 0.0, got {s}"
+    );
 }
 
 #[test]
@@ -176,7 +188,10 @@ fn cosine_empty_vectors_returns_zero() {
     let a = feature_vec(vec![]);
     let b = feature_vec(vec![]);
     let s = cosine_similarity(&a, &b);
-    assert_eq!(s, 0.0, "empty vectors: similarity must be 0.0");
+    assert!(
+        s.abs() < 1e-10,
+        "empty vectors: similarity must be 0.0, got {s}"
+    );
 }
 
 // ── phrase_features_to_vec ────────────────────────────────────────────────────
@@ -202,8 +217,14 @@ fn phrase_features_to_vec_produces_finite_values() {
     let v = phrase_features_to_vec(&feats);
     assert!(!v.values.is_empty(), "feature vec must be non-empty");
     for &val in &v.values {
-        assert!(val.is_finite(), "every feature value must be finite, got {val}");
-        assert!(val >= 0.0, "every feature value must be non-negative, got {val}");
+        assert!(
+            val.is_finite(),
+            "every feature value must be finite, got {val}"
+        );
+        assert!(
+            val >= 0.0,
+            "every feature value must be non-negative, got {val}"
+        );
     }
 }
 
@@ -220,7 +241,11 @@ fn walk_returns_steps_plus_one_nodes() {
             seed: GenerationSeed(42),
         },
     );
-    assert_eq!(walk.len(), 5, "walk of 4 steps must return start + 4 = 5 node ids");
+    assert_eq!(
+        walk.len(),
+        5,
+        "walk of 4 steps must return start + 4 = 5 node ids"
+    );
 }
 
 #[test]
@@ -357,7 +382,11 @@ fn beam_is_deterministic_under_same_seed() {
     };
     let a = beam_search(&g, &req);
     let b = beam_search(&g, &req);
-    assert_eq!(a.len(), b.len(), "same seed must return same number of beams");
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "same seed must return same number of beams"
+    );
     for (ac, bc) in a.iter().zip(b.iter()) {
         assert_eq!(ac.path, bc.path, "same seed must produce identical paths");
         assert!(
@@ -398,6 +427,10 @@ fn beam_zero_steps_returns_start_only() {
         },
     );
     assert_eq!(beams.len(), 1, "zero steps returns one candidate");
-    assert_eq!(beams[0].path.len(), 1, "zero-step path contains only the start");
+    assert_eq!(
+        beams[0].path.len(),
+        1,
+        "zero-step path contains only the start"
+    );
     assert_eq!(beams[0].path[0].0, 1);
 }
