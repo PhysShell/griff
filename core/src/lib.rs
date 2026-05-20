@@ -6,6 +6,7 @@
 
 pub mod boundary;
 pub mod classify;
+pub mod corpus;
 pub mod event;
 pub mod feature;
 pub mod generate;
