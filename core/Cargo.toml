@@ -11,8 +11,9 @@ keywords.workspace     = true
 categories.workspace   = true
 
 [dependencies]
-midly     = { workspace = true }
-thiserror = { workspace = true }
+midly      = { workspace = true }
+thiserror  = { workspace = true }
+guitarpro  = { version = "0.3", default-features = false }
 
 [lints]
 workspace = true

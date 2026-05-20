@@ -8,6 +8,7 @@ pub mod classify;
 pub mod event;
 pub mod feature;
 pub mod generate;
+pub mod gp;
 pub mod midi;
 pub mod score;
 pub mod slice;

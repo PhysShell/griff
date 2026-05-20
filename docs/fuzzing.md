@@ -111,9 +111,9 @@ priority onto canonical stages:
 - The bounded smoke run is wired into the blocking CI gate.
 - Any crash found is committed as a minimized regression seed.
 
-## Known findings (open)
+## Known findings
 
-### F-001 — `group_into_bars` zero-`bar_ticks` hang / OOM
+### F-001 — `group_into_bars` zero-`bar_ticks` hang / OOM *(fixed in S2)*
 
 - **Where:** `core/src/midi.rs` — `group_into_bars` (the
   `while bar_start <= end_tick` loop) advances by `bar_ticks(sig, ppqn)`,
@@ -122,14 +122,11 @@ priority onto canonical stages:
 - **Effect:** `bar_start` never advances → infinite loop while pushing
   `Bar`s → hang then OOM. Reachable from a 49-byte well-formed `.mid`.
 - **Reproducer / first regression seed:**
-  `fuzz/corpus/midi_import/hang_ppqn1_eighth.mid`. Mirrored as the
-  `#[ignore]`d `regression_zero_bar_ticks_hang_repro` test in
-  `core/src/midi.rs` (asserts the root cause without calling `import`, so
-  the suite stays green).
-- **Status:** committed unfixed on the planning branch (ADR-0010 §7). The
-  fix is S0/S2 work and must start with a characterization test
-  (glossary §17.7) — likely: reject `bar_ticks == 0` with a typed
-  `MidiError` (e.g. degenerate meter vs PPQN) instead of looping.
+  `fuzz/corpus/midi_import/hang_ppqn1_eighth.mid`. The characterization
+  test `regression_f001_degenerate_meter_returns_typed_error` in
+  `core/src/midi.rs` guards the fix.
+- **Status:** **fixed at S2** — `bar_ticks()` now returns
+  `MidiError::DegenerateMeter` when the result is 0 instead of looping.
 
 ## See also
 

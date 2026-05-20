@@ -49,3 +49,10 @@ path  = "fuzz_targets/score_projection.rs"
 test  = false
 doc   = false
 bench = false
+
+[[bin]]
+name  = "guitar_pro_import"
+path  = "fuzz_targets/guitar_pro_import.rs"
+test  = false
+doc   = false
+bench = false
