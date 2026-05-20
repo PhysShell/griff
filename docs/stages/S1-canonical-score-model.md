@@ -1,6 +1,6 @@
 # S1: Canonical score model
 
-Status: planned
+Status: done
 Depends on: S0
 ADRs: ADR-0002, ADR-0010
 

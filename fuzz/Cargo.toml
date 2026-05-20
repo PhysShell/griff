@@ -17,6 +17,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.griff-core]
 path = "../core"
@@ -38,6 +39,13 @@ bench = false
 [[bin]]
 name  = "midi_roundtrip"
 path  = "fuzz_targets/midi_roundtrip.rs"
+test  = false
+doc   = false
+bench = false
+
+[[bin]]
+name  = "score_projection"
+path  = "fuzz_targets/score_projection.rs"
 test  = false
 doc   = false
 bench = false

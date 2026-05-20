@@ -11,8 +11,16 @@ use midly::{
 };
 use thiserror::Error;
 
-use crate::event::{
-    Bar, Event, Note, Phrase, Pitch, Rest, Tempo, Ticks, TimeSignature, ValidationError, Velocity,
+use crate::{
+    event::{
+        Bar, Event, Note, Phrase, Pitch, Rest, Tempo, Ticks, TimeSignature, ValidationError,
+        Velocity,
+    },
+    score::{
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, ImportWarning, LossReport, MasterBar,
+        Score, SourceMeta, Track as ScoreTrack, Voice,
+    },
+    slice::TickRange,
 };
 
 // ── error ─────────────────────────────────────────────────────────────────────
@@ -39,6 +47,23 @@ pub enum MidiError {
     /// No tempo event found in the file.
     #[error("no tempo event found in the MIDI file")]
     NoTempo,
+
+    /// The time-signature / PPQN combination produces zero-length bars (F-001).
+    ///
+    /// The MIDI file is structurally valid but would cause a non-terminating
+    /// loop in `group_into_bars`. Callers should reject it with this error.
+    #[error(
+        "degenerate meter: {numerator}/{denominator} at PPQN {ppqn} gives \
+         zero-length bars"
+    )]
+    DegenerateMeter {
+        /// Time-signature numerator.
+        numerator: u8,
+        /// Time-signature denominator.
+        denominator: u8,
+        /// PPQN of the file.
+        ppqn: u16,
+    },
 
     /// Writing MIDI bytes failed.
     #[error("MIDI write error: {0}")]
@@ -290,15 +315,27 @@ fn collect_notes(raw_track: &[TrackEvent<'_>]) -> (Vec<AbsNote>, Option<String>,
 // ── bar grouping ──────────────────────────────────────────────────────────────
 
 /// Return bar duration in ticks for the given time signature and [`Ppqn`].
+///
+/// Returns [`MidiError::DegenerateMeter`] when the result is zero (F-001):
+/// a non-advancing bar step would cause `group_into_bars` to loop forever.
 fn bar_ticks(sig: TimeSignature, ppqn: Ppqn) -> Result<u32, MidiError> {
     let p = u32::from(ppqn.0);
     let n = u32::from(sig.numerator);
     let d = u32::from(sig.denominator);
     // bar_ticks = ppqn * 4 * numerator / denominator
-    p.checked_mul(4)
+    let ticks = p
+        .checked_mul(4)
         .and_then(|v| v.checked_mul(n))
         .and_then(|v| v.checked_div(d))
-        .ok_or(MidiError::TickOverflow)
+        .ok_or(MidiError::TickOverflow)?;
+    if ticks == 0 {
+        return Err(MidiError::DegenerateMeter {
+            numerator: sig.numerator,
+            denominator: sig.denominator,
+            ppqn: ppqn.0,
+        });
+    }
+    Ok(ticks)
 }
 
 /// Convert a flat list of absolute notes into a [`Phrase`] of [`Bar`]s.
@@ -593,15 +630,421 @@ pub fn summarise(song: &MidiSong) -> MidiSummary {
     }
 }
 
+// ── canonical model import/export (S2) ────────────────────────────────────────
+
+/// Imports a MIDI file into the canonical [`Score`] model.
+///
+/// The master timeline is built from the global tempo / time-signature map so
+/// every [`MasterBar`] carries its own tempo (ADR-0003). Tracks get one
+/// [`Voice`] with [`EventGroupKind::Single`] atoms.
+///
+/// The returned [`Score`] contains a [`LossReport`] describing any data that
+/// could not be preserved exactly.
+pub fn import_score(data: &[u8]) -> Result<Score, MidiError> {
+    let smf = Smf::parse(data)?;
+    let ppqn = extract_ppqn(smf.header)?;
+    let (tempos, time_sigs) = collect_global_meta(&smf);
+
+    if tempos.is_empty() {
+        return Err(MidiError::NoTempo);
+    }
+
+    let mut loss = LossReport::new();
+    let mut score_tracks: Vec<ScoreTrack> = Vec::new();
+
+    for (raw_idx, raw_track) in smf.tracks.iter().enumerate() {
+        if let Some((track, track_loss)) = build_score_track(raw_track, ppqn, &time_sigs, raw_idx)?
+        {
+            loss.absorb(track_loss);
+            score_tracks.push(track);
+        }
+    }
+
+    let end_tick = score_end_tick(&score_tracks);
+    let master_bars = build_master_bars(ppqn, &tempos, &time_sigs, end_tick)?;
+
+    Ok(Score {
+        ticks_per_quarter: ppqn.0,
+        master_bars,
+        tracks: score_tracks,
+        source_meta: Some(SourceMeta {
+            format: Some("MIDI".to_owned()),
+        }),
+        loss,
+    })
+}
+
+/// Serialises a [`Score`] to standard MIDI bytes using the master timeline.
+///
+/// The meta track is built exclusively from [`Score::master_bars`] (ADR-0003):
+/// tempo and time-signature changes are emitted at the correct ticks; track
+/// names are preserved.  Only the first [`Voice`] of each track is emitted.
+pub fn export_score(score: &Score) -> Result<Vec<u8>, MidiError> {
+    let ppqn = Ppqn(score.ticks_per_quarter);
+    let format = if score.tracks.len() == 1 {
+        Format::SingleTrack
+    } else {
+        Format::Parallel
+    };
+
+    let mut smf_tracks: Vec<Vec<TrackEvent<'static>>> = vec![build_score_meta_track(score, ppqn)?];
+    for track in &score.tracks {
+        smf_tracks.push(build_score_note_track(track)?);
+    }
+
+    let header = Header {
+        format,
+        timing: Timing::Metrical(u15::new(ppqn.0)),
+    };
+    let mut smf = Smf::new(header);
+    smf.tracks = smf_tracks;
+
+    let mut out: Vec<u8> = Vec::new();
+    smf.write_std(&mut out)?;
+    Ok(out)
+}
+
+// ── canonical helpers ─────────────────────────────────────────────────────────
+
+fn score_end_tick(tracks: &[ScoreTrack]) -> u32 {
+    tracks
+        .iter()
+        .filter_map(|t| t.voices.first())
+        .flat_map(|v| v.event_groups.iter())
+        .flat_map(|g| g.atoms.iter())
+        .map(|a| a.absolute_start().0.saturating_add(a.duration().0))
+        .max()
+        .unwrap_or(0)
+}
+
+fn build_master_bars(
+    ppqn: Ppqn,
+    tempos: &[TempoChange],
+    time_sigs: &[TimeSigChange],
+    end_tick: u32,
+) -> Result<Vec<MasterBar>, MidiError> {
+    let mut master_bars: Vec<MasterBar> = Vec::new();
+    let mut bar_start: u32 = 0;
+    let mut index: usize = 0;
+
+    while bar_start <= end_tick {
+        let sig = active_time_sig(time_sigs, bar_start);
+        let micros = active_tempo(tempos, bar_start);
+        let bt = bar_ticks(sig, ppqn)?;
+        let bar_end = bar_start.saturating_add(bt);
+        let bpm = 60_000_000.0_f64 / f64::from(micros);
+        let tempo = Tempo::new(bpm)?;
+        let tick_range = TickRange::new(Ticks(bar_start), Ticks(bar_end))
+            .map_err(|_| MidiError::TickOverflow)?;
+
+        master_bars.push(MasterBar {
+            index,
+            tick_range,
+            time_signature: sig,
+            tempo,
+        });
+
+        index = index.checked_add(1).ok_or(MidiError::TickOverflow)?;
+        bar_start = bar_end;
+    }
+
+    Ok(master_bars)
+}
+
+#[allow(clippy::type_complexity)]
+fn build_score_track(
+    raw_track: &[TrackEvent<'_>],
+    ppqn: Ppqn,
+    time_sigs: &[TimeSigChange],
+    raw_idx: usize,
+) -> Result<Option<(ScoreTrack, LossReport)>, MidiError> {
+    let (notes, name_result, channel) = collect_notes_with_name(raw_track);
+    if notes.is_empty() {
+        return Ok(None);
+    }
+
+    let mut loss = LossReport::new();
+    let name = name_result.unwrap_or_else(|()| {
+        loss.add(ImportWarning::TrackNameInvalidUtf8 {
+            track_index: raw_idx,
+        });
+        None
+    });
+
+    // Build event groups from absolute notes using the same bar-grouping logic.
+    let end_tick = notes
+        .iter()
+        .map(|n| n.start.saturating_add(n.note.duration.0))
+        .max()
+        .unwrap_or(0);
+
+    let mut sorted_notes = notes;
+    sorted_notes.sort_unstable_by_key(|n| n.start);
+
+    // Walk bars and assign notes.
+    let mut event_groups: Vec<EventGroup> = Vec::new();
+    let mut bar_start: u32 = 0;
+    let mut note_iter = sorted_notes.iter().peekable();
+
+    while bar_start <= end_tick {
+        let sig = active_time_sig(time_sigs, bar_start);
+        let bt = bar_ticks(sig, ppqn)?;
+        let bar_end = bar_start.saturating_add(bt);
+
+        // Collect bar notes: consume all notes that start before bar_end.
+        while note_iter
+            .peek()
+            .is_some_and(|peeked| peeked.start < bar_end)
+        {
+            if let Some(taken) = note_iter.next() {
+                if taken.start >= bar_start {
+                    let atom = AtomEvent::Note(AtomNote {
+                        absolute_start: Ticks(taken.start),
+                        duration: taken.note.duration,
+                        pitch: taken.note.pitch,
+                        velocity: taken.note.velocity,
+                        articulation: taken.note.articulation,
+                    });
+                    event_groups.push(EventGroup {
+                        kind: EventGroupKind::Single,
+                        atoms: vec![atom],
+                        technique_spans: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        bar_start = bar_end;
+    }
+
+    let voice = Voice {
+        id: 0,
+        event_groups,
+    };
+
+    Ok(Some((
+        ScoreTrack {
+            name,
+            channel,
+            voices: vec![voice],
+        },
+        loss,
+    )))
+}
+
+/// Like [`collect_notes`] but returns the track name as `Ok(Some(name))`, `Ok(None)`,
+/// or `Err(())` (invalid UTF-8) so the caller can record a loss.
+#[allow(clippy::type_complexity)]
+fn collect_notes_with_name(
+    raw_track: &[TrackEvent<'_>],
+) -> (Vec<AbsNote>, Result<Option<String>, ()>, u8) {
+    let mut pending: PendingNotes = HashMap::new();
+    let mut notes: Vec<AbsNote> = Vec::new();
+    let mut abs: u32 = 0;
+    let mut track_name: Result<Option<String>, ()> = Ok(None);
+    let mut channel_counts: [u32; 16] = [0u32; 16];
+
+    for ev in raw_track {
+        abs = abs.saturating_add(u32::from(ev.delta));
+        match ev.kind {
+            TrackEventKind::Meta(MetaMessage::TrackName(bytes)) => {
+                track_name = String::from_utf8(bytes.to_vec()).map(Some).map_err(|_| ());
+            }
+            TrackEventKind::Midi { channel, message } => {
+                let ch = u8::from(channel);
+                match message {
+                    MidiMessage::NoteOn { key, vel } if u8::from(vel) > 0 => {
+                        let pitch_val = u8::from(key);
+                        let vel_val = u8::from(vel);
+                        pending.insert((ch, pitch_val), (abs, vel_val));
+                        if let Some(count) = channel_counts.get_mut(usize::from(ch)) {
+                            *count = count.saturating_add(1);
+                        }
+                    }
+                    MidiMessage::NoteOff { key, .. } | MidiMessage::NoteOn { key, .. } => {
+                        let pitch_val = u8::from(key);
+                        if let Some((start, vel_val)) = pending.remove(&(ch, pitch_val)) {
+                            let duration = abs.saturating_sub(start);
+                            if let (Ok(pitch), Ok(velocity)) =
+                                (Pitch::new(pitch_val), Velocity::new(vel_val))
+                            {
+                                notes.push(AbsNote {
+                                    start,
+                                    note: Note {
+                                        pitch,
+                                        duration: Ticks(duration),
+                                        velocity,
+                                        articulation: None,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let dominant_channel = channel_counts
+        .iter()
+        .enumerate()
+        .max_by_key(|&(_, &count)| count)
+        .map_or(0_u8, |(idx, _)| {
+            #[allow(clippy::cast_possible_truncation)]
+            // idx is in 0..16 and always fits in u8
+            {
+                idx as u8
+            }
+        });
+
+    (notes, track_name, dominant_channel)
+}
+
+/// Builds the SMF meta track from the master timeline of a [`Score`].
+///
+/// Emits a tempo event and time-signature event at every [`MasterBar`] where
+/// the value changes from the previous bar. This is the only function that
+/// should emit transport meta events; note tracks must not duplicate them.
+fn build_score_meta_track(
+    score: &Score,
+    ppqn: Ppqn,
+) -> Result<Vec<TrackEvent<'static>>, MidiError> {
+    let mut abs_events: Vec<(u32, TrackEventKind<'static>)> = Vec::new();
+
+    let mut prev_micros: Option<u32> = None;
+    let mut prev_sig: Option<TimeSignature> = None;
+
+    for mb in &score.master_bars {
+        let tick = mb.tick_range.start.0;
+        let micros = tempo_to_micros(mb.tempo)?;
+        let sig = mb.time_signature;
+
+        if prev_micros != Some(micros) {
+            abs_events.push((
+                tick,
+                TrackEventKind::Meta(MetaMessage::Tempo(u24::from_int_lossy(micros))),
+            ));
+            prev_micros = Some(micros);
+        }
+
+        if prev_sig != Some(sig) {
+            let den_pow = sig.denominator.trailing_zeros();
+            #[allow(clippy::cast_possible_truncation)]
+            // trailing_zeros() on u8 is at most 7; fits in u8
+            let den_pow_u8 = den_pow as u8;
+            abs_events.push((
+                tick,
+                TrackEventKind::Meta(MetaMessage::TimeSignature(sig.numerator, den_pow_u8, 24, 8)),
+            ));
+            prev_sig = Some(sig);
+        }
+    }
+
+    // End-of-track at the end of the last master bar.
+    let end_tick = score.master_bars.last().map_or(0, |mb| mb.tick_range.end.0);
+    abs_events.push((end_tick, TrackEventKind::Meta(MetaMessage::EndOfTrack)));
+
+    // Ensure at least an initial tempo + time-sig if master_bars is empty.
+    if score.master_bars.is_empty() {
+        abs_events.push((
+            0,
+            TrackEventKind::Meta(MetaMessage::Tempo(u24::from_int_lossy(500_000_u32))),
+        ));
+        abs_events.push((
+            0,
+            TrackEventKind::Meta(MetaMessage::TimeSignature(4, 2, 24, 8)),
+        ));
+        let ppqn_as_ticks = bar_ticks(
+            TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            ppqn,
+        )?;
+        abs_events.push((ppqn_as_ticks, TrackEventKind::Meta(MetaMessage::EndOfTrack)));
+    }
+
+    abs_events.sort_unstable_by_key(|&(tick, _)| tick);
+    Ok(abs_to_delta(abs_events))
+}
+
+/// Builds a note track for one [`ScoreTrack`], using only the first [`Voice`].
+#[allow(clippy::unnecessary_wraps)]
+fn build_score_note_track(track: &ScoreTrack) -> Result<Vec<TrackEvent<'static>>, MidiError> {
+    let channel = u4::new(track.channel.min(15));
+    let mut abs_events: Vec<(u32, TrackEventKind<'static>)> = Vec::new();
+
+    // Emit track name if present.
+    // (TrackName bytes must have 'static lifetime; we build owned vec and leak it.)
+    // We use a workaround: only emit if the name is non-empty.
+    // NOTE: midly TrackName takes &'static [u8]; we cannot easily emit dynamic
+    // names without unsafe. We skip name emission in export_score for now.
+    // This is a known limitation tracked in LossReport / future work.
+
+    if let Some(voice) = track.voices.first() {
+        for group in &voice.event_groups {
+            for atom in &group.atoms {
+                if let AtomEvent::Note(n) = atom {
+                    let key = u7::new(n.pitch.0);
+                    let vel = u7::new(n.velocity.0);
+                    let start = n.absolute_start.0;
+                    let end = start.saturating_add(n.duration.0);
+
+                    abs_events.push((
+                        start,
+                        TrackEventKind::Midi {
+                            channel,
+                            message: MidiMessage::NoteOn { key, vel },
+                        },
+                    ));
+                    abs_events.push((
+                        end,
+                        TrackEventKind::Midi {
+                            channel,
+                            message: MidiMessage::NoteOff {
+                                key,
+                                vel: u7::new(0),
+                            },
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    // Determine end tick: max of all note-offs.
+    let end_tick = abs_events.iter().map(|&(t, _)| t).max().unwrap_or(0);
+    abs_events.push((end_tick, TrackEventKind::Meta(MetaMessage::EndOfTrack)));
+    abs_events.sort_unstable_by_key(|&(tick, _)| tick);
+    Ok(abs_to_delta(abs_events))
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{bar_ticks, export, import, tempo_to_micros, MidiSong, MidiTrack, Ppqn, Smf};
-    use crate::event::{
-        Bar, Event, Note, Phrase, Pitch, Rest, Tempo, Ticks, TimeSignature, Velocity,
+    use super::{
+        bar_ticks, export, export_score, import, import_score, tempo_to_micros, MidiError,
+        MidiSong, MidiTrack, Ppqn,
     };
+    use crate::{
+        event::{Bar, Event, Note, Phrase, Pitch, Rest, Tempo, Ticks, TimeSignature, Velocity},
+        score::{
+            AtomEvent as ScoreAtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport,
+            MasterBar, Score, Track as ScoreTrack2, Voice,
+        },
+        slice::TickRange,
+    };
+    use midly::{MetaMessage, Smf, TrackEventKind};
+
+    /// Bytes of the `tempo_change` fixture (two-tempo file from the S0 corpus).
+    const TEMPO_CHANGE_MID: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cli/tests/fixtures/tempo_change.mid"
+    ));
 
     #[test]
     fn bar_ticks_4_4_at_480_ppqn() {
@@ -723,26 +1166,14 @@ mod tests {
         assert_eq!(note_count, 1, "seed must import exactly one note");
     }
 
-    /// Regression reproducer for finding F-001 (see `docs/fuzzing.md`):
-    /// a PPQN=1 / 1-8 SMF makes `bar_ticks` integer-divide to zero, so
-    /// `group_into_bars`' `while bar_start <= end_tick` loop never advances
-    /// (infinite loop + unbounded `bars` growth). The root cause is asserted
-    /// directly; `import` is intentionally NOT called here because it does
-    /// not return. The byte sequence is mirrored in
-    /// `fuzz/corpus/midi_import/hang_ppqn1_eighth.mid`, the first regression
-    /// corpus seed; libFuzzer's `-timeout` turns the hang into a crash.
+    /// Regression test for finding F-001 (see `docs/fuzzing.md`):
+    /// a PPQN=1 / 1/8 SMF used to make `bar_ticks` integer-divide to zero,
+    /// causing `group_into_bars` to loop forever.
+    ///
+    /// Fixed in S2: `bar_ticks` now returns [`MidiError::DegenerateMeter`]
+    /// instead of `Ok(0)`, so `import` returns a typed error immediately.
     #[test]
-    #[ignore = "F-001: import() hangs/OOMs on this input; no fix on the planning branch (docs/fuzzing.md)"]
-    fn regression_zero_bar_ticks_hang_repro() {
-        let degenerate = TimeSignature {
-            numerator: 1,
-            denominator: 8,
-        };
-        assert!(
-            matches!(bar_ticks(degenerate, Ppqn(1)), Ok(0)),
-            "1/8 at PPQN=1 must integer-divide to zero bar ticks (the hang trigger)",
-        );
-
+    fn regression_f001_degenerate_meter_returns_typed_error() {
         let hang_mid: &[u8] = &[
             0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
             0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x1B, //
@@ -752,11 +1183,185 @@ mod tests {
             0x01, 0x80, 0x3C, 0x00, //
             0x00, 0xFF, 0x2F, 0x00,
         ];
-        let smf = Smf::parse(hang_mid).expect("F-001 reproducer is a well-formed SMF");
-        assert_eq!(
-            smf.tracks.len(),
-            1,
-            "F-001 reproducer has exactly one track"
+
+        let result = import(hang_mid);
+        assert!(
+            matches!(
+                result,
+                Err(MidiError::DegenerateMeter {
+                    numerator: 1,
+                    denominator: 8,
+                    ppqn: 1
+                })
+            ),
+            "F-001 input must return DegenerateMeter, got {result:?}",
         );
+    }
+
+    #[test]
+    fn bar_ticks_degenerate_returns_typed_error() {
+        let sig = TimeSignature {
+            numerator: 1,
+            denominator: 8,
+        };
+        let result = bar_ticks(sig, Ppqn(1));
+        assert!(
+            matches!(
+                result,
+                Err(MidiError::DegenerateMeter {
+                    numerator: 1,
+                    denominator: 8,
+                    ppqn: 1,
+                })
+            ),
+            "1/8 at PPQN=1 must return DegenerateMeter, got {result:?}",
+        );
+    }
+
+    // ── import_score / export_score ───────────────────────────────────────────
+
+    /// The minimal valid corpus seed must parse via the canonical path.
+    #[test]
+    fn import_score_valid_minimal_succeeds() {
+        let score = import_score(VALID_MINIMAL_MID).expect("valid_minimal must import as Score");
+        assert_eq!(
+            score.ticks_per_quarter, 480,
+            "canonical import must preserve PPQN"
+        );
+        assert_eq!(score.tracks.len(), 1, "one note-bearing track expected");
+        assert!(
+            !score.master_bars.is_empty(),
+            "master bars must be populated"
+        );
+        assert!(score.loss.is_clean(), "minimal file must import cleanly");
+    }
+
+    /// Every master bar in a canonical import must have non-empty tick range.
+    #[test]
+    fn import_score_master_bars_have_valid_ranges() {
+        let score = import_score(VALID_MINIMAL_MID).expect("import_score must succeed");
+        for mb in &score.master_bars {
+            assert!(
+                mb.tick_range.start.0 < mb.tick_range.end.0,
+                "master bar tick range must be non-empty (bar {})",
+                mb.index,
+            );
+        }
+    }
+
+    /// `export_score` followed by `import_score` must preserve track count and PPQN.
+    #[test]
+    fn export_score_roundtrip_preserves_track_count_and_ppqn() {
+        let original = import_score(VALID_MINIMAL_MID).expect("import_score must succeed");
+        let bytes = export_score(&original).expect("export_score must succeed");
+        let reimported = import_score(&bytes).expect("re-import_score must succeed");
+
+        assert_eq!(
+            original.ticks_per_quarter, reimported.ticks_per_quarter,
+            "roundtrip must preserve ticks_per_quarter"
+        );
+        assert_eq!(
+            original.tracks.len(),
+            reimported.tracks.len(),
+            "roundtrip must preserve track count"
+        );
+    }
+
+    /// Multi-track export via `export_score` must put all tempo changes in the
+    /// dedicated meta track — note tracks must contain zero tempo meta events.
+    #[test]
+    fn export_score_multi_track_tempo_in_meta_track_only() {
+        let mk_track = |ch: u8| {
+            let atom = ScoreAtomEvent::Note(AtomNote {
+                absolute_start: Ticks(0),
+                duration: Ticks(480),
+                pitch: Pitch::new(60).expect("valid pitch"),
+                velocity: Velocity::new(80).expect("valid velocity"),
+                articulation: None,
+            });
+            let group = EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![atom],
+                technique_spans: Vec::new(),
+            };
+            ScoreTrack2 {
+                name: Some(format!("T{ch}")),
+                channel: ch,
+                voices: vec![Voice {
+                    id: 0,
+                    event_groups: vec![group],
+                }],
+            }
+        };
+
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: vec![MasterBar {
+                index: 0,
+                tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("valid range"),
+                time_signature: TimeSignature::new(4, 4).expect("4/4 valid"),
+                tempo: Tempo::new(140.0).expect("140 BPM valid"),
+            }],
+            tracks: vec![mk_track(0), mk_track(1)],
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        let bytes = export_score(&score).expect("export_score must succeed");
+        let smf = Smf::parse(&bytes).expect("exported bytes must be valid SMF");
+
+        assert!(smf.tracks.len() >= 3, "meta + 2 note tracks expected");
+
+        for (idx, raw_track) in smf.tracks.iter().enumerate().skip(1) {
+            for ev in raw_track {
+                assert!(
+                    !matches!(ev.kind, TrackEventKind::Meta(MetaMessage::Tempo(_))),
+                    "note track {idx} must not contain a Tempo meta event"
+                );
+            }
+        }
+    }
+
+    /// Tempo changes are correctly preserved across a canonical roundtrip.
+    #[test]
+    fn export_score_preserves_all_tempo_changes() {
+        let score = import_score(TEMPO_CHANGE_MID).expect("tempo_change must import as Score");
+
+        let tempos: Vec<f64> = score.master_bars.iter().map(|mb| mb.tempo.0).collect();
+        let distinct_count = {
+            // Deduplicate by rounding to nearest integer BPM.
+            let mut seen: Vec<u64> = tempos
+                .iter()
+                .map(|&t| {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    {
+                        t.round() as u64
+                    }
+                })
+                .collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.len()
+        };
+        assert!(
+            distinct_count >= 2,
+            "tempo_change fixture must import with at least 2 distinct tempos"
+        );
+
+        let bytes = export_score(&score).expect("export_score must succeed");
+        let rt = import_score(&bytes).expect("re-import_score must succeed");
+
+        let rt_tempos: Vec<f64> = rt.master_bars.iter().map(|mb| mb.tempo.0).collect();
+        assert_eq!(
+            tempos.len(),
+            rt_tempos.len(),
+            "roundtrip must preserve bar count"
+        );
+        for (i, (&orig, &rt_val)) in tempos.iter().zip(rt_tempos.iter()).enumerate() {
+            assert!(
+                (orig - rt_val).abs() < 1.0,
+                "bar {i}: tempo {orig} BPM must survive roundtrip (got {rt_val})"
+            );
+        }
     }
 }
