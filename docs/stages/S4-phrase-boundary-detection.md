@@ -1,6 +1,6 @@
 # S4: Phrase boundary detection
 
-Status: planned
+Status: done
 Depends on: S1
 ADRs: ADR-0008, ADR-0010
 

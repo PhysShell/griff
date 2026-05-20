@@ -56,3 +56,10 @@ path  = "fuzz_targets/guitar_pro_import.rs"
 test  = false
 doc   = false
 bench = false
+
+[[bin]]
+name  = "phrase_boundary"
+path  = "fuzz_targets/phrase_boundary.rs"
+test  = false
+doc   = false
+bench = false
