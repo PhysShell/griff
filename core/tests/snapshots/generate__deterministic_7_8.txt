@@ -1,0 +1,25 @@
+bars=3
+bar 0 7/8 events=7
+  Note(Note { pitch: Pitch(40), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(43), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(45), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(47), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(50), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(40), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(43), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+bar 1 7/8 events=7
+  Note(Note { pitch: Pitch(45), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(47), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(50), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(40), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(43), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(45), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(47), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+bar 2 7/8 events=7
+  Note(Note { pitch: Pitch(50), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(40), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(43), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(45), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(47), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(50), duration: Ticks(240), velocity: Velocity(104), articulation: None })
+  Note(Note { pitch: Pitch(40), duration: Ticks(240), velocity: Velocity(104), articulation: None })

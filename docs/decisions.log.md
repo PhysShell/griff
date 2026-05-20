@@ -23,10 +23,16 @@ Architectural decisions go to [`adr/`](adr/) instead.
   to achieve honesty without destabilizing a published branch, accepting that
   old commit messages stay wrong (reconciled in `docs/audit/`).
 
-- 2026-05-19 — In the context of the fuzzing-strategy planning branch, facing
-  a freshly discovered `group_into_bars` hang/OOM (finding F-001), we decided
-  for committing it unfixed as the first regression corpus seed plus an
-  `#[ignore]`d root-cause repro test, and against fixing it on a planning
-  branch, to achieve a permanent reproducer without an untested behavior
-  change, accepting that the bug stays live until S0/S2 fix it behind a
-  characterization test.
+- 2026-05-19 — In the context of S0 golden CLI tests, facing the `insta` vs
+  hand-rolled snapshot-tooling open question, we decided for hand-rolled plain
+  golden text files (compared in-process, re-blessed via `GRIFF_BLESS=1`) and
+  against the `insta` crate, to keep the workspace dependency tree and the
+  strict `cargo-deny`/clippy posture intact, accepting slightly less ergonomic
+  snapshot review.
+
+- 2026-05-19 — In the context of S0 `.mid` fixtures, facing the in-repo
+  real-MIDI vs synthetic open question, we decided for fully synthetic minimal
+  fixtures generated with `midly` (committed, byte-pinned by an in-sync guard
+  test) and against any licensed real guitar MIDI, to avoid licensing concerns
+  and keep the importer's golden inputs deterministic, accepting that the
+  fixtures are not musically realistic.

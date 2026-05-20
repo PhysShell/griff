@@ -1,0 +1,9 @@
+== simple_4_4 ==
+ppqn 480 tracks 1
+summary idx=0 name=Lead ch=0 bars=3 notes=12
+track 0 name=Lead ch=0 bars=3
+  bar 0 4/4 120.0bpm notes=4 class=Breakdown vel=100 span=24
+  bar 1 4/4 120.0bpm notes=8 class=Clean vel=55 span=7
+  bar 2 4/4 120.0bpm notes=0 class=Unknown vel=0 span=0
+features[0] bars=3 events=13 notes=12 rests=1 artic=0 dur=5760 pitch=40..67 vel=55..100
+timed[0] count=13 first@0 last@3840

@@ -1,0 +1,5 @@
+$ griff import <OUT>
+exit: 1
+--- stdout ---
+--- stderr ---
+error: I/O error: No such file or directory (os error 2)

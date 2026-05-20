@@ -18,5 +18,10 @@ path = "src/main.rs"
 griff-core = { path = "../core" }
 clap       = { workspace = true }
 
+[dev-dependencies]
+# Used only by the S0 characterization suite to synthesise `.mid` fixtures
+# directly, independent of griff's own export path.
+midly = { workspace = true }
+
 [lints]
 workspace = true

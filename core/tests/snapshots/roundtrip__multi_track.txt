@@ -1,0 +1,14 @@
+[orig] ppqn=480 tracks=2
+  track 0 name=Clean ch=2 bars=2
+    bar 0 4/4 90.0bpm notes=8
+    bar 1 4/4 90.0bpm notes=0
+  track 1 name=Solo ch=3 bars=2
+    bar 0 4/4 90.0bpm notes=6
+    bar 1 4/4 90.0bpm notes=0
+[roundtrip] ppqn=480 tracks=2
+  track 0 name=<unnamed> ch=2 bars=2
+    bar 0 4/4 90.0bpm notes=8
+    bar 1 4/4 90.0bpm notes=0
+  track 1 name=<unnamed> ch=3 bars=2
+    bar 0 4/4 90.0bpm notes=6
+    bar 1 4/4 90.0bpm notes=0
