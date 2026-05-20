@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); [[ \"$f\" == *.rs ]] && cd /home/user/griff && cargo test --workspace --quiet 2>&1 | tail -20 || true",
+            "timeout": 120,
+            "statusMessage": "Running cargo test..."
+          }
+        ]
+      }
+    ]
+  }
+}
