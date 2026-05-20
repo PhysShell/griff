@@ -912,6 +912,53 @@ Mutation testing for Rust: checks whether tests catch injected bugs.
 Test-quality check via small code mutations. If tests do not fail, they are
 weak.
 
+### Fuzz testing
+Feeding many automatically generated inputs to a target to find panics,
+hangs, unbounded allocation, or invalid internal models. In `griff` a
+mandatory robustness/security layer for format adapters and selected core
+transforms — never a correctness proof (ADR-0010, `fuzzing.md`).
+
+### Fuzz target
+A small entry point a fuzzer drives, with an oracle. In `griff`:
+`fuzz/fuzz_targets/*.rs` (e.g. `midi_import`, `midi_roundtrip`).
+
+### cargo-fuzz
+The standard Rust fuzzing harness around libFuzzer. `griff`'s chosen tool;
+lives in the isolated nightly `fuzz/` crate.
+
+### libfuzzer-sys
+Rust bindings exposing the libFuzzer engine; the `fuzz_target!` macro crate.
+
+### arbitrary
+Rust crate turning raw bytes into typed structures, for structure-aware
+fuzzing (canonical `Score`, generation requests) rather than only raw bytes.
+
+### Structure-aware fuzzing
+Fuzzing typed inputs (via `arbitrary`) instead of raw byte slices. Used for
+`score_projection`, `phrase_boundary`, generation targets.
+
+### Fuzz corpus
+The committed input set for a target: `fuzz/corpus/<target>/`.
+
+### Seed corpus
+Hand-picked starting inputs (minimal valid files) that bootstrap a target.
+
+### Regression corpus
+Minimized crash/hang inputs committed permanently so a fixed bug stays
+fixed. The first one is `hang_ppqn1_eighth.mid` (finding F-001).
+
+### Fuzz oracle
+The pass/fail contract for a target: no panic/hang/unbounded alloc, typed
+error xor success, plus target-specific normalized invariants.
+
+### Hang
+Input that makes the target not return (infinite loop / pathological work).
+Detected by libFuzzer `-timeout`. Distinct from a panic.
+
+### Uncontrolled allocation
+Input that drives unbounded memory growth (e.g. zip bomb, degenerate
+loop). Bounded by libFuzzer `-rss_limit_mb` / `-malloc_limit_mb`.
+
 ### cargo-llvm-cov
 Code coverage tool for Rust. Coverage ≠ test quality.
 
@@ -1060,6 +1107,8 @@ order). Needed for snapshot tests.
 - `CLAP`, `NIH-plug`, `Host transport` → S10 plugin.
 - `TDD`, `Snapshot`, `Property test`, `Mutation testing` → development
   process.
+- `Fuzz testing`, `cargo-fuzz`, `Fuzz corpus`, `Fuzz oracle` →
+  robustness/security layer (ADR-0010, `fuzzing.md`), isolated `fuzz/`.
 - `ADR`, `SPEC.md`, `AGENTS.md` → documentation/process.
 
 ## 17. Rules for the LLM agent

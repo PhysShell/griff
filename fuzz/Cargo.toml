@@ -1,0 +1,43 @@
+# Isolated fuzzing crate (ADR-0010). Deliberately NOT a member of the parent
+# workspace: cargo-fuzz / libfuzzer-sys require a nightly toolchain and emit an
+# `extern "C"` harness, which cannot satisfy the workspace `unsafe_code =
+# "forbid"` lint policy. Keeping this crate excluded (see the root Cargo.toml
+# `exclude`) and as its own workspace root isolates that nightly + lint
+# divergence from the stable `core`/`cli`/`plugin` workspace.
+
+[package]
+name         = "griff-fuzz"
+version      = "0.0.0"
+publish      = false
+edition      = "2021"
+rust-version = "1.74"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.griff-core]
+path = "../core"
+
+# Standalone workspace root so the parent workspace lint policy is not
+# inherited (it cannot be satisfied here — see the header comment).
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name  = "midi_import"
+path  = "fuzz_targets/midi_import.rs"
+test  = false
+doc   = false
+bench = false
+
+[[bin]]
+name  = "midi_roundtrip"
+path  = "fuzz_targets/midi_roundtrip.rs"
+test  = false
+doc   = false
+bench = false

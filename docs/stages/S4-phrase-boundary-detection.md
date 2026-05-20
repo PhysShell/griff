@@ -2,7 +2,7 @@
 
 Status: planned
 Depends on: S1
-ADRs: ADR-0008
+ADRs: ADR-0008, ADR-0010
 
 ## Goal
 
@@ -33,6 +33,9 @@ boundary_score(t) = w1·pause(t)        + w2·cadence(t)
 - On hand-labelled swancore phrases (from S5): F1 ≥ 0.7 at ±1/16 tolerance.
 - Every boundary carries a `BoundaryReason`.
 - Deterministic for the same input + config.
+- P1 `phrase_boundary` fuzz target (structure-aware via `arbitrary`,
+  ADR-0010): boundaries sorted, ticks within phrase duration, scores
+  finite, `BoundaryReason` consistent with non-zero score components.
 
 ## Open questions
 
@@ -43,3 +46,4 @@ boundary_score(t) = w1·pause(t)        + w2·cadence(t)
 
 - [`../adr/0008-heuristic-phrase-detection-before-ml.md`](../adr/0008-heuristic-phrase-detection-before-ml.md)
 - [`../glossary.md`](../glossary.md) §6
+- [`../fuzzing.md`](../fuzzing.md) (`phrase_boundary`, P1)
