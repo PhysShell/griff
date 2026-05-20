@@ -1,6 +1,6 @@
 # S8: Standalone preview app
 
-Status: planned
+Status: done
 Depends on: S6
 ADRs: —
 
