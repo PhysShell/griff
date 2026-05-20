@@ -6,7 +6,8 @@
     clippy::unwrap_used,
     clippy::indexing_slicing,
     clippy::missing_assert_message,
-    clippy::absolute_paths
+    clippy::absolute_paths,
+    clippy::missing_const_for_fn
 )]
 
 use griff_core::{
@@ -71,7 +72,10 @@ fn same_seed_produces_identical_phrase() {
     let req = request(GenerationStrategy::ConstrainedRandomWalk);
     let a = generate(&req).expect("generate succeeds (a)");
     let b = generate(&req).expect("generate succeeds (b)");
-    assert_eq!(a.phrase, b.phrase, "same seed must produce identical phrase");
+    assert_eq!(
+        a.phrase, b.phrase,
+        "same seed must produce identical phrase"
+    );
 }
 
 #[test]
@@ -86,7 +90,10 @@ fn different_seeds_produce_different_phrases() {
     };
     let a = generate(&req_a).expect("generate A");
     let b = generate(&req_b).expect("generate B");
-    assert_ne!(a.phrase, b.phrase, "distinct seeds must produce distinct phrases");
+    assert_ne!(
+        a.phrase, b.phrase,
+        "distinct seeds must produce distinct phrases"
+    );
 }
 
 // ── structural invariants ─────────────────────────────────────────────────────
@@ -134,7 +141,10 @@ fn candidate_carries_strategy_and_seed() {
         ..request(strategy)
     };
     let candidate = generate(&req).expect("generate succeeds");
-    assert_eq!(candidate.strategy, strategy, "candidate strategy must match request");
+    assert_eq!(
+        candidate.strategy, strategy,
+        "candidate strategy must match request"
+    );
     assert_eq!(candidate.seed, seed, "candidate seed must match request");
 }
 
@@ -156,7 +166,10 @@ fn rhythm_copy_produces_notes_with_source_durations() {
         .collect();
     assert!(!note_durations.is_empty(), "rhythm copy must produce notes");
     for &dur in &note_durations {
-        assert_eq!(dur, 480, "rhythm copy must use quarter-note durations from source");
+        assert_eq!(
+            dur, 480,
+            "rhythm copy must use quarter-note durations from source"
+        );
     }
 }
 
@@ -176,7 +189,10 @@ fn constrained_walk_limits_consecutive_pitch_leaps() {
         .collect();
     for pair in pitches.windows(2) {
         let leap = pair[0].abs_diff(pair[1]);
-        assert!(leap <= 12, "constrained walk: leap {leap} semitones exceeds 12");
+        assert!(
+            leap <= 12,
+            "constrained walk: leap {leap} semitones exceeds 12"
+        );
     }
 }
 
@@ -217,8 +233,7 @@ fn repeat_variation_second_bar_differs_from_first() {
     let candidate = generate(&req).expect("generate succeeds");
     assert_eq!(candidate.phrase.bars.len(), 2, "must produce 2 bars");
     assert_ne!(
-        candidate.phrase.bars[0].events,
-        candidate.phrase.bars[1].events,
+        candidate.phrase.bars[0].events, candidate.phrase.bars[1].events,
         "repeat variation: bar 1 must differ from bar 0",
     );
 }

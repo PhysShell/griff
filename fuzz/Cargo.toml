@@ -63,3 +63,10 @@ path  = "fuzz_targets/phrase_boundary.rs"
 test  = false
 doc   = false
 bench = false
+
+[[bin]]
+name  = "generation_request"
+path  = "fuzz_targets/generation_request.rs"
+test  = false
+doc   = false
+bench = false

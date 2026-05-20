@@ -1,6 +1,6 @@
 # S6: Rule-based generator v0
 
-Status: planned
+Status: done
 Depends on: S5
 ADRs: ADR-0005, ADR-0010
 
