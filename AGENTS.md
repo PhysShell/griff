@@ -41,6 +41,25 @@ codebase is a **pre-canonical baseline** — see
 - A term? → `docs/glossary.md`
 - Scope question? → `docs/SPEC.md`
 
+## TDD workflow (mandatory)
+
+Every new module or non-trivial change follows the red-green cycle strictly:
+
+1. **Red** — write the tests first. Run `cargo test --workspace`; the new tests
+   must appear and fail. Commit the failing tests before touching implementation.
+2. **Green** — write the minimal implementation to make them pass. Run
+   `cargo test --workspace`; all tests must be green. Commit.
+3. **Refactor** — tidy while keeping tests green. Commit if anything changed.
+
+Hard rules:
+- Never commit new `pub fn` / `pub struct` implementation in the same commit as
+  the tests that cover it, for any new functionality.
+- A subagent or agent step that is told to "implement module X" must split the
+  work into two sequential tasks: (a) write and commit failing tests, (b) write
+  and commit implementation.
+- Characterization tests for existing behaviour (no new public API) are exempt
+  from the red phase but must still pass before commit.
+
 ## Hard constraints (full list in docs/SPEC.md)
 
 - `unsafe_code = "forbid"` workspace-wide; no exceptions without an ADR.
