@@ -21,6 +21,9 @@ categories   = ["multimedia::audio", "command-line-utilities"]
 midly     = "0.5"
 thiserror = "2"
 clap      = { version = "4", features = ["derive"] }
+serde     = { version = "1", features = ["derive"] }
+serde_json = "1"
+proptest  = "1"
 
 [profile.release]
 lto           = "thin"
