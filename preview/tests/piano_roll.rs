@@ -173,5 +173,5 @@ fn piano_roll_error_is_display() {
     let err = PianoRollView::from_midi_bytes(&[]).unwrap_err();
     let s = format!("{err}");
     assert!(!s.is_empty(), "PianoRollError must implement Display");
-    let _ = PianoRollError::Empty; // ensure variant is accessible
+    drop(PianoRollError::Empty); // ensure variant is accessible
 }
