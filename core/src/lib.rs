@@ -9,6 +9,7 @@ pub mod classify;
 pub mod corpus;
 pub mod event;
 pub mod feature;
+pub mod feedback;
 pub mod generate;
 pub mod gp;
 pub mod graph;
