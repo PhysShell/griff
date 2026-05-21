@@ -1,6 +1,6 @@
 # S11: Region regeneration with frozen regions
 
-Status: planned
+Status: done
 Depends on: S10
 ADRs: ADR-0010
 

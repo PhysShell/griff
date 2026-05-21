@@ -169,11 +169,10 @@ fn non_frozen_bar_in_region_is_replaced() {
     let regen_pitch = out.phrase.bars[1]
         .events
         .iter()
-        .filter_map(|e| match e {
+        .find_map(|e| match e {
             Event::Note(n) => Some(n.pitch.0),
             Event::Rest(_) => None,
-        })
-        .next();
+        });
     if let Some(p) = regen_pitch {
         assert_ne!(p, source_pitch, "regenerated bar must differ from source");
     }
@@ -227,13 +226,41 @@ fn same_seed_produces_identical_output() {
 
 #[test]
 fn different_seeds_produce_different_output() {
-    let req_a = free_request();
-    let req_b = RegenerationRequest {
-        seed: GenerationSeed(99_999),
-        ..free_request()
+    // Use a multi-pitch scale so the seed actually affects pitch selection.
+    let multi_pitch = PitchMaterial {
+        root: Pitch(40),
+        intervals: vec![0, 3, 5, 7, 10],
     };
-    let out_a = regenerate(&req_a).expect("regenerate a");
-    let out_b = regenerate(&req_b).expect("regenerate b");
+    let wide_constraints = GenerationConstraints {
+        bar_count: 2,
+        time_signature: TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        },
+        tempo: Tempo(120.0),
+        ticks_per_quarter: Ticks(480),
+        pitch_lo: Pitch(36),
+        pitch_hi: Pitch(72),
+    };
+    let base = RegenerationRequest {
+        source: four_bar_phrase(),
+        region: region_bars_1_2(),
+        constraints: RegenerationConstraints {
+            frozen: Vec::new(),
+            anchors: Vec::new(),
+        },
+        pitch_material: multi_pitch,
+        source_rhythms: Vec::new(),
+        generation_constraints: wide_constraints,
+        strategy: GenerationStrategy::ConstrainedRandomWalk,
+        seed: GenerationSeed(1),
+    };
+    let out_a = regenerate(&base).expect("regenerate a");
+    let out_b = regenerate(&RegenerationRequest {
+        seed: GenerationSeed(99_999),
+        ..base
+    })
+    .expect("regenerate b");
     assert_ne!(
         out_a.phrase.bars[1], out_b.phrase.bars[1],
         "different seeds must produce different regenerated bars"
