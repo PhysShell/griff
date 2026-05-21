@@ -1,6 +1,6 @@
 # S9: Human-feedback layer
 
-Status: planned
+Status: done
 Depends on: S6, S8
 ADRs: —
 
