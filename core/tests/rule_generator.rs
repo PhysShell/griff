@@ -135,7 +135,11 @@ fn same_seed_produces_identical_voice() {
     let req = request(GenerationStrategy::ConstrainedRandomWalk);
     let a = generate(&req).expect("generate succeeds (a)");
     let b = generate(&req).expect("generate succeeds (b)");
-    assert_eq!(voice(&a), voice(&b), "same seed must produce identical voice");
+    assert_eq!(
+        voice(&a),
+        voice(&b),
+        "same seed must produce identical voice"
+    );
 }
 
 #[test]
@@ -214,7 +218,10 @@ fn candidate_carries_strategy_and_seed() {
 fn rhythm_copy_produces_notes_with_source_durations() {
     let candidate = generate(&request(GenerationStrategy::RhythmCopyPitchSubstitute))
         .expect("generate succeeds");
-    let durations: Vec<u32> = notes(voice(&candidate)).iter().map(|n| n.duration.0).collect();
+    let durations: Vec<u32> = notes(voice(&candidate))
+        .iter()
+        .map(|n| n.duration.0)
+        .collect();
     assert!(!durations.is_empty(), "rhythm copy must produce notes");
     for &dur in &durations {
         assert_eq!(
@@ -226,8 +233,8 @@ fn rhythm_copy_produces_notes_with_source_durations() {
 
 #[test]
 fn constrained_walk_limits_consecutive_pitch_leaps() {
-    let candidate = generate(&request(GenerationStrategy::ConstrainedRandomWalk))
-        .expect("generate succeeds");
+    let candidate =
+        generate(&request(GenerationStrategy::ConstrainedRandomWalk)).expect("generate succeeds");
     let pitches: Vec<u8> = notes(voice(&candidate)).iter().map(|n| n.pitch.0).collect();
     for pair in pitches.windows(2) {
         let leap = pair[0].abs_diff(pair[1]);
@@ -240,8 +247,8 @@ fn constrained_walk_limits_consecutive_pitch_leaps() {
 
 #[test]
 fn motif_transpose_puts_a_note_in_every_bar() {
-    let candidate = generate(&request(GenerationStrategy::MotifTransposeVariation))
-        .expect("generate succeeds");
+    let candidate =
+        generate(&request(GenerationStrategy::MotifTransposeVariation)).expect("generate succeeds");
     let ns = notes(voice(&candidate));
     for mb in &candidate.score.master_bars {
         assert!(

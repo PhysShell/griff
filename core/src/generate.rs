@@ -4,6 +4,11 @@ use crate::event::{
     Articulation, Bar, Event, Note, Phrase, Pitch, Tempo, Ticks, TimeSignature, ValidationError,
     Velocity,
 };
+use crate::score::{
+    AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track,
+    Voice,
+};
+use crate::slice::TickRange;
 
 // ── S6: rule-based generator ──────────────────────────────────────────────────
 
@@ -75,11 +80,15 @@ pub enum GenerationStrategy {
     RepeatVariation,
 }
 
-/// A generated phrase with provenance metadata.
-#[derive(Debug, Clone, PartialEq)]
+/// A generated part with provenance metadata.
+///
+/// The output is the canonical model: a [`Score`] owning its own
+/// [`MasterBar`]s plus a single [`Track`] with one [`Voice`]. A complementary
+/// part can later be added as another `Track` on the same master timeline.
+#[derive(Debug, Clone)]
 pub struct GenerationCandidate {
-    /// The generated phrase.
-    pub phrase: Phrase,
+    /// The generated score (one track, one voice).
+    pub score: Score,
     /// Strategy that produced this candidate.
     pub strategy: GenerationStrategy,
     /// Seed used for this generation pass.
@@ -162,11 +171,78 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
         }
     };
 
+    let score = bars_to_score(&bars, c, bar_duration);
     Ok(GenerationCandidate {
-        phrase: Phrase { bars },
+        score,
         strategy: request.strategy,
         seed: request.seed,
     })
+}
+
+/// Lays a generated `Vec<Bar>` onto the canonical model.
+///
+/// Builds `MasterBar`s back-to-back from `bar_duration` and flattens each
+/// `Bar`'s events into one `Voice` of `Single` event groups carrying absolute
+/// onsets. Tempo and meter live on the master bars (ADR-0003), not on events.
+fn bars_to_score(bars: &[Bar], c: &GenerationConstraints, bar_duration: Ticks) -> Score {
+    let mut master_bars = Vec::with_capacity(bars.len());
+    let mut event_groups = Vec::new();
+    let mut bar_start = Ticks::ZERO;
+
+    for (index, bar) in bars.iter().enumerate() {
+        let bar_end = Ticks(bar_start.0.saturating_add(bar_duration.0));
+        // Half-open [start, end); `new` only errors when start > end, impossible here.
+        let tick_range = TickRange::new(bar_start, bar_end).unwrap_or(TickRange {
+            start: bar_start,
+            end: bar_end,
+        });
+        master_bars.push(MasterBar {
+            index,
+            tick_range,
+            time_signature: c.time_signature,
+            tempo: c.tempo,
+        });
+
+        let mut cursor = bar_start;
+        for event in &bar.events {
+            let atom = match event {
+                Event::Note(n) => AtomEvent::Note(AtomNote {
+                    absolute_start: cursor,
+                    duration: n.duration,
+                    pitch: n.pitch,
+                    velocity: n.velocity,
+                    articulation: n.articulation,
+                }),
+                Event::Rest(r) => AtomEvent::Rest(AtomRest {
+                    absolute_start: cursor,
+                    duration: r.duration,
+                }),
+            };
+            cursor = Ticks(cursor.0.saturating_add(atom.duration().0));
+            event_groups.push(EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![atom],
+                technique_spans: Vec::new(),
+            });
+        }
+
+        bar_start = bar_end;
+    }
+
+    Score {
+        ticks_per_quarter: u16::try_from(c.ticks_per_quarter.0).unwrap_or(u16::MAX),
+        master_bars,
+        tracks: vec![Track {
+            name: None,
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups,
+            }],
+        }],
+        source_meta: None,
+        loss: LossReport::new(),
+    }
 }
 
 // ── PRNG ──────────────────────────────────────────────────────────────────────
