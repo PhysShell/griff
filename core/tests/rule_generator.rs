@@ -358,4 +358,3 @@ fn ppqn_above_u16_returns_error() {
         Err(GenerationError::InvalidConstraints)
     ));
 }
-
