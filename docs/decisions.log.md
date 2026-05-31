@@ -36,3 +36,25 @@ Architectural decisions go to [`adr/`](adr/) instead.
   test) and against any licensed real guitar MIDI, to avoid licensing concerns
   and keep the importer's golden inputs deterministic, accepting that the
   fixtures are not musically realistic.
+
+- 2026-05-31 — In the context of adding ComplementArranger, facing where to slot
+  it in the canonical roadmap, we decided for appending it as `S13` (next free
+  number, `Depends on: S6`) and against renumbering `S7…S12`, to keep the
+  project's append-only posture and avoid renaming six stage files, accepting
+  that the integer no longer reflects logical position (captured by the
+  dependency note and `docs/audit/2026-05-s13-complementary-arranger.md`).
+
+- 2026-05-31 — In the context of the first ComplementArranger version, facing
+  rule-derived vs corpus-mined complement relations, we decided for purely
+  generative (derive part B from part A by rule) and against mining real
+  two-guitar pairs now, to ship a deterministic baseline without a corpus-schema
+  change, accepting that `ChunkMeta` carries no pair relations yet
+  (`schema_version` stays 1) and that learning from real pairs is deferred to
+  the graph layer.
+
+- 2026-05-31 — In the context of the canon-lift needed for ComplementArranger,
+  facing how much of the legacy linear model to retire now, we decided for
+  porting only `feature` and `generate` to the canonical model and against a
+  full legacy removal up front (ADR-0011), to unblock the new engine cheaply,
+  accepting that `classify`/`slice`/the CLI import path stay on the legacy model
+  until later characterization-gated ports.

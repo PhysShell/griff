@@ -91,6 +91,12 @@ anchors / frozen regions.
 Neural assistance stage. Neural layer for continuation / infilling /
 variation, only after corpus and rule-based baseline exist.
 
+### S13
+Complementary part generation stage (ComplementArranger). Generate a second
+part related to an existing one on chosen axes and contrasting on others.
+Depends on S6; appended as the next free number rather than renumbering
+S7…S12 (ADR-0012; see `docs/audit/2026-05-s13-complementary-arranger.md`).
+
 ## 1. Architecture and data model
 
 ### canonical model
@@ -692,6 +698,38 @@ high = noise.
 ### Style fit
 How well a candidate matches swancore-first constraints.
 
+### Complementary part
+A part (part B) generated to accompany an existing part (part A): related to A
+on chosen musical axes (rhythm, harmony, register, technique, density, contour)
+and deliberately contrasting on others. Arrangement, not duplication.
+
+### ComplementArranger
+The rule-based engine that produces a complementary part. A constraint compiler
+over the S6 generator, not a new generator: it analyses part A, picks a relation
+mode, derives an S6 request for part B, and validates the pair. Named for the
+*relation*, not a fixed part count (S13, ADR-0012).
+
+### Complement relation
+The typed, multi-axis relation between two parts. Exists in three distinct roles
+that must not be conflated: *spec* (input `ComplementSpec`/relation mode),
+*fact* (a mined hyperedge in the graph layer, §9), and *provenance* (metadata on
+a produced candidate).
+
+### Relation mode
+A named complementarity preset chosen for generating part B: `rhythm_lock`,
+`register_contrast`, `call_response`, `support_layer`, `octave_double`,
+`counter_melody`.
+
+### Part profile
+The per-part feature summary ComplementArranger derives from part A: onset/rhythm
+grid, accent pattern, register band, contour, normalised density, technique
+multiset, harmonic context. Richer than `PhraseFeatures`.
+
+### Pair validator
+A post-generation check over the (A, B) pair: per-part playability plus
+harmonic compatibility — no dissonant clashes on coincident onsets, no register
+mud. Distinct from the single-part playability filter.
+
 ## 9. Graph layer
 
 ### Graph layer
@@ -726,6 +764,13 @@ Assembling a new phrase from parts of existing phrases/motifs.
 The documentation/semantic graph of concepts, files, decisions, stages, and
 dependencies. Not the runtime phrase graph.
 
+### Complement hyperedge
+A graph edge linking two phrases/parts by a *set* of per-axis relations
+(rhythm, harmony, register, technique, density, contour) at once, not a single
+similarity weight. The concrete case that makes the graph layer a hypergraph
+rather than a similarity graph. Generative-first in S13; mined from real
+two-part corpus material later in the graph layer.
+
 ## 10. Human-in-the-loop
 
 ### Human-in-the-loop
@@ -751,6 +796,12 @@ the best results.
 ### Reviewer decision
 A human decision on a chunk/candidate: accepted, rejected, needs edit,
 favorite, boundary corrected.
+
+### Relation preference
+Learned preference over complement-relation axes (rhythm_similarity,
+technique_overlap, register_overlap, density_ratio), as opposed to preference
+over single-phrase features. The feedback layer can weight these once
+ComplementArranger emits per-axis relation scores.
 
 ## 11. UI, CLI, plugin
 
