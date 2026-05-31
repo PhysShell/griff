@@ -24,11 +24,14 @@ plugin** with human-in-the-loop curation.
 
 ## Delivery shape
 
-Strict staged delivery, `S0 … S12`, defined canonically in
+Strict staged delivery, `S0 … S13`, defined canonically in
 [`glossary.md`](glossary.md) §0 and detailed in [`stages/`](stages/). Each
 stage is a vertical slice with a measurable acceptance criterion. Stages are
 implemented in order; library groundwork may land earlier but does not "close"
-a later stage until its acceptance criterion is met and documented.
+a later stage until its acceptance criterion is met and documented. The
+roadmap is extended by appending the next free stage number (see
+[`audit/2026-05-s13-complementary-arranger.md`](audit/2026-05-s13-complementary-arranger.md)),
+never by renumbering existing stages.
 
 ## Hard rules (do not violate without a superseding ADR)
 
@@ -72,5 +75,5 @@ and are reconciled in
 - [`glossary.md`](glossary.md) — the constitution.
 - [`adr/README.md`](adr/README.md) — decision index.
 - [`fuzzing.md`](fuzzing.md) — fuzz-testing policy (ADR-0010).
-- [`stages/`](stages/) — S0 … S12.
+- [`stages/`](stages/) — S0 … S13.
 - [`decisions.log.md`](decisions.log.md) — small decisions, append-only.
