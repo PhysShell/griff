@@ -1,6 +1,6 @@
-// TDD red phase for S6 rule-based generator.
-// Fails to compile until the new S6 types and `generate()` are added to
-// `griff_core::generate`.
+// TDD red phase for the ADR-0011 step: port `generate()` output onto the
+// canonical model. Fails to compile until `GenerationCandidate` carries a
+// `score: Score` (canonical) instead of `phrase: Phrase` (legacy).
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -11,11 +11,12 @@
 )]
 
 use griff_core::{
-    event::{Event, Pitch, Tempo, Ticks, TimeSignature},
+    event::{Pitch, Tempo, Ticks, TimeSignature},
     generate::{
-        generate, GenerationConstraints, GenerationError, GenerationSeed, GenerationStrategy,
-        PitchMaterial, RuleGenerationRequest,
+        generate, GenerationCandidate, GenerationConstraints, GenerationError, GenerationSeed,
+        GenerationStrategy, PitchMaterial, RuleGenerationRequest,
     },
+    score::{AtomEvent, AtomNote, MasterBar, Voice},
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -65,21 +66,80 @@ fn all_strategies() -> [GenerationStrategy; 5] {
     ]
 }
 
-// ── determinism ───────────────────────────────────────────────────────────────
+/// The single generated voice (track 0, voice 0).
+fn voice(candidate: &GenerationCandidate) -> &Voice {
+    &candidate.score.tracks[0].voices[0]
+}
+
+/// All note atoms of a voice, in order.
+fn notes(voice: &Voice) -> Vec<AtomNote> {
+    voice
+        .event_groups
+        .iter()
+        .flat_map(|g| g.atoms.iter())
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some(*n),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect()
+}
+
+/// Note pitches whose onset falls inside `mb`'s half-open tick range.
+fn bar_pitches(ns: &[AtomNote], mb: &MasterBar) -> Vec<u8> {
+    ns.iter()
+        .filter(|n| {
+            n.absolute_start.0 >= mb.tick_range.start.0 && n.absolute_start.0 < mb.tick_range.end.0
+        })
+        .map(|n| n.pitch.0)
+        .collect()
+}
+
+// ── canonical output shape ──────────────────────────────────────────────────────
 
 #[test]
-fn same_seed_produces_identical_phrase() {
-    let req = request(GenerationStrategy::ConstrainedRandomWalk);
-    let a = generate(&req).expect("generate succeeds (a)");
-    let b = generate(&req).expect("generate succeeds (b)");
+fn output_is_a_single_track_single_voice_score() {
+    let candidate =
+        generate(&request(GenerationStrategy::ConstrainedRandomWalk)).expect("generate succeeds");
+    assert_eq!(candidate.score.tracks.len(), 1, "one generated track");
     assert_eq!(
-        a.phrase, b.phrase,
-        "same seed must produce identical phrase"
+        candidate.score.tracks[0].voices.len(),
+        1,
+        "one voice in the generated track"
     );
 }
 
 #[test]
-fn different_seeds_produce_different_phrases() {
+fn master_bar_count_matches_request() {
+    for strategy in all_strategies() {
+        let req = request(strategy);
+        let candidate = generate(&req).expect("generate succeeds");
+        assert_eq!(
+            candidate.score.master_bars.len(),
+            req.constraints.bar_count,
+            "{strategy:?}: master-bar count must match request",
+        );
+    }
+}
+
+#[test]
+fn score_carries_request_ppqn() {
+    let candidate =
+        generate(&request(GenerationStrategy::ShuffleMotifs)).expect("generate succeeds");
+    assert_eq!(candidate.score.ticks_per_quarter, 480);
+}
+
+// ── determinism ───────────────────────────────────────────────────────────────
+
+#[test]
+fn same_seed_produces_identical_voice() {
+    let req = request(GenerationStrategy::ConstrainedRandomWalk);
+    let a = generate(&req).expect("generate succeeds (a)");
+    let b = generate(&req).expect("generate succeeds (b)");
+    assert_eq!(voice(&a), voice(&b), "same seed must produce identical voice");
+}
+
+#[test]
+fn different_seeds_produce_different_voices() {
     let req_a = RuleGenerationRequest {
         seed: GenerationSeed(1),
         ..request(GenerationStrategy::ConstrainedRandomWalk)
@@ -91,25 +151,13 @@ fn different_seeds_produce_different_phrases() {
     let a = generate(&req_a).expect("generate A");
     let b = generate(&req_b).expect("generate B");
     assert_ne!(
-        a.phrase, b.phrase,
-        "distinct seeds must produce distinct phrases"
+        voice(&a),
+        voice(&b),
+        "distinct seeds must produce distinct voices"
     );
 }
 
 // ── structural invariants ─────────────────────────────────────────────────────
-
-#[test]
-fn output_bar_count_matches_request() {
-    for strategy in all_strategies() {
-        let req = request(strategy);
-        let candidate = generate(&req).expect("generate succeeds");
-        assert_eq!(
-            candidate.phrase.bars.len(),
-            req.constraints.bar_count,
-            "{strategy:?}: bar count must match request",
-        );
-    }
-}
 
 #[test]
 fn all_notes_within_pitch_range() {
@@ -118,16 +166,31 @@ fn all_notes_within_pitch_range() {
         let lo = req.constraints.pitch_lo.0;
         let hi = req.constraints.pitch_hi.0;
         let candidate = generate(&req).expect("generate succeeds");
-        for bar in &candidate.phrase.bars {
-            for event in &bar.events {
-                if let Event::Note(n) = event {
-                    assert!(
-                        n.pitch.0 >= lo && n.pitch.0 <= hi,
-                        "{strategy:?}: pitch {} is outside [{lo}, {hi}]",
-                        n.pitch.0,
-                    );
-                }
-            }
+        for n in notes(voice(&candidate)) {
+            assert!(
+                n.pitch.0 >= lo && n.pitch.0 <= hi,
+                "{strategy:?}: pitch {} is outside [{lo}, {hi}]",
+                n.pitch.0,
+            );
+        }
+    }
+}
+
+#[test]
+fn note_onsets_are_non_decreasing() {
+    for strategy in all_strategies() {
+        let candidate = generate(&request(strategy)).expect("generate succeeds");
+        let onsets: Vec<u32> = notes(voice(&candidate))
+            .iter()
+            .map(|n| n.absolute_start.0)
+            .collect();
+        for pair in onsets.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "{strategy:?}: onsets must be non-decreasing ({} then {})",
+                pair[0],
+                pair[1],
+            );
         }
     }
 }
@@ -141,31 +204,19 @@ fn candidate_carries_strategy_and_seed() {
         ..request(strategy)
     };
     let candidate = generate(&req).expect("generate succeeds");
-    assert_eq!(
-        candidate.strategy, strategy,
-        "candidate strategy must match request"
-    );
-    assert_eq!(candidate.seed, seed, "candidate seed must match request");
+    assert_eq!(candidate.strategy, strategy, "strategy must match request");
+    assert_eq!(candidate.seed, seed, "seed must match request");
 }
 
 // ── per-strategy smoke tests ──────────────────────────────────────────────────
 
 #[test]
 fn rhythm_copy_produces_notes_with_source_durations() {
-    let req = request(GenerationStrategy::RhythmCopyPitchSubstitute);
-    let candidate = generate(&req).expect("generate succeeds");
-    let note_durations: Vec<u32> = candidate
-        .phrase
-        .bars
-        .iter()
-        .flat_map(|b| b.events.iter())
-        .filter_map(|e| match e {
-            Event::Note(n) => Some(n.duration.0),
-            Event::Rest(_) => None,
-        })
-        .collect();
-    assert!(!note_durations.is_empty(), "rhythm copy must produce notes");
-    for &dur in &note_durations {
+    let candidate = generate(&request(GenerationStrategy::RhythmCopyPitchSubstitute))
+        .expect("generate succeeds");
+    let durations: Vec<u32> = notes(voice(&candidate)).iter().map(|n| n.duration.0).collect();
+    assert!(!durations.is_empty(), "rhythm copy must produce notes");
+    for &dur in &durations {
         assert_eq!(
             dur, 480,
             "rhythm copy must use quarter-note durations from source"
@@ -175,18 +226,9 @@ fn rhythm_copy_produces_notes_with_source_durations() {
 
 #[test]
 fn constrained_walk_limits_consecutive_pitch_leaps() {
-    let req = request(GenerationStrategy::ConstrainedRandomWalk);
-    let candidate = generate(&req).expect("generate succeeds");
-    let pitches: Vec<u8> = candidate
-        .phrase
-        .bars
-        .iter()
-        .flat_map(|b| b.events.iter())
-        .filter_map(|e| match e {
-            Event::Note(n) => Some(n.pitch.0),
-            Event::Rest(_) => None,
-        })
-        .collect();
+    let candidate = generate(&request(GenerationStrategy::ConstrainedRandomWalk))
+        .expect("generate succeeds");
+    let pitches: Vec<u8> = notes(voice(&candidate)).iter().map(|n| n.pitch.0).collect();
     for pair in pitches.windows(2) {
         let leap = pair[0].abs_diff(pair[1]);
         assert!(
@@ -197,17 +239,13 @@ fn constrained_walk_limits_consecutive_pitch_leaps() {
 }
 
 #[test]
-fn motif_transpose_produces_at_least_one_note_per_bar() {
-    let req = request(GenerationStrategy::MotifTransposeVariation);
-    let candidate = generate(&req).expect("generate succeeds");
-    for bar in &candidate.phrase.bars {
-        let note_count = bar
-            .events
-            .iter()
-            .filter(|e| matches!(e, Event::Note(_)))
-            .count();
+fn motif_transpose_puts_a_note_in_every_bar() {
+    let candidate = generate(&request(GenerationStrategy::MotifTransposeVariation))
+        .expect("generate succeeds");
+    let ns = notes(voice(&candidate));
+    for mb in &candidate.score.master_bars {
         assert!(
-            note_count > 0,
+            !bar_pitches(&ns, mb).is_empty(),
             "motif transpose must put at least one note in every bar"
         );
     }
@@ -215,25 +253,23 @@ fn motif_transpose_produces_at_least_one_note_per_bar() {
 
 #[test]
 fn shuffle_motifs_produces_notes() {
-    let req = request(GenerationStrategy::ShuffleMotifs);
-    let candidate = generate(&req).expect("generate succeeds");
-    let total_notes: usize = candidate
-        .phrase
-        .bars
-        .iter()
-        .flat_map(|b| b.events.iter())
-        .filter(|e| matches!(e, Event::Note(_)))
-        .count();
-    assert!(total_notes > 0, "shuffle motifs must produce notes");
+    let candidate =
+        generate(&request(GenerationStrategy::ShuffleMotifs)).expect("generate succeeds");
+    assert!(
+        !notes(voice(&candidate)).is_empty(),
+        "shuffle motifs must produce notes"
+    );
 }
 
 #[test]
 fn repeat_variation_second_bar_differs_from_first() {
-    let req = request(GenerationStrategy::RepeatVariation);
-    let candidate = generate(&req).expect("generate succeeds");
-    assert_eq!(candidate.phrase.bars.len(), 2, "must produce 2 bars");
+    let candidate =
+        generate(&request(GenerationStrategy::RepeatVariation)).expect("generate succeeds");
+    assert_eq!(candidate.score.master_bars.len(), 2, "must produce 2 bars");
+    let ns = notes(voice(&candidate));
     assert_ne!(
-        candidate.phrase.bars[0].events, candidate.phrase.bars[1].events,
+        bar_pitches(&ns, &candidate.score.master_bars[0]),
+        bar_pitches(&ns, &candidate.score.master_bars[1]),
         "repeat variation: bar 1 must differ from bar 0",
     );
 }
@@ -249,7 +285,10 @@ fn empty_pitch_material_returns_error() {
         },
         ..request(GenerationStrategy::ConstrainedRandomWalk)
     };
-    assert_eq!(generate(&req), Err(GenerationError::EmptyPitchMaterial));
+    assert!(matches!(
+        generate(&req),
+        Err(GenerationError::EmptyPitchMaterial)
+    ));
 }
 
 #[test]
@@ -261,7 +300,7 @@ fn zero_bar_count_returns_error() {
         },
         ..request(GenerationStrategy::ConstrainedRandomWalk)
     };
-    assert_eq!(generate(&req), Err(GenerationError::BarCountZero));
+    assert!(matches!(generate(&req), Err(GenerationError::BarCountZero)));
 }
 
 #[test]
@@ -270,5 +309,8 @@ fn rhythm_copy_without_source_rhythms_returns_error() {
         source_rhythms: Vec::new(),
         ..request(GenerationStrategy::RhythmCopyPitchSubstitute)
     };
-    assert_eq!(generate(&req), Err(GenerationError::RhythmTemplateMissing));
+    assert!(matches!(
+        generate(&req),
+        Err(GenerationError::RhythmTemplateMissing)
+    ));
 }
