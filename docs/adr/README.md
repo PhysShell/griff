@@ -16,6 +16,8 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0008](0008-heuristic-phrase-detection-before-ml.md) | Explainable heuristic phrase detection before any ML | Accepted |
 | [0009](0009-use-nygard-adr-format.md) | Use the Nygard ADR format, stored in-repo, append-only | Accepted |
 | [0010](0010-fuzz-format-adapters-and-core-invariants.md) | Fuzz-test format adapters and core invariants | Accepted |
+| [0011](0011-retire-legacy-linear-model.md) | Retire the legacy linear model in favour of the canonical model | Proposed |
+| [0012](0012-complementary-part-generation.md) | Complementary part generation (ComplementArranger) | Proposed |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
