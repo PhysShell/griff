@@ -1,6 +1,11 @@
 //! Feature extraction over structured musical phrases.
+//!
+//! Two entry points coexist during the ADR-0011 migration:
+//! - [`phrase_features`] over the legacy [`Phrase`] model (being retired);
+//! - [`voice_features`] over the canonical [`Voice`] model.
 
 use crate::event::{Event, Phrase, Pitch, Ticks, ValidationError, Velocity};
+use crate::score::{AtomEvent, Voice};
 
 /// Inclusive pitch span found in a phrase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +105,80 @@ pub fn phrase_features(phrase: &Phrase) -> Result<PhraseFeatures, ValidationErro
                     ));
                 }
                 Event::Rest(_) => {
+                    features.rest_count = increment(features.rest_count)?;
+                }
+            }
+        }
+    }
+
+    Ok(features)
+}
+
+/// Voice-level features over the canonical model.
+///
+/// Mirrors [`PhraseFeatures`] without `bar_count`: bars are a score-level
+/// [`MasterBar`](crate::score::MasterBar) concept, not a property of a
+/// [`Voice`]. Counts span every atom of every event group, so chord and
+/// arpeggio atoms each contribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceFeatures {
+    /// Number of atom events across all groups.
+    pub event_count: usize,
+    /// Number of note atoms.
+    pub note_count: usize,
+    /// Number of rest atoms.
+    pub rest_count: usize,
+    /// Number of note atoms carrying articulation metadata.
+    pub articulated_note_count: usize,
+    /// Summed duration of all atoms in ticks.
+    pub total_duration: Ticks,
+    /// Pitch span across note atoms, or `None` when the voice has no notes.
+    pub pitch_range: Option<PitchRange>,
+    /// Velocity span across note atoms, or `None` when the voice has no notes.
+    pub velocity_range: Option<VelocityRange>,
+}
+
+/// Extracts voice-level counts, spans, and total duration over the canonical
+/// model.
+pub fn voice_features(voice: &Voice) -> Result<VoiceFeatures, ValidationError> {
+    let mut features = VoiceFeatures {
+        event_count: 0,
+        note_count: 0,
+        rest_count: 0,
+        articulated_note_count: 0,
+        total_duration: Ticks::ZERO,
+        pitch_range: None,
+        velocity_range: None,
+    };
+
+    for group in &voice.event_groups {
+        for atom in &group.atoms {
+            features.event_count = increment(features.event_count)?;
+            features.total_duration = features.total_duration.checked_add(atom.duration())?;
+
+            match atom {
+                AtomEvent::Note(note) => {
+                    features.note_count = increment(features.note_count)?;
+                    if note.articulation.is_some() {
+                        features.articulated_note_count =
+                            increment(features.articulated_note_count)?;
+                    }
+                    features.pitch_range = Some(features.pitch_range.map_or(
+                        PitchRange {
+                            lowest: note.pitch,
+                            highest: note.pitch,
+                        },
+                        |range| range.include(note.pitch),
+                    ));
+                    features.velocity_range = Some(features.velocity_range.map_or(
+                        VelocityRange {
+                            lowest: note.velocity,
+                            highest: note.velocity,
+                        },
+                        |range| range.include(note.velocity),
+                    ));
+                }
+                AtomEvent::Rest(_) => {
                     features.rest_count = increment(features.rest_count)?;
                 }
             }

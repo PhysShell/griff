@@ -9,11 +9,26 @@
 //! Note: `bar_count` from `PhraseFeatures` is intentionally absent — bars are a
 //! score-level concept (`MasterBar`), not a property of a `Voice`.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::missing_assert_message,
+    clippy::absolute_paths,
+    clippy::missing_const_for_fn
+)]
+
 use griff_core::event::{Articulation, Pitch, Ticks, ValidationError, Velocity};
 use griff_core::feature::{voice_features, PitchRange, VelocityRange, VoiceFeatures};
 use griff_core::score::{AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, Voice};
 
-fn note_group(start: u32, duration: u32, pitch: u8, velocity: u8, art: Option<Articulation>) -> EventGroup {
+fn note_group(
+    start: u32,
+    duration: u32,
+    pitch: u8,
+    velocity: u8,
+    art: Option<Articulation>,
+) -> EventGroup {
     EventGroup {
         kind: EventGroupKind::Single,
         atoms: vec![AtomEvent::Note(AtomNote {
