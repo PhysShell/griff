@@ -58,3 +58,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   full legacy removal up front (ADR-0011), to unblock the new engine cheaply,
   accepting that `classify`/`slice`/the CLI import path stay on the legacy model
   until later characterization-gated ports.
+
+- 2026-05-31 — In the context of S7 traversal, facing weighted-random-walk vs
+  dynamic programming, we decided for DP/Viterbi as the primary mechanism (beam
+  search only as a large-graph approximation) and against random walk
+  (ADR-0013), to get deterministic, whole-sequence-optimal selection that fits
+  SPEC §6 without an RNG, accepting that the DP state must stay small and that
+  S7 now depends on a realised `EnergyState` and the fretboard model.
+
+- 2026-05-31 — In the context of humanising guitar parts, facing pitch-only
+  notes vs string/fret positions, we decided for making the canonical model
+  fretboard-aware (`AtomNote` gains an optional `(string, fret)` under the
+  score `Tuning`) and against staying pitch-only (ADR-0014), to enable position
+  shifts / `fret_jump_penalty` / playability, accepting that position is
+  optional (MIDI often can't recover it), inference is a deferred lossy
+  sub-problem, and it adds scope to S7.

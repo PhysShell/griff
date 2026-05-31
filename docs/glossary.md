@@ -134,6 +134,12 @@ linear" problem.
 The minimal event in the canonical model: note, rest, tie, control/expression
 event, or a service unit. The atom that groups are built from.
 
+### Fretboard position
+The `(string, fret)` location of a note under the score's `Tuning`. Carried
+optionally on a note (ADR-0014): Guitar Pro import supplies it directly, MIDI
+import leaves it absent or inferred. Pitch alone cannot express hand position;
+position is what makes `fret_jump_penalty` and human-plausible parts possible.
+
 ### Note
 A sounding note. Currently has `pitch`, `duration`, `velocity`,
 `articulation`. The target model must also carry source metadata: string,
@@ -770,6 +776,35 @@ A graph edge linking two phrases/parts by a *set* of per-axis relations
 similarity weight. The concrete case that makes the graph layer a hypergraph
 rather than a similarity graph. Generative-first in S13; mined from real
 two-part corpus material later in the graph layer.
+
+### Map vs route
+The separation between the hypergraph (the *map* — what is connected /
+possible) and traversal (the *route* — which sequence is best). They must not
+be conflated; the graph stores musical relations, DP selects a path through
+them.
+
+### DP / Viterbi traversal
+Dynamic-programming selection of the optimal candidate sequence across bars,
+the primary S7 traversal mechanism (ADR-0013). Deterministic by construction
+(no RNG needed; ties break by a fixed rule), so it satisfies SPEC §6, and it
+optimises the whole sequence instead of picking the locally-best candidate per
+bar. Beam search is an approximation for graphs too large for exact DP.
+
+### DP state
+The running context carried through traversal: current candidate, fretboard
+position, last technique, energy level (`EnergyState`), and rhythmic similarity
+to part A. Kept small so exact DP stays tractable.
+
+### Cost function
+The inspectable transition cost DP minimises:
+`harmonic_fit + rhythm_complement + style_fit + playability + phrase_continuity
+− mud_penalty − repetition_penalty − fret_jump_penalty`. Exposed as data
+(weights), because it is the same surface the feedback layer (S9) tunes.
+
+### EnergyState
+A graph node / DP-state component representing the local energy level of a
+passage (e.g. verse below chorus). Used to shape the global arc of a generated
+part.
 
 ## 10. Human-in-the-loop
 
