@@ -140,6 +140,13 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
         return Err(GenerationError::RhythmTemplateMissing);
     }
 
+    // `Score::ticks_per_quarter` is a `u16`; a PPQN that cannot be represented
+    // there would make the score's resolution disagree with the onsets we
+    // compute at the real PPQN. Reject rather than clamp.
+    if u16::try_from(request.constraints.ticks_per_quarter.0).is_err() {
+        return Err(GenerationError::InvalidConstraints);
+    }
+
     let bar_duration = bar_duration_ticks(
         request.constraints.time_signature,
         request.constraints.ticks_per_quarter,
@@ -171,7 +178,7 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
         }
     };
 
-    let score = bars_to_score(&bars, c, bar_duration);
+    let score = bars_to_score(&bars, c, bar_duration)?;
     Ok(GenerationCandidate {
         score,
         strategy: request.strategy,
@@ -184,18 +191,25 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
 /// Builds `MasterBar`s back-to-back from `bar_duration` and flattens each
 /// `Bar`'s events into one `Voice` of `Single` event groups carrying absolute
 /// onsets. Tempo and meter live on the master bars (ADR-0003), not on events.
-fn bars_to_score(bars: &[Bar], c: &GenerationConstraints, bar_duration: Ticks) -> Score {
+///
+/// Returns [`GenerationError::InvalidConstraints`] when the absolute timeline
+/// cannot be represented in the `u32` tick space (rather than silently
+/// truncating later bars). The caller guarantees PPQN fits a `u16`.
+fn bars_to_score(
+    bars: &[Bar],
+    c: &GenerationConstraints,
+    bar_duration: Ticks,
+) -> Result<Score, GenerationError> {
     let mut master_bars = Vec::with_capacity(bars.len());
     let mut event_groups = Vec::new();
     let mut bar_start = Ticks::ZERO;
 
     for (index, bar) in bars.iter().enumerate() {
-        let bar_end = Ticks(bar_start.0.saturating_add(bar_duration.0));
-        // Half-open [start, end); `new` only errors when start > end, impossible here.
-        let tick_range = TickRange::new(bar_start, bar_end).unwrap_or(TickRange {
-            start: bar_start,
-            end: bar_end,
-        });
+        let bar_end = bar_start
+            .checked_add(bar_duration)
+            .map_err(|_| GenerationError::InvalidConstraints)?;
+        let tick_range =
+            TickRange::new(bar_start, bar_end).map_err(|_| GenerationError::InvalidConstraints)?;
         master_bars.push(MasterBar {
             index,
             tick_range,
@@ -218,7 +232,9 @@ fn bars_to_score(bars: &[Bar], c: &GenerationConstraints, bar_duration: Ticks) -
                     duration: r.duration,
                 }),
             };
-            cursor = Ticks(cursor.0.saturating_add(atom.duration().0));
+            cursor = cursor
+                .checked_add(atom.duration())
+                .map_err(|_| GenerationError::InvalidConstraints)?;
             event_groups.push(EventGroup {
                 kind: EventGroupKind::Single,
                 atoms: vec![atom],
@@ -229,8 +245,11 @@ fn bars_to_score(bars: &[Bar], c: &GenerationConstraints, bar_duration: Ticks) -
         bar_start = bar_end;
     }
 
-    Score {
-        ticks_per_quarter: u16::try_from(c.ticks_per_quarter.0).unwrap_or(u16::MAX),
+    let ticks_per_quarter =
+        u16::try_from(c.ticks_per_quarter.0).map_err(|_| GenerationError::InvalidConstraints)?;
+
+    Ok(Score {
+        ticks_per_quarter,
         master_bars,
         tracks: vec![Track {
             name: None,
@@ -242,7 +261,7 @@ fn bars_to_score(bars: &[Bar], c: &GenerationConstraints, bar_duration: Ticks) -
         }],
         source_meta: None,
         loss: LossReport::new(),
-    }
+    })
 }
 
 // ── PRNG ──────────────────────────────────────────────────────────────────────
