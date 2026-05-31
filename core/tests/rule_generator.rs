@@ -321,3 +321,41 @@ fn rhythm_copy_without_source_rhythms_returns_error() {
         Err(GenerationError::RhythmTemplateMissing)
     ));
 }
+
+#[test]
+fn timeline_overflow_returns_error() {
+    // Each ingredient is individually valid (PPQN fits u16, meter is legal),
+    // but bar_duration * bar_count overflows the u32 master timeline. The
+    // canonical MasterBar ranges must not silently truncate; reject instead.
+    let req = RuleGenerationRequest {
+        constraints: GenerationConstraints {
+            bar_count: 100_000,
+            ticks_per_quarter: Ticks(65_535),
+            ..constraints_2_bars_4_4()
+        },
+        ..request(GenerationStrategy::ConstrainedRandomWalk)
+    };
+    assert!(matches!(
+        generate(&req),
+        Err(GenerationError::InvalidConstraints)
+    ));
+}
+
+#[test]
+fn ppqn_above_u16_returns_error() {
+    // Score::ticks_per_quarter is u16; a request whose PPQN exceeds u16::MAX
+    // cannot be represented faithfully. Reject rather than clamp (which would
+    // make onsets, computed at the real PPQN, inconsistent with the score).
+    let req = RuleGenerationRequest {
+        constraints: GenerationConstraints {
+            ticks_per_quarter: Ticks(70_000),
+            ..constraints_2_bars_4_4()
+        },
+        ..request(GenerationStrategy::ConstrainedRandomWalk)
+    };
+    assert!(matches!(
+        generate(&req),
+        Err(GenerationError::InvalidConstraints)
+    ));
+}
+
