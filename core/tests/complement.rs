@@ -12,7 +12,10 @@
     clippy::missing_assert_message,
     clippy::indexing_slicing,
     clippy::missing_const_for_fn,
-    clippy::float_cmp
+    clippy::float_cmp,
+    clippy::arithmetic_side_effects,
+    clippy::str_to_string,
+    clippy::doc_markdown
 )]
 
 use griff_core::{
@@ -126,10 +129,19 @@ fn analyze_part_extracts_rhythm_grid_and_density() {
     let score = score_with_part_a(2, &[60, 62, 64, 65]);
     let profile = analyze_part(&score, 0).expect("analysis must succeed");
 
-    assert_eq!(profile.bar_rhythms.len(), 2, "one rhythm row per master bar");
+    assert_eq!(
+        profile.bar_rhythms.len(),
+        2,
+        "one rhythm row per master bar"
+    );
     assert_eq!(
         profile.bar_rhythms[0],
-        vec![Ticks(QUARTER), Ticks(QUARTER), Ticks(QUARTER), Ticks(QUARTER)],
+        vec![
+            Ticks(QUARTER),
+            Ticks(QUARTER),
+            Ticks(QUARTER),
+            Ticks(QUARTER)
+        ],
     );
     assert_eq!(profile.note_count, 8);
     assert_eq!(profile.density, 4.0, "8 notes over 2 bars = 4 notes/bar");
@@ -157,7 +169,7 @@ fn rhythm_lock_shares_master_bars_and_ppqn() {
         mode: RelationMode::RhythmLock,
         register_offset: -12,
     };
-    let cand = arrange_complement(&score, 0, &spec, GenerationSeed(7)).expect("arrange ok");
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
 
     assert_eq!(
         cand.score.ticks_per_quarter, score.ticks_per_quarter,
@@ -171,7 +183,11 @@ fn rhythm_lock_shares_master_bars_and_ppqn() {
     // The original part A track is preserved and B is appended.
     assert_eq!(cand.score.tracks.len(), 2, "A plus appended B");
     assert_eq!(cand.part_b_index, 1);
-    assert_eq!(note_onsets(&cand.score, 0), note_onsets(&score, 0), "A untouched");
+    assert_eq!(
+        note_onsets(&cand.score, 0),
+        note_onsets(&score, 0),
+        "A untouched"
+    );
 }
 
 #[test]
@@ -182,7 +198,7 @@ fn rhythm_lock_b_onsets_match_part_a_grid() {
         mode: RelationMode::RhythmLock,
         register_offset: -12,
     };
-    let cand = arrange_complement(&score, 0, &spec, GenerationSeed(1)).expect("arrange ok");
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(1)).expect("arrange ok");
 
     assert_eq!(
         note_onsets(&cand.score, cand.part_b_index),
@@ -198,7 +214,7 @@ fn rhythm_lock_b_pitches_within_offset_register() {
         mode: RelationMode::RhythmLock,
         register_offset: -12,
     };
-    let cand = arrange_complement(&score, 0, &spec, GenerationSeed(3)).expect("arrange ok");
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(3)).expect("arrange ok");
 
     // A spans [60,65]; an octave-down offset puts B's band at [48,53].
     for p in note_pitches(&cand.score, cand.part_b_index) {
@@ -216,7 +232,7 @@ fn rhythm_lock_axis_scores_report_locked_rhythm() {
         mode: RelationMode::RhythmLock,
         register_offset: -12,
     };
-    let cand = arrange_complement(&score, 0, &spec, GenerationSeed(9)).expect("arrange ok");
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(9)).expect("arrange ok");
     assert_eq!(
         cand.axis_scores.rhythm_similarity, 1.0,
         "rhythm_lock must report identical rhythm",
@@ -230,8 +246,8 @@ fn arrange_is_deterministic_for_fixed_seed() {
         mode: RelationMode::RhythmLock,
         register_offset: -12,
     };
-    let a = arrange_complement(&score, 0, &spec, GenerationSeed(42)).expect("arrange ok");
-    let b = arrange_complement(&score, 0, &spec, GenerationSeed(42)).expect("arrange ok");
+    let a = arrange_complement(&score, 0, spec, GenerationSeed(42)).expect("arrange ok");
+    let b = arrange_complement(&score, 0, spec, GenerationSeed(42)).expect("arrange ok");
     assert_eq!(
         note_pitches(&a.score, a.part_b_index),
         note_pitches(&b.score, b.part_b_index),
@@ -251,8 +267,10 @@ fn arrange_unimplemented_mode_is_reported() {
         register_offset: 0,
     };
     assert!(matches!(
-        arrange_complement(&score, 0, &spec, GenerationSeed(1)),
-        Err(ComplementError::ModeNotImplemented(RelationMode::CounterMelody)),
+        arrange_complement(&score, 0, spec, GenerationSeed(1)),
+        Err(ComplementError::ModeNotImplemented(
+            RelationMode::CounterMelody
+        )),
     ));
 }
 
@@ -265,7 +283,7 @@ fn arrange_rejects_part_with_no_notes() {
         register_offset: -12,
     };
     assert!(matches!(
-        arrange_complement(&score, 0, &spec, GenerationSeed(1)),
+        arrange_complement(&score, 0, spec, GenerationSeed(1)),
         Err(ComplementError::PartHasNoNotes)
     ));
 }
@@ -318,6 +336,9 @@ fn validate_pair_passes_consonant_octave_apart() {
 
     let v = validate_pair(&score, 0, 1).expect("validate ok");
     assert_eq!(v.coincident_dissonances, 0, "octaves/consonances are clean");
-    assert!(!v.register_mud, "an octave of separation is not register mud");
+    assert!(
+        !v.register_mud,
+        "an octave of separation is not register mud"
+    );
     assert!(v.is_clean());
 }

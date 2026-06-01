@@ -126,7 +126,7 @@ impl TimeSignature {
 }
 
 /// Per-note guitar articulation carried as optional metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Articulation {
     /// Slide into or out of the note.
     Slide,
