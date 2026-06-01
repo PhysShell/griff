@@ -1,8 +1,17 @@
 # S13: Complementary part generation (ComplementArranger)
 
-Status: planned
+Status: in progress — `rhythm_lock` slice landed (2026-06-01)
 Depends on: S6 (rule generator), ADR-0011 (canonical port of feature/generate)
 ADRs: ADR-0012, ADR-0011
+
+> Progress: the `complement` module ships the first vertical slice — part-A
+> analysis (`PartProfile`), the `rhythm_lock` mode (a constraint compiler over
+> the S6 `RhythmCopyPitchSubstitute` generator), per-axis provenance
+> (`AxisScores`), a minimal `validate_pair` (coincident-onset dissonance +
+> register mud), and the P2 `complement_request` fuzz target. Remaining:
+> `register_contrast`, `call_response`, `support_layer`, `octave_double`,
+> `counter_melody`; per-part playability in the validator; richer harmonic
+> context in the profile.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label audit). Logically it sits between the single-part generator (S6)
