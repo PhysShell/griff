@@ -1,15 +1,24 @@
 //! Deterministic phrase generation primitives.
 
-use crate::event::{
-    Bar, Event, Note, Pitch, Tempo, Ticks, TimeSignature, ValidationError, Velocity,
-};
+use crate::event::{Pitch, Tempo, Ticks, TimeSignature, ValidationError, Velocity};
 use crate::score::{
-    AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track,
-    Voice,
+    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
 };
 use crate::slice::TickRange;
 
 // ── S6: rule-based generator ──────────────────────────────────────────────────
+
+/// A single generated note, the internal intermediate of the rule strategies.
+///
+/// Strategies emit `Vec<Vec<GenNote>>` (one inner `Vec` per bar); `bars_to_score`
+/// lowers these onto the canonical model. Meter and tempo are not carried here —
+/// they live on the master bars (ADR-0003), derived from the request constraints.
+#[derive(Debug, Clone, Copy)]
+struct GenNote {
+    pitch: Pitch,
+    duration: Ticks,
+    velocity: Velocity,
+}
 
 /// Deterministic seed for rule-based generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -185,17 +194,17 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
     })
 }
 
-/// Lays a generated `Vec<Bar>` onto the canonical model.
+/// Lays the generated bars (each a `Vec<GenNote>`) onto the canonical model.
 ///
-/// Builds `MasterBar`s back-to-back from `bar_duration` and flattens each
-/// `Bar`'s events into one `Voice` of `Single` event groups carrying absolute
-/// onsets. Tempo and meter live on the master bars (ADR-0003), not on events.
+/// Builds `MasterBar`s back-to-back from `bar_duration` and flattens each bar's
+/// notes into one `Voice` of `Single` event groups carrying absolute onsets.
+/// Tempo and meter live on the master bars (ADR-0003), not on notes.
 ///
 /// Returns [`GenerationError::InvalidConstraints`] when the absolute timeline
 /// cannot be represented in the `u32` tick space (rather than silently
 /// truncating later bars). The caller guarantees PPQN fits a `u16`.
 fn bars_to_score(
-    bars: &[Bar],
+    bars: &[Vec<GenNote>],
     c: &GenerationConstraints,
     bar_duration: Ticks,
 ) -> Result<Score, GenerationError> {
@@ -217,20 +226,14 @@ fn bars_to_score(
         });
 
         let mut cursor = bar_start;
-        for event in &bar.events {
-            let atom = match event {
-                Event::Note(n) => AtomEvent::Note(AtomNote {
-                    absolute_start: cursor,
-                    duration: n.duration,
-                    pitch: n.pitch,
-                    velocity: n.velocity,
-                    articulation: n.articulation,
-                }),
-                Event::Rest(r) => AtomEvent::Rest(AtomRest {
-                    absolute_start: cursor,
-                    duration: r.duration,
-                }),
-            };
+        for note in bar {
+            let atom = AtomEvent::Note(AtomNote {
+                absolute_start: cursor,
+                duration: note.duration,
+                pitch: note.pitch,
+                velocity: note.velocity,
+                articulation: None,
+            });
             cursor = cursor
                 .checked_add(atom.duration())
                 .map_err(|_| GenerationError::InvalidConstraints)?;
@@ -338,7 +341,7 @@ fn strategy_rhythm_copy(
     source_rhythms: &[Vec<Ticks>],
     prng: &mut Xorshift64,
     bar_duration: Ticks,
-) -> Vec<Bar> {
+) -> Vec<Vec<GenNote>> {
     // Validated non-empty before entering; first() is guaranteed Some.
     let template: &[Ticks] = source_rhythms.first().map_or(&[], Vec::as_slice);
 
@@ -347,7 +350,7 @@ fn strategy_rhythm_copy(
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for _ in 0..c.bar_count {
-        let mut events = Vec::new();
+        let mut notes = Vec::new();
         let mut remaining = bar_duration;
         let mut tidx = 0_usize;
 
@@ -357,22 +360,17 @@ fn strategy_rhythm_copy(
             if duration == Ticks::ZERO {
                 break;
             }
-            events.push(Event::Note(Note {
+            notes.push(GenNote {
                 pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
                 duration,
                 velocity: Velocity(90),
-                articulation: None,
-            }));
+            });
             remaining = Ticks(remaining.0.saturating_sub(duration.0));
             degree = advance_degree(degree, scale_len);
             tidx = advance_idx(tidx, template.len().max(1));
         }
 
-        bars.push(Bar {
-            time_signature: c.time_signature,
-            tempo: c.tempo,
-            events,
-        });
+        bars.push(notes);
     }
     bars
 }
@@ -382,7 +380,7 @@ fn strategy_motif_transpose(
     pm: &PitchMaterial,
     prng: &mut Xorshift64,
     bar_duration: Ticks,
-) -> Vec<Bar> {
+) -> Vec<Vec<GenNote>> {
     const MOTIF_LEN: usize = 4;
     // Transpositions in semitones applied cyclically per bar.
     const TRANSPOSES: [i8; 7] = [0, 3, 5, 7, -3, -5, -7];
@@ -398,7 +396,7 @@ fn strategy_motif_transpose(
             .get(bi.checked_rem(TRANSPOSES.len()).unwrap_or(0))
             .copied()
             .unwrap_or(0_i8);
-        let mut events = Vec::new();
+        let mut notes = Vec::new();
         let mut cursor = Ticks::ZERO;
         let mut note_idx = 0_usize;
 
@@ -415,21 +413,16 @@ fn strategy_motif_transpose(
             if duration == Ticks::ZERO {
                 break;
             }
-            events.push(Event::Note(Note {
+            notes.push(GenNote {
                 pitch: transposed,
                 duration,
                 velocity: Velocity(85),
-                articulation: None,
-            }));
+            });
             cursor = Ticks(cursor.0.saturating_add(duration.0));
             note_idx = note_idx.wrapping_add(1);
         }
 
-        bars.push(Bar {
-            time_signature: c.time_signature,
-            tempo: c.tempo,
-            events,
-        });
+        bars.push(notes);
     }
     bars
 }
@@ -439,7 +432,7 @@ fn strategy_constrained_walk(
     pm: &PitchMaterial,
     prng: &mut Xorshift64,
     bar_duration: Ticks,
-) -> Vec<Bar> {
+) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
     // Two-octave degree range keeps consecutive leaps ≤ 12 semitones.
     let max_degree = scale_len.saturating_mul(2).saturating_sub(1);
@@ -449,7 +442,7 @@ fn strategy_constrained_walk(
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for _ in 0..c.bar_count {
-        let mut events = Vec::new();
+        let mut notes = Vec::new();
         let mut cursor = Ticks::ZERO;
 
         while cursor < bar_duration {
@@ -459,12 +452,11 @@ fn strategy_constrained_walk(
             if duration == Ticks::ZERO {
                 break;
             }
-            events.push(Event::Note(Note {
+            notes.push(GenNote {
                 pitch,
                 duration,
                 velocity: Velocity(80),
-                articulation: None,
-            }));
+            });
             cursor = Ticks(cursor.0.saturating_add(duration.0));
 
             // Walk ±1 degree, bounded to [0, max_degree].
@@ -475,11 +467,7 @@ fn strategy_constrained_walk(
             }
         }
 
-        bars.push(Bar {
-            time_signature: c.time_signature,
-            tempo: c.tempo,
-            events,
-        });
+        bars.push(notes);
     }
     bars
 }
@@ -489,14 +477,14 @@ fn strategy_shuffle_motifs(
     pm: &PitchMaterial,
     prng: &mut Xorshift64,
     bar_duration: Ticks,
-) -> Vec<Bar> {
+) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
     let step = Ticks(c.ticks_per_quarter.0);
 
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for _ in 0..c.bar_count {
-        let mut events = Vec::new();
+        let mut notes = Vec::new();
         let mut cursor = Ticks::ZERO;
 
         while cursor < bar_duration {
@@ -507,20 +495,15 @@ fn strategy_shuffle_motifs(
             if duration == Ticks::ZERO {
                 break;
             }
-            events.push(Event::Note(Note {
+            notes.push(GenNote {
                 pitch,
                 duration,
                 velocity: Velocity(88),
-                articulation: None,
-            }));
+            });
             cursor = Ticks(cursor.0.saturating_add(duration.0));
         }
 
-        bars.push(Bar {
-            time_signature: c.time_signature,
-            tempo: c.tempo,
-            events,
-        });
+        bars.push(notes);
     }
     bars
 }
@@ -530,7 +513,7 @@ fn strategy_repeat_variation(
     pm: &PitchMaterial,
     prng: &mut Xorshift64,
     bar_duration: Ticks,
-) -> Vec<Bar> {
+) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
     let step = Ticks(c.ticks_per_quarter.0);
     let base_degree = prng.next_mod(scale_len);
@@ -552,8 +535,8 @@ fn strategy_repeat_variation(
 
     for _ in 1..c.bar_count {
         let mut varied = base_bar.clone();
-        // Replace the last event (always a Note) with the variation pitch.
-        if let Some(Event::Note(ref mut n)) = varied.events.last_mut() {
+        // Replace the last note with the variation pitch.
+        if let Some(n) = varied.last_mut() {
             n.pitch = var_pitch;
         }
         bars.push(varied);
@@ -568,11 +551,11 @@ fn build_ascending_bar(
     start_degree: usize,
     step: Ticks,
     bar_duration: Ticks,
-) -> Bar {
+) -> Vec<GenNote> {
     let scale_len = pm.intervals.len();
     // Two-octave ceiling mirrors the walk strategy.
     let max_degree = scale_len.saturating_mul(2).saturating_sub(1);
-    let mut events = Vec::new();
+    let mut notes = Vec::new();
     let mut cursor = Ticks::ZERO;
     let mut degree = start_degree;
 
@@ -583,21 +566,16 @@ fn build_ascending_bar(
         if duration == Ticks::ZERO {
             break;
         }
-        events.push(Event::Note(Note {
+        notes.push(GenNote {
             pitch,
             duration,
             velocity: Velocity(92),
-            articulation: None,
-        }));
+        });
         cursor = Ticks(cursor.0.saturating_add(duration.0));
         degree = degree.saturating_add(1).min(max_degree);
     }
 
-    Bar {
-        time_signature: c.time_signature,
-        tempo: c.tempo,
-        events,
-    }
+    notes
 }
 
 /// Transposes a pitch by `semitones`, clamping the result to `[lo, hi]`.
