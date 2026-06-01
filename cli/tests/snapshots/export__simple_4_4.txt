@@ -1,5 +1,5 @@
 $ griff export <SRC> <OUT>
 exit: 0
 --- stdout ---
-exported 1 tracks (163 bytes) -> <OUT>
+exported 1 tracks (162 bytes) -> <OUT>
 --- stderr ---
