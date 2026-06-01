@@ -82,6 +82,7 @@ priority onto canonical stages:
 | P1       | `score_projection`  | S1 / S2  | canonical model          |
 | P1       | `phrase_boundary`   | S4       | boundary detector        |
 | P2       | `generation_request`| S6       | rule generator           |
+| P2       | `complement_request`| S13      | ComplementArranger       |
 | P2       | `region_regeneration`| S11     | regeneration             |
 
 ## Corpus

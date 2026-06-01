@@ -70,3 +70,10 @@ path  = "fuzz_targets/generation_request.rs"
 test  = false
 doc   = false
 bench = false
+
+[[bin]]
+name  = "complement_request"
+path  = "fuzz_targets/complement_request.rs"
+test  = false
+doc   = false
+bench = false
