@@ -1,13 +1,11 @@
-//! Characterization + red tests for canonical-model feature extraction.
+//! Characterization tests for canonical-model feature extraction.
 //!
-//! Ports the legacy `phrase_features` behaviour (over `Phrase/Bar/Event`) onto
-//! the canonical model (`Voice → EventGroup → AtomEvent`), as the first step of
-//! ADR-0011 (retire the legacy linear model). These reference
-//! `feature::{voice_features, VoiceFeatures}`, which do not exist yet, so the
-//! suite fails to compile until the green step lands.
+//! Exercises `feature::{voice_features, VoiceFeatures}` over the canonical model
+//! (`Voice → EventGroup → AtomEvent`), part of ADR-0011 (retire the legacy
+//! linear model).
 //!
-//! Note: `bar_count` from `PhraseFeatures` is intentionally absent — bars are a
-//! score-level concept (`MasterBar`), not a property of a `Voice`.
+//! Note: there is no `bar_count` — bars are a score-level concept
+//! (`MasterBar`), not a property of a `Voice`.
 
 #![allow(
     clippy::expect_used,
