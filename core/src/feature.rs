@@ -47,6 +47,17 @@ impl VelocityRange {
 /// Bars are a score-level [`MasterBar`](crate::score::MasterBar) concept, not a
 /// property of a [`Voice`], so there is no `bar_count`. Counts span every atom
 /// of every event group, so chord and arpeggio atoms each contribute.
+///
+/// Silence is **not** counted. In the canonical model (ADR-0002/0003) rests are
+/// implicit: a `Voice` stores only the atoms it actually carries, and silence is
+/// the gap between those atoms and the [`MasterBar`](crate::score::MasterBar)
+/// timeline — it is not a stored [`AtomRest`]. So `rest_count` reflects only
+/// explicit rest atoms, and `total_duration` is the summed duration of the
+/// voice's atoms, not the span of the enclosing bars. (The retired legacy
+/// `phrase_features` differed: its `project_phrase` source materialized a rest
+/// for every inter-note gap and for trailing bar silence before counting.)
+/// Silence-aware metrics, when needed, should be derived from `MasterBar`
+/// context rather than baked into the voice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoiceFeatures {
     /// Number of atom events across all groups.
