@@ -288,6 +288,88 @@ fn arrange_rejects_part_with_no_notes() {
     ));
 }
 
+fn note_durations(score: &Score, track_index: usize) -> Vec<u32> {
+    score.tracks[track_index].voices[0]
+        .event_groups
+        .iter()
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some(n.duration.0),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect()
+}
+
+/// Regression for Codex P1+P2: an irregular A — sparse/off-beat rhythm in bar 0
+/// and a 4/4 → 3/4 meter change — must still be reproduced exactly by B,
+/// onsets *and* durations, since rhythm_lock copies A's real grid.
+#[test]
+fn rhythm_lock_preserves_irregular_grid_and_meter_change() {
+    // bar 0: 4/4 [0,1920) — notes at 0 and 960 (a gap between, sparse).
+    // bar 1: 3/4 [1920,3360) — notes at 1920 and 2880.
+    let three_four = 1440_u32; // 3/4 at 480 PPQN
+    let master_bars = vec![
+        MasterBar {
+            index: 0,
+            tick_range: TickRange::new(Ticks(0), Ticks(BAR)).expect("ordered"),
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            tempo: Tempo::new(120.0).expect("120 BPM"),
+        },
+        MasterBar {
+            index: 1,
+            tick_range: TickRange::new(Ticks(BAR), Ticks(BAR + three_four)).expect("ordered"),
+            time_signature: TimeSignature {
+                numerator: 3,
+                denominator: 4,
+            },
+            tempo: Tempo::new(120.0).expect("120 BPM"),
+        },
+    ];
+    let onsets = [0_u32, 960, 1920, 2880];
+    let groups: Vec<EventGroup> = onsets
+        .iter()
+        .map(|&o| single_group(quarter_note(o, 64)))
+        .collect();
+    let score = Score {
+        ticks_per_quarter: PPQN,
+        master_bars,
+        tracks: vec![Track {
+            name: Some("A".to_string()),
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: groups,
+            }],
+        }],
+        source_meta: None,
+        loss: LossReport::new(),
+    };
+
+    let spec = ComplementSpec {
+        mode: RelationMode::RhythmLock,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(5)).expect("arrange ok");
+
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        onsets.to_vec(),
+        "B must reproduce A's exact onsets across the meter change",
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        note_durations(&score, 0),
+        "B must reproduce A's exact note durations",
+    );
+    assert_eq!(
+        cand.axis_scores.rhythm_similarity, 1.0,
+        "rhythm is genuinely locked",
+    );
+}
+
 // ── validate_pair ──────────────────────────────────────────────────────────────
 
 #[test]

@@ -1,25 +1,24 @@
 //! `ComplementArranger` — rule-based complementary-part generation (S13).
 //!
 //! Given an existing part A on a [`Score`], `ComplementArranger` analyses A into a
-//! [`PartProfile`], picks a [`RelationMode`], *derives* a concrete S6 generation
-//! request for part B, delegates to [`crate::generate::generate`], and appends B
-//! as a new [`Track`] on A's shared [`crate::score::MasterBar`] timeline
-//! (ADR-0003). It is a constraint compiler over the S6 generator, not a new
-//! generator (ADR-0012).
+//! [`PartProfile`], picks a [`RelationMode`], *derives* part B, and appends it as
+//! a new [`Track`] on A's shared [`crate::score::MasterBar`] timeline (ADR-0003).
+//! It compiles a relative intent into the canonical model rather than being a new
+//! generation core (ADR-0012); modes that synthesise fresh pitch sequences will
+//! delegate to the S6 generator ([`crate::generate::generate`]).
 //!
 //! This module is the first vertical slice: the `rhythm_lock` mode plus a
-//! minimal pair validator. The other relation modes are named but not yet
-//! implemented; they return [`ComplementError::ModeNotImplemented`].
+//! minimal pair validator. `rhythm_lock` places B on A's exact onset grid, so it
+//! reuses A's onsets directly rather than the S6 generator. The other relation
+//! modes are named but not yet implemented; they return
+//! [`ComplementError::ModeNotImplemented`].
 
 use std::collections::BTreeSet;
 
-use crate::event::{Articulation, Pitch, Ticks};
+use crate::event::{Articulation, Pitch, Ticks, Velocity};
 use crate::feature::PitchRange;
-use crate::generate::{
-    generate, GenerationConstraints, GenerationError, GenerationSeed, GenerationStrategy,
-    PitchMaterial, RuleGenerationRequest,
-};
-use crate::score::{AtomEvent, Score, Track, Voice};
+use crate::generate::{GenerationError, GenerationSeed};
+use crate::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Score, Track, Voice};
 
 /// A named complementarity preset for generating part B (glossary §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -149,6 +148,7 @@ struct NoteRef {
     onset: u32,
     duration: Ticks,
     pitch: u8,
+    velocity: u8,
     articulation: Option<Articulation>,
 }
 
@@ -166,6 +166,7 @@ fn voice_notes(track: &Track) -> Vec<NoteRef> {
                 onset: n.absolute_start.0,
                 duration: n.duration,
                 pitch: n.pitch.0,
+                velocity: n.velocity.0,
                 articulation: n.articulation,
             }),
             AtomEvent::Rest(_) => None,
@@ -276,9 +277,14 @@ pub fn arrange_complement(
     }
 }
 
-/// `rhythm_lock`: reuse the S6 `RhythmCopyPitchSubstitute` strategy with A's
-/// onset grid as `source_rhythms` and pitch material derived from A's harmony,
+/// `rhythm_lock`: place B on A's *actual* per-bar onset grid — every B note
+/// keeps A's onset and duration, with the pitch substituted from A's harmony
 /// shifted into the register requested by `spec.register_offset`.
+///
+/// Because B reuses A's onsets directly (rather than a regenerated grid), the
+/// rhythm is locked exactly even when A has rests, off-beat starts, different
+/// rhythms in later bars, or per-bar meter changes — A's onsets already respect
+/// A's master-bar timeline. Pitch selection is seed-deterministic.
 fn arrange_rhythm_lock(
     score: &Score,
     track_index: usize,
@@ -286,62 +292,51 @@ fn arrange_rhythm_lock(
     spec: ComplementSpec,
     seed: GenerationSeed,
 ) -> Result<ComplementCandidate, ComplementError> {
-    // master_bars is non-empty (checked by the caller).
-    let first_bar = score
-        .master_bars
-        .first()
-        .ok_or(ComplementError::EmptyScore)?;
-
     // Register band for B: A's band shifted, clamped, and ordered.
     let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
-    let lo_shift = shift_pitch(register.lowest.0, spec.register_offset);
-    let hi_shift = shift_pitch(register.highest.0, spec.register_offset);
-    let pitch_lo = Pitch::new(lo_shift.min(hi_shift)).unwrap_or(register.lowest);
-    let pitch_hi = Pitch::new(lo_shift.max(hi_shift)).unwrap_or(register.highest);
+    let band_lo = shift_pitch(register.lowest.0, spec.register_offset);
+    let band_hi = shift_pitch(register.highest.0, spec.register_offset);
+    let band_lo = band_lo.min(band_hi);
+    let band_hi = band_lo.max(band_hi);
 
-    // Pitch material: A's pitch classes as intervals above the band's low note.
-    let pitch_material = pitch_material_from(profile, pitch_lo);
+    // Scale: A's distinct pitch classes, as intervals above the band's low note.
+    let intervals = scale_intervals_from(profile);
 
-    // Rhythm template: the first non-empty bar of A's onset grid.
-    let template = profile
-        .bar_rhythms
-        .iter()
-        .find(|r| !r.is_empty())
-        .cloned()
-        .ok_or(ComplementError::PartHasNoNotes)?;
-
-    let constraints = GenerationConstraints {
-        bar_count: score.master_bars.len(),
-        time_signature: first_bar.time_signature,
-        tempo: first_bar.tempo,
-        ticks_per_quarter: Ticks(u32::from(score.ticks_per_quarter)),
-        pitch_lo,
-        pitch_hi,
-    };
-
-    let request = RuleGenerationRequest {
-        seed,
-        pitch_material,
-        constraints,
-        source_rhythms: vec![template],
-        strategy: GenerationStrategy::RhythmCopyPitchSubstitute,
-    };
-
-    let generated = generate(&request).map_err(ComplementError::Generation)?;
-
-    // Lift B's single voice onto A's score as a new track on the shared bars.
-    let b_voice = generated
-        .score
+    let a_track = score
         .tracks
-        .into_iter()
-        .next()
-        .and_then(|t| t.voices.into_iter().next())
-        .unwrap_or(Voice {
-            id: 0,
-            event_groups: Vec::new(),
-        });
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+    let a_notes = voice_notes(a_track);
 
-    let a_channel = score.tracks.get(track_index).map_or(0, |t| t.channel);
+    let event_groups: Vec<EventGroup> = a_notes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let degree = pitch_index(seed.0, i, intervals.len());
+            let pitch_val = degree_to_pitch(band_lo, band_hi, &intervals, degree);
+            let pitch = Pitch::new(pitch_val).unwrap_or(Pitch(band_lo));
+            // `n.velocity` originates from a valid AtomNote, so it is always in range.
+            let velocity = Velocity::new(n.velocity).unwrap_or(Velocity(0));
+            EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(AtomNote {
+                    absolute_start: Ticks(n.onset),
+                    duration: n.duration,
+                    pitch,
+                    velocity,
+                    articulation: None,
+                })],
+                technique_spans: Vec::new(),
+            }
+        })
+        .collect();
+
+    let b_voice = Voice {
+        id: 0,
+        event_groups,
+    };
+
+    let a_channel = a_track.channel;
     let b_channel = if a_channel >= 15 {
         0
     } else {
@@ -358,7 +353,15 @@ fn arrange_rhythm_lock(
     combined.tracks.push(b_track);
     let part_b_index = combined.tracks.len().saturating_sub(1);
 
-    let axis_scores = score_axes(profile, &combined, part_b_index, pitch_lo, pitch_hi);
+    let band_lo_pitch = Pitch::new(band_lo).unwrap_or(register.lowest);
+    let band_hi_pitch = Pitch::new(band_hi).unwrap_or(register.highest);
+    let axis_scores = score_axes(
+        profile,
+        &combined,
+        part_b_index,
+        band_lo_pitch,
+        band_hi_pitch,
+    );
 
     Ok(ComplementCandidate {
         score: combined,
@@ -369,10 +372,10 @@ fn arrange_rhythm_lock(
     })
 }
 
-/// Builds pitch material from A: root at the band low, intervals = A's distinct
-/// pitch classes measured from A's lowest pitch.
-fn pitch_material_from(profile: &PartProfile, root: Pitch) -> PitchMaterial {
-    let min_a = profile.pitches.first().copied().unwrap_or(root.0);
+/// A's distinct pitch classes (semitone offsets from A's lowest pitch), sorted
+/// and non-empty — the scale B substitutes pitches from.
+fn scale_intervals_from(profile: &PartProfile) -> Vec<u8> {
+    let min_a = profile.pitches.first().copied().unwrap_or(0);
     let mut intervals: Vec<u8> = profile
         .pitches
         .iter()
@@ -383,7 +386,32 @@ fn pitch_material_from(profile: &PartProfile, root: Pitch) -> PitchMaterial {
     if intervals.is_empty() {
         intervals.push(0);
     }
-    PitchMaterial { root, intervals }
+    intervals
+}
+
+/// Maps a scale `degree` to a concrete pitch inside `[lo, hi]`.
+fn degree_to_pitch(lo: u8, hi: u8, intervals: &[u8], degree: usize) -> u8 {
+    let idx = degree.checked_rem(intervals.len()).unwrap_or(0);
+    let interval = intervals.get(idx).copied().unwrap_or(0);
+    let raw = u16::from(lo).saturating_add(u16::from(interval));
+    let clamped = raw.clamp(u16::from(lo), u16::from(hi));
+    u8::try_from(clamped).unwrap_or(hi)
+}
+
+/// Seed-deterministic scale-degree picker for note `index` (`SplitMix64` finalizer).
+fn pitch_index(seed: u64, index: usize, modulo: usize) -> usize {
+    if modulo == 0 {
+        return 0;
+    }
+    let salt = u64::try_from(index)
+        .unwrap_or(0)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mut z = seed.wrapping_add(salt);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    let m = u64::try_from(modulo).unwrap_or(1).max(1);
+    usize::try_from(z.checked_rem(m).unwrap_or(0)).unwrap_or(0)
 }
 
 /// Computes per-axis provenance scores for the produced pair.
