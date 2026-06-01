@@ -1,6 +1,6 @@
-// TDD red phase for the ADR-0011 step: port `generate()` output onto the
-// canonical model. Fails to compile until `GenerationCandidate` carries a
-// `score: Score` (canonical) instead of `phrase: Phrase` (legacy).
+// Characterization for the ADR-0011 step: `generate()` emits the canonical
+// model — `GenerationCandidate` carries a `score: Score` rather than the
+// retired legacy linear representation.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

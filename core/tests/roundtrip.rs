@@ -1,22 +1,24 @@
-//! S0 MIDI roundtrip baseline.
+//! S0 MIDI roundtrip baseline (canonical model).
 //!
-//! Pins `import → export → import` behavior over the shared fixture corpus.
+//! Pins `import_score → export_score → import_score` behavior over the shared
+//! fixture corpus.
 //!
 //! Hard invariant (S0 acceptance): **bar alignment is preserved** — track
-//! count, per-track bar count, per-bar time signature, and the per-bar note
-//! content all survive a roundtrip unchanged, and the roundtrip reaches a
+//! count, score-level master-bar count, per-bar time signature, and the per-bar
+//! note content all survive a roundtrip unchanged, and the roundtrip reaches a
 //! fixed point after the first pass.
 //!
-//! Known, deliberately-pinned losses of the pre-canonical adapter (track
-//! names dropped; only the first tempo retained, so mid-song tempo changes
-//! collapse) are documented in the `roundtrip__*` golden dumps rather than
-//! asserted away. S0 freezes behavior; it does not fix it.
+//! Known, deliberately-pinned losses of the MIDI adapter (only the first tempo
+//! retained, so mid-song tempo changes collapse) are documented in the
+//! `roundtrip__*` golden dumps rather than asserted away. S0 freezes behavior;
+//! it does not fix it.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::missing_assert_message
+    clippy::missing_assert_message,
+    clippy::indexing_slicing
 )]
 
 mod common;
@@ -25,83 +27,90 @@ use std::fmt::Write as _;
 
 use common::{assert_golden, fixtures};
 use griff_core::{
-    event::Event,
-    midi::{self, MidiSong},
+    midi::{self},
+    score::{AtomEvent, Score, Track},
+    slice::TickRange,
 };
 
 const INFALLIBLE: &str = "writing to a String is infallible";
 
-/// `(pitch, velocity, duration)` of every note, grouped per bar, per track.
+/// `(pitch, velocity, duration)` of every note, grouped per master bar, per track.
 type NoteShape = Vec<Vec<Vec<(u8, u8, u32)>>>;
 
-fn note_shape(song: &MidiSong) -> NoteShape {
-    song.tracks
+/// Note atoms of a track's primary voice whose onset falls in `range`.
+fn notes_in_range(track: &Track, range: TickRange) -> Vec<(u8, u8, u32)> {
+    let Some(voice) = track.voices.first() else {
+        return Vec::new();
+    };
+    voice
+        .event_groups
+        .iter()
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some(n),
+            AtomEvent::Rest(_) => None,
+        })
+        .filter(|n| n.absolute_start.0 >= range.start.0 && n.absolute_start.0 < range.end.0)
+        .map(|n| (n.pitch.0, n.velocity.0, n.duration.0))
+        .collect()
+}
+
+fn note_shape(score: &Score) -> NoteShape {
+    score
+        .tracks
         .iter()
         .map(|t| {
-            t.phrase
-                .bars
+            score
+                .master_bars
                 .iter()
-                .map(|b| {
-                    b.events
-                        .iter()
-                        .filter_map(|e| match e {
-                            Event::Note(n) => Some((n.pitch.0, n.velocity.0, n.duration.0)),
-                            Event::Rest(_) => None,
-                        })
-                        .collect()
-                })
+                .map(|mb| notes_in_range(t, mb.tick_range))
                 .collect()
         })
         .collect()
 }
 
-fn time_sigs(song: &MidiSong) -> Vec<Vec<(u8, u8)>> {
-    song.tracks
+/// Score-level per-bar time signatures (one row; master bars are shared).
+fn time_sigs(score: &Score) -> Vec<(u8, u8)> {
+    score
+        .master_bars
         .iter()
-        .map(|t| {
-            t.phrase
-                .bars
-                .iter()
-                .map(|b| (b.time_signature.numerator, b.time_signature.denominator))
-                .collect()
-        })
+        .map(|mb| (mb.time_signature.numerator, mb.time_signature.denominator))
         .collect()
 }
 
-fn roundtrip(song: &MidiSong) -> MidiSong {
-    let bytes = midi::export(song).expect("export must succeed");
-    midi::import(&bytes).expect("re-import must succeed")
+fn roundtrip(score: &Score) -> Score {
+    let bytes = midi::export_score(score).expect("export must succeed");
+    midi::import_score(&bytes).expect("re-import must succeed")
 }
 
-fn dump(tag: &str, song: &MidiSong, out: &mut String) {
+fn dump(tag: &str, score: &Score, out: &mut String) {
     writeln!(
         out,
-        "[{tag}] ppqn={} tracks={}",
-        song.ppqn.0,
-        song.tracks.len()
+        "[{tag}] ppqn={} master_bars={} tracks={}",
+        score.ticks_per_quarter,
+        score.master_bars.len(),
+        score.tracks.len(),
     )
     .expect(INFALLIBLE);
-    for (ti, t) in song.tracks.iter().enumerate() {
+    for mb in &score.master_bars {
         writeln!(
             out,
-            "  track {ti} name={} ch={} bars={}",
-            t.name.as_deref().unwrap_or("<unnamed>"),
-            t.channel,
-            t.phrase.bars.len(),
+            "  bar {} {}/{} {:.1}bpm",
+            mb.index, mb.time_signature.numerator, mb.time_signature.denominator, mb.tempo.0,
         )
         .expect(INFALLIBLE);
-        for (bi, b) in t.phrase.bars.iter().enumerate() {
-            let notes = b
-                .events
-                .iter()
-                .filter(|e| matches!(e, Event::Note(_)))
-                .count();
-            writeln!(
-                out,
-                "    bar {bi} {}/{} {:.1}bpm notes={notes}",
-                b.time_signature.numerator, b.time_signature.denominator, b.tempo.0,
-            )
-            .expect(INFALLIBLE);
+    }
+    for (ti, t) in score.tracks.iter().enumerate() {
+        writeln!(
+            out,
+            "  track {ti} name={} ch={}",
+            t.name.as_deref().unwrap_or("<unnamed>"),
+            t.channel,
+        )
+        .expect(INFALLIBLE);
+        for mb in &score.master_bars {
+            let notes = notes_in_range(t, mb.tick_range).len();
+            writeln!(out, "    bar {} notes={notes}", mb.index).expect(INFALLIBLE);
         }
     }
 }
@@ -109,12 +118,12 @@ fn dump(tag: &str, song: &MidiSong, out: &mut String) {
 #[test]
 fn roundtrip_preserves_bar_alignment() {
     for (name, bytes) in fixtures() {
-        let original = midi::import(bytes).expect("fixture must import");
+        let original = midi::import_score(bytes).expect("fixture must import");
         let rt1 = roundtrip(&original);
         let rt2 = roundtrip(&rt1);
 
         assert_eq!(
-            original.ppqn, rt1.ppqn,
+            original.ticks_per_quarter, rt1.ticks_per_quarter,
             "{name}: PPQN must survive a roundtrip"
         );
         assert_eq!(
@@ -146,8 +155,8 @@ fn roundtrip_preserves_bar_alignment() {
         );
 
         // Export is deterministic.
-        let a = midi::export(&original).expect("export");
-        let b = midi::export(&original).expect("export");
+        let a = midi::export_score(&original).expect("export");
+        let b = midi::export_score(&original).expect("export");
         assert_eq!(a, b, "{name}: export must be byte-deterministic");
 
         let mut snap = String::new();

@@ -1,13 +1,19 @@
 //! Bar-level style classification.
 //!
-//! Assigns a broad playing-style label to a single [`Bar`] using simple
-//! heuristics (note density, average velocity, pitch span).  The thresholds
-//! are intentionally coarse; they are meant to be a first-pass triage, not a
+//! Assigns a broad playing-style label to a single bar using simple heuristics
+//! (note density, average velocity, pitch span). The thresholds are
+//! intentionally coarse; they are meant to be a first-pass triage, not a
 //! ground-truth classifier.
+//!
+//! Bars are a score-level [`MasterBar`](crate::score::MasterBar) concept in the
+//! canonical model (ADR-0003): [`bar_features_in_range`] computes the metrics
+//! over a [`Voice`]'s note atoms whose onset falls inside a half-open tick
+//! range.
 
 use std::fmt;
 
-use crate::event::{Bar, Event};
+use crate::score::{AtomEvent, Voice};
+use crate::slice::TickRange;
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -52,15 +58,26 @@ pub struct BarFeatures {
 
 // ── public functions ──────────────────────────────────────────────────────────
 
-/// Computes per-bar metrics without allocating.
-pub fn bar_features(bar: &Bar) -> BarFeatures {
+/// Computes per-bar metrics over a [`Voice`]'s note atoms whose onset falls in
+/// the half-open `range` `[start, end)`.
+///
+/// Rest atoms and notes outside the range are ignored. Every note atom of every
+/// event group counts, so chord and arpeggio atoms each contribute.
+pub fn bar_features_in_range(voice: &Voice, range: TickRange) -> BarFeatures {
     let mut note_count: usize = 0;
     let mut vel_sum: u32 = 0;
     let mut lowest: Option<u8> = None;
     let mut highest: Option<u8> = None;
 
-    for event in &bar.events {
-        if let Event::Note(note) = event {
+    for group in &voice.event_groups {
+        for atom in &group.atoms {
+            let AtomEvent::Note(note) = atom else {
+                continue;
+            };
+            let onset = note.absolute_start.0;
+            if onset < range.start.0 || onset >= range.end.0 {
+                continue;
+            }
             note_count = note_count.saturating_add(1);
             vel_sum = vel_sum.saturating_add(u32::from(note.velocity.0));
             let pitch = note.pitch.0;
@@ -119,98 +136,12 @@ pub const fn classify_bar(features: BarFeatures) -> BarClass {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
-    use super::{bar_features, classify_bar, BarClass, BarFeatures};
-    use crate::event::{
-        Articulation, Bar, Event, Note, Pitch, Rest, Tempo, Ticks, TimeSignature, Velocity,
-    };
+    use super::{classify_bar, BarClass, BarFeatures};
 
-    fn test_bar(events: Vec<Event>) -> Bar {
-        Bar {
-            time_signature: TimeSignature {
-                numerator: 4,
-                denominator: 4,
-            },
-            tempo: Tempo::new(120.0).expect("120 BPM valid"),
-            events,
-        }
-    }
-
-    fn note(pitch: u8, vel: u8, dur: u32) -> Event {
-        Event::Note(Note {
-            pitch: Pitch::new(pitch).expect("valid pitch"),
-            velocity: Velocity::new(vel).expect("valid velocity"),
-            duration: Ticks(dur),
-            articulation: None::<Articulation>,
-        })
-    }
-
-    fn rest(dur: u32) -> Event {
-        Event::Rest(Rest {
-            duration: Ticks(dur),
-        })
-    }
-
-    // ── bar_features ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn bar_features_empty_bar_gives_zeros() {
-        let f = bar_features(&test_bar(vec![]));
-        assert_eq!(
-            f,
-            BarFeatures {
-                note_count: 0,
-                avg_velocity: 0,
-                pitch_span: 0
-            }
-        );
-    }
-
-    #[test]
-    fn bar_features_rests_only_gives_zeros() {
-        let f = bar_features(&test_bar(vec![rest(480), rest(480)]));
-        assert_eq!(
-            f,
-            BarFeatures {
-                note_count: 0,
-                avg_velocity: 0,
-                pitch_span: 0
-            }
-        );
-    }
-
-    #[test]
-    fn bar_features_single_note() {
-        let f = bar_features(&test_bar(vec![note(60, 90, 480)]));
-        assert_eq!(f.note_count, 1);
-        assert_eq!(f.avg_velocity, 90);
-        assert_eq!(f.pitch_span, 0);
-    }
-
-    #[test]
-    fn bar_features_computes_avg_velocity() {
-        // two notes: vel 60 + 100 → avg 80
-        let f = bar_features(&test_bar(vec![note(60, 60, 240), note(62, 100, 240)]));
-        assert_eq!(f.avg_velocity, 80);
-    }
-
-    #[test]
-    fn bar_features_computes_pitch_span() {
-        // E2 (40) to E5 (64) = 24 semitones
-        let f = bar_features(&test_bar(vec![note(40, 80, 240), note(64, 80, 240)]));
-        assert_eq!(f.pitch_span, 24);
-    }
-
-    #[test]
-    fn bar_features_ignores_rests_in_counts() {
-        let f = bar_features(&test_bar(vec![
-            note(60, 80, 240),
-            rest(240),
-            note(62, 80, 240),
-        ]));
-        assert_eq!(f.note_count, 2);
-    }
+    // Note: `bar_features_in_range` (the canonical feature extractor) is
+    // characterized in `core/tests/classify_canonical.rs`. These unit tests pin
+    // the pure `classify_bar` thresholds, which operate on `BarFeatures` alone.
 
     // ── classify_bar ──────────────────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 # ADR 0011: Retire the legacy linear model in favour of the canonical model
 
 Date: 2026-05-31
-Status: Proposed
+Status: Accepted — implemented 2026-06-01 (all three staged steps complete)
 
 ## Context
 
@@ -69,3 +69,25 @@ records direction and order, not a single migration commit.
   and is explicitly deferred, not done here.
 - Accepted: golden CLI snapshots may need re-blessing when the CLI moves onto
   the canonical model (step 2), gated by characterization tests first.
+
+## Status (2026-06-01)
+
+All three steps are complete; the legacy types and `project_phrase` no longer
+exist.
+
+1. **Done (earlier).** `feature` and `generate` ported onto the canonical model;
+   `GenerationCandidate` carries a `Score`. (`generate`'s internal note IR was
+   finally cut over from `event::{Bar,Event,Note}` to a private `GenNote`.)
+2. **Done.** `classify` now exposes `bar_features_in_range(&Voice, TickRange)`
+   (was `bar_features(&Bar)`); `slice` was already canonical; the CLI
+   `import`/`inspect`/`export`/`classify`/`curate` commands run through
+   `import_score`/`export_score`; the MIDI roundtrip test and the two MIDI fuzz
+   targets drive `import_score`/`export_score`. Behaviour was pinned with
+   characterization tests; the `import__`/`export__`/`roundtrip__` goldens were
+   re-blessed deliberately (bars are now a score-level concept, ADR-0003).
+3. **Done.** `Phrase`, `Bar`, `Event`, `Note`, `Rest`, `project_phrase`, the
+   legacy `midi::import`/`export`/`summarise` path and `MidiSong`/`MidiTrack`
+   are deleted. The shared primitives (`Pitch`, `Ticks`, `Velocity`,
+   `TimeSignature`, `Tempo`, `Articulation`, `ValidationError`) stay in
+   `event.rs`. The dual-model ambiguity is gone: the canonical model is the
+   single internal representation.

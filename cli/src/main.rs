@@ -7,12 +7,13 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use griff_core::{
-    classify,
+    classify::{self, BarClass},
     corpus::{
         ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, SourceFormat, SourceRef, SwancoreTag,
     },
-    event::Event,
     midi::{self, MidiError},
+    score::{AtomEvent, Score, Track, Voice},
+    slice::TickRange,
 };
 
 /// griff — guitar riff engine.
@@ -90,21 +91,49 @@ fn main() -> ExitCode {
 
 // ── commands ──────────────────────────────────────────────────────────────────
 
+/// Returns the first (primary) voice of a track, if any.
+fn primary_voice(track: &Track) -> Option<&Voice> {
+    track.voices.first()
+}
+
+/// Counts note atoms in a voice whose onset falls in `range`.
+fn note_count_in_range(voice: &Voice, range: TickRange) -> usize {
+    voice
+        .event_groups
+        .iter()
+        .flat_map(|g| &g.atoms)
+        .filter(|a| matches!(a, AtomEvent::Note(_)))
+        .filter(|a| {
+            let onset = a.absolute_start().0;
+            onset >= range.start.0 && onset < range.end.0
+        })
+        .count()
+}
+
+/// Total note atoms across all voices of a track.
+fn track_note_count(track: &Track) -> usize {
+    track
+        .voices
+        .iter()
+        .flat_map(|v| &v.event_groups)
+        .flat_map(|g| &g.atoms)
+        .filter(|a| matches!(a, AtomEvent::Note(_)))
+        .count()
+}
+
 fn cmd_import(path: &Path) -> Result<(), CliError> {
     let data = fs::read(path)?;
-    let song = midi::import(&data)?;
-    let summary = midi::summarise(&song);
+    let score = midi::import_score(&data)?;
 
-    println!("PPQN: {}", summary.ppqn);
-    println!("Tracks: {}", summary.tracks.len());
-    for t in &summary.tracks {
-        let name = t.name.as_deref().unwrap_or("<unnamed>");
+    println!("PPQN: {}", score.ticks_per_quarter);
+    println!("Bars: {}", score.master_bars.len());
+    println!("Tracks: {}", score.tracks.len());
+    for (idx, track) in score.tracks.iter().enumerate() {
+        let name = track.name.as_deref().unwrap_or("<unnamed>");
         println!(
-            "  [{idx}] ch={ch:02}  bars={bars:4}  notes={notes:5}  \"{name}\"",
-            idx = t.index,
-            ch = t.channel,
-            bars = t.bar_count,
-            notes = t.note_count,
+            "  [{idx}] ch={ch:02}  notes={notes:5}  \"{name}\"",
+            ch = track.channel,
+            notes = track_note_count(track),
         );
     }
     Ok(())
@@ -112,24 +141,21 @@ fn cmd_import(path: &Path) -> Result<(), CliError> {
 
 fn cmd_inspect(path: &Path) -> Result<(), CliError> {
     let data = fs::read(path)?;
-    let song = midi::import(&data)?;
+    let score = midi::import_score(&data)?;
 
-    println!("PPQN: {}", song.ppqn.0);
-    for (ti, track) in song.tracks.iter().enumerate() {
+    println!("PPQN: {}", score.ticks_per_quarter);
+    for (ti, track) in score.tracks.iter().enumerate() {
         let name = track.name.as_deref().unwrap_or("<unnamed>");
         println!("Track {ti} ch={ch} \"{name}\":", ch = track.channel);
-        for (bi, bar) in track.phrase.bars.iter().enumerate() {
-            let note_count = bar
-                .events
-                .iter()
-                .filter(|e| matches!(e, Event::Note(_)))
-                .count();
+        let voice = primary_voice(track);
+        for mb in &score.master_bars {
+            let notes = voice.map_or(0, |v| note_count_in_range(v, mb.tick_range));
             println!(
                 "  Bar {bi:4}  {num}/{den}  {bpm:.1} BPM  {notes} notes",
-                num = bar.time_signature.numerator,
-                den = bar.time_signature.denominator,
-                bpm = bar.tempo.0,
-                notes = note_count,
+                bi = mb.index,
+                num = mb.time_signature.numerator,
+                den = mb.time_signature.denominator,
+                bpm = mb.tempo.0,
             );
         }
     }
@@ -138,12 +164,12 @@ fn cmd_inspect(path: &Path) -> Result<(), CliError> {
 
 fn cmd_export(input: &Path, output: &Path) -> Result<(), CliError> {
     let data = fs::read(input)?;
-    let song = midi::import(&data)?;
-    let out_bytes = midi::export(&song)?;
+    let score = midi::import_score(&data)?;
+    let out_bytes = midi::export_score(&score)?;
     fs::write(output, &out_bytes)?;
     println!(
         "exported {} tracks ({} bytes) -> {}",
-        song.tracks.len(),
+        score.tracks.len(),
         out_bytes.len(),
         output.display(),
     );
@@ -152,25 +178,34 @@ fn cmd_export(input: &Path, output: &Path) -> Result<(), CliError> {
 
 fn cmd_classify(path: &Path) -> Result<(), CliError> {
     let data = fs::read(path)?;
-    let song = midi::import(&data)?;
+    let score = midi::import_score(&data)?;
 
-    println!("PPQN: {}", song.ppqn.0);
-    for (ti, track) in song.tracks.iter().enumerate() {
+    println!("PPQN: {}", score.ticks_per_quarter);
+    for (ti, track) in score.tracks.iter().enumerate() {
         let name = track.name.as_deref().unwrap_or("<unnamed>");
         println!(
             "Track {ti} ch={ch:02} \"{name}\" — {} bars",
-            track.phrase.bars.len(),
+            score.master_bars.len(),
             ch = track.channel,
         );
-        for (bi, bar) in track.phrase.bars.iter().enumerate() {
-            let feat = classify::bar_features(bar);
-            let class = classify::classify_bar(feat);
+        let voice = primary_voice(track);
+        for mb in &score.master_bars {
+            let feat = voice.map_or_else(
+                || classify::BarFeatures {
+                    note_count: 0,
+                    avg_velocity: 0,
+                    pitch_span: 0,
+                },
+                |v| classify::bar_features_in_range(v, mb.tick_range),
+            );
+            let class: BarClass = classify::classify_bar(feat);
             println!(
                 "  Bar {bi:4}  {num}/{den}  {bpm:.1} BPM  \
                  notes={notes:3}  class={class:<10}  vel={vel:3}  span={span:2}st",
-                num = bar.time_signature.numerator,
-                den = bar.time_signature.denominator,
-                bpm = bar.tempo.0,
+                bi = mb.index,
+                num = mb.time_signature.numerator,
+                den = mb.time_signature.denominator,
+                bpm = mb.tempo.0,
                 notes = feat.note_count,
                 vel = feat.avg_velocity,
                 span = feat.pitch_span,
@@ -182,23 +217,22 @@ fn cmd_classify(path: &Path) -> Result<(), CliError> {
 
 fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
     let data = fs::read(path)?;
-    let song = midi::import(&data)?;
-    let summary = midi::summarise(&song);
+    let score = midi::import_score(&data)?;
 
-    print_score_summary(path, &summary);
+    print_score_summary(path, &score);
 
     let inputs = gather_curate_inputs()?;
 
-    let (tempo_bpm, time_signature) = song
-        .tracks
-        .first()
-        .and_then(|t| t.phrase.bars.first())
-        .map_or((120.0, (4_u8, 4_u8)), |b| {
-            (
-                b.tempo.0,
-                (b.time_signature.numerator, b.time_signature.denominator),
-            )
-        });
+    let (tempo_bpm, time_signature) =
+        score
+            .master_bars
+            .first()
+            .map_or((120.0, (4_u8, 4_u8)), |b| {
+                (
+                    b.tempo.0,
+                    (b.time_signature.numerator, b.time_signature.denominator),
+                )
+            });
 
     let filename = path
         .file_name()
@@ -215,7 +249,7 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
             bar_range: None,
         },
         tempo_bpm,
-        ticks_per_quarter: summary.ppqn,
+        ticks_per_quarter: score.ticks_per_quarter,
         time_signature,
         tuning: inputs.tuning,
         tags: inputs.tags,
@@ -299,18 +333,17 @@ fn gather_curate_inputs() -> Result<CurateInputs, CliError> {
     })
 }
 
-fn print_score_summary(path: &Path, summary: &midi::MidiSummary) {
+fn print_score_summary(path: &Path, score: &Score) {
     println!("File  : {}", path.display());
-    println!("PPQN  : {}", summary.ppqn);
-    println!("Tracks: {}", summary.tracks.len());
-    for t in &summary.tracks {
+    println!("PPQN  : {}", score.ticks_per_quarter);
+    println!("Bars  : {}", score.master_bars.len());
+    println!("Tracks: {}", score.tracks.len());
+    for (idx, track) in score.tracks.iter().enumerate() {
         println!(
-            "  [{idx}] ch={ch:02}  bars={bars}  notes={notes}  \"{name}\"",
-            idx = t.index,
-            ch = t.channel,
-            bars = t.bar_count,
-            notes = t.note_count,
-            name = t.name.as_deref().unwrap_or("<unnamed>"),
+            "  [{idx}] ch={ch:02}  notes={notes}  \"{name}\"",
+            ch = track.channel,
+            notes = track_note_count(track),
+            name = track.name.as_deref().unwrap_or("<unnamed>"),
         );
     }
 }
