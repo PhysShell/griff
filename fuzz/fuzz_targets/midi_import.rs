@@ -11,9 +11,9 @@
 //!     other failure mode.
 //!
 //! The first regression seed, `corpus/midi_import/hang_ppqn1_eighth.mid`,
-//! is a known-failing input: a PPQN=1 / 1-8 file drives
-//! `group_into_bars` into a non-advancing loop. It is committed unfixed on
-//! the planning branch (see `docs/fuzzing.md`).
+//! is a known-failing input: a PPQN=1 / 1-8 file would drive bar grouping
+//! into a non-advancing loop, now rejected as `MidiError::DegenerateMeter`
+//! (see `docs/fuzzing.md`).
 
 use libfuzzer_sys::fuzz_target;
 
