@@ -18,6 +18,8 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0010](0010-fuzz-format-adapters-and-core-invariants.md) | Fuzz-test format adapters and core invariants | Accepted |
 | [0011](0011-retire-legacy-linear-model.md) | Retire the legacy linear model in favour of the canonical model | Proposed |
 | [0012](0012-complementary-part-generation.md) | Complementary part generation (ComplementArranger) | Proposed |
+| [0013](0013-dp-viterbi-traversal.md) | DP/Viterbi traversal over the phrase hypergraph | Proposed |
+| [0014](0014-fretboard-aware-model.md) | Fretboard-aware canonical model (string/fret positions) | Proposed |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).

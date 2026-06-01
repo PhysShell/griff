@@ -1,26 +1,24 @@
 //! Canonical score model — the internal musical representation for griff.
 //!
-//! Introduced in S1 (ADR-0002). The legacy `Phrase/Bar/Event` model (in
-//! [`crate::event`]) is retained as a compatibility layer and can be obtained
-//! via [`project_phrase`].
+//! Introduced in S1 (ADR-0002); the single internal truth (ADR-0011).
 //!
-//! ## Old ↔ new mapping
+//! ## Hierarchy
 //!
-//! | Old (legacy)        | New (canonical)                           |
+//! | Concept             | Role                                      |
 //! |---------------------|-------------------------------------------|
-//! | `Phrase`            | first-voice projection of a `Track`      |
-//! | `Bar`               | driven by `MasterBar` in the projection  |
-//! | `Event::Note`       | `AtomEvent::Note(AtomNote)`               |
-//! | `Event::Rest`       | `AtomEvent::Rest(AtomRest)`               |
-//! | —                   | `Voice` — polyphonic event stream        |
-//! | —                   | `EventGroup` — chord / tuplet / grace    |
-//! | —                   | `TechniqueSpan` — span-level technique   |
-//! | —                   | `SourceMeta` — importer evidence         |
-//! | —                   | `LossReport` — import/export losses      |
+//! | `Score`             | top-level document                        |
+//! | `MasterBar`         | shared transport (meter / tempo)          |
+//! | `Track`             | an instrument part                        |
+//! | `Voice`             | a polyphonic event stream                 |
+//! | `EventGroup`        | chord / tuplet / grace                    |
+//! | `AtomEvent::Note`   | `AtomNote`                                 |
+//! | `AtomEvent::Rest`   | `AtomRest`                                 |
+//! | `TechniqueSpan`     | span-level technique                      |
+//! | `SourceMeta`        | importer evidence                         |
+//! | `LossReport`        | import/export losses                      |
 
 use crate::{
-    event::Pitch,
-    event::{Articulation, Bar, Event, Note, Phrase, Rest, Tempo, Ticks, TimeSignature, Velocity},
+    event::{Articulation, Pitch, Tempo, Ticks, TimeSignature, Velocity},
     slice::TickRange,
 };
 
@@ -237,93 +235,6 @@ pub struct Score {
 
 // ── compatibility projection ─────────────────────────────────────────────────
 
-/// Projects the first voice of `track_index` in `score` onto the legacy
-/// [`Phrase`] / [`Bar`] / [`Event`] model.
-///
-/// Returns `None` if `track_index` is out of bounds or the track has no voices.
-///
-/// The projection is intentionally lossy:
-/// - Only the first voice is represented; all other voices are discarded.
-/// - [`EventGroup`] structure (chord, tuplet, …) is flattened.
-/// - [`TechniqueSpan`]s are not represented in the legacy model.
-pub fn project_phrase(score: &Score, track_index: usize) -> Option<Phrase> {
-    let track = score.tracks.get(track_index)?;
-    let voice = track.voices.first()?;
-
-    // Collect all AtomEvents from the first voice, sorted by absolute start.
-    let mut atoms: Vec<AtomEvent> = voice
-        .event_groups
-        .iter()
-        .flat_map(|g| g.atoms.iter().copied())
-        .collect();
-    atoms.sort_unstable_by_key(|a| a.absolute_start().0);
-
-    let bars: Vec<Bar> = score
-        .master_bars
-        .iter()
-        .map(|mb| {
-            let in_bar: Vec<AtomEvent> = atoms
-                .iter()
-                .filter(|a| {
-                    a.absolute_start().0 >= mb.tick_range.start.0
-                        && a.absolute_start().0 < mb.tick_range.end.0
-                })
-                .copied()
-                .collect();
-
-            let events = fill_bar_events(&in_bar, mb.tick_range.start, mb.tick_range.end);
-            Bar {
-                time_signature: mb.time_signature,
-                tempo: mb.tempo,
-                events,
-            }
-        })
-        .collect();
-
-    Some(Phrase { bars })
-}
-
-/// Fills the half-open range `[bar_start, bar_end)` with legacy [`Event`]s,
-/// inserting [`Event::Rest`] for any gaps between atoms.
-fn fill_bar_events(atoms: &[AtomEvent], bar_start: Ticks, bar_end: Ticks) -> Vec<Event> {
-    let mut events: Vec<Event> = Vec::new();
-    let mut cursor = bar_start;
-
-    for atom in atoms {
-        let start = atom.absolute_start();
-        if start.0 > cursor.0 {
-            events.push(Event::Rest(Rest {
-                duration: Ticks(start.0.saturating_sub(cursor.0)),
-            }));
-        }
-        match *atom {
-            AtomEvent::Note(n) => {
-                events.push(Event::Note(Note {
-                    pitch: n.pitch,
-                    duration: n.duration,
-                    velocity: n.velocity,
-                    articulation: n.articulation,
-                }));
-                cursor = Ticks(start.0.saturating_add(n.duration.0));
-            }
-            AtomEvent::Rest(r) => {
-                events.push(Event::Rest(Rest {
-                    duration: r.duration,
-                }));
-                cursor = Ticks(start.0.saturating_add(r.duration.0));
-            }
-        }
-    }
-
-    if cursor.0 < bar_end.0 {
-        events.push(Event::Rest(Rest {
-            duration: Ticks(bar_end.0.saturating_sub(cursor.0)),
-        }));
-    }
-
-    events
-}
-
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -334,22 +245,11 @@ fn fill_bar_events(atoms: &[AtomEvent], bar_start: Ticks, bar_end: Ticks) -> Vec
     clippy::missing_assert_message
 )]
 mod tests {
-    use super::{
-        project_phrase, AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning,
-        LossReport, MasterBar, Score, SourceMeta, TechniqueSpan, Track, Voice,
-    };
+    use super::{AtomEvent, AtomNote, AtomRest, ImportWarning, LossReport, TechniqueSpan};
     use crate::{
-        event::{Articulation, Event, Pitch, Tempo, Ticks, TimeSignature, Velocity},
+        event::{Articulation, Pitch, Ticks, Velocity},
         slice::TickRange,
     };
-
-    fn ts_4_4() -> TimeSignature {
-        TimeSignature::new(4, 4).expect("4/4 valid")
-    }
-
-    fn tempo_120() -> Tempo {
-        Tempo::new(120.0).expect("120 BPM valid")
-    }
 
     fn tick_range(start: u32, end: u32) -> TickRange {
         TickRange::new(Ticks(start), Ticks(end)).expect("ordered range")
@@ -427,193 +327,5 @@ mod tests {
             tick_range: tick_range(0, 480),
         };
         assert_eq!(span.technique, Articulation::PalmMute);
-    }
-
-    // ── project_phrase ────────────────────────────────────────────────────────
-
-    fn one_bar_score(atoms: Vec<AtomEvent>) -> Score {
-        let group = EventGroup {
-            kind: EventGroupKind::Single,
-            atoms,
-            technique_spans: Vec::new(),
-        };
-        let voice = Voice {
-            id: 0,
-            event_groups: vec![group],
-        };
-        let track = Track {
-            name: Some("Test".to_owned()),
-            channel: 0,
-            voices: vec![voice],
-        };
-        let mb = MasterBar {
-            index: 0,
-            tick_range: tick_range(0, 1920),
-            time_signature: ts_4_4(),
-            tempo: tempo_120(),
-        };
-        Score {
-            ticks_per_quarter: 480,
-            master_bars: vec![mb],
-            tracks: vec![track],
-            source_meta: Some(SourceMeta {
-                format: Some("test".to_owned()),
-            }),
-            loss: LossReport::new(),
-        }
-    }
-
-    #[test]
-    fn project_phrase_returns_none_for_out_of_bounds_track() {
-        let score = one_bar_score(Vec::new());
-        assert!(
-            project_phrase(&score, 1).is_none(),
-            "out-of-bounds track index must return None"
-        );
-    }
-
-    #[test]
-    fn project_phrase_empty_voice_fills_bar_with_rest() {
-        let score = one_bar_score(Vec::new());
-        let phrase = project_phrase(&score, 0).expect("track 0 exists");
-
-        assert_eq!(phrase.bars.len(), 1, "one master bar → one projected bar");
-        let bar = &phrase.bars[0];
-        assert_eq!(
-            bar.events.len(),
-            1,
-            "empty voice bar must contain a single fill-rest"
-        );
-        assert!(
-            matches!(bar.events[0], Event::Rest(_)),
-            "fill event must be a rest"
-        );
-    }
-
-    #[test]
-    fn project_phrase_single_note_at_bar_start() {
-        let score = one_bar_score(vec![atom_note(0, 480, 60)]);
-        let phrase = project_phrase(&score, 0).expect("track 0 exists");
-
-        let bar = &phrase.bars[0];
-        assert!(
-            matches!(bar.events[0], Event::Note(_)),
-            "first event must be the note"
-        );
-        assert_eq!(
-            bar.events.len(),
-            2,
-            "note + tail rest = 2 events in projected bar"
-        );
-    }
-
-    #[test]
-    fn project_phrase_note_with_leading_gap_inserts_rest() {
-        // Note starts at tick 240 inside a 1920-tick bar.
-        let score = one_bar_score(vec![atom_note(240, 480, 62)]);
-        let phrase = project_phrase(&score, 0).expect("track 0 exists");
-
-        let bar = &phrase.bars[0];
-        assert!(
-            matches!(bar.events[0], Event::Rest(_)),
-            "leading gap must produce a leading rest"
-        );
-        assert!(
-            matches!(bar.events[1], Event::Note(_)),
-            "second event must be the note"
-        );
-    }
-
-    #[test]
-    fn project_phrase_atoms_sorted_by_absolute_start() {
-        // Provide atoms out of order; projection must sort them.
-        let atoms = vec![atom_note(480, 480, 64), atom_note(0, 480, 60)];
-        let score = one_bar_score(atoms);
-        let phrase = project_phrase(&score, 0).expect("track 0 exists");
-
-        let notes: Vec<u8> = phrase.bars[0]
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                Event::Note(n) => Some(n.pitch.0),
-                Event::Rest(_) => None,
-            })
-            .collect();
-
-        assert_eq!(
-            notes,
-            vec![60, 64],
-            "notes must appear in onset order regardless of insertion order"
-        );
-    }
-
-    #[test]
-    fn project_phrase_multi_bar_score() {
-        let group = EventGroup {
-            kind: EventGroupKind::Single,
-            atoms: vec![atom_note(0, 480, 60), atom_note(1920, 480, 62)],
-            technique_spans: Vec::new(),
-        };
-        let voice = Voice {
-            id: 0,
-            event_groups: vec![group],
-        };
-        let track = Track {
-            name: None,
-            channel: 0,
-            voices: vec![voice],
-        };
-        let score = Score {
-            ticks_per_quarter: 480,
-            master_bars: vec![
-                MasterBar {
-                    index: 0,
-                    tick_range: tick_range(0, 1920),
-                    time_signature: ts_4_4(),
-                    tempo: tempo_120(),
-                },
-                MasterBar {
-                    index: 1,
-                    tick_range: tick_range(1920, 3840),
-                    time_signature: ts_4_4(),
-                    tempo: tempo_120(),
-                },
-            ],
-            tracks: vec![track],
-            source_meta: None,
-            loss: LossReport::new(),
-        };
-
-        let phrase = project_phrase(&score, 0).expect("track 0 exists");
-        assert_eq!(phrase.bars.len(), 2, "two master bars → two projected bars");
-
-        let bar0_notes: usize = phrase.bars[0]
-            .events
-            .iter()
-            .filter(|e| matches!(e, Event::Note(_)))
-            .count();
-        let bar1_notes: usize = phrase.bars[1]
-            .events
-            .iter()
-            .filter(|e| matches!(e, Event::Note(_)))
-            .count();
-        assert_eq!(bar0_notes, 1, "bar 0 must contain exactly one note");
-        assert_eq!(bar1_notes, 1, "bar 1 must contain exactly one note");
-    }
-
-    #[test]
-    fn project_phrase_atom_rest_projects_correctly() {
-        let score = one_bar_score(vec![atom_rest(0, 240), atom_note(240, 480, 60)]);
-        let phrase = project_phrase(&score, 0).expect("track 0 exists");
-
-        let bar = &phrase.bars[0];
-        assert!(
-            matches!(bar.events[0], Event::Rest(_)),
-            "first projected event must be the rest atom"
-        );
-        assert!(
-            matches!(bar.events[1], Event::Note(_)),
-            "second projected event must be the note"
-        );
     }
 }

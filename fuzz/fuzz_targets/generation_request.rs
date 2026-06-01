@@ -8,9 +8,9 @@
 //! Oracle (normalised invariants):
 //!   * No panic / hang / unbounded allocation (libFuzzer limits).
 //!   * On `Ok(candidate)`:
-//!     - `candidate.phrase.bars.len() == constraints.bar_count`.
+//!     - `candidate.score.master_bars.len() == constraints.bar_count`.
 //!     - Every note pitch is in `[pitch_lo, pitch_hi]`.
-//!     - Fixed seed is deterministic: running twice yields the same phrase.
+//!     - Fixed seed is deterministic: running twice yields the same voice.
 //!   * On `Err(_)`: the typed error is one of the declared variants — no panic.
 
 use arbitrary::Arbitrary;
@@ -22,6 +22,7 @@ use griff_core::{
         generate, GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial,
         RuleGenerationRequest,
     },
+    score::AtomEvent,
 };
 
 #[derive(Debug, Arbitrary)]
@@ -107,33 +108,37 @@ fuzz_target!(|input: FuzzInput| {
         return;
     };
 
-    // Invariant: bar count matches request.
+    // Invariant: master-bar count matches request.
     assert_eq!(
-        candidate.phrase.bars.len(),
+        candidate.score.master_bars.len(),
         req.constraints.bar_count,
-        "generated bar count must match request",
+        "generated master-bar count must match request",
     );
 
     // Invariant: all notes within pitch range.
     let lo = pitch_lo.0.min(pitch_hi.0);
     let hi = pitch_lo.0.max(pitch_hi.0).min(127);
-    for bar in &candidate.phrase.bars {
-        for event in &bar.events {
-            if let griff_core::event::Event::Note(n) = event {
-                assert!(
-                    n.pitch.0 >= lo && n.pitch.0 <= hi,
-                    "note pitch {} out of [{lo}, {hi}]",
-                    n.pitch.0,
-                );
+    for track in &candidate.score.tracks {
+        for voice in &track.voices {
+            for group in &voice.event_groups {
+                for atom in &group.atoms {
+                    if let AtomEvent::Note(n) = atom {
+                        assert!(
+                            n.pitch.0 >= lo && n.pitch.0 <= hi,
+                            "note pitch {} out of [{lo}, {hi}]",
+                            n.pitch.0,
+                        );
+                    }
+                }
             }
         }
     }
 
-    // Invariant: fixed seed is deterministic.
+    // Invariant: fixed seed is deterministic (compare the generated voice).
     let candidate2 = generate(&req).expect("second call with same request must succeed");
     assert_eq!(
-        candidate.phrase,
-        candidate2.phrase,
-        "same request must produce identical phrase",
+        candidate.score.tracks[0].voices[0],
+        candidate2.score.tracks[0].voices[0],
+        "same request must produce identical voice",
     );
 });
