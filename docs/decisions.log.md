@@ -73,3 +73,14 @@ Architectural decisions go to [`adr/`](adr/) instead.
   shifts / `fret_jump_penalty` / playability, accepting that position is
   optional (MIDI often can't recover it), inference is a deferred lossy
   sub-problem, and it adds scope to S7.
+
+- 2026-06-01 — In the context of finishing ADR-0011 steps 2–3, facing how to
+  move `classify` and the CLI off the legacy `Bar`/`Phrase` types and how
+  to present per-bar output once bars are score-level (ADR-0003), we decided for
+  a canonical `classify::bar_features_in_range(&Voice, TickRange)` and a
+  score-level CLI summary (one `Bars:` line, per-track note counts) — and
+  against preserving the old per-track `bars=` column — deliberately re-blessing
+  the `import__`/`export__`/`roundtrip__` goldens behind characterization tests,
+  accepting a one-off snapshot churn and a marginally smaller `export_score`
+  byte stream that still round-trips. With this the legacy linear model is fully
+  removed (single internal model).
