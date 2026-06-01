@@ -13,7 +13,8 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::missing_assert_message,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn
 )]
 
 use griff_core::{
@@ -99,7 +100,10 @@ fn single_note_in_range() {
 #[test]
 fn computes_avg_velocity() {
     // two notes: vel 60 + 100 → avg 80
-    let v = voice(vec![note_atom(0, 240, 60, 60), note_atom(240, 240, 62, 100)]);
+    let v = voice(vec![
+        note_atom(0, 240, 60, 60),
+        note_atom(240, 240, 62, 100),
+    ]);
     assert_eq!(bar_features_in_range(&v, range(0, 1920)).avg_velocity, 80);
 }
 
