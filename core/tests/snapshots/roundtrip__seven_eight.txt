@@ -1,8 +1,12 @@
-[orig] ppqn=480 tracks=1
-  track 0 name=Rhythm ch=1 bars=2
-    bar 0 7/8 140.0bpm notes=7
-    bar 1 7/8 140.0bpm notes=0
-[roundtrip] ppqn=480 tracks=1
-  track 0 name=<unnamed> ch=1 bars=2
-    bar 0 7/8 140.0bpm notes=7
-    bar 1 7/8 140.0bpm notes=0
+[orig] ppqn=480 master_bars=2 tracks=1
+  bar 0 7/8 140.0bpm
+  bar 1 7/8 140.0bpm
+  track 0 name=Rhythm ch=1
+    bar 0 notes=7
+    bar 1 notes=0
+[roundtrip] ppqn=480 master_bars=2 tracks=1
+  bar 0 7/8 140.0bpm
+  bar 1 7/8 140.0bpm
+  track 0 name=<unnamed> ch=1
+    bar 0 notes=7
+    bar 1 notes=0
