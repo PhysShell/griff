@@ -84,3 +84,13 @@ Architectural decisions go to [`adr/`](adr/) instead.
   accepting a one-off snapshot churn and a marginally smaller `export_score`
   byte stream that still round-trips. With this the legacy linear model is fully
   removed (single internal model).
+
+- 2026-06-01 — In the context of starting S13 (ComplementArranger), facing
+  where part-A's profile lives and how much to ship first, we decided for a
+  dedicated `PartProfile` in a new `complement` module (over extending the
+  feature layer) and a first vertical slice of `rhythm_lock` only — a constraint
+  compiler that derives an S6 `RhythmCopyPitchSubstitute` request from A and
+  appends B as a new `Track` on A's master bars — plus a minimal `validate_pair`
+  and the P2 `complement_request` fuzz target (ADR-0012), accepting that the
+  other five relation modes, per-part playability in the validator, and richer
+  harmonic context in the profile are deferred to follow-up increments.
