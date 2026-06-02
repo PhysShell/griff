@@ -12,6 +12,16 @@ ADRs: —
 > rendered frame. Dependency-free (only `griff-core`), so it builds and is
 > verifiable in headless CI.
 
+## UI design reference
+
+`preview/design/index.html` is a self-contained, dependency-free interactive
+mockup of the intended native (`egui`) window — transport bar, left track dock,
+piano-roll (keyboard gutter, bar ruler, per-lane notes, playhead, S4 boundary
+overlays, S6 chunk classification bands), and a right curation/inspector dock
+(S14 structure metrics, tags, approve/reject/split/merge). It is a design
+target only — not wired to the engine — used to settle layout and interactions
+before building the real front-end.
+
 ## Remaining work (follow-up increments)
 
 The two pure layers (`view` + `render`) are the foundation; the interactive

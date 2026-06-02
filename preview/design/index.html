@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>griff · preview — UI mockup (S8)</title>
+<style>
+  /* ──────────────────────────────────────────────────────────────────────
+     egui-flavoured theme. Flat panels, 4px rounding, muted dark palette with
+     a single blue accent — approximating egui's default dark visuals so this
+     mockup reads like the eventual native window.
+  ─────────────────────────────────────────────────────────────────────── */
+  :root, .theme-dark {
+    --bg:            #1c1c1e;
+    --panel:        #242427;
+    --panel-2:      #2b2b2f;
+    --faint:        #313136;
+    --widget:       #3a3a40;
+    --widget-hover: #45454c;
+    --widget-active:#525259;
+    --stroke:       #46464d;
+    --stroke-soft:  #36363b;
+    --text:         #dcdcde;
+    --text-dim:     #9a9aa2;
+    --text-faint:   #6e6e76;
+    --accent:       #3b9dff;
+    --accent-dim:   #2b6fb8;
+    --grid-beat:    #2e2e33;
+    --grid-bar:     #45454e;
+    --row-black:    #202024;
+    --playhead:     #ffcf4d;
+    --boundary:     #ff5d6c;
+    --shadow:       rgba(0,0,0,.45);
+  }
+  .theme-light {
+    --bg:            #e7e7ea;
+    --panel:        #f3f3f5;
+    --panel-2:      #ebebee;
+    --faint:        #e0e0e4;
+    --widget:       #dadade;
+    --widget-hover: #cdcdd3;
+    --widget-active:#bfbfc6;
+    --stroke:       #c2c2c9;
+    --stroke-soft:  #d4d4da;
+    --text:         #1f1f24;
+    --text-dim:     #5a5a63;
+    --text-faint:   #8a8a93;
+    --accent:       #1677ff;
+    --accent-dim:   #4096ff;
+    --grid-beat:    #d9d9df;
+    --grid-bar:     #bcbcc4;
+    --row-black:    #dedee3;
+    --playhead:     #d48806;
+    --boundary:     #f5222d;
+    --shadow:       rgba(0,0,0,.18);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.45 -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    overflow: hidden;
+  }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ── menu / title bar ─────────────────────────────────────────────── */
+  .menubar {
+    display: flex; align-items: center; gap: 14px;
+    height: 36px; padding: 0 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--stroke-soft);
+  }
+  .brand { font-weight: 700; letter-spacing: .2px; }
+  .brand .dot { color: var(--accent); }
+  .menubar .menu { color: var(--text-dim); cursor: default; }
+  .menubar .menu:hover { color: var(--text); }
+  .menubar .spacer { flex: 1; }
+  .tag {
+    font-size: 11px; color: var(--text-dim);
+    border: 1px solid var(--stroke); border-radius: 999px;
+    padding: 2px 9px;
+  }
+
+  /* ── transport ────────────────────────────────────────────────────── */
+  .transport {
+    display: flex; align-items: center; gap: 10px;
+    height: 44px; padding: 0 12px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--stroke-soft);
+  }
+  button.btn {
+    font: inherit; color: var(--text);
+    background: var(--widget);
+    border: 1px solid var(--stroke);
+    border-radius: 5px;
+    padding: 5px 10px; cursor: pointer;
+    transition: background .08s, border-color .08s;
+  }
+  button.btn:hover { background: var(--widget-hover); }
+  button.btn:active { background: var(--widget-active); }
+  button.btn.icon { width: 34px; padding: 5px 0; text-align: center; font-size: 14px; }
+  button.btn.primary { background: var(--accent-dim); border-color: var(--accent); }
+  button.btn.primary:hover { background: var(--accent); }
+  button.btn.toggled { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+
+  .field { display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
+  .field .val {
+    color: var(--text); font-variant-numeric: tabular-nums;
+    background: var(--faint); border: 1px solid var(--stroke);
+    border-radius: 5px; padding: 4px 8px; min-width: 54px; text-align: center;
+  }
+  .sep { width: 1px; height: 22px; background: var(--stroke); }
+  .transport .spacer { flex: 1; }
+  input[type="range"] { width: 120px; accent-color: var(--accent); }
+
+  /* ── body: 3 docks ───────────────────────────────────────────────── */
+  .body { flex: 1; display: flex; min-height: 0; }
+  .dock {
+    background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .dock.left  { width: 210px; border-right: 1px solid var(--stroke-soft); }
+  .dock.right { width: 268px; border-left: 1px solid var(--stroke-soft); }
+  .dock-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--text-faint); padding: 9px 12px 6px;
+  }
+  .dock-scroll { overflow-y: auto; padding: 0 8px 12px; }
+
+  /* ── track list ──────────────────────────────────────────────────── */
+  .track {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 8px; border-radius: 6px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .track:hover { background: var(--faint); }
+  .track.sel { background: var(--faint); border-color: var(--stroke); }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; box-shadow: 0 0 0 1px var(--shadow); }
+  .track .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track .ch { font-size: 10px; color: var(--text-faint); }
+  .ms { display: flex; gap: 4px; }
+  .ms button {
+    width: 20px; height: 20px; font-size: 10px; font-weight: 700;
+    border-radius: 4px; border: 1px solid var(--stroke);
+    background: var(--widget); color: var(--text-dim); cursor: pointer;
+  }
+  .ms button.m.on { background: #c0392b; border-color: #e05545; color: #fff; }
+  .ms button.s.on { background: #b8860b; border-color: #e0a800; color: #fff; }
+
+  /* ── piano roll ──────────────────────────────────────────────────── */
+  .center { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+  .ruler-row { display: flex; height: 26px; border-bottom: 1px solid var(--stroke-soft); }
+  .ruler-corner { width: var(--gutter); flex: none; background: var(--panel); border-right: 1px solid var(--stroke-soft); }
+  .ruler-clip { flex: 1; overflow: hidden; position: relative; background: var(--panel-2); }
+  .ruler { position: absolute; top: 0; left: 0; height: 100%; }
+  .ruler .bar-tick {
+    position: absolute; top: 0; height: 100%;
+    border-left: 1px solid var(--grid-bar);
+    color: var(--text-dim); font-size: 11px; padding: 5px 0 0 5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ruler .chunk-band {
+    position: absolute; top: 0; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; letter-spacing: .4px; text-transform: uppercase;
+    color: #fff; opacity: .92; cursor: pointer; overflow: hidden;
+    border-right: 1px solid var(--bg);
+  }
+  .ruler .chunk-band.sel { box-shadow: inset 0 -2px 0 #fff, inset 0 2px 0 #fff; }
+
+  .roll-row { flex: 1; display: flex; min-height: 0; }
+  .keys { width: var(--gutter); flex: none; overflow: hidden; background: var(--panel); border-right: 1px solid var(--stroke-soft); position: relative; }
+  .keys .key {
+    position: absolute; left: 0; right: 0;
+    display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 7px; font-size: 10px; color: var(--text-faint);
+    border-top: 1px solid var(--stroke-soft);
+  }
+  .keys .key.black { background: var(--row-black); }
+  .keys .key.c { color: var(--text-dim); font-weight: 600; }
+
+  .grid-clip { flex: 1; overflow: auto; position: relative; }
+  .grid { position: relative; }
+  .grid .rowband { position: absolute; left: 0; right: 0; }
+  .grid .rowband.black { background: var(--row-black); }
+  .grid .vline { position: absolute; top: 0; bottom: 0; width: 1px; }
+  .grid .vline.beat { background: var(--grid-beat); }
+  .grid .vline.bar  { background: var(--grid-bar); }
+  .grid .boundary {
+    position: absolute; top: 0; bottom: 0; width: 0;
+    border-left: 2px dashed var(--boundary); opacity: .8; pointer-events: none;
+  }
+  .note {
+    position: absolute; border-radius: 3px; cursor: pointer;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), 0 1px 2px var(--shadow);
+    overflow: hidden;
+  }
+  .note:hover { box-shadow: inset 0 0 0 1px #fff, 0 1px 3px var(--shadow); }
+  .note.sel { box-shadow: inset 0 0 0 2px #fff, 0 1px 4px var(--shadow); }
+  .note.muted { opacity: .22; }
+  .playhead {
+    position: absolute; top: 0; bottom: 0; width: 0;
+    border-left: 2px solid var(--playhead); pointer-events: none; z-index: 5;
+  }
+  .playhead::before {
+    content: ""; position: absolute; top: -1px; left: -5px;
+    border: 5px solid transparent; border-top-color: var(--playhead);
+  }
+
+  /* ── inspector / curation ────────────────────────────────────────── */
+  .insp-class {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-weight: 700; font-size: 13px; padding: 4px 10px; border-radius: 5px;
+    color: #fff; margin: 2px 0 10px;
+  }
+  .kv { display: flex; justify-content: space-between; padding: 5px 2px; border-bottom: 1px solid var(--stroke-soft); }
+  .kv .k { color: var(--text-dim); }
+  .kv .v { color: var(--text); font-variant-numeric: tabular-nums; }
+  .meter { height: 7px; background: var(--faint); border-radius: 4px; overflow: hidden; margin-top: 5px; }
+  .meter > span { display: block; height: 100%; background: var(--accent); }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+  .chip {
+    font-size: 11px; padding: 3px 8px; border-radius: 999px;
+    background: var(--faint); border: 1px solid var(--stroke); color: var(--text-dim);
+  }
+  .chip.on { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+  .actions .btn { width: 100%; text-align: center; }
+  .btn.ok   { background: #1f7a40; border-color: #2c9d54; }
+  .btn.ok:hover { background: #2c9d54; }
+  .btn.no   { background: #973030; border-color: #c0392b; }
+  .btn.no:hover { background: #c0392b; }
+
+  /* ── status bar ──────────────────────────────────────────────────── */
+  .statusbar {
+    display: flex; align-items: center; gap: 16px;
+    height: 24px; padding: 0 12px;
+    background: var(--panel); border-top: 1px solid var(--stroke-soft);
+    color: var(--text-faint); font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .statusbar .spacer { flex: 1; }
+  .hint { color: var(--text-faint); }
+
+  /* ── tooltip ─────────────────────────────────────────────────────── */
+  #tip {
+    position: fixed; z-index: 50; pointer-events: none; display: none;
+    background: var(--panel); border: 1px solid var(--stroke);
+    border-radius: 5px; padding: 6px 9px; font-size: 11px;
+    color: var(--text); box-shadow: 0 4px 14px var(--shadow);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .dock-scroll::-webkit-scrollbar, .grid-clip::-webkit-scrollbar { width: 10px; height: 10px; }
+  .dock-scroll::-webkit-scrollbar-thumb, .grid-clip::-webkit-scrollbar-thumb {
+    background: var(--widget); border-radius: 6px; border: 2px solid var(--panel);
+  }
+</style>
+</head>
+<body class="theme-dark">
+<div class="app">
+
+  <!-- menu bar -->
+  <div class="menubar">
+    <div class="brand">griff<span class="dot">·</span>preview</div>
+    <div class="menu">File</div>
+    <div class="menu">View</div>
+    <div class="menu">Corpus</div>
+    <div class="menu">Help</div>
+    <div class="spacer"></div>
+    <div class="tag" id="fileTag">demo-riff.mid</div>
+    <button class="btn icon" id="themeBtn" title="Toggle theme">☾</button>
+  </div>
+
+  <!-- transport -->
+  <div class="transport">
+    <button class="btn icon" id="toStart" title="To start">⏮</button>
+    <button class="btn icon primary" id="playBtn" title="Play / pause">▶</button>
+    <button class="btn icon" id="stopBtn" title="Stop">⏹</button>
+    <div class="sep"></div>
+    <div class="field">BPM <span class="val" id="bpmVal">120</span></div>
+    <div class="field">Meter <span class="val">4/4</span></div>
+    <div class="field">Pos <span class="val" id="posVal">1:1.00</span></div>
+    <div class="sep"></div>
+    <button class="btn" id="loopBtn" title="Loop selected chunk">⟳ Loop</button>
+    <div class="spacer"></div>
+    <div class="field">Zoom
+      <input type="range" id="zoom" min="60" max="420" value="170" />
+    </div>
+  </div>
+
+  <!-- body -->
+  <div class="body">
+
+    <!-- left dock: tracks -->
+    <div class="dock left">
+      <div class="dock-title">Tracks</div>
+      <div class="dock-scroll" id="trackList"></div>
+    </div>
+
+    <!-- center: piano roll -->
+    <div class="center">
+      <div class="ruler-row">
+        <div class="ruler-corner"></div>
+        <div class="ruler-clip" id="rulerClip">
+          <div class="ruler" id="ruler"></div>
+        </div>
+      </div>
+      <div class="roll-row">
+        <div class="keys" id="keys"></div>
+        <div class="grid-clip" id="gridClip">
+          <div class="grid" id="grid">
+            <div class="playhead" id="playhead" style="left:0"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- right dock: inspector / curation -->
+    <div class="dock right">
+      <div class="dock-title">Chunk inspector</div>
+      <div class="dock-scroll" id="inspector"></div>
+    </div>
+
+  </div>
+
+  <!-- status bar -->
+  <div class="statusbar">
+    <span id="stFile">demo-riff.mid</span>
+    <span>480 ppq</span>
+    <span id="stCounts"></span>
+    <span class="spacer"></span>
+    <span class="hint">space — play/pause · ←/→ — chunk · click chunk to select</span>
+  </div>
+</div>
+<div id="tip"></div>
+
+<script>
+/* ──────────────────────────────────────────────────────────────────────
+   Demo data — a short metal riff so the mockup reads like griff's domain.
+   Built programmatically: PPQ 480, 4/4, 4 bars. A galloping palm-muted low-E
+   rhythm, a root-following bass, and a lead phrase entering in bar 3.
+─────────────────────────────────────────────────────────────────────── */
+const PPQ = 480, BEATS = 4, BARS = 4;
+const BAR = PPQ * BEATS;          // 1920 ticks
+const TOTAL = BAR * BARS;         // 7680 ticks
+const BPM = 120;
+
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const isBlack = p => [1,3,6,8,10].includes(((p%12)+12)%12);
+const pitchName = p => NOTE_NAMES[((p%12)+12)%12] + (Math.floor(p/12) - 1);
+
+function gallop(track, pitch, vel) {           // 16th,16th,8th per beat
+  for (let bar = 0; bar < BARS - 1; bar++) {     // bars 1–3 chug
+    for (let b = 0; b < BEATS; b++) {
+      const t0 = bar*BAR + b*PPQ;
+      track.notes.push({t: t0,          dur: PPQ/4 - 18, pitch, vel});
+      track.notes.push({t: t0 + PPQ/4,  dur: PPQ/4 - 18, pitch, vel});
+      track.notes.push({t: t0 + PPQ/2,  dur: PPQ/2 - 22, pitch, vel: vel-8});
+    }
+  }
+}
+
+const tracks = [
+  { name: "Rhythm Gtr", color: "#ff7a45", channel: 0, muted:false, solo:false, notes: [] },
+  { name: "Lead Gtr",   color: "#36cfc9", channel: 1, muted:false, solo:false, notes: [] },
+  { name: "Bass",       color: "#9254de", channel: 2, muted:false, solo:false, notes: [] },
+];
+
+// Rhythm: gallop on low E (E2 = 40), with power-chord stabs in bar 4.
+gallop(tracks[0], 40, 104);
+[[0,2],[PPQ,2],[PPQ*2,4]].forEach(([off,beats]) => {
+  tracks[0].notes.push({t: 3*BAR+off, dur: beats*PPQ-30, pitch:40, vel:112});
+  tracks[0].notes.push({t: 3*BAR+off, dur: beats*PPQ-30, pitch:47, vel:108}); // power 5th
+});
+
+// Bass: quarter-note roots, octave below.
+for (let i = 0; i < BARS*BEATS; i++)
+  tracks[2].notes.push({t: i*PPQ, dur: PPQ-26, pitch: 28 + (i%2?0:0), vel: 96});
+
+// Lead: a phrase entering bar 3, climbing the E-minor pentatonic.
+const lead = [62,64,67,69,71,69,67,64, 67,71,74,72];
+lead.forEach((p,i) => tracks[1].notes.push({
+  t: 2*BAR + i*(PPQ/2), dur: PPQ/2 - 24, pitch: p, vel: 90 + (i%3)*6
+}));
+
+// Classified chunks (what S6 `classify` + S4 boundaries would surface).
+const CLASS_COLORS = { Riff:"#1668dc", Breakdown:"#cf1322", Solo:"#d48806", Clean:"#389e0d" };
+const chunks = [
+  { label:"Riff",      bar0:0, bar1:2, key:"E minor", loop:0.91, repeat:0.88, var:0.21, status:"unreviewed", tags:["palm-mute","gallop"] },
+  { label:"Breakdown", bar0:2, bar1:3, key:"E minor", loop:0.74, repeat:0.62, var:0.34, status:"unreviewed", tags:["palm-mute"] },
+  { label:"Solo",      bar0:3, bar1:4, key:"E minor", loop:0.46, repeat:0.30, var:0.71, status:"unreviewed", tags:["lead"] },
+];
+
+/* ── layout state ─────────────────────────────────────────────────── */
+const ROW_H = 15;
+let pxPerBar = 170;
+let pxPerTick = pxPerBar / BAR;
+const allPitches = tracks.flatMap(t => t.notes.map(n => n.pitch));
+const PMIN = Math.min(...allPitches) - 2;
+const PMAX = Math.max(...allPitches) + 3;
+const ROWS = PMAX - PMIN + 1;
+const GRID_H = ROWS * ROW_H;
+const rowOf = p => (PMAX - p) * ROW_H;          // high pitch on top
+
+document.documentElement.style.setProperty('--gutter', '52px');
+
+/* ── element refs ─────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+const grid = $("grid"), gridClip = $("gridClip"), keys = $("keys");
+const ruler = $("ruler"), rulerClip = $("rulerClip"), playhead = $("playhead");
+const tip = $("tip");
+let selectedChunk = 0, selectedNote = null, loopOn = false;
+
+/* ── build static grid (rows, gridlines, boundaries) ──────────────── */
+function buildGridChrome() {
+  grid.style.width = (TOTAL * pxPerTick) + "px";
+  grid.style.height = GRID_H + "px";
+  ruler.style.width = (TOTAL * pxPerTick) + "px";
+  keys.querySelectorAll('.key').forEach(e => e.remove());
+  grid.querySelectorAll('.rowband,.vline,.boundary,.chunk-hit').forEach(e => e.remove());
+  ruler.querySelectorAll('.bar-tick,.chunk-band').forEach(e => e.remove());
+
+  // pitch row bands + keyboard
+  for (let p = PMIN; p <= PMAX; p++) {
+    const y = rowOf(p);
+    if (isBlack(p)) {
+      const band = document.createElement('div');
+      band.className = 'rowband black';
+      band.style.top = y + "px"; band.style.height = ROW_H + "px";
+      grid.appendChild(band);
+    }
+    const k = document.createElement('div');
+    k.className = 'key' + (isBlack(p) ? ' black' : '') + (p%12===0 ? ' c' : '');
+    k.style.top = y + "px"; k.style.height = ROW_H + "px";
+    if (p % 12 === 0 || p === PMAX || p === PMIN) k.textContent = pitchName(p);
+    keys.appendChild(k);
+  }
+
+  // beat + bar gridlines
+  for (let b = 0; b <= BARS*BEATS; b++) {
+    const x = b * PPQ * pxPerTick;
+    const v = document.createElement('div');
+    v.className = 'vline ' + (b % BEATS === 0 ? 'bar' : 'beat');
+    v.style.left = x + "px";
+    grid.appendChild(v);
+  }
+
+  // ruler bar numbers + chunk classification bands
+  for (let bar = 0; bar < BARS; bar++) {
+    const t = document.createElement('div');
+    t.className = 'bar-tick';
+    t.style.left = (bar*BAR*pxPerTick) + "px";
+    t.textContent = (bar+1);
+    ruler.appendChild(t);
+  }
+  chunks.forEach((c, i) => {
+    const band = document.createElement('div');
+    band.className = 'chunk-band' + (i===selectedChunk ? ' sel' : '');
+    band.style.left  = (c.bar0*BAR*pxPerTick) + "px";
+    band.style.width = ((c.bar1-c.bar0)*BAR*pxPerTick) + "px";
+    band.style.background = CLASS_COLORS[c.label];
+    band.textContent = c.label;
+    band.onclick = () => selectChunk(i);
+    ruler.appendChild(band);
+    // boundary line at chunk start
+    const bd = document.createElement('div');
+    bd.className = 'boundary';
+    bd.style.left = (c.bar0*BAR*pxPerTick) + "px";
+    grid.appendChild(bd);
+  });
+}
+
+/* ── build notes ──────────────────────────────────────────────────── */
+function anySolo() { return tracks.some(t => t.solo); }
+function trackAudible(t) { return anySolo() ? t.solo : !t.muted; }
+
+function buildNotes() {
+  grid.querySelectorAll('.note').forEach(e => e.remove());
+  tracks.forEach((tr, ti) => {
+    const audible = trackAudible(tr);
+    tr.notes.forEach((n, ni) => {
+      const el = document.createElement('div');
+      el.className = 'note' + (audible ? '' : ' muted');
+      const x = n.t * pxPerTick, w = Math.max(3, n.dur * pxPerTick);
+      el.style.left = x + "px";
+      el.style.top = (rowOf(n.pitch) + 1) + "px";
+      el.style.width = w + "px";
+      el.style.height = (ROW_H - 2) + "px";
+      const a = 0.55 + (n.vel/127)*0.45;
+      el.style.background = tr.color;
+      el.style.opacity = audible ? a : undefined;
+      el.dataset.ti = ti; el.dataset.ni = ni;
+      el.onmousemove = e => showTip(e, `${pitchName(n.pitch)} · ${tr.name}\nstart ${fmtPos(n.t)} · ${n.dur}t · vel ${n.vel}`);
+      el.onmouseleave = hideTip;
+      el.onclick = ev => { ev.stopPropagation(); selectNote(el); };
+      grid.appendChild(el);
+    });
+  });
+}
+
+/* ── tracks panel ─────────────────────────────────────────────────── */
+function buildTracks() {
+  const list = $("trackList"); list.innerHTML = "";
+  tracks.forEach((tr, i) => {
+    const row = document.createElement('div');
+    row.className = 'track';
+    row.innerHTML = `
+      <span class="swatch" style="background:${tr.color}"></span>
+      <span class="name">${tr.name}</span>
+      <span class="ch">ch${tr.channel+1}</span>
+      <span class="ms">
+        <button class="m ${tr.muted?'on':''}" title="Mute">M</button>
+        <button class="s ${tr.solo?'on':''}" title="Solo">S</button>
+      </span>`;
+    const [mb, sb] = row.querySelectorAll('.ms button');
+    mb.onclick = e => { e.stopPropagation(); tr.muted = !tr.muted; buildTracks(); buildNotes(); };
+    sb.onclick = e => { e.stopPropagation(); tr.solo  = !tr.solo;  buildTracks(); buildNotes(); };
+    list.appendChild(row);
+  });
+}
+
+/* ── inspector / curation ─────────────────────────────────────────── */
+function buildInspector() {
+  const c = chunks[selectedChunk];
+  const insp = $("inspector");
+  const pct = x => Math.round(x*100) + "%";
+  insp.innerHTML = `
+    <div class="insp-class" style="background:${CLASS_COLORS[c.label]}">${c.label}</div>
+    <div class="kv"><span class="k">Bars</span><span class="v">${c.bar0+1}–${c.bar1}</span></div>
+    <div class="kv"><span class="k">Key</span><span class="v">${c.key}</span></div>
+    <div class="kv"><span class="k">Length</span><span class="v">${c.bar1-c.bar0} bar · ${(c.bar1-c.bar0)*BAR}t</span></div>
+    <div class="kv"><span class="k">Status</span><span class="v" id="stStatus">${c.status}</span></div>
+
+    <div style="margin-top:14px;color:var(--text-faint);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Structure (S14)</div>
+    <div class="kv"><span class="k">Loopability</span><span class="v">${pct(c.loop)}</span></div>
+    <div class="meter"><span style="width:${pct(c.loop)}"></span></div>
+    <div class="kv" style="margin-top:8px"><span class="k">Repeatability</span><span class="v">${pct(c.repeat)}</span></div>
+    <div class="meter"><span style="width:${pct(c.repeat)}"></span></div>
+    <div class="kv" style="margin-top:8px"><span class="k">Variation</span><span class="v">${pct(c.var)}</span></div>
+    <div class="meter"><span style="width:${pct(c.var)}"></span></div>
+
+    <div style="margin-top:14px;color:var(--text-faint);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Tags</div>
+    <div class="tags" id="tagRow"></div>
+
+    <div class="actions">
+      <button class="btn ok" id="approve">✓ Approve</button>
+      <button class="btn no" id="reject">✕ Reject</button>
+      <button class="btn" id="split">⤲ Split</button>
+      <button class="btn" id="merge">⤜ Merge</button>
+    </div>`;
+  // tag chips
+  const tagRow = insp.querySelector('#tagRow');
+  ["palm-mute","gallop","lead","clean","tapping","tremolo"].forEach(t => {
+    const chip = document.createElement('span');
+    chip.className = 'chip' + (c.tags.includes(t) ? ' on' : '');
+    chip.textContent = t;
+    chip.onclick = () => {
+      const idx = c.tags.indexOf(t);
+      if (idx >= 0) c.tags.splice(idx,1); else c.tags.push(t);
+      buildInspector();
+    };
+    tagRow.appendChild(chip);
+  });
+  // curation actions (mock — just reflect state)
+  insp.querySelector('#approve').onclick = () => { c.status = "approved ✓"; buildInspector(); };
+  insp.querySelector('#reject').onclick  = () => { c.status = "rejected ✕"; buildInspector(); };
+}
+
+/* ── selection ────────────────────────────────────────────────────── */
+function selectChunk(i) {
+  selectedChunk = i;
+  buildGridChrome(); buildNotes(); buildInspector();
+  if (loopOn) { stop(); }
+  // scroll chunk into view
+  const c = chunks[i];
+  gridClip.scrollTo({ left: c.bar0*BAR*pxPerTick - 30, behavior: 'smooth' });
+}
+function selectNote(el) {
+  if (selectedNote) selectedNote.classList.remove('sel');
+  selectedNote = el; el.classList.add('sel');
+}
+
+/* ── transport / playhead ─────────────────────────────────────────── */
+let playing = false, playTick = 0, rafId = null, lastTs = 0;
+const ticksPerMs = (PPQ * BPM / 60) / 1000;
+
+function fmtPos(t) {
+  const bar = Math.floor(t / BAR);
+  const beat = (t % BAR) / PPQ;
+  return (bar+1) + ":" + (beat+1).toFixed(2);
+}
+function loopRange() {
+  if (loopOn) { const c = chunks[selectedChunk]; return [c.bar0*BAR, c.bar1*BAR]; }
+  return [0, TOTAL];
+}
+function setPlayhead() {
+  playhead.style.left = (playTick * pxPerTick) + "px";
+  $("posVal").textContent = fmtPos(playTick);
+  const x = playTick * pxPerTick, view = gridClip.scrollLeft, w = gridClip.clientWidth;
+  if (x < view + 40 || x > view + w - 60) gridClip.scrollLeft = x - w*0.4;
+}
+function tick(ts) {
+  if (!playing) return;
+  if (!lastTs) lastTs = ts;
+  playTick += (ts - lastTs) * ticksPerMs;
+  lastTs = ts;
+  const [lo, hi] = loopRange();
+  if (playTick >= hi) {
+    if (loopOn) { playTick = lo; }
+    else { stop(); return; }
+  }
+  setPlayhead();
+  rafId = requestAnimationFrame(tick);
+}
+function play() { if (playing) return; playing = true; lastTs = 0; $("playBtn").textContent="⏸"; rafId = requestAnimationFrame(tick); }
+function pause(){ playing = false; $("playBtn").textContent="▶"; cancelAnimationFrame(rafId); }
+function stop() { pause(); const [lo] = loopRange(); playTick = lo; setPlayhead(); }
+
+/* ── ruler ↔ grid scroll sync ─────────────────────────────────────── */
+function syncScroll() {
+  ruler.style.transform = `translateX(${-gridClip.scrollLeft}px)`;  // ruler follows X
+  keys.scrollTop = gridClip.scrollTop;                              // keyboard follows Y
+}
+
+/* ── tooltip ──────────────────────────────────────────────────────── */
+function showTip(e, text) {
+  tip.style.display = 'block';
+  tip.style.whiteSpace = 'pre';
+  tip.textContent = text;
+  tip.style.left = (e.clientX + 14) + "px";
+  tip.style.top  = (e.clientY + 14) + "px";
+}
+function hideTip(){ tip.style.display = 'none'; }
+
+/* ── controls ─────────────────────────────────────────────────────── */
+$("playBtn").onclick = () => playing ? pause() : play();
+$("stopBtn").onclick = stop;
+$("toStart").onclick = () => { playTick = 0; setPlayhead(); gridClip.scrollLeft = 0; };
+$("loopBtn").onclick = () => { loopOn = !loopOn; $("loopBtn").classList.toggle('toggled', loopOn); };
+$("zoom").oninput = e => {
+  pxPerBar = +e.target.value; pxPerTick = pxPerBar / BAR;
+  buildGridChrome(); buildNotes(); setPlayhead();
+};
+$("themeBtn").onclick = () => {
+  const dark = document.body.classList.toggle('theme-dark');
+  document.body.classList.toggle('theme-light', !dark);
+  $("themeBtn").textContent = dark ? "☾" : "☀";
+};
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); playing ? pause() : play(); }
+  if (e.code === 'ArrowRight') selectChunk(Math.min(chunks.length-1, selectedChunk+1));
+  if (e.code === 'ArrowLeft')  selectChunk(Math.max(0, selectedChunk-1));
+});
+gridClip.addEventListener('scroll', syncScroll);
+
+/* ── boot ─────────────────────────────────────────────────────────── */
+const noteCount = tracks.reduce((s,t) => s + t.notes.length, 0);
+$("stCounts").textContent = `${tracks.length} tracks · ${noteCount} notes · ${BARS} bars`;
+buildGridChrome();
+buildNotes();
+buildTracks();
+buildInspector();
+setPlayhead();
+selectChunk(0);
+</script>
+</body>
+</html>
