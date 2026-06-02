@@ -214,7 +214,8 @@ fn unique_ratio(signatures: &[Vec<(u32, u8)>]) -> f64 {
 }
 
 /// Loopability: continuity of the wrap-around seam — how close the last note is
-/// to the first in pitch, and how completely the material fills to the span end.
+/// to the first in pitch, and how little silence sits at the seam (trailing gap
+/// after the last note plus leading gap before the first note).
 #[allow(clippy::cast_precision_loss)]
 fn loopability(notes: &[NoteRef], score: &Score) -> f64 {
     let (Some(first), Some(last)) = (notes.first(), notes.last()) else {
@@ -231,7 +232,9 @@ fn loopability(notes: &[NoteRef], score: &Score) -> f64 {
         .abs();
     let pitch_seam = 1.0 - f64::from(interval.min(12)) / 12.0;
 
-    // Timing seam: how close the final note's end is to the span's end.
+    // Timing seam: total silence across the wrap point — the trailing gap from
+    // the last note's end to the span end, plus the leading gap from the span
+    // start to the first note's onset (the loop waits through both).
     let bar_ticks = last_bar
         .tick_range
         .end
@@ -244,13 +247,16 @@ fn loopability(notes: &[NoteRef], score: &Score) -> f64 {
                 .0
                 .saturating_sub(last_bar.tick_range.start.0),
         );
+    let span_start = first_bar.tick_range.start.0;
     let span_end = last_bar.tick_range.end.0;
     let last_end = last.onset.saturating_add(last.duration);
-    let gap = span_end.abs_diff(last_end);
+    let trailing_gap = span_end.saturating_sub(last_end);
+    let leading_gap = first.onset.saturating_sub(span_start);
+    let seam_gap = trailing_gap.saturating_add(leading_gap);
     let timing_seam = if bar_ticks == 0 {
         0.0
     } else {
-        1.0 - f64::from(gap.min(bar_ticks)) / f64::from(bar_ticks)
+        1.0 - f64::from(seam_gap.min(bar_ticks)) / f64::from(bar_ticks)
     };
 
     (pitch_seam + timing_seam) / 2.0

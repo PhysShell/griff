@@ -263,6 +263,61 @@ fn loopability_low_when_seam_jumps_and_leaves_a_gap() {
     );
 }
 
+#[test]
+fn loopability_penalizes_leading_silence() {
+    // Last note reaches the span end (no trailing gap) and the seam is a unison,
+    // but the first note starts a 3-beat rest late — the wrapped loop waits
+    // through that leading silence before the riff sounds again, so it is not
+    // seamless. (Without counting leading silence this would score 1.0.)
+    let master_bars = (0..2)
+        .map(|i| {
+            let start = u32::try_from(i).unwrap() * BAR;
+            MasterBar {
+                index: i,
+                tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
+                time_signature: TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                },
+                tempo: Tempo::new(120.0).expect("120 BPM"),
+            }
+        })
+        .collect();
+
+    let single = |start: u32, p: u8| EventGroup {
+        kind: EventGroupKind::Single,
+        atoms: vec![quarter_note(start, p)],
+        technique_spans: Vec::new(),
+    };
+    // bar 0: one note at beat 4 (onset 1440); bar 1: full, ending on a unison.
+    let mut groups = vec![single(1440, 60)];
+    for (i, &p) in [60, 62, 64, 60].iter().enumerate() {
+        groups.push(single(BAR + u32::try_from(i).unwrap() * QUARTER, p));
+    }
+
+    let score = Score {
+        ticks_per_quarter: PPQN,
+        master_bars,
+        tracks: vec![Track {
+            name: Some("lead-in".to_string()),
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: groups,
+            }],
+        }],
+        source_meta: None,
+        loss: LossReport::new(),
+    };
+
+    let m = measure_structure(&score, 0).expect("measure ok");
+    assert!(
+        m.loopability_score < 0.7,
+        "leading silence must lower loopability, got {}",
+        m.loopability_score,
+    );
+}
+
 // ── contract ───────────────────────────────────────────────────────────────────
 
 #[test]
