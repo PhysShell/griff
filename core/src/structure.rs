@@ -14,6 +14,17 @@
 //! Granularity: this first pass detects the period at *bar* resolution via
 //! self-similarity autocorrelation over per-bar signatures. Sub-bar (beat-level)
 //! periods and the full per-axis complexity profile are later increments.
+//!
+//! Known limitations (Phase 0, deferred refinements — ADR-0015):
+//! - Bar signatures compare `(onset, absolute pitch)`, so a motif transposed
+//!   bar-to-bar (`A A' A''`) reads as *low* repeatability rather than *medium*.
+//!   A later pass may compare rhythm + interval contour. The intended use is a
+//!   user-tunable control, so an exact-pitch baseline is acceptable for now.
+//! - Metrics are computed over the score's master bars as given. A trailing
+//!   empty bar lowers `loopability_score` (it reads as a whole-bar seam gap) and
+//!   dilutes the period/repeatability scores. Note the MIDI importer appends one
+//!   such sentinel bar when content ends exactly on a barline (see
+//!   `midi::build_master_bars`); fixing that at the source is a follow-up.
 
 use std::collections::BTreeSet;
 

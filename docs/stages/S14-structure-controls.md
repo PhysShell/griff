@@ -17,6 +17,24 @@ ADRs: ADR-0015
 > single-part generator (S6) and region regeneration (S11) and *feeds* the graph
 > layer (S7); it deliberately does **not** depend on S7 or DP/Viterbi (ADR-0013).
 
+## Known limitations (Phase 0 — deferred refinements)
+
+Documented now, to be addressed in later increments (ADR-0015 framed Phase 0 as
+a first pass). The metrics are intended to become user-tunable, so an honest
+exact-pitch baseline is acceptable for the first cut.
+
+- [ ] **Transposed repeats.** Bar signatures compare `(onset, absolute pitch)`,
+      so a motif transposed bar-to-bar (`A A' A''`) reads as low repeatability
+      rather than medium. A later pass may compare rhythm + interval contour.
+- [ ] **Trailing empty bars.** Metrics run over the master bars as given; a
+      trailing empty bar lowers `loopability_score` and dilutes
+      period/repeatability. The MIDI importer appends one such sentinel bar when
+      content ends exactly on a barline (`midi::build_master_bars`, `<=`); the
+      clean fix is at the importer (e.g. `< end_tick || master_bars.is_empty()`),
+      which may re-bless import/roundtrip goldens — hence deferred.
+- [ ] Sub-bar (beat-level) period detection and the full per-axis
+      `ComplexityProfile`.
+
 ## Goal
 
 Make the time-organisation of generated material a first-class, controllable

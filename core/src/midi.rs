@@ -358,6 +358,11 @@ fn build_master_bars(
     let mut bar_start: u32 = 0;
     let mut index: usize = 0;
 
+    // `<=` covers content whose last event ends exactly on a barline. As a side
+    // effect, when `end_tick` falls on a boundary this appends one trailing empty
+    // bar (a sentinel). Downstream analysis that measures whole-span seams should
+    // account for a possible trailing empty bar — see the S14 structure-metrics
+    // known limitations (ADR-0015).
     while bar_start <= end_tick {
         let sig = active_time_sig(time_sigs, bar_start);
         let micros = active_tempo(tempos, bar_start);
