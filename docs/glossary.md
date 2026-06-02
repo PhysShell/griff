@@ -97,6 +97,12 @@ part related to an existing one on chosen axes and contrasting on others.
 Depends on S6; appended as the next free number rather than renumbering
 S7…S12 (ADR-0012; see `docs/audit/2026-05-s13-complementary-arranger.md`).
 
+### S14
+Structure controls and metrics stage. Make time-organisation controllable —
+target span, pattern period, repeatability/variation, complexity profile — as a
+constraint compiler over S6. Depends on S6/S4; appended as the next free number.
+Feeds the graph layer but does not depend on it or on DP/Viterbi (ADR-0015).
+
 ## 1. Architecture and data model
 
 ### canonical model
@@ -735,6 +741,44 @@ multiset, harmonic context. Richer than `PhraseFeatures`.
 A post-generation check over the (A, B) pair: per-part playability plus
 harmonic compatibility — no dissonant clashes on coincident onsets, no register
 mud. Distinct from the single-part playability filter.
+
+### Target span
+The region of the timeline to fill — a `TickRange` (or bar count). The physical
+length of the result; says nothing about the material inside (S14, ADR-0015).
+
+### Pattern period
+The length of the base repeating idea inside a span (e.g. 1/2 bar, 1 bar, 2
+bars), possibly sub-bar. Distinct from target span and from complexity: a short
+period can carry hard material. `None` = through-composed (no strong repeat).
+
+### Repeatability
+How strictly the material repeats across pattern periods: identical copies →
+high; recurring-but-transformed → medium; always-new → low.
+
+### Variation rate
+How much repeats mutate (the complement of strict repeatability). High variation
+with a recognisable period = "A A' A'' A'''".
+
+### Loopability
+How seamlessly a span can be looped — the smoothness of the wrap-around seam.
+Distinct from repeatability (internal self-similarity vs seam continuity).
+
+### Complexity profile
+A *vector*, not a scalar: `rhythmic / pitch / technical / harmonic / playability
+/ structural` complexity, each normalised. Orthogonal to length and period — a
+short loop may be technically hard; a long line may be trivial.
+
+### Structure control
+The input spec for S14 generation: `target span`, `pattern period`,
+`repeatability`, `variation rate`, `loopability`, `complexity profile`. Compiled
+into S6 generation constraints (ADR-0015).
+
+### Structure metrics
+The measured counterpart of a structure control over a produced or imported
+span: detected pattern period, repeatability, variation, loopability, structural
+complexity. Used to rerank candidates and — later — as graph node attributes.
+Computed by self-similarity / autocorrelation analysis; does not depend on the
+graph layer or DP/Viterbi (ADR-0015).
 
 ## 9. Graph layer
 

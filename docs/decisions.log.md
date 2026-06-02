@@ -94,3 +94,15 @@ Architectural decisions go to [`adr/`](adr/) instead.
   and the P2 `complement_request` fuzz target (ADR-0012), accepting that the
   other five relation modes, per-part playability in the validator, and richer
   harmonic context in the profile are deferred to follow-up increments.
+
+- 2026-06-02 — In the context of a structure-controls requirement (separate
+  target span / pattern period / repeatability / variation / complexity), facing
+  whether it should lean on the planned graph layer (S7) or DP/Viterbi
+  (ADR-0013), we decided for a self-contained structure layer — a constraint
+  compiler over S6 plus a self-similarity/autocorrelation metric pass — that
+  depends on neither, and against pulling S7/DP in early (ADR-0015, new stage
+  S14), to keep the dependency running one way: `StructureMetrics` are designed
+  to *become* S7 node attributes and DP transition-cost features later, never to
+  consume them. Accepted: complexity stays a vector (not a scalar), `phrase_length`
+  is reused from S4 rather than re-added, and a `ChunkMeta` schema bump is
+  deferred to the corpus phase.

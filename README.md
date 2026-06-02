@@ -15,7 +15,7 @@ human-in-the-loop curation.
 
 - [`docs/SPEC.md`](docs/SPEC.md) — what griff is/isn't, hard rules
 - [`docs/glossary.md`](docs/glossary.md) — the constitution (terms)
-- [`docs/stages/`](docs/stages/) — canonical roadmap S0…S13
+- [`docs/stages/`](docs/stages/) — canonical roadmap S0…S14
 - [`docs/adr/`](docs/adr/README.md) — architecture decisions
 - [`AGENTS.md`](AGENTS.md) — guide for AI agents
 

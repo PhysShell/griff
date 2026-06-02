@@ -8,10 +8,25 @@ ADRs: ADR-0012, ADR-0011
 > analysis (`PartProfile`), the `rhythm_lock` mode (a constraint compiler over
 > the S6 `RhythmCopyPitchSubstitute` generator), per-axis provenance
 > (`AxisScores`), a minimal `validate_pair` (coincident-onset dissonance +
-> register mud), and the P2 `complement_request` fuzz target. Remaining:
-> `register_contrast`, `call_response`, `support_layer`, `octave_double`,
-> `counter_melody`; per-part playability in the validator; richer harmonic
-> context in the profile.
+> register mud), and the P2 `complement_request` fuzz target.
+
+## Remaining work (follow-up increments)
+
+The through-path (analyse A → derive request → append B on shared master bars →
+provenance) and the pair validator are in place, so the remaining modes are
+low-risk additions on the same skeleton:
+
+- [ ] `register_contrast` — B in a register band disjoint from A.
+- [ ] `call_response` — B answers A in its gaps (onset complement).
+- [ ] `support_layer` — sparser low-register layer; `density(B) < density(A)`.
+- [ ] `octave_double` — reproduce A's contour an octave away.
+- [ ] `counter_melody` — independent line against A.
+- [ ] Pair validator: add per-part playability (the S6 filter), beyond the
+      current harmonic-compatibility / register-mud checks.
+- [ ] `PartProfile`: richer harmonic context (key/scale fit) for pitch material.
+
+Each is its own red→green increment; `arrange_complement` already dispatches to
+them via `RelationMode`, returning `ModeNotImplemented` until wired.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label audit). Logically it sits between the single-part generator (S6)
