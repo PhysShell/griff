@@ -1,8 +1,16 @@
 # S14: Structure controls and metrics
 
-Status: planned
+Status: in progress — Phase 0 (metrics) landed (2026-06-02)
 Depends on: S6 (rule generator), S4 (phrase boundaries, for `phrase_length`)
 ADRs: ADR-0015
+
+> Progress: Phase 0 ships the `structure` module — `measure_structure` →
+> `StructureMetrics` (detected pattern period in bars + ticks, repeatability,
+> variation, loopability, structural complexity) via per-bar self-similarity
+> autocorrelation, plus the P2 `structure_metrics` fuzz target. Pure,
+> deterministic, and independent of the graph layer / DP. Remaining: sub-bar
+> (beat-level) period detection, the full per-axis `ComplexityProfile`, then
+> Phases 1–4 below.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label history in [`../audit/`](../audit/)). Logically it sits beside the
@@ -48,7 +56,9 @@ of onset & contour features / motif recurrence / loop-seam), deterministic
 
 ## Phases (per ADR-0015; "measure before target")
 
-- **Phase 0 — metrics.** `StructureMetrics` over any span (no generation change).
+- **Phase 0 — metrics.** ✅ `StructureMetrics` over a score track (no generation
+  change). Bar-resolution period detection; sub-bar cells + full complexity
+  vector deferred.
 - **Phase 1 — controls.** `StructureControl` + the tile/vary compiler over S6.
 - **Phase 2 — scoring loop.** Reject / rerank candidates by metric distance
   (simple scoring + sort over a small candidate set — *not* DP).
