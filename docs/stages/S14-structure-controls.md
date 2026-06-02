@@ -1,13 +1,39 @@
 # S14: Structure controls and metrics
 
-Status: planned
+Status: in progress — Phase 0 (metrics) landed (2026-06-02)
 Depends on: S6 (rule generator), S4 (phrase boundaries, for `phrase_length`)
 ADRs: ADR-0015
+
+> Progress: Phase 0 ships the `structure` module — `measure_structure` →
+> `StructureMetrics` (detected pattern period in bars + ticks, repeatability,
+> variation, loopability, structural complexity) via per-bar self-similarity
+> autocorrelation, plus the P2 `structure_metrics` fuzz target. Pure,
+> deterministic, and independent of the graph layer / DP. Remaining: sub-bar
+> (beat-level) period detection, the full per-axis `ComplexityProfile`, then
+> Phases 1–4 below.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label history in [`../audit/`](../audit/)). Logically it sits beside the
 > single-part generator (S6) and region regeneration (S11) and *feeds* the graph
 > layer (S7); it deliberately does **not** depend on S7 or DP/Viterbi (ADR-0013).
+
+## Known limitations (Phase 0 — deferred refinements)
+
+Documented now, to be addressed in later increments (ADR-0015 framed Phase 0 as
+a first pass). The metrics are intended to become user-tunable, so an honest
+exact-pitch baseline is acceptable for the first cut.
+
+- [ ] **Transposed repeats.** Bar signatures compare `(onset, absolute pitch)`,
+      so a motif transposed bar-to-bar (`A A' A''`) reads as low repeatability
+      rather than medium. A later pass may compare rhythm + interval contour.
+- [ ] **Trailing empty bars.** Metrics run over the master bars as given; a
+      trailing empty bar lowers `loopability_score` and dilutes
+      period/repeatability. The MIDI importer appends one such sentinel bar when
+      content ends exactly on a barline (`midi::build_master_bars`, `<=`); the
+      clean fix is at the importer (e.g. `< end_tick || master_bars.is_empty()`),
+      which may re-bless import/roundtrip goldens — hence deferred.
+- [ ] Sub-bar (beat-level) period detection and the full per-axis
+      `ComplexityProfile`.
 
 ## Goal
 
@@ -48,7 +74,9 @@ of onset & contour features / motif recurrence / loop-seam), deterministic
 
 ## Phases (per ADR-0015; "measure before target")
 
-- **Phase 0 — metrics.** `StructureMetrics` over any span (no generation change).
+- **Phase 0 — metrics.** ✅ `StructureMetrics` over a score track (no generation
+  change). Bar-resolution period detection; sub-bar cells + full complexity
+  vector deferred.
 - **Phase 1 — controls.** `StructureControl` + the tile/vary compiler over S6.
 - **Phase 2 — scoring loop.** Reject / rerank candidates by metric distance
   (simple scoring + sort over a small candidate set — *not* DP).

@@ -15,3 +15,4 @@ pub mod gp;
 pub mod midi;
 pub mod score;
 pub mod slice;
+pub mod structure;

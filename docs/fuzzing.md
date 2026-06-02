@@ -83,6 +83,7 @@ priority onto canonical stages:
 | P1       | `phrase_boundary`   | S4       | boundary detector        |
 | P2       | `generation_request`| S6       | rule generator           |
 | P2       | `complement_request`| S13      | ComplementArranger       |
+| P2       | `structure_metrics` | S14      | structure metrics        |
 | P2       | `region_regeneration`| S11     | regeneration             |
 
 ## Corpus

@@ -77,3 +77,10 @@ path  = "fuzz_targets/complement_request.rs"
 test  = false
 doc   = false
 bench = false
+
+[[bin]]
+name  = "structure_metrics"
+path  = "fuzz_targets/structure_metrics.rs"
+test  = false
+doc   = false
+bench = false
