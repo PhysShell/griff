@@ -33,7 +33,7 @@ codebase is a **pre-canonical baseline** — see
 
 ## Routing
 
-- A roadmap stage? → `docs/stages/SN-*.md` (canonical S0…S13)
+- A roadmap stage? → `docs/stages/SN-*.md` (canonical S0…S14)
 - A fuzzing question? → [`docs/fuzzing.md`](docs/fuzzing.md) (policy) /
   ADR-0010
 - An architectural decision? → new ADR in `docs/adr/` (Nygard, ADR-0009)
