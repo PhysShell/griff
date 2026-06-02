@@ -1,47 +1,43 @@
-//! `griff-preview` — render a `.mid` file as a piano-roll to stdout (S8, slice 1).
+//! `griff-preview` — interactive terminal piano-roll for a `.mid` file (S8).
 //!
 //! Usage:
 //!
 //! ```text
-//! griff-preview <file.mid> [--size=WIDTHxHEIGHT]
+//! griff-preview <file.mid>                 # interactive TUI
+//! griff-preview <file.mid> --snapshot=WxH  # print one headless frame and exit
 //! ```
 //!
-//! This first slice is a one-shot, dependency-free renderer: it imports the file
-//! through the core MIDI importer, builds a [`PianoRollView`], and prints one
-//! rasterised frame. An interactive `ratatui` front-end (scroll/zoom) and MIDI
-//! playback build on the same view/render layers in later increments.
+//! It imports the file through the core MIDI importer, builds a
+//! [`griff_preview::view::PianoRollView`] and its [`griff_preview::analysis`],
+//! then either launches the `ratatui` front-end or renders a single frame to
+//! stdout via a headless backend (useful in CI / over a pipe).
 
 use std::process::ExitCode;
 use std::{env, fs};
 
 use griff_core::midi::import_score;
-use griff_preview::render::{lane_glyph, pitch_name, render_frame};
-use griff_preview::view::{build_view, PianoRollView};
-
-/// Default frame size when `--size` is not given.
-const DEFAULT_WIDTH: usize = 100;
-const DEFAULT_HEIGHT: usize = 32;
+use griff_preview::analysis::analyze;
+use griff_preview::tui::{self, App};
+use griff_preview::view::build_view;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let Some(path) = args.next() else {
-        eprintln!("usage: griff-preview <file.mid> [--size=WIDTHxHEIGHT]");
+        eprintln!("usage: griff-preview <file.mid> [--snapshot=WIDTHxHEIGHT]");
         return ExitCode::FAILURE;
     };
 
-    let mut width = DEFAULT_WIDTH;
-    let mut height = DEFAULT_HEIGHT;
+    let mut snapshot: Option<(u16, u16)> = None;
     for arg in args {
         if arg == "-h" || arg == "--help" {
-            println!("usage: griff-preview <file.mid> [--size=WIDTHxHEIGHT]");
+            println!("usage: griff-preview <file.mid> [--snapshot=WIDTHxHEIGHT]");
             return ExitCode::SUCCESS;
-        } else if let Some(spec) = arg.strip_prefix("--size=") {
-            let Some((w, h)) = parse_size(spec) else {
-                eprintln!("invalid --size '{spec}', expected e.g. --size=120x40");
+        } else if let Some(spec) = arg.strip_prefix("--snapshot=") {
+            let Some(size) = parse_size(spec) else {
+                eprintln!("invalid --snapshot '{spec}', expected e.g. --snapshot=120x40");
                 return ExitCode::FAILURE;
             };
-            width = w;
-            height = h;
+            snapshot = Some(size);
         } else {
             eprintln!("unknown argument '{arg}'");
             return ExitCode::FAILURE;
@@ -63,49 +59,38 @@ fn main() -> ExitCode {
         }
     };
 
-    let view = build_view(&score);
-    print_header(&path, &view);
-    for line in render_frame(&view, width, height) {
-        println!("{line}");
+    let mut app = App::new(build_view(&score), analyze(&score), path);
+
+    match snapshot {
+        Some((w, h)) => match app.snapshot(w, h) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("snapshot failed: {err}");
+                ExitCode::FAILURE
+            }
+        },
+        None => match tui::run(app) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("tui error: {err}");
+                ExitCode::FAILURE
+            }
+        },
     }
-    print_legend(&view);
-    ExitCode::SUCCESS
 }
 
-/// Parses a `WIDTHxHEIGHT` spec, clamped to sane bounds. Returns `None` on
-/// malformed input or a zero dimension.
-fn parse_size(spec: &str) -> Option<(usize, usize)> {
+/// Parses a `WIDTHxHEIGHT` spec into clamped terminal dimensions.
+fn parse_size(spec: &str) -> Option<(u16, u16)> {
     let (w, h) = spec.split_once(['x', 'X'])?;
-    let w = w.trim().parse::<usize>().ok()?;
-    let h = h.trim().parse::<usize>().ok()?;
+    let w = w.trim().parse::<u16>().ok()?;
+    let h = h.trim().parse::<u16>().ok()?;
     if w == 0 || h == 0 {
         return None;
     }
     Some((w.min(400), h.min(200)))
-}
-
-fn print_header(path: &str, view: &PianoRollView) {
-    let span = view.tick_end.saturating_sub(view.tick_start);
-    println!(
-        "griff-preview │ {path} │ {bars} bar(s) │ {bpm:.0} BPM │ {ppq} ppq │ pitch {lo}–{hi} │ {span} ticks",
-        bars = view.bar_count,
-        bpm = view.tempo_bpm,
-        ppq = view.ppq,
-        lo = pitch_name(view.low_pitch),
-        hi = pitch_name(view.high_pitch),
-    );
-}
-
-fn print_legend(view: &PianoRollView) {
-    if view.lanes.is_empty() {
-        println!("(no note-bearing tracks)");
-        return;
-    }
-    let parts: Vec<String> = view
-        .lanes
-        .iter()
-        .enumerate()
-        .map(|(i, lane)| format!("{} {}", lane_glyph(i), lane.name))
-        .collect();
-    println!("lanes: {}", parts.join("   "));
 }
