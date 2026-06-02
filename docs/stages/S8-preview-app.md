@@ -14,13 +14,21 @@ ADRs: —
 
 ## UI design reference
 
-`preview/design/index.html` is a self-contained, dependency-free interactive
-mockup of the intended native (`egui`) window — transport bar, left track dock,
-piano-roll (keyboard gutter, bar ruler, per-lane notes, playhead, S4 boundary
-overlays, S6 chunk classification bands), and a right curation/inspector dock
-(S14 structure metrics, tags, approve/reject/split/merge). It is a design
-target only — not wired to the engine — used to settle layout and interactions
-before building the real front-end.
+`preview/design/` holds self-contained, dependency-free interactive mockups of
+the intended native (`egui`) window (design targets only — not wired to the
+engine — used to settle layout and interactions before building the real
+front-end). Two cross-linked views:
+
+- `index.html` — **piano-roll**: transport bar, left track dock, pitch × time
+  grid (keyboard gutter, bar ruler, per-lane notes, playhead, S4 boundary
+  overlays, S6 chunk classification bands), and a right curation/inspector dock
+  (S14 structure metrics, tags, approve/reject/split/merge).
+- `tab.html` — **Guitar Pro–style tablature**: standard notation staff (treble,
+  written 8vb) above a TAB staff with fret numbers, rhythm stems/beams, palm-
+  mute spans, power chords and lead techniques (bend/hammer/let-ring), a
+  multitrack selector strip, and a toggle to hide notation (tab-only, TuxGuitar
+  style). Reflects that the engine's `Score`/technique model should drive a
+  notation/tab projection alongside the piano-roll.
 
 ## Remaining work (follow-up increments)
 

@@ -79,6 +79,10 @@
   .menubar .menu { color: var(--text-dim); cursor: default; }
   .menubar .menu:hover { color: var(--text); }
   .menubar .spacer { flex: 1; }
+  .switch { display: flex; border: 1px solid var(--stroke); border-radius: 6px; overflow: hidden; }
+  .switch a { text-decoration: none; color: var(--text-dim); padding: 5px 12px; font-size: 12px; background: var(--widget); }
+  .switch a.on { background: var(--accent-dim); color: #fff; }
+  .switch a:hover { color: var(--text); }
   .tag {
     font-size: 11px; color: var(--text-dim);
     border: 1px solid var(--stroke); border-radius: 999px;
@@ -266,10 +270,13 @@
   <!-- menu bar -->
   <div class="menubar">
     <div class="brand">griff<span class="dot">·</span>preview</div>
+    <div class="switch">
+      <a href="index.html" class="on">Piano roll</a>
+      <a href="tab.html">Tablature</a>
+    </div>
     <div class="menu">File</div>
     <div class="menu">View</div>
     <div class="menu">Corpus</div>
-    <div class="menu">Help</div>
     <div class="spacer"></div>
     <div class="tag" id="fileTag">demo-riff.mid</div>
     <button class="btn icon" id="themeBtn" title="Toggle theme">☾</button>
