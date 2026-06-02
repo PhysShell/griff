@@ -61,14 +61,14 @@ struct NoteRef {
     pitch: u8,
 }
 
-/// Collects a track's primary-voice notes, sorted by onset.
-fn voice_notes(track: &Track) -> Vec<NoteRef> {
-    let Some(voice) = track.voices.first() else {
-        return Vec::new();
-    };
-    let mut notes: Vec<NoteRef> = voice
-        .event_groups
+/// Collects all of a track's notes — across every voice — sorted by onset, so a
+/// track's structure is measured as a whole (some importers split one track into
+/// several voices).
+fn track_notes(track: &Track) -> Vec<NoteRef> {
+    let mut notes: Vec<NoteRef> = track
+        .voices
         .iter()
+        .flat_map(|v| &v.event_groups)
         .flat_map(|g| &g.atoms)
         .filter_map(|a| match a {
             AtomEvent::Note(n) => Some(NoteRef {
@@ -96,7 +96,7 @@ pub fn measure_structure(
         .get(track_index)
         .ok_or(StructureError::TrackIndexOutOfRange)?;
 
-    let notes = voice_notes(track);
+    let notes = track_notes(track);
     let bar_count = score.master_bars.len();
 
     // Per-bar signature: the set of (onset-within-bar, pitch) pairs.
@@ -174,6 +174,10 @@ fn detect_period(signatures: &[Vec<(u32, u8)>]) -> (Option<usize>, f64) {
 }
 
 /// Jaccard similarity of two bar signatures (sets of `(onset, pitch)` pairs).
+///
+/// Two empty signatures (whole-bar rests) are treated as identical (`1.0`), so a
+/// rest bar that is part of a repeated phrase still counts toward the period; an
+/// empty bar against a non-empty one is fully dissimilar (`0.0`).
 #[allow(clippy::cast_precision_loss)]
 fn jaccard(a: &[(u32, u8)], b: &[(u32, u8)]) -> f64 {
     let sa: BTreeSet<(u32, u8)> = a.iter().copied().collect();
@@ -181,7 +185,7 @@ fn jaccard(a: &[(u32, u8)], b: &[(u32, u8)]) -> f64 {
     let inter = sa.intersection(&sb).count();
     let union = sa.union(&sb).count();
     if union == 0 {
-        0.0
+        1.0
     } else {
         inter as f64 / union as f64
     }

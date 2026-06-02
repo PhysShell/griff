@@ -147,6 +147,95 @@ fn reports_no_period_for_through_composed_material() {
     assert_eq!(m.structural_complexity, 1.0, "every bar distinct");
 }
 
+#[test]
+fn detects_period_across_whole_bar_rests() {
+    // "A rest rest" tiled twice — the rest bars are part of the repeated idea.
+    let a = vec![60, 62, 64, 65];
+    let rest: Vec<u8> = vec![];
+    let score = build_score(&[a.clone(), rest.clone(), rest.clone(), a, rest.clone(), rest]);
+    let m = measure_structure(&score, 0).expect("measure ok");
+
+    assert_eq!(
+        m.detected_pattern_period_bars,
+        Some(3),
+        "matching whole-bar rests must count toward the period",
+    );
+    assert_eq!(m.detected_pattern_period_ticks, Some(3 * BAR));
+    assert!(
+        m.repeatability_score > 0.9,
+        "the 3-bar unit repeats exactly"
+    );
+}
+
+#[test]
+fn measures_all_voices_of_a_track() {
+    // Voice 0 carries bars 0 & 2; voice 1 carries bars 1 & 3; every bar is the
+    // same material A. Measured as a whole track this is a clean 1-bar loop —
+    // a first-voice-only view would instead see "A rest A rest" (period 2).
+    let a = [60, 62, 64, 65];
+    let voice_groups = |bars: &[usize]| -> Vec<EventGroup> {
+        let mut groups = Vec::new();
+        for &b in bars {
+            let bar_start = u32::try_from(b).unwrap() * BAR;
+            for (i, &p) in a.iter().enumerate() {
+                groups.push(EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![quarter_note(
+                        bar_start + u32::try_from(i).unwrap() * QUARTER,
+                        p,
+                    )],
+                    technique_spans: Vec::new(),
+                });
+            }
+        }
+        groups
+    };
+
+    let master_bars = (0..4)
+        .map(|i| {
+            let start = u32::try_from(i).unwrap() * BAR;
+            MasterBar {
+                index: i,
+                tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
+                time_signature: TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                },
+                tempo: Tempo::new(120.0).expect("120 BPM"),
+            }
+        })
+        .collect();
+
+    let score = Score {
+        ticks_per_quarter: PPQN,
+        master_bars,
+        tracks: vec![Track {
+            name: Some("multi".to_string()),
+            channel: 0,
+            voices: vec![
+                Voice {
+                    id: 0,
+                    event_groups: voice_groups(&[0, 2]),
+                },
+                Voice {
+                    id: 1,
+                    event_groups: voice_groups(&[1, 3]),
+                },
+            ],
+        }],
+        source_meta: None,
+        loss: LossReport::new(),
+    };
+
+    let m = measure_structure(&score, 0).expect("measure ok");
+    assert_eq!(
+        m.detected_pattern_period_bars,
+        Some(1),
+        "all voices merged → every bar is A → 1-bar period",
+    );
+    assert!(m.repeatability_score > 0.9);
+}
+
 // ── loopability ────────────────────────────────────────────────────────────────
 
 #[test]
