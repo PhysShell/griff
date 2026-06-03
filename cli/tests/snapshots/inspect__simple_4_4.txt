@@ -5,5 +5,4 @@ PPQN: 480
 Track 0 ch=0 "Lead":
   Bar    0  4/4  120.0 BPM  4 notes
   Bar    1  4/4  120.0 BPM  8 notes
-  Bar    2  4/4  120.0 BPM  0 notes
 --- stderr ---

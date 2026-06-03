@@ -2,8 +2,7 @@ $ griff classify <OUT>
 exit: 0
 --- stdout ---
 PPQN: 480
-Track 0 ch=00 "Lead" — 3 bars
+Track 0 ch=00 "Lead" — 2 bars
   Bar    0  4/4  120.0 BPM  notes=  4  class=Breakdown   vel=100  span=24st
   Bar    1  4/4  120.0 BPM  notes=  8  class=Clean       vel= 55  span= 7st
-  Bar    2  4/4  120.0 BPM  notes=  0  class=Unknown     vel=  0  span= 0st
 --- stderr ---

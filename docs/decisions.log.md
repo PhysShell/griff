@@ -132,6 +132,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   (a deferred `schema_version` bump), and the contract is only proven when a
   second consumer (DP cost or S9) reuses it.
 
+- 2026-06-03 — In the context of S14 structure metrics being diluted by a
+  trailing empty bar, facing where to cut the sentinel, we decided to fix it at
+  the source — `midi::build_master_bars` now loops `while bar_start < end_tick ||
+  master_bars.is_empty()` instead of `<=`, so content ending exactly on a barline
+  no longer appends an empty bar — and against masking it downstream in the
+  metrics, to keep one honest master timeline (the bar holding the last event is
+  still always built; an empty score still yields one bar). Accepted: this is an
+  intentional behaviour change that re-blessed the import / inspect / classify /
+  roundtrip / characterize goldens for all four fixtures (each was one content
+  bar plus the sentinel) behind a red unit test pinning the new bar-count
+  contract; no notes are lost and roundtrip still re-imports identically.
+
 - 2026-06-03 — In the context of resolving preview P2 #3 (bar classification
   read only `voices.first()`, so material in voice 2+ was invisible to the
   section bands), facing whether to merge every voice's atoms into one

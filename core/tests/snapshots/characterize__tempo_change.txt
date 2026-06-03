@@ -1,8 +1,7 @@
 == tempo_change ==
-ppqn 480 master_bars 4 tracks 1
+ppqn 480 master_bars 3 tracks 1
 bar 0 4/4 100.0bpm [0, 1920)
 bar 1 4/4 150.0bpm [1920, 3840)
 bar 2 4/4 150.0bpm [3840, 5760)
-bar 3 4/4 150.0bpm [5760, 7680)
 track 0 name=Lead ch=0 voices=1
   voice[0.0] id=0 groups=12 events=12 notes=12 rests=0 artic=0 dur=5760 pitch=45..50 vel=88..88

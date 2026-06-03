@@ -1,6 +1,5 @@
 == seven_eight ==
-ppqn 480 master_bars 2 tracks 1
+ppqn 480 master_bars 1 tracks 1
 bar 0 7/8 140.0bpm [0, 1680)
-bar 1 7/8 140.0bpm [1680, 3360)
 track 0 name=Rhythm ch=1 voices=1
   voice[0.0] id=0 groups=7 events=7 notes=7 rests=0 artic=0 dur=1680 pitch=38..43 vel=96..96

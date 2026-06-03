@@ -358,12 +358,12 @@ fn build_master_bars(
     let mut bar_start: u32 = 0;
     let mut index: usize = 0;
 
-    // `<=` covers content whose last event ends exactly on a barline. As a side
-    // effect, when `end_tick` falls on a boundary this appends one trailing empty
-    // bar (a sentinel). Downstream analysis that measures whole-span seams should
-    // account for a possible trailing empty bar — see the S14 structure-metrics
-    // known limitations (ADR-0015).
-    while bar_start <= end_tick {
+    // Bars are created while `bar_start` is strictly before `end_tick`, so the
+    // bar holding the last event is always built but content ending exactly on a
+    // barline does NOT append a trailing empty (sentinel) bar — which previously
+    // diluted S14 structure metrics (ADR-0015). `is_empty()` guarantees a
+    // single bar for an empty score.
+    while bar_start < end_tick || master_bars.is_empty() {
         let sig = active_time_sig(time_sigs, bar_start);
         let micros = active_tempo(tempos, bar_start);
         let bt = bar_ticks(sig, ppqn)?;
@@ -716,13 +716,24 @@ mod tests {
     fn build_master_bars_drops_trailing_empty_bar_on_barline() {
         // 4/4 at 480 PPQN → 1920-tick bars (empty tempo/sig slices use defaults).
         let ppqn = Ppqn(480);
-        let bars =
-            |end_tick: u32| build_master_bars(ppqn, &[], &[], end_tick).expect("valid bars").len();
+        let bars = |end_tick: u32| {
+            build_master_bars(ppqn, &[], &[], end_tick)
+                .expect("valid bars")
+                .len()
+        };
 
         // Content ending exactly on a barline must NOT append a trailing empty
         // (sentinel) bar — the bug behind the S14 metric dilution (ADR-0015).
-        assert_eq!(bars(1920), 1, "one bar of content ending on the barline is one bar");
-        assert_eq!(bars(3840), 2, "two bars of content ending on the barline is two bars");
+        assert_eq!(
+            bars(1920),
+            1,
+            "one bar of content ending on the barline is one bar"
+        );
+        assert_eq!(
+            bars(3840),
+            2,
+            "two bars of content ending on the barline is two bars"
+        );
 
         // An empty score still yields one bar.
         assert_eq!(bars(0), 1, "an empty score has a single bar");

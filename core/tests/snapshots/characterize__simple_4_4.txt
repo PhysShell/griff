@@ -1,7 +1,6 @@
 == simple_4_4 ==
-ppqn 480 master_bars 3 tracks 1
+ppqn 480 master_bars 2 tracks 1
 bar 0 4/4 120.0bpm [0, 1920)
 bar 1 4/4 120.0bpm [1920, 3840)
-bar 2 4/4 120.0bpm [3840, 5760)
 track 0 name=Lead ch=0 voices=1
   voice[0.0] id=0 groups=12 events=12 notes=12 rests=0 artic=0 dur=3840 pitch=40..67 vel=55..100
