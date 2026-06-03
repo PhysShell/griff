@@ -14,10 +14,8 @@
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::too_many_lines
+    clippy::cast_sign_loss
 )]
 
 use std::io;
@@ -35,12 +33,10 @@ use ratatui::{DefaultTerminal, Frame, Terminal};
 use griff_core::classify::BarClass;
 
 use crate::analysis::Analysis;
-use crate::render::pitch_name;
+use crate::scene::{resolve, CellRole, GridSize, Scene, SceneCell, GUTTER};
 use crate::view::PianoRollView;
 use crate::viewport::{Intent, Step, ViewContext, Viewport};
 
-/// Left gutter width inside the roll: 4 columns of pitch label + 1 separator.
-const GUTTER: u16 = 5;
 /// Width of the inspector dock.
 const INSPECTOR_W: u16 = 32;
 /// Width of a metric meter bar in the inspector.
@@ -72,10 +68,6 @@ const fn class_color(c: BarClass) -> Color {
         BarClass::Clean => Color::Rgb(56, 158, 13),
         BarClass::Unknown => Color::Rgb(90, 90, 100),
     }
-}
-
-const fn is_black_key(pitch: u8) -> bool {
-    matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
 /// Interactive piano-roll application.
@@ -204,9 +196,20 @@ impl App {
         }
         render_footer(footer, frame);
 
+        // All piano-roll layout lives in the shared scene resolver; this renderer
+        // only maps placed cells to ratatui styling.
+        let scene = resolve(
+            &self.view,
+            &self.analysis,
+            &self.vp,
+            GridSize {
+                cols: roll.width,
+                rows: roll.height,
+            },
+        );
         let buf = frame.buffer_mut();
-        self.render_sections(sections, roll, buf);
-        self.render_roll(roll, buf);
+        paint_band(&scene, roll.x, sections.y, buf);
+        paint_plane(&scene, roll, buf);
     }
 
     fn render_header(&self, area: Rect, frame: &mut Frame<'_>) {
@@ -226,150 +229,6 @@ impl App {
             )),
         ]);
         frame.render_widget(Paragraph::new(line), area);
-    }
-
-    fn render_sections(&self, row: Rect, roll: Rect, buf: &mut Buffer) {
-        if roll.width <= GUTTER {
-            return;
-        }
-        let y = row.y;
-        let plot_x0 = roll.x + GUTTER;
-        let plot_w = roll.width - GUTTER;
-        let xmax = plot_x0.saturating_add(plot_w);
-        put_str(
-            buf,
-            (row.x, y),
-            GUTTER - 1,
-            "SEC",
-            Style::new().fg(Color::Rgb(110, 110, 118)),
-        );
-
-        for (i, s) in self.analysis.sections.iter().enumerate() {
-            let a = self.tick_to_col(s.tick_start, plot_x0, plot_w);
-            let b = self.tick_to_col(s.tick_end, plot_x0, plot_w);
-            if b <= a {
-                continue;
-            }
-            let mut style = Style::new().bg(class_color(s.class)).fg(Color::White);
-            if i == self.vp.sel_section {
-                style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-            }
-            for x in a..b.min(xmax) {
-                if let Some(c) = buf.cell_mut((x, y)) {
-                    c.set_char(' ').set_style(style);
-                }
-            }
-            let label = s.class.to_string();
-            let w = usize::from(b - a);
-            if w >= label.chars().count() {
-                let off = ((w - label.chars().count()) / 2) as u16;
-                put_str(buf, (a + off, y), plot_w, &label, style);
-            }
-        }
-    }
-
-    fn render_roll(&self, area: Rect, buf: &mut Buffer) {
-        if area.width <= GUTTER || area.height == 0 {
-            return;
-        }
-        let plot_x0 = area.x + GUTTER;
-        let plot_w = area.width - GUTTER;
-        let rows = area.height;
-        let dim = Style::new().fg(Color::Rgb(70, 70, 80));
-
-        // black-key shading, separator column, pitch labels
-        for r in 0..rows {
-            let y = area.y + r;
-            let pitch = i32::from(self.vp.top_pitch) - i32::from(r);
-            if pitch >= 0 && is_black_key(pitch as u8) {
-                for x in plot_x0..plot_x0.saturating_add(plot_w) {
-                    if let Some(c) = buf.cell_mut((x, y)) {
-                        c.set_bg(Color::Rgb(38, 38, 44));
-                    }
-                }
-            }
-            if let Some(c) = buf.cell_mut((plot_x0.saturating_sub(1), y)) {
-                c.set_char('│').set_style(dim);
-            }
-            if pitch >= 0 && (pitch % 12 == 0 || r == 0) {
-                put_str(
-                    buf,
-                    (area.x, y),
-                    GUTTER - 1,
-                    &pitch_name(pitch as u8),
-                    Style::new().fg(Color::Rgb(150, 150, 158)),
-                );
-            }
-        }
-
-        // bar gridlines
-        for &t in &self.view.bar_lines {
-            if let Some(x) = self.visible_col(t, plot_x0, plot_w) {
-                for r in 0..rows {
-                    if let Some(c) = buf.cell_mut((x, area.y + r)) {
-                        if c.symbol() == " " {
-                            c.set_char('│').set_style(dim);
-                        }
-                    }
-                }
-            }
-        }
-
-        // section boundary markers
-        for s in &self.analysis.sections {
-            if s.tick_start <= self.vp.scroll_tick {
-                continue;
-            }
-            if let Some(x) = self.visible_col(s.tick_start, plot_x0, plot_w) {
-                let st = Style::new().fg(class_color(s.class));
-                for r in 0..rows {
-                    if let Some(c) = buf.cell_mut((x, area.y + r)) {
-                        if c.symbol() == " " || c.symbol() == "│" {
-                            c.set_char('╎').set_style(st);
-                        }
-                    }
-                }
-            }
-        }
-
-        // notes
-        for (li, lane) in self.view.lanes.iter().enumerate() {
-            let color = lane_color(li);
-            for note in &lane.notes {
-                if i32::from(note.pitch) > i32::from(self.vp.top_pitch) {
-                    continue;
-                }
-                let row = i32::from(self.vp.top_pitch) - i32::from(note.pitch);
-                if row < 0 || row >= i32::from(rows) || note.end <= self.vp.scroll_tick {
-                    continue;
-                }
-                let y = area.y + row as u16;
-                let c0 = note.onset.saturating_sub(self.vp.scroll_tick) / self.vp.ticks_per_col;
-                let c1 = note
-                    .end
-                    .saturating_sub(self.vp.scroll_tick)
-                    .saturating_sub(1)
-                    / self.vp.ticks_per_col;
-                let last = u32::from(plot_w).saturating_sub(1);
-                for col in c0.min(last)..=c1.min(last) {
-                    if let Some(c) = buf.cell_mut((plot_x0 + col as u16, y)) {
-                        c.set_char('█').set_fg(color);
-                    }
-                }
-            }
-        }
-
-        // playhead
-        if let Some(x) = self.visible_col(self.vp.play_tick, plot_x0, plot_w) {
-            let st = Style::new()
-                .fg(Color::Rgb(255, 207, 77))
-                .add_modifier(Modifier::BOLD);
-            for r in 0..rows {
-                if let Some(c) = buf.cell_mut((x, area.y + r)) {
-                    c.set_char('┃').set_style(st);
-                }
-            }
-        }
     }
 
     fn render_inspector(&self, area: Rect, frame: &mut Frame<'_>) {
@@ -441,24 +300,6 @@ impl App {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────
-    /// Maps a tick to a screen column, or `None` if off the right edge.
-    fn visible_col(&self, tick: u32, plot_x0: u16, plot_w: u16) -> Option<u16> {
-        if tick < self.vp.scroll_tick {
-            return None;
-        }
-        let col = (tick - self.vp.scroll_tick) / self.vp.ticks_per_col;
-        (col < u32::from(plot_w)).then(|| plot_x0 + col as u16)
-    }
-
-    /// Maps a tick to a clamped column within `[plot_x0, plot_x0+plot_w]`.
-    fn tick_to_col(&self, tick: u32, plot_x0: u16, plot_w: u16) -> u16 {
-        if tick <= self.vp.scroll_tick {
-            return plot_x0;
-        }
-        let col = ((tick - self.vp.scroll_tick) / self.vp.ticks_per_col).min(u32::from(plot_w));
-        plot_x0.saturating_add(col as u16)
-    }
-
     fn position_label(&self) -> String {
         let ppq = u32::from(self.view.ppq).max(1);
         let mut bar_idx = 0usize;
@@ -507,12 +348,76 @@ fn meter(value: f64, width: usize) -> String {
     s
 }
 
-/// Writes up to `maxw` chars of `s` starting at `pos`, applying `style`.
-fn put_str(buf: &mut Buffer, pos: (u16, u16), maxw: u16, s: &str, style: Style) {
-    let (x, y) = pos;
-    for (i, ch) in s.chars().take(usize::from(maxw)).enumerate() {
-        if let Some(c) = buf.cell_mut((x.saturating_add(i as u16), y)) {
-            c.set_char(ch).set_style(style);
+/// Blits the section band of `scene` onto `buf`, with the band's left edge at
+/// `x0` (the roll's left edge) on row `y` (the sections row).
+fn paint_band(scene: &Scene, x0: u16, y: u16, buf: &mut Buffer) {
+    for col in 0..scene.cols {
+        if let Some(cell) = scene.band_cell(col) {
+            paint_cell(buf, x0.saturating_add(col), y, cell);
+        }
+    }
+}
+
+/// Blits the roll plane of `scene` onto `buf`, anchored at `area`'s top-left.
+fn paint_plane(scene: &Scene, area: Rect, buf: &mut Buffer) {
+    for r in 0..scene.rows {
+        for col in 0..scene.cols {
+            if let Some(cell) = scene.plane_cell(r, col) {
+                paint_cell(
+                    buf,
+                    area.x.saturating_add(col),
+                    area.y.saturating_add(r),
+                    cell,
+                );
+            }
+        }
+    }
+}
+
+/// Maps one placed [`SceneCell`] to ratatui glyph + styling. This is the only
+/// place semantic roles become concrete colours; `set_fg`/`set_style` carry no
+/// background so a note keeps the black-key shade laid down underneath it.
+fn paint_cell(buf: &mut Buffer, x: u16, y: u16, cell: &SceneCell) {
+    let Some(c) = buf.cell_mut((x, y)) else {
+        return;
+    };
+    if cell.shade {
+        c.set_bg(Color::Rgb(38, 38, 44));
+    }
+    let dim = Style::new().fg(Color::Rgb(70, 70, 80));
+    match cell.role {
+        CellRole::Empty => {}
+        CellRole::Separator | CellRole::GridLine => {
+            c.set_char(cell.glyph).set_style(dim);
+        }
+        CellRole::SectionMark(class) => {
+            c.set_char(cell.glyph)
+                .set_style(Style::new().fg(class_color(class)));
+        }
+        CellRole::Note(lane) => {
+            c.set_char(cell.glyph).set_fg(lane_color(usize::from(lane)));
+        }
+        CellRole::Playhead => {
+            c.set_char(cell.glyph).set_style(
+                Style::new()
+                    .fg(Color::Rgb(255, 207, 77))
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        CellRole::PitchLabel => {
+            c.set_char(cell.glyph)
+                .set_style(Style::new().fg(Color::Rgb(150, 150, 158)));
+        }
+        CellRole::BandHeader => {
+            c.set_char(cell.glyph)
+                .set_style(Style::new().fg(Color::Rgb(110, 110, 118)));
+        }
+        CellRole::BandFill { class, selected } => {
+            let mut style = Style::new().bg(class_color(class)).fg(Color::White);
+            if selected {
+                style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+            }
+            c.set_char(cell.glyph).set_style(style);
         }
     }
 }
