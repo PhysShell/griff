@@ -660,7 +660,9 @@ fn build_score_note_track(track: &ScoreTrack) -> Result<Vec<TrackEvent<'static>>
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{bar_ticks, export_score, import_score, tempo_to_micros, MidiError, Ppqn};
+    use super::{
+        bar_ticks, build_master_bars, export_score, import_score, tempo_to_micros, MidiError, Ppqn,
+    };
     use crate::{
         event::{Pitch, Tempo, Ticks, TimeSignature, Velocity},
         score::{
@@ -708,6 +710,27 @@ mod tests {
             matches!(tempo_to_micros(tempo), Ok(500_000)),
             "120 BPM must map to 500 000 µs/beat",
         );
+    }
+
+    #[test]
+    fn build_master_bars_drops_trailing_empty_bar_on_barline() {
+        // 4/4 at 480 PPQN → 1920-tick bars (empty tempo/sig slices use defaults).
+        let ppqn = Ppqn(480);
+        let bars =
+            |end_tick: u32| build_master_bars(ppqn, &[], &[], end_tick).expect("valid bars").len();
+
+        // Content ending exactly on a barline must NOT append a trailing empty
+        // (sentinel) bar — the bug behind the S14 metric dilution (ADR-0015).
+        assert_eq!(bars(1920), 1, "one bar of content ending on the barline is one bar");
+        assert_eq!(bars(3840), 2, "two bars of content ending on the barline is two bars");
+
+        // An empty score still yields one bar.
+        assert_eq!(bars(0), 1, "an empty score has a single bar");
+
+        // Content ending mid-bar is unaffected: the bar holding the last event
+        // is always created.
+        assert_eq!(bars(1000), 1, "mid-bar content stays one bar");
+        assert_eq!(bars(2000), 2, "content into the second bar is two bars");
     }
 
     /// Bytes of `fuzz/corpus/midi_import/valid_minimal.mid`: a 50-byte
