@@ -27,6 +27,7 @@
 use griff_core::classify::BarClass;
 
 use crate::analysis::Analysis;
+use crate::render::pitch_name;
 use crate::view::PianoRollView;
 use crate::viewport::Viewport;
 
@@ -57,7 +58,7 @@ pub enum CellRole {
     /// A section boundary marker, carrying the section's class.
     SectionMark(BarClass),
     /// A note block in the lane of the given index.
-    Note(usize),
+    Note(u16),
     /// The playhead column.
     Playhead,
     /// A pitch-label glyph in the gutter.
@@ -95,10 +96,11 @@ impl SceneCell {
     };
 }
 
-/// A resolved frame: the section band (one row of `cols` cells) and the roll
-/// plane (`rows × cols`, row-major), every cell already placed and semantically
-/// styled. The pure output of [`resolve`]; a renderer only blits it.
-#[derive(Debug, Clone, PartialEq)]
+/// A resolved frame: the section band plus the roll plane, every cell placed.
+///
+/// The band is one row of `cols` cells; the plane is `rows × cols` cells in
+/// row-major order. The pure output of [`resolve`]; a renderer only blits it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scene {
     /// Total width in cells.
     pub cols: u16,
@@ -135,14 +137,238 @@ impl Scene {
 /// result and re-derive none of it. Total and panic-free: a grid too narrow to
 /// plot (`cols <= GUTTER`) yields a blank scene rather than an error.
 #[must_use]
-pub fn resolve(
+pub fn resolve(view: &PianoRollView, analysis: &Analysis, vp: &Viewport, size: GridSize) -> Scene {
+    let GridSize { cols, rows } = size;
+    let mut band = vec![SceneCell::EMPTY; usize::from(cols)];
+    let mut plane = vec![SceneCell::EMPTY; usize::from(cols) * usize::from(rows)];
+
+    // Too narrow to plot anything (gutter only): a blank scene, never a panic.
+    if cols <= GUTTER {
+        return Scene {
+            cols,
+            rows,
+            band,
+            plane,
+        };
+    }
+    let plot_w = cols - GUTTER; // > 0
+
+    resolve_plane(&mut plane, view, analysis, vp, size);
+    resolve_band(&mut band, analysis, vp, plot_w);
+
+    Scene {
+        cols,
+        rows,
+        band,
+        plane,
+    }
+}
+
+/// Index of plane cell (`row`, `col`) in the row-major buffer.
+fn plane_idx(cols: u16, row: u16, col: u16) -> usize {
+    usize::from(row) * usize::from(cols) + usize::from(col)
+}
+
+/// tick → scene column, or `None` past the right edge. Plot column 0 maps to
+/// scene column `GUTTER`. Used for gridlines, section markers, and the playhead.
+fn visible_col(vp: &Viewport, plot_w: u16, tick: u32) -> Option<u16> {
+    if tick < vp.scroll_tick {
+        return None;
+    }
+    let col = (tick - vp.scroll_tick) / tpc_of(vp);
+    (col < u32::from(plot_w)).then(|| GUTTER + col as u16)
+}
+
+/// tick → scene column, pinned to the plot edges `[GUTTER, GUTTER + plot_w]`.
+/// Used for the section band, which never clips a span to nothing.
+fn clamp_col(vp: &Viewport, plot_w: u16, tick: u32) -> u16 {
+    if tick <= vp.scroll_tick {
+        return GUTTER;
+    }
+    let col = ((tick - vp.scroll_tick) / tpc_of(vp)).min(u32::from(plot_w));
+    GUTTER + col as u16
+}
+
+/// Places everything in the roll plane, layer by layer, in the same order the
+/// renderer used to draw it: later layers overdraw earlier ones (notes over
+/// gridlines, the playhead over all), so the precedence is preserved exactly.
+fn resolve_plane(
+    plane: &mut [SceneCell],
     view: &PianoRollView,
     analysis: &Analysis,
     vp: &Viewport,
     size: GridSize,
-) -> Scene {
-    let _ = (view, analysis, vp);
-    todo!("resolve the scene placement (green phase)")
+) {
+    let GridSize { cols, rows } = size;
+    let plot_w = cols.saturating_sub(GUTTER);
+
+    place_scaffold(plane, vp, cols, rows);
+
+    // Bar gridlines, only on blank cells.
+    for &tick in &view.bar_lines {
+        if let Some(col) = visible_col(vp, plot_w, tick) {
+            paint_column(plane, cols, rows, col, |c| {
+                if c.glyph == ' ' {
+                    c.glyph = '│';
+                    c.role = CellRole::GridLine;
+                }
+            });
+        }
+    }
+
+    // Section boundary markers, over blank cells or gridlines.
+    for s in &analysis.sections {
+        if s.tick_start <= vp.scroll_tick {
+            continue;
+        }
+        if let Some(col) = visible_col(vp, plot_w, s.tick_start) {
+            paint_column(plane, cols, rows, col, |c| {
+                if c.glyph == ' ' || c.glyph == '│' {
+                    c.glyph = '╎';
+                    c.role = CellRole::SectionMark(s.class);
+                }
+            });
+        }
+    }
+
+    place_notes(plane, view, vp, size);
+
+    // Playhead, over everything.
+    if let Some(col) = visible_col(vp, plot_w, vp.play_tick) {
+        paint_column(plane, cols, rows, col, |c| {
+            c.glyph = '┃';
+            c.role = CellRole::Playhead;
+        });
+    }
+}
+
+/// Applies `f` to every cell of plane column `col`.
+fn paint_column(
+    plane: &mut [SceneCell],
+    cols: u16,
+    rows: u16,
+    col: u16,
+    f: impl Fn(&mut SceneCell),
+) {
+    for r in 0..rows {
+        if let Some(c) = plane.get_mut(plane_idx(cols, r, col)) {
+            f(c);
+        }
+    }
+}
+
+/// Per-row scaffolding: black-key shading, the separator column, pitch labels.
+fn place_scaffold(plane: &mut [SceneCell], vp: &Viewport, cols: u16, rows: u16) {
+    for r in 0..rows {
+        let pitch = i32::from(vp.top_pitch) - i32::from(r);
+        if pitch >= 0 && is_black_key(pitch as u8) {
+            for col in GUTTER..cols {
+                if let Some(c) = plane.get_mut(plane_idx(cols, r, col)) {
+                    c.shade = true;
+                }
+            }
+        }
+        if let Some(c) = plane.get_mut(plane_idx(cols, r, GUTTER - 1)) {
+            c.glyph = '│';
+            c.role = CellRole::Separator;
+        }
+        if pitch >= 0 && (pitch % 12 == 0 || r == 0) {
+            let name = pitch_name(pitch as u8);
+            for (i, ch) in name.chars().take(usize::from(GUTTER - 1)).enumerate() {
+                if let Some(c) = plane.get_mut(plane_idx(cols, r, i as u16)) {
+                    c.glyph = ch;
+                    c.role = CellRole::PitchLabel;
+                }
+            }
+        }
+    }
+}
+
+/// Note blocks, lane by lane (later lanes overdraw earlier on overlap).
+fn place_notes(plane: &mut [SceneCell], view: &PianoRollView, vp: &Viewport, size: GridSize) {
+    let GridSize { cols, rows } = size;
+    let last = u32::from(cols.saturating_sub(GUTTER)).saturating_sub(1);
+    let tpc = tpc_of(vp);
+    for (li, lane) in view.lanes.iter().enumerate() {
+        let lane_role = CellRole::Note(li as u16);
+        for note in &lane.notes {
+            if i32::from(note.pitch) > i32::from(vp.top_pitch) {
+                continue;
+            }
+            let row = i32::from(vp.top_pitch) - i32::from(note.pitch);
+            if row < 0 || row >= i32::from(rows) || note.end <= vp.scroll_tick {
+                continue;
+            }
+            let row = row as u16;
+            let c0 = note.onset.saturating_sub(vp.scroll_tick) / tpc;
+            let c1 = note.end.saturating_sub(vp.scroll_tick).saturating_sub(1) / tpc;
+            let mut col = c0.min(last);
+            let stop = c1.min(last);
+            while col <= stop {
+                if let Some(c) = plane.get_mut(plane_idx(cols, row, GUTTER + col as u16)) {
+                    c.glyph = '█';
+                    c.role = lane_role;
+                }
+                col += 1;
+            }
+        }
+    }
+}
+
+/// Places the section band: the `SEC` gutter header, a coloured fill per section
+/// span, and each section's centred class label.
+fn resolve_band(band: &mut [SceneCell], analysis: &Analysis, vp: &Viewport, plot_w: u16) {
+    for (i, ch) in "SEC".chars().take(usize::from(GUTTER - 1)).enumerate() {
+        if let Some(c) = band.get_mut(i) {
+            c.glyph = ch;
+            c.role = CellRole::BandHeader;
+        }
+    }
+
+    let xmax = GUTTER + plot_w; // == cols
+    for (i, s) in analysis.sections.iter().enumerate() {
+        let a = clamp_col(vp, plot_w, s.tick_start);
+        let b = clamp_col(vp, plot_w, s.tick_end);
+        if b <= a {
+            continue;
+        }
+        let role = CellRole::BandFill {
+            class: s.class,
+            selected: i == vp.sel_section,
+        };
+        for col in a..b.min(xmax) {
+            if let Some(c) = band.get_mut(usize::from(col)) {
+                c.glyph = ' ';
+                c.role = role;
+            }
+        }
+        let label = s.class.to_string();
+        let label_len = label.chars().count();
+        let w = usize::from(b - a);
+        if w >= label_len {
+            let off = (w - label_len) / 2;
+            for (j, ch) in label.chars().take(usize::from(plot_w)).enumerate() {
+                let col = usize::from(a) + off + j;
+                if let Some(c) = band.get_mut(col) {
+                    c.glyph = ch;
+                    c.role = role;
+                }
+            }
+        }
+    }
+}
+
+/// Ticks per column, floored at 1 (mirrors the viewport invariant).
+const fn tpc_of(vp: &Viewport) -> u32 {
+    if vp.ticks_per_col == 0 {
+        1
+    } else {
+        vp.ticks_per_col
+    }
+}
+
+const fn is_black_key(pitch: u8) -> bool {
+    matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
 #[cfg(test)]
@@ -292,7 +518,10 @@ mod tests {
     fn black_key_rows_are_shaded_white_rows_are_not() {
         // top_pitch 52: row 1 → pitch 51 (D#, black); row 0 → pitch 52 (E, white).
         let s = resolved();
-        assert!(s.plane_cell(1, 10).expect("plot cell").shade, "black key row");
+        assert!(
+            s.plane_cell(1, 10).expect("plot cell").shade,
+            "black key row"
+        );
         assert!(
             !s.plane_cell(0, 10).expect("plot cell").shade,
             "white key row"
