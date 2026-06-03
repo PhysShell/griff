@@ -9,7 +9,10 @@ after Will Swan / Dance Gavin Dance / Hail The Sun.
 ## What (project map)
 
 - `core/`    — library: event model, MIDI I/O, slicing, features, generator
-- `cli/`     — binary `griff` (`import` / `inspect` / `export` / `classify`)
+- `cli/`     — binary `griff` (`import` / `inspect` / `export` / `classify` /
+  `curate`)
+- `preview/` — headless-testable ratatui preview: view-model, analysis
+  (sections + structure metrics), interaction core (ADR-0016)
 - `plugin/`  — CLAP plugin via nih-plug (S10+, not yet)
 - `fuzz/`    — isolated nightly cargo-fuzz crate (ADR-0010; not a workspace
   member); policy in [`docs/fuzzing.md`](docs/fuzzing.md)
@@ -18,8 +21,10 @@ after Will Swan / Dance Gavin Dance / Hail The Sun.
 ## Constitution
 
 [`docs/glossary.md`](docs/glossary.md) is authoritative. On any term conflict,
-defer to it; extend it rather than inventing synonyms in code. The current
-codebase is a **pre-canonical baseline** — see
+defer to it; extend it rather than inventing synonyms in code. The **canonical
+score model is now the single internal model** — the legacy linear
+`Event/Bar/Phrase` layer has been removed (ADR-0011). For the stage-label
+history see
 [`docs/audit/2026-05-stage-label-reconciliation.md`](docs/audit/2026-05-stage-label-reconciliation.md).
 
 ## How (commands)

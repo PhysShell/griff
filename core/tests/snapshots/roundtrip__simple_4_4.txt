@@ -1,16 +1,12 @@
-[orig] ppqn=480 master_bars=3 tracks=1
+[orig] ppqn=480 master_bars=2 tracks=1
   bar 0 4/4 120.0bpm
   bar 1 4/4 120.0bpm
-  bar 2 4/4 120.0bpm
   track 0 name=Lead ch=0
     bar 0 notes=4
     bar 1 notes=8
-    bar 2 notes=0
-[roundtrip] ppqn=480 master_bars=3 tracks=1
+[roundtrip] ppqn=480 master_bars=2 tracks=1
   bar 0 4/4 120.0bpm
   bar 1 4/4 120.0bpm
-  bar 2 4/4 120.0bpm
   track 0 name=<unnamed> ch=0
     bar 0 notes=4
     bar 1 notes=8
-    bar 2 notes=0

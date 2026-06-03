@@ -1,7 +1,6 @@
 == multi_track ==
-ppqn 480 master_bars 2 tracks 2
+ppqn 480 master_bars 1 tracks 2
 bar 0 4/4 90.0bpm [0, 1920)
-bar 1 4/4 90.0bpm [1920, 3840)
 track 0 name=Clean ch=2 voices=1
   voice[0.0] id=0 groups=8 events=8 notes=8 rests=0 artic=0 dur=1920 pitch=55..62 vel=50..50
 track 1 name=Solo ch=3 voices=1

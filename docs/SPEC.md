@@ -60,14 +60,19 @@ never by renumbering existing stages.
     fuzzing plus the regression corpus is a blocking CI gate; deep fuzzing
     runs scheduled and non-blocking.
 
-## Current state (pre-canonical baseline)
+## Current state
 
-The workspace (`core`, `cli`, `plugin`) exists with a simple linear model
-(`Event::{Note,Rest}`, `Bar`, `Phrase`), a MIDI import/export adapter, and
-simple `feature` / `generate` / `slice` / `classify` helpers. This is the
-**pre-canonical baseline** — the input to S0 (freeze it) and S1 (introduce the
-canonical model alongside it). Earlier commit stage labels predate this spec
-and are reconciled in
+The workspace (`core`, `cli`, `plugin`, `preview`) runs on the canonical score
+model (`Score → MasterBar → Track → Voice → EventGroup → AtomEvent`) as its
+single internal model; the legacy linear `Event/Bar/Phrase` layer has been
+removed (ADR-0011). On top of it: a MIDI import/export adapter on the master
+timeline, `feature` / `slice` / `classify` / `generate` (the rule-based S6
+baseline), phrase-boundary detection (S4), the ComplementArranger first slice
+(`rhythm_lock`, S13), structure metrics (S14 Phase 0), a headless-testable
+ratatui preview, and the shared scoring vocabulary (ADR-0017). Not yet:
+string/fret positions and richer techniques (ADR-0014), the graph layer / DP
+traversal (S7), neural assistance (S12), and the CLAP plugin (S10). Earlier
+commit stage labels predate this spec and are reconciled in
 [`audit/2026-05-stage-label-reconciliation.md`](audit/2026-05-stage-label-reconciliation.md).
 
 ## See also

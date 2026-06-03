@@ -26,12 +26,12 @@ exact-pitch baseline is acceptable for the first cut.
 - [ ] **Transposed repeats.** Bar signatures compare `(onset, absolute pitch)`,
       so a motif transposed bar-to-bar (`A A' A''`) reads as low repeatability
       rather than medium. A later pass may compare rhythm + interval contour.
-- [ ] **Trailing empty bars.** Metrics run over the master bars as given; a
-      trailing empty bar lowers `loopability_score` and dilutes
-      period/repeatability. The MIDI importer appends one such sentinel bar when
-      content ends exactly on a barline (`midi::build_master_bars`, `<=`); the
-      clean fix is at the importer (e.g. `< end_tick || master_bars.is_empty()`),
-      which may re-bless import/roundtrip goldens — hence deferred.
+- [x] **Trailing empty bars.** *Fixed at the importer.* `build_master_bars` now
+      loops `while bar_start < end_tick || master_bars.is_empty()`, so content
+      ending exactly on a barline no longer appends a sentinel bar that lowered
+      `loopability_score` and diluted period/repeatability. Re-blessed the
+      import / inspect / classify / roundtrip / characterize goldens
+      (decisions.log 2026-06-03).
 - [ ] Sub-bar (beat-level) period detection and the full per-axis
       `ComplexityProfile`.
 

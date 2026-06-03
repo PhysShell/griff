@@ -6,5 +6,4 @@ Track 0 ch=0 "Lead":
   Bar    0  4/4  100.0 BPM  4 notes
   Bar    1  4/4  150.0 BPM  4 notes
   Bar    2  4/4  150.0 BPM  4 notes
-  Bar    3  4/4  150.0 BPM  0 notes
 --- stderr ---

@@ -2,7 +2,7 @@ $ griff import <OUT>
 exit: 0
 --- stdout ---
 PPQN: 480
-Bars: 2
+Bars: 1
 Tracks: 2
   [0] ch=02  notes=    8  "Clean"
   [1] ch=03  notes=    6  "Solo"
