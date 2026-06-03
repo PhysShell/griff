@@ -1,5 +1,5 @@
 griff·preview  demo.mid  ·  ♩=120  ·  2 bars  ·  pos 2:1                        
-SEC          Riff                  Solo                                         
+SEC          Riff                 Solo                                          
 F3  ││                    ┃                    │┌ Inspector ───────────────────┐
     ││                    ┃                    ││track  Rhythm                 │
     ││                    ┃                    ││Solo                          │
