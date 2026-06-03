@@ -117,6 +117,21 @@ Architectural decisions go to [`adr/`](adr/) instead.
   golden frames; the third is a semantic analysis-layer decision), to keep the
   refactor's "no behaviour change" contract intact and revisitable.
 
+- 2026-06-03 — In the context of the same scoring-with-provenance shape recurring
+  across the canon (boundary `score`/`BoundaryReason`/`weights`, complement
+  `AxisScores`, the DP cost terms of ADR-0013, the `ComplexityProfile` of
+  ADR-0015, the flat "Quality score"), facing five bespoke shapes that cannot
+  share a tuning surface, a UI, or a vocabulary, we decided for one scoring
+  contract — axes (data) + weights (S9-tunable policy) + rationale + a *derived*
+  aggregate, carried in a shared `Scored<T>` (ADR-0017) — and against letting
+  each consumer mint its own type, to give S9 a single weight surface and one
+  "why this candidate" inspector, and to design out the scalar-quality and
+  evidence/rationale-collision hazards. Accepted: this ships no code (the
+  complement+boundary migration is a later characterization-gated slice), every
+  stored score must carry a weights-version to stay reproducible under feedback
+  (a deferred `schema_version` bump), and the contract is only proven when a
+  second consumer (DP cost or S9) reuses it.
+
 - 2026-06-03 — In the context of resolving preview P2 #3 (bar classification
   read only `voices.first()`, so material in voice 2+ was invisible to the
   section bands), facing whether to merge every voice's atoms into one

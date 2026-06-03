@@ -700,8 +700,38 @@ Generating a phrase ending with a sense of completion.
 A filter discarding physically awkward or impossible phrases.
 
 ### Quality score
-The overall candidate score: similarity, novelty, playability, density, user
-preference, style fit.
+The *aggregate* of a quality axis-vector — similarity, novelty, playability,
+density, user preference, style fit — not a primitive scalar (ADR-0017). The
+axes are the truth; the aggregate is a derived convenience for sort/UI.
+
+### Scored value
+The shared output shape `Scored<T>`: a produced value (candidate, boundary,
+part) plus its score *axes*, *rationale*, and *provenance*. Replaces ad-hoc
+`{ score, reason }` shapes so boundary, complement, structure, and DP scores
+share one form (ADR-0017).
+
+### Score axes
+The named, normalised per-axis measurements behind a score, carried as labelled
+data rather than a fixed struct (e.g. complement `rhythm_similarity /
+register_overlap / density_ratio / technique_overlap`, a `ComplexityProfile`, or
+the DP cost terms). The source of truth; never discarded in favour of the
+aggregate (ADR-0017).
+
+### Score weights
+The data-valued policy vector that reduces axes to an aggregate — the surface the
+feedback layer (S9) tunes. Kept separate from the code that computes axes so
+weights change without touching scoring (ADR-0013, ADR-0017).
+
+### Score rationale
+The explainable trace of a score: which axes fired or contributed, which
+thresholds were crossed (the generalisation of `BoundaryReason`). The "why".
+Distinct from *evidence*, which is reserved for import-side provenance
+(ADR-0017).
+
+### Aggregate score
+The derived scalar `aggregate(axes, weights)` used for sorting and display.
+Reproducible only relative to `(seed, weights-version)`; ties break by a fixed,
+documented rule so ordering is total and stable (ADR-0017, extends SPEC §6).
 
 ### Novelty
 How different a candidate is from the source. Balance: too low = copy, too
@@ -1298,7 +1328,8 @@ Use these as defaults until an ADR decides otherwise:
 `TechniqueSpan`, `SourceMeta`, `ImportWarning`, `LossReport`, `PhraseBoundary`,
 `BoundaryReason`, `BoundaryScore`, `PhraseChunk`, `FeatureVector`,
 `GenerationRequest`, `GenerationCandidate`, `GenerationSeed`,
-`RegenerationRegion`, `FrozenRegion`, `AnchorPoint`, `PreferenceProfile`.
+`RegenerationRegion`, `FrozenRegion`, `AnchorPoint`, `PreferenceProfile`,
+`Scored`, `ScoreAxes`, `ScoreWeights`, `Rationale` (ADR-0017).
 
 ## 19. Terms to avoid or use carefully
 
@@ -1317,6 +1348,12 @@ not dragged into production core without cleanup.
 ### MIDI articulation
 Dangerous term. Prefer `MIDI expression evidence` or `inferred articulation
 from MIDI evidence`.
+
+### Evidence (in scoring)
+Do not use "evidence" for a scoring rationale. "Evidence" is reserved for
+import-side articulation provenance (why a technique is believed — MIDI / Guitar
+Pro, §3 / §5). For "why this score" use `rationale`; for output metadata use
+`provenance` (ADR-0017).
 
 ### Guitar Pro support
 Always qualify: GP3/4/5, GPX/GP6, GP7/GP8, read-only or export, stable or
