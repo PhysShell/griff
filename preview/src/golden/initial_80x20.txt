@@ -1,20 +1,20 @@
 griff·preview  demo.mid  ·  ♩=120  ·  2 bars  ·  pos 1:1                        
 SEC          Riff                  Solo                                         
-F3  │┃                    ╎                     ┌ Inspector ───────────────────┐
-    │┃                    ╎                     │track  Rhythm                 │
-    │┃                    ╎                     │Riff                          │
-    │┃                    ╎                     │bars 1–1 · 1 bar(s)           │
-    │┃                    ╎                     │                              │
-C3  │┃                    ╎                     │structure (S14)               │
-    │┃                    ████████████          │—                             │
-    │┃                    ╎                     │                              │
-    │┃                    ╎                     │transport                     │
-    │┃                    ╎                     │♩=120   ⏸ paused              │
-    │┃                    ╎                     │pos 1:1                       │
-    │┃                    ╎                     │                              │
-    │┃                    ╎                     │                              │
-    │┃██████████          ╎                     │                              │
-    │┃                    ╎                     │                              │
-    │┃                    ╎                     │                              │
-    │┃                    ╎                     └──────────────────────────────┘
+F3  │┃                    ╎                    │┌ Inspector ───────────────────┐
+    │┃                    ╎                    ││track  Rhythm                 │
+    │┃                    ╎                    ││Riff                          │
+    │┃                    ╎                    ││bars 1–1 · 1 bar(s)           │
+    │┃                    ╎                    ││                              │
+C3  │┃                    ╎                    ││structure (S14)               │
+    │┃                    ███████████          ││—                             │
+    │┃                    ╎                    ││                              │
+    │┃                    ╎                    ││transport                     │
+    │┃                    ╎                    ││♩=120   ⏸ paused              │
+    │┃                    ╎                    ││pos 1:1                       │
+    │┃                    ╎                    ││                              │
+    │┃                    ╎                    ││                              │
+    │┃██████████          ╎                    ││                              │
+    │┃                    ╎                    ││                              │
+    │┃                    ╎                    ││                              │
+    │┃                    ╎                    │└──────────────────────────────┘
 q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · i in

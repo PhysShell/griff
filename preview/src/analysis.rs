@@ -3,8 +3,13 @@
 //! Named sections (from [`griff_core::classify`]) and structure metrics (from
 //! [`griff_core::structure`]). Pure and headless-testable.
 
-use griff_core::classify::{bar_features_in_range, classify_bar, BarClass};
+// Bar aggregation is bounded saturating integer arithmetic over MIDI note
+// counts, velocities, and pitch spans.
+#![allow(clippy::arithmetic_side_effects)]
+
+use griff_core::classify::{classify_bar, BarClass, BarFeatures};
 use griff_core::score::{AtomEvent, Score, Voice};
+use griff_core::slice::TickRange;
 use griff_core::structure::{measure_structure, StructureMetrics};
 
 /// A run of consecutive bars sharing one classification — a *named section*
@@ -80,19 +85,60 @@ fn pick_focus_track(score: &Score) -> usize {
         .map_or(0, |(i, _)| i)
 }
 
-/// Classifies each bar of the track's primary voice and merges consecutive
-/// equal classes into [`Section`]s.
+fn bar_features_across_voices(voices: &[Voice], range: TickRange) -> BarFeatures {
+    let mut note_count: usize = 0;
+    let mut vel_sum: u32 = 0;
+    let mut lowest: Option<u8> = None;
+    let mut highest: Option<u8> = None;
+
+    for voice in voices {
+        for group in &voice.event_groups {
+            for atom in &group.atoms {
+                let AtomEvent::Note(note) = atom else {
+                    continue;
+                };
+                let onset = note.absolute_start.0;
+                if onset < range.start.0 || onset >= range.end.0 {
+                    continue;
+                }
+
+                note_count = note_count.saturating_add(1);
+                vel_sum = vel_sum.saturating_add(u32::from(note.velocity.0));
+                let pitch = note.pitch.0;
+                lowest = Some(lowest.map_or(pitch, |lo| lo.min(pitch)));
+                highest = Some(highest.map_or(pitch, |hi| hi.max(pitch)));
+            }
+        }
+    }
+
+    let avg_velocity = if note_count == 0 {
+        0
+    } else {
+        let count32 = u32::try_from(note_count).unwrap_or(u32::MAX);
+        u8::try_from(vel_sum / count32).unwrap_or(u8::MAX)
+    };
+    let pitch_span = match (lowest, highest) {
+        (Some(lo), Some(hi)) => hi.saturating_sub(lo),
+        _ => 0,
+    };
+
+    BarFeatures {
+        note_count,
+        avg_velocity,
+        pitch_span,
+    }
+}
+
+/// Classifies each bar of the track's voices and merges consecutive equal
+/// classes into [`Section`]s.
 fn sections_for(score: &Score, track_index: usize) -> Vec<Section> {
     let Some(track) = score.tracks.get(track_index) else {
         return Vec::new();
     };
-    let voice = track.voices.first();
     let mut out: Vec<Section> = Vec::new();
 
     for bar in &score.master_bars {
-        let class = voice.map_or(BarClass::Unknown, |v| {
-            classify_bar(bar_features_in_range(v, bar.tick_range))
-        });
+        let class = classify_bar(bar_features_across_voices(&track.voices, bar.tick_range));
         let (ts, te) = (bar.tick_range.start.0, bar.tick_range.end.0);
         match out.last_mut() {
             Some(last) if last.class == class && last.bar_end == bar.index => {
@@ -157,19 +203,27 @@ mod tests {
         (mb, atoms)
     }
 
-    fn score_from(bars: Vec<Vec<(u8, u8)>>) -> Score {
-        let mut master_bars = Vec::new();
-        let mut groups = Vec::new();
-        for (i, pitches) in bars.into_iter().enumerate() {
-            let (mb, atoms) = bar_of_notes(i, &pitches);
-            master_bars.push(mb);
-            for a in atoms {
-                groups.push(EventGroup {
+    fn voice_from_atoms(id: u8, atoms: Vec<AtomEvent>) -> Voice {
+        Voice {
+            id,
+            event_groups: atoms
+                .into_iter()
+                .map(|a| EventGroup {
                     kind: EventGroupKind::Single,
                     atoms: vec![a],
                     technique_spans: Vec::new(),
-                });
-            }
+                })
+                .collect(),
+        }
+    }
+
+    fn score_from(bars: Vec<Vec<(u8, u8)>>) -> Score {
+        let mut master_bars = Vec::new();
+        let mut atoms = Vec::new();
+        for (i, pitches) in bars.into_iter().enumerate() {
+            let (mb, bar_atoms) = bar_of_notes(i, &pitches);
+            master_bars.push(mb);
+            atoms.extend(bar_atoms);
         }
         Score {
             ticks_per_quarter: PPQN,
@@ -177,10 +231,7 @@ mod tests {
             tracks: vec![Track {
                 name: Some("gtr".into()),
                 channel: 0,
-                voices: vec![Voice {
-                    id: 0,
-                    event_groups: groups,
-                }],
+                voices: vec![voice_from_atoms(0, atoms)],
             }],
             source_meta: None,
             loss: LossReport::new(),
@@ -222,5 +273,30 @@ mod tests {
         let a = analyze(&score);
         let s = a.sections.first().expect("one section");
         assert_eq!((s.tick_start, s.tick_end), (0, BAR));
+    }
+
+    #[test]
+    fn sections_classify_notes_from_all_voices_in_the_focus_track() {
+        let (bar, second_voice_notes) =
+            bar_of_notes(0, &[(40, 100), (43, 100), (45, 100), (47, 100), (40, 100)]);
+        let score = Score {
+            ticks_per_quarter: PPQN,
+            master_bars: vec![bar],
+            tracks: vec![Track {
+                name: Some("gtr".into()),
+                channel: 0,
+                voices: vec![
+                    voice_from_atoms(0, Vec::new()),
+                    voice_from_atoms(1, second_voice_notes),
+                ],
+            }],
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        let a = analyze(&score);
+
+        assert_eq!(a.focus_track, 0);
+        assert_eq!(a.sections.first().map(|s| s.class), Some(BarClass::Riff));
     }
 }

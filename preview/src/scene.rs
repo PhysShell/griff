@@ -302,7 +302,10 @@ fn place_notes(plane: &mut [SceneCell], view: &PianoRollView, vp: &Viewport, siz
             let row = row as u16;
             let c0 = note.onset.saturating_sub(vp.scroll_tick) / tpc;
             let c1 = note.end.saturating_sub(vp.scroll_tick).saturating_sub(1) / tpc;
-            let mut col = c0.min(last);
+            if c0 > last {
+                continue;
+            }
+            let mut col = c0;
             let stop = c1.min(last);
             while col <= stop {
                 if let Some(c) = plane.get_mut(plane_idx(cols, row, GUTTER + col as u16)) {
@@ -481,6 +484,23 @@ mod tests {
         let cell = s.plane_cell(12, 6).expect("note cell in range");
         assert_eq!(cell.role, CellRole::Note(0));
         assert_eq!(cell.glyph, '█');
+    }
+
+    #[test]
+    fn notes_starting_beyond_the_viewport_are_skipped() {
+        let (mut view, analysis, vp) = fixture();
+        view.bar_lines.clear();
+        view.lanes[0].notes = vec![NoteRect {
+            onset: 360,
+            end: 480,
+            pitch: 40,
+        }];
+
+        let s = resolve(&view, &analysis, &vp, GridSize { cols: 10, rows: 14 });
+
+        let right_edge = s.plane_cell(12, 9).expect("rightmost pitch cell");
+        assert_ne!(right_edge.role, CellRole::Note(0));
+        assert_ne!(right_edge.glyph, '█');
     }
 
     #[test]

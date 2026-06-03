@@ -3,8 +3,9 @@
 Three latent **P2** issues surfaced by the Codex reviewer on PR #18 (the
 viewport refactor, ADR-0016). None were introduced by that refactor — it is
 behaviour-preserving and golden-locked — all three live in the pre-existing S8
-slice-2 code (commit `600c939`). They are recorded here so the clean refactor PR
-stays scoped and the fixes can be picked up deliberately as follow-ups.
+slice-2 code (commit `600c939`). They were recorded here so the clean refactor
+PR could stay scoped and the fixes could be picked up deliberately as
+follow-ups.
 
 Each item is independent. Items 1 and 2 change rendered output, so fixing them
 must regenerate the `preview/src/golden/*.txt` characterization frames in the
@@ -67,7 +68,17 @@ semantic decision in the analysis layer and likely warrants its own discussion.
 
 ## Status
 
-Deferred from PR #18. Codex review threads left open as the live pointer:
+Resolved in the follow-up branch created from PR #18 review feedback:
+
+- #1 — regression test added for a note that starts beyond the visible plot; the
+  scene resolver now skips it before right-edge clamping.
+- #2 — `Viewport::fit` now uses ceiling division; both 80×20 terminal goldens
+  were re-blessed for the visible final barline / shortened fitted note tail.
+- #3 — section classification now aggregates note features across every voice in
+  the focus track before assigning a bar class.
+
+Original Codex review thread pointers:
+
 - #1 — https://github.com/PhysShell/griff/pull/18#discussion_r3345343488
 - #2 — https://github.com/PhysShell/griff/pull/18#discussion_r3345343491
 - #3 — https://github.com/PhysShell/griff/pull/18#discussion_r3345343494

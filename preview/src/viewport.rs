@@ -120,7 +120,7 @@ impl Viewport {
     pub fn fit(&mut self, plot_cols: u32, ctx: &ViewContext) {
         let cols = plot_cols.max(1);
         let span = ctx.tick_end.saturating_sub(ctx.tick_start).max(1);
-        self.ticks_per_col = (span / cols).max(1);
+        self.ticks_per_col = span.div_ceil(cols).max(1);
         self.scroll_tick = ctx.tick_start;
     }
 
@@ -265,6 +265,18 @@ mod tests {
         let mut vp = Viewport::new(&c, 52);
         vp.fit(100_000, &c);
         assert!(vp.ticks_per_col >= 1);
+    }
+
+    #[test]
+    fn fit_uses_ceiling_zoom_to_cover_the_whole_span() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.fit(35, &c);
+        assert_eq!(vp.ticks_per_col, 55, "1920 ticks over 35 columns rounds up");
+        assert!(
+            35 * vp.ticks_per_col >= c.tick_end - c.tick_start,
+            "fitted viewport covers the full score tail"
+        );
     }
 
     #[test]
