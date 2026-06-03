@@ -3,13 +3,8 @@
 //! Named sections (from [`griff_core::classify`]) and structure metrics (from
 //! [`griff_core::structure`]). Pure and headless-testable.
 
-// Bar aggregation is bounded saturating integer arithmetic over MIDI note
-// counts, velocities, and pitch spans.
-#![allow(clippy::arithmetic_side_effects)]
-
-use griff_core::classify::{classify_bar, BarClass, BarFeatures};
+use griff_core::classify::{bar_features_across_voices, classify_bar, BarClass};
 use griff_core::score::{AtomEvent, Score, Voice};
-use griff_core::slice::TickRange;
 use griff_core::structure::{measure_structure, StructureMetrics};
 
 /// A run of consecutive bars sharing one classification — a *named section*
@@ -83,50 +78,6 @@ fn pick_focus_track(score: &Score) -> usize {
         .enumerate()
         .max_by_key(|(_, t)| t.voices.iter().map(voice_note_count).sum::<usize>())
         .map_or(0, |(i, _)| i)
-}
-
-fn bar_features_across_voices(voices: &[Voice], range: TickRange) -> BarFeatures {
-    let mut note_count: usize = 0;
-    let mut vel_sum: u32 = 0;
-    let mut lowest: Option<u8> = None;
-    let mut highest: Option<u8> = None;
-
-    for voice in voices {
-        for group in &voice.event_groups {
-            for atom in &group.atoms {
-                let AtomEvent::Note(note) = atom else {
-                    continue;
-                };
-                let onset = note.absolute_start.0;
-                if onset < range.start.0 || onset >= range.end.0 {
-                    continue;
-                }
-
-                note_count = note_count.saturating_add(1);
-                vel_sum = vel_sum.saturating_add(u32::from(note.velocity.0));
-                let pitch = note.pitch.0;
-                lowest = Some(lowest.map_or(pitch, |lo| lo.min(pitch)));
-                highest = Some(highest.map_or(pitch, |hi| hi.max(pitch)));
-            }
-        }
-    }
-
-    let avg_velocity = if note_count == 0 {
-        0
-    } else {
-        let count32 = u32::try_from(note_count).unwrap_or(u32::MAX);
-        u8::try_from(vel_sum / count32).unwrap_or(u8::MAX)
-    };
-    let pitch_span = match (lowest, highest) {
-        (Some(lo), Some(hi)) => hi.saturating_sub(lo),
-        _ => 0,
-    };
-
-    BarFeatures {
-        note_count,
-        avg_velocity,
-        pitch_span,
-    }
 }
 
 /// Classifies each bar of the track's voices and merges consecutive equal

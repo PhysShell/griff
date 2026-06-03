@@ -17,8 +17,12 @@
     clippy::missing_const_for_fn
 )]
 
+use std::slice::from_ref;
+
 use griff_core::{
-    classify::{bar_features_in_range, classify_bar, BarClass, BarFeatures},
+    classify::{
+        bar_features_across_voices, bar_features_in_range, classify_bar, BarClass, BarFeatures,
+    },
     event::{Pitch, Ticks, Velocity},
     score::{AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, Voice},
     slice::TickRange,
@@ -192,4 +196,53 @@ fn classify_canonical_empty_bar_is_unknown() {
     let v = voice(vec![]);
     let f = bar_features_in_range(&v, range(0, 1920));
     assert_eq!(classify_bar(f), BarClass::Unknown);
+}
+
+// ── bar_features_across_voices ──────────────────────────────────────────────────
+
+#[test]
+fn across_voices_aggregates_every_voice() {
+    // One logical part split across two voices: a low voice and a high voice.
+    let low = voice(vec![
+        note_atom(0, 480, 40, 100),
+        note_atom(480, 480, 40, 100),
+    ]);
+    let high = voice(vec![note_atom(0, 480, 64, 80), note_atom(960, 480, 67, 80)]);
+
+    let f = bar_features_across_voices(&[low, high], range(0, 1920));
+
+    assert_eq!(f.note_count, 4, "notes from both voices are counted");
+    assert_eq!(
+        f.pitch_span, 27,
+        "span covers the lowest to the highest (40..67)"
+    );
+    assert_eq!(f.avg_velocity, 90, "(100 + 100 + 80 + 80) / 4");
+}
+
+#[test]
+fn across_voices_of_one_voice_equals_the_single_voice_wrapper() {
+    let v = voice(vec![note_atom(0, 480, 40, 90), note_atom(960, 480, 52, 70)]);
+    assert_eq!(
+        bar_features_across_voices(from_ref(&v), range(0, 1920)),
+        bar_features_in_range(&v, range(0, 1920)),
+    );
+}
+
+#[test]
+fn across_voices_skips_a_silent_first_voice() {
+    // The exact gap the fix closes: voice 0 empty, content lives in voice 1.
+    let empty = voice(vec![]);
+    let busy = voice(vec![
+        note_atom(0, 240, 40, 100),
+        note_atom(240, 240, 43, 100),
+        note_atom(480, 240, 45, 100),
+        note_atom(720, 240, 47, 100),
+    ]);
+    let f = bar_features_across_voices(&[empty, busy], range(0, 1920));
+    assert_eq!(f.note_count, 4);
+    assert_ne!(
+        classify_bar(f),
+        BarClass::Unknown,
+        "voice 1 is not invisible"
+    );
 }

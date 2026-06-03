@@ -116,3 +116,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   as deferred follow-ups, and against folding the fixes in (two change the
   golden frames; the third is a semantic analysis-layer decision), to keep the
   refactor's "no behaviour change" contract intact and revisitable.
+
+- 2026-06-03 — In the context of resolving preview P2 #3 (bar classification
+  read only `voices.first()`, so material in voice 2+ was invisible to the
+  section bands), facing whether to merge every voice's atoms into one
+  `BarFeatures` before classifying or to classify each voice and reduce, we
+  decided for **merge-then-classify** — a new `bar_features_across_voices` in
+  `griff_core::classify` aggregates note count / average velocity / pitch span
+  across all voices of the focus track, with `bar_features_in_range` kept as a
+  thin single-voice wrapper over it — and against a per-voice-then-reduce scheme
+  and against the original fix's duplicate aggregator living in the preview
+  layer, to give multi-voice imported parts (e.g. one `Voice` per Guitar Pro
+  voice) a single honest classification and keep the feature math in core (one
+  home, no drift). Accepted: this is the coarse named-section heuristic, not the
+  S14 structure metrics; if per-voice section semantics are ever needed this is
+  revisitable.

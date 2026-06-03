@@ -11,6 +11,7 @@
 //! range.
 
 use std::fmt;
+use std::slice::from_ref;
 
 use crate::score::{AtomEvent, Voice};
 use crate::slice::TickRange;
@@ -62,27 +63,42 @@ pub struct BarFeatures {
 /// the half-open `range` `[start, end)`.
 ///
 /// Rest atoms and notes outside the range are ignored. Every note atom of every
-/// event group counts, so chord and arpeggio atoms each contribute.
+/// event group counts, so chord and arpeggio atoms each contribute. A thin
+/// single-voice wrapper over [`bar_features_across_voices`].
 pub fn bar_features_in_range(voice: &Voice, range: TickRange) -> BarFeatures {
+    bar_features_across_voices(from_ref(voice), range)
+}
+
+/// Computes per-bar metrics over the note atoms of *several* voices whose onset
+/// falls in the half-open `range` `[start, end)` — the multi-voice aggregate of
+/// [`bar_features_in_range`].
+///
+/// Used when one logical part is split across voices (e.g. one [`Voice`] per
+/// Guitar Pro voice) and a single classification is wanted over all of them, so
+/// material in voice 2+ is not invisible to bar classification. Rest atoms and
+/// notes outside the range are ignored.
+pub fn bar_features_across_voices(voices: &[Voice], range: TickRange) -> BarFeatures {
     let mut note_count: usize = 0;
     let mut vel_sum: u32 = 0;
     let mut lowest: Option<u8> = None;
     let mut highest: Option<u8> = None;
 
-    for group in &voice.event_groups {
-        for atom in &group.atoms {
-            let AtomEvent::Note(note) = atom else {
-                continue;
-            };
-            let onset = note.absolute_start.0;
-            if onset < range.start.0 || onset >= range.end.0 {
-                continue;
+    for voice in voices {
+        for group in &voice.event_groups {
+            for atom in &group.atoms {
+                let AtomEvent::Note(note) = atom else {
+                    continue;
+                };
+                let onset = note.absolute_start.0;
+                if onset < range.start.0 || onset >= range.end.0 {
+                    continue;
+                }
+                note_count = note_count.saturating_add(1);
+                vel_sum = vel_sum.saturating_add(u32::from(note.velocity.0));
+                let pitch = note.pitch.0;
+                lowest = Some(lowest.map_or(pitch, |lo| lo.min(pitch)));
+                highest = Some(highest.map_or(pitch, |hi| hi.max(pitch)));
             }
-            note_count = note_count.saturating_add(1);
-            vel_sum = vel_sum.saturating_add(u32::from(note.velocity.0));
-            let pitch = note.pitch.0;
-            lowest = Some(lowest.map_or(pitch, |lo| lo.min(pitch)));
-            highest = Some(highest.map_or(pitch, |hi| hi.max(pitch)));
         }
     }
 
