@@ -2,7 +2,8 @@
 
 Status: planned (deliberately late)
 Depends on: S6 acceptance
-ADRs: ADR-0013 (DP/Viterbi traversal), ADR-0014 (fretboard-aware model)
+ADRs: ADR-0013 (DP/Viterbi traversal), ADR-0018 (rich note model: fretboard +
+multi-technique with evidence; supersedes ADR-0014)
 
 ## Goal
 
@@ -28,8 +29,9 @@ connected / possible); DP/Viterbi is the *route* (which sequence is best).
   by construction (SPEC §6), optimising the whole sequence rather than picking
   the locally-best candidate per bar. Beam search is kept only as an
   approximation for graphs too large for exact DP.
-- DP state carries running context: current candidate, fretboard position
-  (ADR-0014), last technique, `EnergyState`, rhythmic similarity to part A.
+- DP state carries running context: current candidate, fretboard position and
+  last technique (ADR-0018 — the rich note model makes both expressible),
+  `EnergyState`, rhythmic similarity to part A.
 - Cost function (inspectable, the same weights S9 later tunes):
   `harmonic_fit + rhythm_complement + style_fit + playability + phrase_continuity
   − mud_penalty − repetition_penalty − fret_jump_penalty`.
@@ -52,6 +54,7 @@ connected / possible); DP/Viterbi is the *route* (which sequence is best).
 
 - [`../glossary.md`](../glossary.md) §9
 - [`../adr/0013-dp-viterbi-traversal.md`](../adr/0013-dp-viterbi-traversal.md)
-- [`../adr/0014-fretboard-aware-model.md`](../adr/0014-fretboard-aware-model.md)
+- [`../adr/0018-rich-note-model-fretboard-and-techniques.md`](../adr/0018-rich-note-model-fretboard-and-techniques.md)
+  (fretboard position + multi-technique with evidence; supersedes ADR-0014)
 - [`S13-complementary-part-generation.md`](S13-complementary-part-generation.md)
   (single-bar retrieval; this stage adds multi-bar sequencing)
