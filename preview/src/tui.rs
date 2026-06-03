@@ -37,6 +37,7 @@ use griff_core::classify::BarClass;
 use crate::analysis::Analysis;
 use crate::render::pitch_name;
 use crate::view::PianoRollView;
+use crate::viewport::{Intent, Step, ViewContext, Viewport};
 
 /// Left gutter width inside the roll: 4 columns of pitch label + 1 separator.
 const GUTTER: u16 = 5;
@@ -77,38 +78,39 @@ const fn is_black_key(pitch: u8) -> bool {
     matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
-/// Interactive piano-roll application state.
+/// Interactive piano-roll application.
+///
+/// Holds the renderer-agnostic view-model and analysis, the shared interaction
+/// [`Viewport`] and its [`ViewContext`], and the source file label. All
+/// interaction logic lives in the viewport core; this type only maps keys to
+/// [`Intent`]s and the state to `ratatui` cells.
 #[derive(Debug, Clone)]
 pub struct App {
     view: PianoRollView,
     analysis: Analysis,
     file: String,
-    scroll_tick: u32,
-    ticks_per_col: u32,
-    top_pitch: u8,
-    sel_section: usize,
-    playing: bool,
-    play_tick: u32,
-    show_inspector: bool,
+    vp: Viewport,
+    ctx: ViewContext,
 }
 
 impl App {
     /// Builds the app from a view, its analysis, and the source file label.
     #[must_use]
     pub fn new(view: PianoRollView, analysis: Analysis, file: String) -> Self {
-        let top_pitch = view.high_pitch.saturating_add(1).min(127);
-        let scroll_tick = view.tick_start;
+        let ctx = ViewContext {
+            tick_start: view.tick_start,
+            tick_end: view.tick_end,
+            ppq: view.ppq,
+            tempo_bpm: view.tempo_bpm,
+            section_starts: analysis.sections.iter().map(|s| s.tick_start).collect(),
+        };
+        let vp = Viewport::new(&ctx, view.high_pitch);
         Self {
             view,
             analysis,
             file,
-            scroll_tick,
-            ticks_per_col: 60,
-            top_pitch,
-            sel_section: 0,
-            playing: false,
-            play_tick: scroll_tick,
-            show_inspector: true,
+            vp,
+            ctx,
         }
     }
 
@@ -127,97 +129,54 @@ impl App {
 
     /// Chooses a zoom (ticks per column) that fits the whole span in the plot.
     fn fit(&mut self, total_width: u16) {
-        let reserved = GUTTER.saturating_add(if self.show_inspector { INSPECTOR_W } else { 0 });
-        let plot = total_width.saturating_sub(reserved).max(1);
-        let span = self
-            .view
-            .tick_end
-            .saturating_sub(self.view.tick_start)
-            .max(1);
-        self.ticks_per_col = (span / u32::from(plot)).max(1);
-        self.scroll_tick = self.view.tick_start;
+        let reserved = GUTTER.saturating_add(if self.vp.show_inspector {
+            INSPECTOR_W
+        } else {
+            0
+        });
+        let plot_cols = u32::from(total_width.saturating_sub(reserved).max(1));
+        self.vp.fit(plot_cols, &self.ctx);
     }
 
     // ── input ───────────────────────────────────────────────────────────
     /// Handles a key press; returns `false` when the app should quit.
+    ///
+    /// Translates the key into a semantic [`Intent`] and lets the shared
+    /// viewport reducer interpret it — no interaction logic lives here.
     fn on_key(&mut self, code: KeyCode) -> bool {
-        let scroll_step = self.ticks_per_col.saturating_mul(8).max(1);
-        match code {
-            KeyCode::Char('q') | KeyCode::Esc => return false,
-            KeyCode::Char(' ') => {
-                if !self.playing && self.play_tick >= self.view.tick_end {
-                    self.play_tick = self.view.tick_start;
-                }
-                self.playing = !self.playing;
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                self.scroll_tick = self
-                    .scroll_tick
-                    .saturating_sub(scroll_step)
-                    .max(self.view.tick_start);
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                self.scroll_tick = self.scroll_tick.saturating_add(scroll_step);
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.top_pitch = self.top_pitch.saturating_add(2).min(127);
-            }
-            KeyCode::Down | KeyCode::Char('j') => self.top_pitch = self.top_pitch.saturating_sub(2),
-            KeyCode::Char('+' | '=') => {
-                self.ticks_per_col = (self.ticks_per_col.saturating_mul(2) / 3).max(1);
-            }
-            KeyCode::Char('-' | '_') => {
-                self.ticks_per_col = (self.ticks_per_col.saturating_mul(3) / 2).max(1);
-            }
-            KeyCode::Char('[') => self.select_section(self.sel_section.saturating_sub(1)),
-            KeyCode::Char(']') | KeyCode::Tab => {
-                self.select_section(self.sel_section.saturating_add(1));
-            }
-            KeyCode::Char('i') => self.show_inspector = !self.show_inspector,
-            KeyCode::Char('0') | KeyCode::Home => {
-                self.scroll_tick = self.view.tick_start;
-                self.play_tick = self.view.tick_start;
-            }
-            _ => {}
-        }
-        true
+        let Some(intent) = Self::key_intent(code) else {
+            return true;
+        };
+        self.vp.apply(intent, &self.ctx) == Step::Continue
     }
 
-    fn select_section(&mut self, idx: usize) {
-        let last = self.analysis.sections.len().saturating_sub(1);
-        self.sel_section = idx.min(last);
-        if let Some(s) = self.analysis.sections.get(self.sel_section) {
-            self.scroll_tick = s.tick_start;
-            self.play_tick = s.tick_start;
-        }
+    /// Maps a raw key to a semantic [`Intent`], or `None` if unbound.
+    const fn key_intent(code: KeyCode) -> Option<Intent> {
+        Some(match code {
+            KeyCode::Char('q') | KeyCode::Esc => Intent::Quit,
+            KeyCode::Char(' ') => Intent::TogglePlay,
+            KeyCode::Left | KeyCode::Char('h') => Intent::ScrollLeft,
+            KeyCode::Right | KeyCode::Char('l') => Intent::ScrollRight,
+            KeyCode::Up | KeyCode::Char('k') => Intent::PitchUp,
+            KeyCode::Down | KeyCode::Char('j') => Intent::PitchDown,
+            KeyCode::Char('+' | '=') => Intent::ZoomIn,
+            KeyCode::Char('-' | '_') => Intent::ZoomOut,
+            KeyCode::Char('[') => Intent::PrevSection,
+            KeyCode::Char(']') | KeyCode::Tab => Intent::NextSection,
+            KeyCode::Char('i') => Intent::ToggleInspector,
+            KeyCode::Char('0') | KeyCode::Home => Intent::Home,
+            _ => return None,
+        })
     }
 
     /// Advances playback by `dt`.
     fn tick(&mut self, dt: Duration) {
-        if !self.playing {
-            return;
-        }
-        let tps = f64::from(self.view.ppq) * self.view.tempo_bpm / 60.0;
-        let adv = (tps * dt.as_secs_f64()) as u32;
-        self.play_tick = self.play_tick.saturating_add(adv.max(1));
-        if self.play_tick >= self.view.tick_end {
-            self.play_tick = self.view.tick_end;
-            self.playing = false;
-        }
+        self.vp.advance_playback(dt.as_secs_f64(), &self.ctx);
     }
 
     fn autoscroll(&mut self, roll_width: u16) {
-        if !self.playing || roll_width <= GUTTER {
-            return;
-        }
-        let plot_w = u32::from(roll_width - GUTTER);
-        let right = self
-            .scroll_tick
-            .saturating_add(plot_w.saturating_mul(self.ticks_per_col));
-        if self.play_tick < self.scroll_tick || self.play_tick >= right {
-            let back = (plot_w / 4).saturating_mul(self.ticks_per_col);
-            self.scroll_tick = self.play_tick.saturating_sub(back);
-        }
+        let plot_cols = u32::from(roll_width.saturating_sub(GUTTER));
+        self.vp.autoscroll(plot_cols);
     }
 
     // ── rendering ─────────────────────────────────────────────────────────
@@ -230,7 +189,7 @@ impl App {
         ])
         .areas(frame.area());
 
-        let (roll, inspector) = if self.show_inspector && body.width > INSPECTOR_W + 12 {
+        let (roll, inspector) = if self.vp.show_inspector && body.width > INSPECTOR_W + 12 {
             let [r, i] = Layout::horizontal([Constraint::Min(0), Constraint::Length(INSPECTOR_W)])
                 .areas(body);
             (r, Some(i))
@@ -292,7 +251,7 @@ impl App {
                 continue;
             }
             let mut style = Style::new().bg(class_color(s.class)).fg(Color::White);
-            if i == self.sel_section {
+            if i == self.vp.sel_section {
                 style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
             }
             for x in a..b.min(xmax) {
@@ -321,7 +280,7 @@ impl App {
         // black-key shading, separator column, pitch labels
         for r in 0..rows {
             let y = area.y + r;
-            let pitch = i32::from(self.top_pitch) - i32::from(r);
+            let pitch = i32::from(self.vp.top_pitch) - i32::from(r);
             if pitch >= 0 && is_black_key(pitch as u8) {
                 for x in plot_x0..plot_x0.saturating_add(plot_w) {
                     if let Some(c) = buf.cell_mut((x, y)) {
@@ -358,7 +317,7 @@ impl App {
 
         // section boundary markers
         for s in &self.analysis.sections {
-            if s.tick_start <= self.scroll_tick {
+            if s.tick_start <= self.vp.scroll_tick {
                 continue;
             }
             if let Some(x) = self.visible_col(s.tick_start, plot_x0, plot_w) {
@@ -377,17 +336,20 @@ impl App {
         for (li, lane) in self.view.lanes.iter().enumerate() {
             let color = lane_color(li);
             for note in &lane.notes {
-                if i32::from(note.pitch) > i32::from(self.top_pitch) {
+                if i32::from(note.pitch) > i32::from(self.vp.top_pitch) {
                     continue;
                 }
-                let row = i32::from(self.top_pitch) - i32::from(note.pitch);
-                if row < 0 || row >= i32::from(rows) || note.end <= self.scroll_tick {
+                let row = i32::from(self.vp.top_pitch) - i32::from(note.pitch);
+                if row < 0 || row >= i32::from(rows) || note.end <= self.vp.scroll_tick {
                     continue;
                 }
                 let y = area.y + row as u16;
-                let c0 = note.onset.saturating_sub(self.scroll_tick) / self.ticks_per_col;
-                let c1 = note.end.saturating_sub(self.scroll_tick).saturating_sub(1)
-                    / self.ticks_per_col;
+                let c0 = note.onset.saturating_sub(self.vp.scroll_tick) / self.vp.ticks_per_col;
+                let c1 = note
+                    .end
+                    .saturating_sub(self.vp.scroll_tick)
+                    .saturating_sub(1)
+                    / self.vp.ticks_per_col;
                 let last = u32::from(plot_w).saturating_sub(1);
                 for col in c0.min(last)..=c1.min(last) {
                     if let Some(c) = buf.cell_mut((plot_x0 + col as u16, y)) {
@@ -398,7 +360,7 @@ impl App {
         }
 
         // playhead
-        if let Some(x) = self.visible_col(self.play_tick, plot_x0, plot_w) {
+        if let Some(x) = self.visible_col(self.vp.play_tick, plot_x0, plot_w) {
             let st = Style::new()
                 .fg(Color::Rgb(255, 207, 77))
                 .add_modifier(Modifier::BOLD);
@@ -431,7 +393,7 @@ impl App {
             Span::raw(track),
         ]));
 
-        if let Some(s) = self.analysis.sections.get(self.sel_section) {
+        if let Some(s) = self.analysis.sections.get(self.vp.sel_section) {
             lines.push(Line::from(Span::styled(
                 format!(" {} ", s.class),
                 Style::new()
@@ -467,7 +429,7 @@ impl App {
         lines.push(Line::from(format!(
             "♩={:.0}   {}",
             self.view.tempo_bpm,
-            if self.playing {
+            if self.vp.playing {
                 "▶ playing"
             } else {
                 "⏸ paused"
@@ -481,19 +443,19 @@ impl App {
     // ── helpers ─────────────────────────────────────────────────────────
     /// Maps a tick to a screen column, or `None` if off the right edge.
     fn visible_col(&self, tick: u32, plot_x0: u16, plot_w: u16) -> Option<u16> {
-        if tick < self.scroll_tick {
+        if tick < self.vp.scroll_tick {
             return None;
         }
-        let col = (tick - self.scroll_tick) / self.ticks_per_col;
+        let col = (tick - self.vp.scroll_tick) / self.vp.ticks_per_col;
         (col < u32::from(plot_w)).then(|| plot_x0 + col as u16)
     }
 
     /// Maps a tick to a clamped column within `[plot_x0, plot_x0+plot_w]`.
     fn tick_to_col(&self, tick: u32, plot_x0: u16, plot_w: u16) -> u16 {
-        if tick <= self.scroll_tick {
+        if tick <= self.vp.scroll_tick {
             return plot_x0;
         }
-        let col = ((tick - self.scroll_tick) / self.ticks_per_col).min(u32::from(plot_w));
+        let col = ((tick - self.vp.scroll_tick) / self.vp.ticks_per_col).min(u32::from(plot_w));
         plot_x0.saturating_add(col as u16)
     }
 
@@ -502,14 +464,14 @@ impl App {
         let mut bar_idx = 0usize;
         let mut bar_start = self.view.tick_start;
         for (i, &t) in self.view.bar_lines.iter().enumerate() {
-            if t <= self.play_tick {
+            if t <= self.vp.play_tick {
                 bar_idx = i;
                 bar_start = t;
             } else {
                 break;
             }
         }
-        let beat = self.play_tick.saturating_sub(bar_start) / ppq;
+        let beat = self.vp.play_tick.saturating_sub(bar_start) / ppq;
         format!("{}:{}", bar_idx.saturating_add(1), beat.saturating_add(1))
     }
 }
@@ -715,7 +677,7 @@ mod tests {
     fn quit_key_stops_and_space_toggles_play() {
         let mut app = demo_app();
         assert!(app.on_key(KeyCode::Char(' ')), "space keeps running");
-        assert!(app.playing, "space starts playback");
+        assert!(app.vp.playing, "space starts playback");
         assert!(!app.on_key(KeyCode::Char('q')), "q requests quit");
     }
 
@@ -723,16 +685,16 @@ mod tests {
     fn section_nav_moves_scroll_to_section() {
         let mut app = demo_app();
         app.on_key(KeyCode::Char(']'));
-        assert_eq!(app.sel_section, 1);
-        assert_eq!(app.scroll_tick, 960, "selecting a section scrolls to it");
+        assert_eq!(app.vp.sel_section, 1);
+        assert_eq!(app.vp.scroll_tick, 960, "selecting a section scrolls to it");
     }
 
     #[test]
     fn zoom_keys_change_resolution() {
         let mut app = demo_app();
         app.fit(80);
-        let base = app.ticks_per_col;
+        let base = app.vp.ticks_per_col;
         app.on_key(KeyCode::Char('+'));
-        assert!(app.ticks_per_col <= base, "zoom in lowers ticks/col");
+        assert!(app.vp.ticks_per_col <= base, "zoom in lowers ticks/col");
     }
 }
