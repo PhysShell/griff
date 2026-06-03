@@ -106,3 +106,13 @@ Architectural decisions go to [`adr/`](adr/) instead.
   consume them. Accepted: complexity stays a vector (not a scalar), `phrase_length`
   is reused from S4 rather than re-added, and a `ChunkMeta` schema bump is
   deferred to the corpus phase.
+
+- 2026-06-03 — In the context of the Codex review of PR #18 (the viewport
+  refactor, ADR-0016), facing three pre-existing P2 issues in the S8 slice-2
+  code (phantom right-edge note, `fit` floor division clipping the tail,
+  bar classification reading only the first voice), we decided to keep PR #18 a
+  clean behaviour-preserving refactor and record the findings in
+  [`audit/2026-06-preview-known-issues.md`](audit/2026-06-preview-known-issues.md)
+  as deferred follow-ups, and against folding the fixes in (two change the
+  golden frames; the third is a semantic analysis-layer decision), to keep the
+  refactor's "no behaviour change" contract intact and revisitable.
