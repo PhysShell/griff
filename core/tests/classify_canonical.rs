@@ -39,6 +39,7 @@ fn note_atom(start: u32, dur: u32, pitch: u8, vel: u8) -> AtomEvent {
         pitch: Pitch::new(pitch).expect("valid pitch"),
         velocity: Velocity::new(vel).expect("valid velocity"),
         articulation: None,
+        position: None,
     })
 }
 

@@ -500,7 +500,7 @@ const fn signal_motif_boundary() -> f64 {
 mod tests {
     use super::{detect_phrase_boundaries, quantize_tick, signal_cadence, BoundaryConfig};
     use crate::{
-        event::{Tempo, Ticks, TimeSignature},
+        event::{Tempo, Ticks, TimeSignature, Tuning},
         score::{
             AtomEvent, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track,
             Voice,
@@ -544,6 +544,7 @@ mod tests {
             name: None,
             channel: 0,
             voices: vec![voice],
+            tuning: Tuning::standard_e(),
         };
         let mb = MasterBar {
             index: 0,
@@ -575,6 +576,7 @@ mod tests {
             name: None,
             channel: 0,
             voices: vec![voice],
+            tuning: Tuning::standard_e(),
         };
         Score {
             ticks_per_quarter: 960,

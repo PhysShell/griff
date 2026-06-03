@@ -148,6 +148,71 @@ pub enum Articulation {
     HarmonicPinch,
 }
 
+// ── fretboard ───────────────────────────────────────────────────────────────
+
+/// A `(string, fret)` location on the fretboard, interpreted under a [`Tuning`]
+/// (ADR-0018).
+///
+/// `string` is 1-indexed in Guitar Pro order: string 1 is the highest-pitched
+/// (thinnest). Carried optionally on a note — Guitar Pro supplies it, MIDI
+/// usually cannot recover it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FretboardPosition {
+    /// 1-indexed string number (string 1 = highest-pitched).
+    pub string: u8,
+    /// Fret number (0 = open string).
+    pub fret: u8,
+}
+
+/// A guitar tuning: the open-string pitches ordered by string number
+/// (index 0 = string 1, the highest-pitched).
+///
+/// The reference that maps pitch ↔ (string, fret) (ADR-0018). Carried per
+/// [`crate::score::Track`]; defaults to [`Tuning::standard_e`] (ADR-0006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tuning {
+    open_strings: Vec<Pitch>,
+}
+
+impl Tuning {
+    /// Builds a tuning from open-string pitches, string 1 (highest) first.
+    #[must_use]
+    pub const fn new(open_strings: Vec<Pitch>) -> Self {
+        Self { open_strings }
+    }
+
+    /// Standard E tuning (ADR-0006): strings 1..6 = E4 B3 G3 D3 A2 E2.
+    #[must_use]
+    pub fn standard_e() -> Self {
+        Self {
+            open_strings: vec![
+                Pitch(64), // 1: E4 (high E)
+                Pitch(59), // 2: B3
+                Pitch(55), // 3: G3
+                Pitch(50), // 4: D3
+                Pitch(45), // 5: A2
+                Pitch(40), // 6: E2 (low E)
+            ],
+        }
+    }
+
+    /// The open-string pitches, string 1 (highest) first.
+    #[must_use]
+    pub fn open_strings(&self) -> &[Pitch] {
+        &self.open_strings
+    }
+
+    /// The pitch at `pos` under this tuning, or `None` when the string is out of
+    /// range or the resulting MIDI pitch would exceed 127.
+    #[must_use]
+    pub fn pitch_at(&self, pos: FretboardPosition) -> Option<Pitch> {
+        let idx = usize::from(pos.string.checked_sub(1)?);
+        let open = self.open_strings.get(idx)?;
+        let midi = open.0.checked_add(pos.fret)?;
+        Pitch::new(midi).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Pitch, Tempo, Ticks, TimeSignature, ValidationError, Velocity};

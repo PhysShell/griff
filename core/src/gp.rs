@@ -21,7 +21,9 @@
 //! simultaneous articulations (only the primary one is kept).
 
 use crate::{
-    event::{Articulation, Pitch, Tempo, Ticks, TimeSignature, Velocity},
+    event::{
+        Articulation, FretboardPosition, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity,
+    },
     score::{
         AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
         MasterBar, Score, SourceMeta, TechniqueSpan, Track, Voice,
@@ -209,6 +211,22 @@ fn build_gp_track(
         name: Some(gp_track.name.clone()),
         channel,
         voices,
+        tuning: gp_tuning(&gp_track.strings),
+    }
+}
+
+/// Builds a [`Tuning`] from a Guitar Pro `(string_number, open_midi)` array,
+/// ordered string 1 (highest) first (ADR-0018). Falls back to Standard E when
+/// the array carries no valid open-string pitches.
+fn gp_tuning(strings: &[(i8, i8)]) -> Tuning {
+    let open: Vec<Pitch> = strings
+        .iter()
+        .filter_map(|&(_, midi)| u8::try_from(midi).ok().and_then(|m| Pitch::new(m).ok()))
+        .collect();
+    if open.is_empty() {
+        Tuning::standard_e()
+    } else {
+        Tuning::new(open)
     }
 }
 
@@ -293,6 +311,8 @@ fn build_event_group(
                     pitch,
                     velocity,
                     articulation,
+                    // Guitar Pro is a source of truth for (string, fret) — ADR-0018.
+                    position: gp_note_position(note),
                 }));
             }
             guitarpro::NoteType::Tie
@@ -351,6 +371,17 @@ fn gp_note_midi_pitch(note: &guitarpro::Note, strings: &[(i8, i8)]) -> Option<u8
     let midi = i16::from(tuning).saturating_add(note.value);
     // Clamp and convert to u8; saturating_add already guards against overflow.
     u8::try_from(midi.clamp(0, 127)).ok()
+}
+
+/// Reads the source-of-truth `(string, fret)` of a GP note as a
+/// [`FretboardPosition`] (ADR-0018). `None` when the GP string/fret is invalid.
+fn gp_note_position(note: &guitarpro::Note) -> Option<FretboardPosition> {
+    if note.string <= 0 || note.value < 0 {
+        return None;
+    }
+    let string = u8::try_from(note.string).ok()?;
+    let fret = u8::try_from(note.value).ok()?;
+    Some(FretboardPosition { string, fret })
 }
 
 // ── articulation mapping ──────────────────────────────────────────────────────

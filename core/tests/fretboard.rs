@@ -40,13 +40,28 @@ fn fretboard_position_is_a_copy_value() {
 fn standard_e_maps_string_and_fret_to_pitch() {
     let tuning = Tuning::standard_e();
     // String 1 = high E (E4 = 64), string 6 = low E (E2 = 40).
-    assert_eq!(tuning.pitch_at(FretboardPosition { string: 1, fret: 0 }), Some(Pitch(64)));
-    assert_eq!(tuning.pitch_at(FretboardPosition { string: 6, fret: 0 }), Some(Pitch(40)));
+    assert_eq!(
+        tuning.pitch_at(FretboardPosition { string: 1, fret: 0 }),
+        Some(Pitch(64))
+    );
+    assert_eq!(
+        tuning.pitch_at(FretboardPosition { string: 6, fret: 0 }),
+        Some(Pitch(40))
+    );
     // 5th fret of the low E is A2 (45).
-    assert_eq!(tuning.pitch_at(FretboardPosition { string: 6, fret: 5 }), Some(Pitch(45)));
+    assert_eq!(
+        tuning.pitch_at(FretboardPosition { string: 6, fret: 5 }),
+        Some(Pitch(45))
+    );
     // Out-of-range string (0 or > 6) maps to nothing.
-    assert_eq!(tuning.pitch_at(FretboardPosition { string: 0, fret: 0 }), None);
-    assert_eq!(tuning.pitch_at(FretboardPosition { string: 7, fret: 0 }), None);
+    assert_eq!(
+        tuning.pitch_at(FretboardPosition { string: 0, fret: 0 }),
+        None
+    );
+    assert_eq!(
+        tuning.pitch_at(FretboardPosition { string: 7, fret: 0 }),
+        None
+    );
 }
 
 #[test]
@@ -63,7 +78,10 @@ fn atom_note_carries_optional_position() {
         position: None,
         ..with
     };
-    assert_eq!(with.position, Some(FretboardPosition { string: 1, fret: 0 }));
+    assert_eq!(
+        with.position,
+        Some(FretboardPosition { string: 1, fret: 0 })
+    );
     assert_eq!(without.position, None);
 }
 

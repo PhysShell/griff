@@ -18,7 +18,9 @@
 //! | `LossReport`        | import/export losses                      |
 
 use crate::{
-    event::{Articulation, Pitch, Tempo, Ticks, TimeSignature, Velocity},
+    event::{
+        Articulation, FretboardPosition, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity,
+    },
     slice::TickRange,
 };
 
@@ -105,6 +107,9 @@ pub struct AtomNote {
     pub velocity: Velocity,
     /// Optional playing technique.
     pub articulation: Option<Articulation>,
+    /// Optional fretboard position under the track's [`Tuning`] (ADR-0018).
+    /// Guitar Pro supplies it; MIDI import leaves it `None`.
+    pub position: Option<FretboardPosition>,
 }
 
 /// A rest (silence) in the canonical model, carrying absolute position.
@@ -198,6 +203,9 @@ pub struct Track {
     pub channel: u8,
     /// Independent event streams; note-bearing tracks have at least one.
     pub voices: Vec<Voice>,
+    /// Tuning used to interpret note fretboard positions (ADR-0018); defaults to
+    /// Standard E (ADR-0006) when the source carries no tuning.
+    pub tuning: Tuning,
 }
 
 /// A score-level bar whose meter and tempo are shared across all tracks.
@@ -262,6 +270,7 @@ mod tests {
             pitch: Pitch::new(pitch).expect("valid pitch"),
             velocity: Velocity::new(80).expect("valid velocity"),
             articulation: None,
+            position: None,
         })
     }
 

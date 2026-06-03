@@ -35,6 +35,7 @@ fn note_group(
             pitch: Pitch(pitch),
             velocity: Velocity(velocity),
             articulation: art,
+            position: None,
         })],
         technique_spans: Vec::new(),
     }
@@ -139,6 +140,7 @@ fn voice_features_counts_all_atoms_in_a_group() {
                     pitch: Pitch(52),
                     velocity: Velocity(90),
                     articulation: None,
+                    position: None,
                 }),
                 AtomEvent::Note(AtomNote {
                     absolute_start: Ticks(0),
@@ -146,6 +148,7 @@ fn voice_features_counts_all_atoms_in_a_group() {
                     pitch: Pitch(59),
                     velocity: Velocity(90),
                     articulation: None,
+                    position: None,
                 }),
             ],
             technique_spans: Vec::new(),

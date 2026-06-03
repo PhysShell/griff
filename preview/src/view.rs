@@ -130,7 +130,7 @@ mod tests {
     )]
 
     use super::*;
-    use griff_core::event::{Pitch, Tempo, Ticks, TimeSignature, Velocity};
+    use griff_core::event::{Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
     };
@@ -146,6 +146,7 @@ mod tests {
             pitch: Pitch::new(pitch).expect("valid pitch"),
             velocity: Velocity::new(96).expect("valid velocity"),
             articulation: None,
+            position: None,
         })
     }
 
@@ -178,6 +179,7 @@ mod tests {
                         })
                         .collect(),
                 }],
+                tuning: Tuning::standard_e(),
             })
             .collect();
         Score {

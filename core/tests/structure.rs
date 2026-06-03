@@ -21,7 +21,7 @@
 )]
 
 use griff_core::{
-    event::{Pitch, Tempo, Ticks, TimeSignature, Velocity},
+    event::{Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
     },
@@ -40,6 +40,7 @@ fn quarter_note(start: u32, pitch: u8) -> AtomEvent {
         pitch: Pitch::new(pitch).expect("valid pitch"),
         velocity: Velocity::new(90).expect("valid velocity"),
         articulation: None,
+        position: None,
     })
 }
 
@@ -84,6 +85,7 @@ fn build_score(bars: &[Vec<u8>]) -> Score {
                 id: 0,
                 event_groups: groups,
             }],
+            tuning: Tuning::standard_e(),
         }],
         source_meta: None,
         loss: LossReport::new(),
@@ -222,6 +224,7 @@ fn measures_all_voices_of_a_track() {
                     event_groups: voice_groups(&[1, 3]),
                 },
             ],
+            tuning: Tuning::standard_e(),
         }],
         source_meta: None,
         loss: LossReport::new(),
@@ -305,6 +308,7 @@ fn loopability_penalizes_leading_silence() {
                 id: 0,
                 event_groups: groups,
             }],
+            tuning: Tuning::standard_e(),
         }],
         source_meta: None,
         loss: LossReport::new(),

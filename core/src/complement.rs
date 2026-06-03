@@ -15,7 +15,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::event::{Articulation, Pitch, Ticks, Velocity};
+use crate::event::{Articulation, Pitch, Ticks, Tuning, Velocity};
 use crate::feature::PitchRange;
 use crate::generate::{GenerationError, GenerationSeed};
 use crate::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Score, Track, Voice};
@@ -412,6 +412,7 @@ fn arrange_rhythm_lock(
                     pitch,
                     velocity,
                     articulation: None,
+                    position: None,
                 })],
                 technique_spans: Vec::new(),
             }
@@ -434,6 +435,8 @@ fn arrange_rhythm_lock(
         name: Some(format!("Complement ({})", spec.mode.label())),
         channel: b_channel,
         voices: vec![b_voice],
+        // Part B inherits the standard tuning; positions are not derived yet.
+        tuning: Tuning::standard_e(),
     };
 
     let mut combined = score.clone();

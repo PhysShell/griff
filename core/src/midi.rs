@@ -12,7 +12,7 @@ use midly::{
 use thiserror::Error;
 
 use crate::{
-    event::{Articulation, Pitch, Tempo, Ticks, TimeSignature, ValidationError, Velocity},
+    event::{Articulation, Pitch, Tempo, Ticks, TimeSignature, Tuning, ValidationError, Velocity},
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, ImportWarning, LossReport, MasterBar,
         Score, SourceMeta, Track as ScoreTrack, Voice,
@@ -440,6 +440,8 @@ fn build_score_track(
                         pitch: taken.pitch,
                         velocity: taken.velocity,
                         articulation: taken.articulation,
+                        // MIDI cannot recover string/fret (ADR-0018).
+                        position: None,
                     });
                     event_groups.push(EventGroup {
                         kind: EventGroupKind::Single,
@@ -463,6 +465,8 @@ fn build_score_track(
             name,
             channel,
             voices: vec![voice],
+            // MIDI carries no tuning; default to Standard E (ADR-0006/0018).
+            tuning: Tuning::standard_e(),
         },
         loss,
     )))
@@ -664,7 +668,7 @@ mod tests {
         bar_ticks, build_master_bars, export_score, import_score, tempo_to_micros, MidiError, Ppqn,
     };
     use crate::{
-        event::{Pitch, Tempo, Ticks, TimeSignature, Velocity},
+        event::{Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
         score::{
             AtomEvent as ScoreAtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport,
             MasterBar, Score, Track as ScoreTrack2, Voice,
@@ -868,6 +872,7 @@ mod tests {
                 pitch: Pitch::new(60).expect("valid pitch"),
                 velocity: Velocity::new(80).expect("valid velocity"),
                 articulation: None,
+                position: None,
             });
             let group = EventGroup {
                 kind: EventGroupKind::Single,
@@ -881,6 +886,7 @@ mod tests {
                     id: 0,
                     event_groups: vec![group],
                 }],
+                tuning: Tuning::standard_e(),
             }
         };
 
