@@ -14,5 +14,6 @@ pub mod generate;
 pub mod gp;
 pub mod midi;
 pub mod score;
+pub mod scoring;
 pub mod slice;
 pub mod structure;

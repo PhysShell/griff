@@ -19,6 +19,7 @@ use crate::event::{Articulation, Pitch, Ticks, Velocity};
 use crate::feature::PitchRange;
 use crate::generate::{GenerationError, GenerationSeed};
 use crate::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Score, Track, Voice};
+use crate::scoring::{rank_indices, Axes, Axis, Scored, WeightPolicy};
 
 /// A named complementarity preset for generating part B (glossary §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -95,6 +96,63 @@ pub struct AxisScores {
     pub technique_overlap: f64,
 }
 
+// Stable relation-axis labels — the join keys between [`AxisScores`] facts and a
+// scoring [`WeightPolicy`] (ADR-0017). Named once so the labels and the axis
+// order cannot drift apart.
+const AXIS_RHYTHM_SIMILARITY: &str = "rhythm_similarity";
+const AXIS_REGISTER_OVERLAP: &str = "register_overlap";
+const AXIS_DENSITY_RATIO: &str = "density_ratio";
+const AXIS_TECHNIQUE_OVERLAP: &str = "technique_overlap";
+
+/// The complement relation axes, in their canonical order (ADR-0017).
+pub const RELATION_AXIS_LABELS: [&str; 4] = [
+    AXIS_RHYTHM_SIMILARITY,
+    AXIS_REGISTER_OVERLAP,
+    AXIS_DENSITY_RATIO,
+    AXIS_TECHNIQUE_OVERLAP,
+];
+
+impl AxisScores {
+    /// The four relation axes as labelled scoring facts (ADR-0017).
+    ///
+    /// Exposes the existing per-axis measurements as shared [`Axes`] data, in
+    /// [`RELATION_AXIS_LABELS`] order, so the complement relation is scored,
+    /// ranked, and explained with the same vocabulary as every other score.
+    #[must_use]
+    pub fn axes(&self) -> Axes {
+        Axes::new(vec![
+            Axis {
+                label: AXIS_RHYTHM_SIMILARITY,
+                value: self.rhythm_similarity,
+            },
+            Axis {
+                label: AXIS_REGISTER_OVERLAP,
+                value: self.register_overlap,
+            },
+            Axis {
+                label: AXIS_DENSITY_RATIO,
+                value: self.density_ratio,
+            },
+            Axis {
+                label: AXIS_TECHNIQUE_OVERLAP,
+                value: self.technique_overlap,
+            },
+        ])
+    }
+}
+
+/// The baseline relation weight policy (`relation` v1): uniform over the four
+/// relation axes.
+///
+/// Untuned by design — weights are *data* the feedback layer (S9) learns
+/// (ADR-0017 §3), and per-relation-mode policies are future data, not branches
+/// hardcoded here. For the implemented `rhythm_lock` mode the uniform aggregate
+/// reads as "how strongly B relates to A".
+#[must_use]
+pub fn relation_weights_v1() -> WeightPolicy {
+    WeightPolicy::uniform("relation", 1, &RELATION_AXIS_LABELS)
+}
+
 /// A produced complement: the combined score plus provenance.
 #[derive(Debug, Clone)]
 pub struct ComplementCandidate {
@@ -108,6 +166,35 @@ pub struct ComplementCandidate {
     pub seed: GenerationSeed,
     /// Per-axis relation scores.
     pub axis_scores: AxisScores,
+}
+
+impl ComplementCandidate {
+    /// An explainable [`Scored`] view of this candidate under `policy`
+    /// (ADR-0017).
+    ///
+    /// The value is the part-B track locator; the provenance carries the seed
+    /// and the weight-policy version, so the aggregate and any ranking are
+    /// reproducible relative to `(seed, policy version)` (ADR-0017 §7).
+    #[must_use]
+    pub fn scored(&self, policy: &WeightPolicy) -> Scored<usize> {
+        Scored::new(
+            self.part_b_index,
+            self.axis_scores.axes(),
+            policy,
+            Some(self.seed.0),
+        )
+    }
+}
+
+/// Ranks complement candidates under `policy`, most-related first, ties broken
+/// by candidate order (the fixed tie-break rule, ADR-0017 §7).
+///
+/// Returns indices into `candidates`. Deterministic for fixed inputs and a fixed
+/// policy version.
+#[must_use]
+pub fn rank_candidates(candidates: &[ComplementCandidate], policy: &WeightPolicy) -> Vec<usize> {
+    let scored: Vec<Scored<usize>> = candidates.iter().map(|c| c.scored(policy)).collect();
+    rank_indices(&scored)
 }
 
 /// Result of the (A, B) pair validator.
