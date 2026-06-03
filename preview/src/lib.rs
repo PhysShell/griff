@@ -22,8 +22,10 @@ pub mod analysis;
 pub mod render;
 pub mod tui;
 pub mod view;
+pub mod viewport;
 
 pub use analysis::{analyze, Analysis, Section};
 pub use render::render_frame;
 pub use tui::App;
 pub use view::{build_view, Lane, NoteRect, PianoRollView};
+pub use viewport::{Intent, Step, ViewContext, Viewport};
