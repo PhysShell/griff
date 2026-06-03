@@ -9,6 +9,17 @@
 //! width. The reducer reads only a narrow [`ViewContext`] — never the view-model
 //! directly — so this layer has no dependency on any renderer or projection.
 
+// The reducer and playback math are bounded saturating integer arithmetic over
+// tick spans and column counts, plus one ticks-per-second cast for playback.
+// Values are clamped and every denominator is guarded non-zero, so the
+// overflow/precision lints carry no signal here.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+
 /// The read-only facts the reducer needs about the score projection: the plotted
 /// tick span, timing, and the onset tick of each named section (in order).
 #[derive(Debug, Clone, PartialEq)]
@@ -27,7 +38,7 @@ pub struct ViewContext {
 
 /// Interactive, renderer-agnostic viewport state. Mutated only by the reducer
 /// ([`Viewport::apply`]) and the pure playback helpers.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
     /// Leftmost visible tick.
     pub scroll_tick: u32,
@@ -77,7 +88,6 @@ pub enum Intent {
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[must_use]
 pub enum Step {
     /// Keep running.
     Continue,
@@ -85,41 +95,114 @@ pub enum Step {
     Quit,
 }
 
+/// Default zoom (ticks per column) before a [`Viewport::fit`].
+const DEFAULT_TICKS_PER_COL: u32 = 60;
+
 impl Viewport {
     /// Builds the initial viewport for a score whose highest pitch is
     /// `high_pitch`, anchored at the start of `ctx`'s span.
     #[must_use]
     pub fn new(ctx: &ViewContext, high_pitch: u8) -> Self {
-        let _ = (ctx, high_pitch);
-        todo!("red phase: Viewport::new")
+        let top_pitch = high_pitch.saturating_add(1).min(127);
+        Self {
+            scroll_tick: ctx.tick_start,
+            ticks_per_col: DEFAULT_TICKS_PER_COL,
+            top_pitch,
+            sel_section: 0,
+            playing: false,
+            play_tick: ctx.tick_start,
+            show_inspector: true,
+        }
     }
 
     /// Chooses a zoom that fits the whole span into `plot_cols` columns and
     /// resets the scroll to the start of the span.
     pub fn fit(&mut self, plot_cols: u32, ctx: &ViewContext) {
-        let _ = (plot_cols, ctx);
-        todo!("red phase: Viewport::fit")
+        let cols = plot_cols.max(1);
+        let span = ctx.tick_end.saturating_sub(ctx.tick_start).max(1);
+        self.ticks_per_col = (span / cols).max(1);
+        self.scroll_tick = ctx.tick_start;
     }
 
     /// Applies one [`Intent`], mutating the viewport, and reports whether the app
     /// should keep running.
     pub fn apply(&mut self, intent: Intent, ctx: &ViewContext) -> Step {
-        let _ = (intent, ctx);
-        todo!("red phase: Viewport::apply")
+        let scroll_step = self.ticks_per_col.saturating_mul(8).max(1);
+        match intent {
+            Intent::Quit => return Step::Quit,
+            Intent::TogglePlay => {
+                if !self.playing && self.play_tick >= ctx.tick_end {
+                    self.play_tick = ctx.tick_start;
+                }
+                self.playing = !self.playing;
+            }
+            Intent::ScrollLeft => {
+                self.scroll_tick = self
+                    .scroll_tick
+                    .saturating_sub(scroll_step)
+                    .max(ctx.tick_start);
+            }
+            Intent::ScrollRight => {
+                self.scroll_tick = self.scroll_tick.saturating_add(scroll_step);
+            }
+            Intent::PitchUp => self.top_pitch = self.top_pitch.saturating_add(2).min(127),
+            Intent::PitchDown => self.top_pitch = self.top_pitch.saturating_sub(2),
+            Intent::ZoomIn => {
+                self.ticks_per_col = (self.ticks_per_col.saturating_mul(2) / 3).max(1);
+            }
+            Intent::ZoomOut => {
+                self.ticks_per_col = (self.ticks_per_col.saturating_mul(3) / 2).max(1);
+            }
+            Intent::PrevSection => self.select_section(self.sel_section.saturating_sub(1), ctx),
+            Intent::NextSection => self.select_section(self.sel_section.saturating_add(1), ctx),
+            Intent::ToggleInspector => self.show_inspector = !self.show_inspector,
+            Intent::Home => {
+                self.scroll_tick = ctx.tick_start;
+                self.play_tick = ctx.tick_start;
+            }
+        }
+        Step::Continue
+    }
+
+    /// Selects section `idx` (clamped to the last) and jumps the scroll and
+    /// playhead to its onset.
+    fn select_section(&mut self, idx: usize, ctx: &ViewContext) {
+        let last = ctx.section_starts.len().saturating_sub(1);
+        self.sel_section = idx.min(last);
+        if let Some(&start) = ctx.section_starts.get(self.sel_section) {
+            self.scroll_tick = start;
+            self.play_tick = start;
+        }
     }
 
     /// Advances playback by `dt_secs` seconds of wall-clock time. A no-op when
     /// paused; stops at the end of the span.
     pub fn advance_playback(&mut self, dt_secs: f64, ctx: &ViewContext) {
-        let _ = (dt_secs, ctx);
-        todo!("red phase: Viewport::advance_playback")
+        if !self.playing {
+            return;
+        }
+        let tps = f64::from(ctx.ppq) * ctx.tempo_bpm / 60.0;
+        let adv = (tps * dt_secs) as u32;
+        self.play_tick = self.play_tick.saturating_add(adv.max(1));
+        if self.play_tick >= ctx.tick_end {
+            self.play_tick = ctx.tick_end;
+            self.playing = false;
+        }
     }
 
     /// Recenters the scroll on the playhead when it leaves the visible window of
     /// `plot_cols` columns. A no-op when paused.
     pub fn autoscroll(&mut self, plot_cols: u32) {
-        let _ = plot_cols;
-        todo!("red phase: Viewport::autoscroll")
+        if !self.playing || plot_cols == 0 {
+            return;
+        }
+        let right = self
+            .scroll_tick
+            .saturating_add(plot_cols.saturating_mul(self.ticks_per_col));
+        if self.play_tick < self.scroll_tick || self.play_tick >= right {
+            let back = (plot_cols / 4).saturating_mul(self.ticks_per_col);
+            self.scroll_tick = self.play_tick.saturating_sub(back);
+        }
     }
 }
 
