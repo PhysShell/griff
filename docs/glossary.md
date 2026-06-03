@@ -923,9 +923,11 @@ reducer `Viewport::apply` is the only place that interprets them. See ADR-0016.
 
 ### Scene
 A resolved, renderer-agnostic placement of a frame: a grid of placed cells (note
-blocks, bar/section lines, playhead, status segments) in abstract cells with
-*semantic* style. Produced by `resolve(view, analysis, viewport, size)`; each
-renderer maps it to glyphs/pixels. See ADR-0016.
+blocks, bar/section lines, playhead, section band, gutter labels) in abstract
+cells with *semantic* style. Produced by `resolve(view, analysis, viewport,
+size)`; each renderer maps it to glyphs/pixels. Carries *placement only* —
+toolkit-specific text (header, footer, inspector) is rendered per-frontend from
+the same view-model, never resolved into the scene. See ADR-0016.
 
 ### Renderer
 A thin frontend backend (ratatui or egui) that maps a `Scene` to its toolkit and

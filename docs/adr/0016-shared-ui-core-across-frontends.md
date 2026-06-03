@@ -42,8 +42,8 @@ has four layers, top to bottom:
 3. **Scene** (`scene`, follows in a later slice) — a `resolve(view, analysis,
    viewport, GridSize) -> Scene` that lifts all layout math into one place and
    emits a *placed* grid (note cells, bar/section lines, playhead column,
-   status segments) in abstract cells, with **semantic** style (lane index,
-   emphasis enum, section class) rather than concrete colours. This is the
+   section band, gutter labels) in abstract cells, with **semantic** style (lane
+   index, emphasis enum, section class) rather than concrete colours. This is the
    *visual* half.
 4. **Renderers** — `ratatui` and `egui`. Each maps `Scene` → its toolkit and its
    raw input → `Intent`. The piano-roll is fundamentally a grid, so `egui`
@@ -61,6 +61,20 @@ dependency, visible in review, not a silent drift.
 We do **not** share input handling (keys vs mouse/wheel differ — only `Intent`s
 cross), and we do **not** build a portable widget framework on top of two
 toolkits. The core is data + reducer + a grid resolver; nothing more.
+
+The line between core and renderer is **placement vs presentation**. A thing
+enters the `Scene` only when it reduces to a placed cell plus a semantic role
+that every toolkit draws identically (a filled grid cell). Anything whose layout
+is toolkit-specific — text shaping, wrapping, widget composition, borders,
+meters — stays in the renderer; the core passes at most the *numbers and enums*
+it needs, never formatted output. So the piano-roll grid (notes, bar/section
+lines, section markers, playhead, the section band, gutter labels) is resolved,
+while the header line, footer hint, and inspector dock are rendered per-frontend
+from the *same* `PianoRollView`/`Analysis`/`Viewport`. The test is directional:
+when a renderer-local need turns out to be shared *placement*, push it **down**
+into the `Scene`; when it is only *formatting*, it stays up. This keeps the
+`Scene` something a renderer blits, not interprets — and is why "status
+segments" are deliberately **not** scene cells.
 
 Tests assert the `Scene` (and the reducer) headlessly; the `ratatui`
 cell-snapshot stays as a human-readable witness of the same scene.
