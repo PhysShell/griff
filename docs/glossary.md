@@ -141,15 +141,17 @@ The minimal event in the canonical model: note, rest, tie, control/expression
 event, or a service unit. The atom that groups are built from.
 
 ### Fretboard position
-The `(string, fret)` location of a note under the score's `Tuning`. Carried
-optionally on a note (ADR-0014): Guitar Pro import supplies it directly, MIDI
-import leaves it absent or inferred. Pitch alone cannot express hand position;
-position is what makes `fret_jump_penalty` and human-plausible parts possible.
+The `(string, fret)` location of a note under the track's `Tuning`, carried
+optionally on a note as part of the rich note model (ADR-0018, superseding
+ADR-0014): Guitar Pro import supplies it directly, MIDI import leaves it absent
+or inferred. Pitch alone cannot express hand position; position is what makes
+`fret_jump_penalty` and human-plausible parts possible.
 
 ### Note
-A sounding note. Currently has `pitch`, `duration`, `velocity`,
-`articulation`. The target model must also carry source metadata: string,
-fret, technique evidence, voice id.
+A sounding note (`AtomNote`): `pitch`, `duration`, `velocity`, an optional
+`FretboardPosition`, and a set of `NoteMark`s, each technique carrying
+`TechniqueEvidence`. The flat `Option<Articulation>` is superseded by the marks
+set plus `TechniqueSpan`s (ADR-0018).
 
 ### Rest
 A musically significant silence of a given duration. Distinct from "no event".
@@ -419,24 +421,28 @@ several strings).
 A guitar fret. With string, defines the physical position of a note.
 
 ### Tuning
-Guitar tuning (standard, drop D, alternate). Required to interpret string/fret
-correctly.
+Guitar tuning (standard, drop D, alternate). A first-class model type carried
+per `Track` (default Standard E, ADR-0006), the reference that maps pitch ↔
+(string, fret) (ADR-0018). Distinct from the coarse corpus `tuning` string tag.
 
 ### Guitar technique
 A playing technique: hammer-on, pull-off, slide, bend, vibrato, palm mute,
 tapping, harmonic, etc.
 
 ### TechniqueSpan
-A time or note range a technique applies to (techniques are not always
-single-note).
+A spanning guitar technique over a tick (later: note) range — slide, legato
+(hammer-on/pull-off), bend, vibrato, palm-mute, let-ring, tremolo, sweep. Holds a
+`SpanTechnique` kind plus `TechniqueEvidence`. The relational / time-extended
+half of the technique model; the per-note half is `NoteMark` (ADR-0018).
 
 ### Source-of-truth articulation
 An articulation from a format that stores it explicitly (e.g. Guitar Pro), as
 opposed to inferred from MIDI.
 
 ### Inferred articulation
-An articulation guessed by heuristics. Must carry confidence/evidence, not
-masquerade as fact.
+A technique guessed by heuristics from MIDI evidence. Carries `TechniqueEvidence`
+(`InferredFromMidi` + confidence `< 1.0`), so it never masquerades as a
+source-of-truth (`Explicit`) technique (ADR-0018).
 
 ### Lossless import
 Import without losing important semantics. Possible for much of Guitar Pro if
@@ -449,8 +455,40 @@ lossy).
 ## 5. Articulations and guitar techniques
 
 ### Articulation
-A technique/manner of playing a note. The current enum already holds some
-guitar articulations.
+A compatibility *projection* — a single dominant label over a note's `NoteMark`
+set and overlapping `TechniqueSpan`s — kept for summaries, views, and coarse
+corpus tags (ADR-0018). No longer how a note stores technique: the truth is the
+marks set plus spans, each with evidence.
+
+### NoteMark
+A per-note guitar technique that is intrinsic to one note and **co-occurs** with
+others: accent, ghost, staccato, dead/muted, natural/pinch harmonic, tap. A note
+carries a *set* of marks, replacing the old `Option<Articulation>` (ADR-0018).
+
+### SpanTechnique
+The kind of a `TechniqueSpan` — a technique that relates notes or covers a range
+(slide, legato, bend, vibrato, palm-mute, let-ring, tremolo, sweep). Distinct
+from `NoteMark` so illegal states are unrepresentable (a slide is not a note
+mark; an accent is not a span) (ADR-0018).
+
+### TechniqueEvidence
+Provenance on a mark, span, or position: a `TechniqueSource`
+(`Explicit` = read from a source-of-truth format like Guitar Pro, confidence 1.0;
+`InferredFromMidi` = guessed from MIDI evidence, confidence `< 1.0`) plus the
+confidence. Keeps inferred techniques from masquerading as fact (ADR-0018). The
+import-side sense of *evidence* reserved by ADR-0017 (distinct from a scoring
+*rationale*).
+
+### TechniqueSource
+Where a technique came from: `Explicit` (source-of-truth format) or
+`InferredFromMidi` (heuristic cue). The `source` field of `TechniqueEvidence`
+(ADR-0018).
+
+### NoteId
+A lightweight stable note identifier, so a `TechniqueSpan` can pin specific
+endpoints (a legato pair, which chord note bends) and survive region
+regeneration. Part of the target rich note model; phased in after the initial
+tick-range spans (ADR-0018).
 
 ### Slide
 Sliding between notes/positions. In MIDI only indirectly via pitch bend; in
@@ -1329,7 +1367,9 @@ Use these as defaults until an ADR decides otherwise:
 `BoundaryReason`, `BoundaryScore`, `PhraseChunk`, `FeatureVector`,
 `GenerationRequest`, `GenerationCandidate`, `GenerationSeed`,
 `RegenerationRegion`, `FrozenRegion`, `AnchorPoint`, `PreferenceProfile`,
-`Scored`, `ScoreAxes`, `ScoreWeights`, `Rationale` (ADR-0017).
+`Scored`, `ScoreAxes`, `ScoreWeights`, `Rationale` (ADR-0017),
+`FretboardPosition`, `Tuning`, `NoteMark`, `SpanTechnique`, `TechniqueEvidence`,
+`NoteId` (ADR-0018).
 
 ## 19. Terms to avoid or use carefully
 
