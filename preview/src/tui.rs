@@ -667,6 +667,27 @@ mod tests {
         App::new(view, analysis, "demo.mid".to_string())
     }
 
+    // Characterization goldens: pin the exact rendered frame before and after a
+    // scripted interaction, so the viewport refactor cannot silently change what
+    // the terminal draws. Regenerate deliberately if the UI is meant to change.
+    #[test]
+    fn render_byte_stable_initial() {
+        let mut app = demo_app();
+        let got = app.snapshot(80, 20).expect("renders").join("\n");
+        assert_eq!(got, include_str!("golden/initial_80x20.txt"));
+    }
+
+    #[test]
+    fn render_byte_stable_after_actions() {
+        let mut app = demo_app();
+        app.fit(80);
+        app.on_key(KeyCode::Char(' ')); // play
+        app.on_key(KeyCode::Char(']')); // next section
+        app.on_key(KeyCode::Char('+')); // zoom in
+        let got = app.snapshot(80, 20).expect("renders").join("\n");
+        assert_eq!(got, include_str!("golden/acted_80x20.txt"));
+    }
+
     #[test]
     fn snapshot_has_exact_dimensions() {
         let mut app = demo_app();
