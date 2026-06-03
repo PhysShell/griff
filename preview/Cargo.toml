@@ -1,0 +1,22 @@
+[package]
+name         = "griff-preview"
+description  = "Standalone preview: render a score as a piano-roll (S8)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[[bin]]
+name = "griff-preview"
+path = "src/main.rs"
+
+[dependencies]
+griff-core = { path = "../core" }
+ratatui    = "0.29"
+
+[lints]
+workspace = true

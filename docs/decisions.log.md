@@ -106,3 +106,28 @@ Architectural decisions go to [`adr/`](adr/) instead.
   consume them. Accepted: complexity stays a vector (not a scalar), `phrase_length`
   is reused from S4 rather than re-added, and a `ChunkMeta` schema bump is
   deferred to the corpus phase.
+
+- 2026-06-03 — In the context of the Codex review of PR #18 (the viewport
+  refactor, ADR-0016), facing three pre-existing P2 issues in the S8 slice-2
+  code (phantom right-edge note, `fit` floor division clipping the tail,
+  bar classification reading only the first voice), we decided to keep PR #18 a
+  clean behaviour-preserving refactor and record the findings in
+  [`audit/2026-06-preview-known-issues.md`](audit/2026-06-preview-known-issues.md)
+  as deferred follow-ups, and against folding the fixes in (two change the
+  golden frames; the third is a semantic analysis-layer decision), to keep the
+  refactor's "no behaviour change" contract intact and revisitable.
+
+- 2026-06-03 — In the context of resolving preview P2 #3 (bar classification
+  read only `voices.first()`, so material in voice 2+ was invisible to the
+  section bands), facing whether to merge every voice's atoms into one
+  `BarFeatures` before classifying or to classify each voice and reduce, we
+  decided for **merge-then-classify** — a new `bar_features_across_voices` in
+  `griff_core::classify` aggregates note count / average velocity / pitch span
+  across all voices of the focus track, with `bar_features_in_range` kept as a
+  thin single-voice wrapper over it — and against a per-voice-then-reduce scheme
+  and against the original fix's duplicate aggregator living in the preview
+  layer, to give multi-voice imported parts (e.g. one `Voice` per Guitar Pro
+  voice) a single honest classification and keep the feature math in core (one
+  home, no drift). Accepted: this is the coarse named-section heuristic, not the
+  S14 structure metrics; if per-voice section semantics are ever needed this is
+  revisitable.

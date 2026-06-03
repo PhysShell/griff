@@ -901,6 +901,39 @@ Roundtrip/export.
 A standalone app for viewing phrases, candidates, boundaries, graph, and
 feedback. Comes before CLAP.
 
+### View-model
+A pure, renderer-agnostic projection of a `Score` for display (e.g.
+`PianoRollView`, `Analysis`). No rendering, no I/O. The shared input every
+frontend draws from. See ADR-0016.
+
+### UI core
+The shared, frontend-independent layers behind every `griff` GUI: the
+*view-model*, the *interaction core* (`Viewport`/`Intent`), and the *scene*.
+Frontends (ratatui, egui) are thin adapters over it. See ADR-0016.
+
+### Viewport
+The interactive UI-core state: scroll, zoom, pitch offset, section selection,
+playback position, inspector toggle. Renderer-agnostic; mutated only by the
+reducer. See ADR-0016.
+
+### Intent
+A semantic, device-independent UI action (e.g. `TogglePlay`, `ScrollRight`,
+`NextSection`). Frontends translate raw input (keys, mouse) into intents; the
+reducer `Viewport::apply` is the only place that interprets them. See ADR-0016.
+
+### Scene
+A resolved, renderer-agnostic placement of a frame: a grid of placed cells (note
+blocks, bar/section lines, playhead, section band, gutter labels) in abstract
+cells with *semantic* style. Produced by `resolve(view, analysis, viewport,
+size)`; each renderer maps it to glyphs/pixels. Carries *placement only* —
+toolkit-specific text (header, footer, inspector) is rendered per-frontend from
+the same view-model, never resolved into the scene. See ADR-0016.
+
+### Renderer
+A thin frontend backend (ratatui or egui) that maps a `Scene` to its toolkit and
+raw input to `Intent`s. Holds no interaction logic and no layout math. See
+ADR-0016.
+
 ### egui
 A Rust immediate-mode GUI library. Candidate for the preview app.
 

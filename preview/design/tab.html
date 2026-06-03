@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>griff · preview — tablature view (Guitar Pro style)</title>
+<style>
+  :root, .theme-dark {
+    --bg:#1c1c1e; --panel:#242427; --panel-2:#2b2b2f; --faint:#313136;
+    --widget:#3a3a40; --widget-hover:#45454c; --widget-active:#525259;
+    --stroke:#46464d; --stroke-soft:#36363b;
+    --text:#dcdcde; --text-dim:#9a9aa2; --text-faint:#6e6e76;
+    --accent:#3b9dff; --accent-dim:#2b6fb8; --shadow:rgba(0,0,0,.45);
+    /* score "paper" — Guitar Pro shows a light sheet on a dark app */
+    --paper:#f6f5f1; --ink:#1d1d1f; --staff:#2a2a2c; --rule:#b9b6ad;
+    --cursor:rgba(59,157,255,.18); --cursor-line:#3b9dff;
+    --pm:#7a5a00;
+  }
+  .score-dark {
+    --paper:#202024; --ink:#e8e8ea; --staff:#c9c9cf; --rule:#4a4a52;
+    --cursor:rgba(59,157,255,.22); --cursor-line:#69b4ff; --pm:#d2a23a;
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body {
+    font:13px/1.45 -apple-system,"Segoe UI",Roboto,Inter,system-ui,sans-serif;
+    background:var(--bg); color:var(--text); -webkit-font-smoothing:antialiased;
+    user-select:none; overflow:hidden;
+  }
+  .app { display:flex; flex-direction:column; height:100vh; }
+
+  .menubar {
+    display:flex; align-items:center; gap:14px; height:36px; padding:0 12px;
+    background:var(--panel); border-bottom:1px solid var(--stroke-soft);
+  }
+  .brand { font-weight:700; } .brand .dot { color:var(--accent); }
+  .menubar .spacer { flex:1; }
+  .switch { display:flex; border:1px solid var(--stroke); border-radius:6px; overflow:hidden; }
+  .switch a {
+    text-decoration:none; color:var(--text-dim); padding:5px 12px; font-size:12px;
+    background:var(--widget);
+  }
+  .switch a.on { background:var(--accent-dim); color:#fff; }
+  .switch a:hover { color:var(--text); }
+  .tag { font-size:11px; color:var(--text-dim); border:1px solid var(--stroke); border-radius:999px; padding:2px 9px; }
+
+  .transport {
+    display:flex; align-items:center; gap:10px; height:44px; padding:0 12px;
+    background:var(--panel-2); border-bottom:1px solid var(--stroke-soft);
+  }
+  button.btn {
+    font:inherit; color:var(--text); background:var(--widget);
+    border:1px solid var(--stroke); border-radius:5px; padding:5px 10px; cursor:pointer;
+    transition:background .08s;
+  }
+  button.btn:hover { background:var(--widget-hover); }
+  button.btn.icon { width:34px; padding:5px 0; text-align:center; font-size:14px; }
+  button.btn.primary { background:var(--accent-dim); border-color:var(--accent); }
+  button.btn.primary:hover { background:var(--accent); }
+  button.btn.toggled { background:var(--accent-dim); border-color:var(--accent); color:#fff; }
+  .field { display:flex; align-items:center; gap:6px; color:var(--text-dim); }
+  .field .val { color:var(--text); font-variant-numeric:tabular-nums; background:var(--faint);
+    border:1px solid var(--stroke); border-radius:5px; padding:4px 8px; min-width:48px; text-align:center; }
+  .sep { width:1px; height:22px; background:var(--stroke); }
+  .transport .spacer { flex:1; }
+
+  /* score area */
+  .scoreWrap { flex:1; overflow:auto; background:var(--bg); padding:22px; }
+  .sheet {
+    background:var(--paper); color:var(--ink);
+    margin:0 auto; max-width:1180px; border-radius:6px;
+    box-shadow:0 8px 30px var(--shadow); padding:26px 30px 34px;
+  }
+  .sheet .title { font-size:20px; font-weight:700; text-align:center; letter-spacing:.3px; }
+  .sheet .subtitle { text-align:center; color:#8a8a86; font-size:12px; margin-top:2px; }
+  .score-dark .sheet .subtitle { color:#9a9aa2; }
+  .trackhead {
+    display:flex; align-items:baseline; gap:12px; margin:18px 0 4px; font-size:13px;
+    border-left:3px solid var(--accent); padding-left:10px;
+  }
+  .trackhead .tn { font-weight:700; }
+  .trackhead .meta { color:#8a8a86; font-size:12px; }
+  .score-dark .trackhead .meta { color:#9a9aa2; }
+  svg { display:block; width:100%; height:auto; font-family:"Times New Roman",Georgia,serif; }
+
+  /* bottom track strip — Guitar Pro multitrack selector */
+  .trackstrip {
+    display:flex; gap:8px; align-items:stretch; padding:8px 12px;
+    background:var(--panel); border-top:1px solid var(--stroke-soft); overflow-x:auto;
+  }
+  .tcard {
+    display:flex; align-items:center; gap:9px; min-width:170px;
+    background:var(--panel-2); border:1px solid var(--stroke); border-radius:7px;
+    padding:8px 10px; cursor:pointer;
+  }
+  .tcard:hover { background:var(--faint); }
+  .tcard.sel { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+  .tcard .sw { width:11px; height:24px; border-radius:3px; flex:none; }
+  .tcard .col { display:flex; flex-direction:column; line-height:1.25; }
+  .tcard .nm { font-weight:600; font-size:12px; }
+  .tcard .tun { color:var(--text-faint); font-size:11px; }
+  .tcard .ms { margin-left:auto; display:flex; gap:4px; }
+  .tcard .ms button { width:20px; height:20px; font-size:10px; font-weight:700; border-radius:4px;
+    border:1px solid var(--stroke); background:var(--widget); color:var(--text-dim); cursor:pointer; }
+  .tcard .ms button.m.on { background:#c0392b; border-color:#e05545; color:#fff; }
+  .tcard .ms button.s.on { background:#b8860b; border-color:#e0a800; color:#fff; }
+
+  .statusbar {
+    display:flex; align-items:center; gap:16px; height:24px; padding:0 12px;
+    background:var(--panel); border-top:1px solid var(--stroke-soft);
+    color:var(--text-faint); font-size:11px;
+  }
+  .statusbar .spacer { flex:1; }
+  .scoreWrap::-webkit-scrollbar, .trackstrip::-webkit-scrollbar { width:10px; height:10px; }
+  .scoreWrap::-webkit-scrollbar-thumb, .trackstrip::-webkit-scrollbar-thumb {
+    background:var(--widget); border-radius:6px; border:2px solid var(--bg); }
+</style>
+</head>
+<body class="theme-dark">
+<div class="app">
+
+  <div class="menubar">
+    <div class="brand">griff<span class="dot">·</span>preview</div>
+    <div class="switch">
+      <a href="index.html">Piano roll</a>
+      <a href="tab.html" class="on">Tablature</a>
+    </div>
+    <div class="spacer"></div>
+    <div class="tag" id="fileTag">demo-riff.gp</div>
+  </div>
+
+  <div class="transport">
+    <button class="btn icon" id="toStart" title="To start">⏮</button>
+    <button class="btn icon primary" id="playBtn" title="Play / pause">▶</button>
+    <button class="btn icon" id="stopBtn" title="Stop">⏹</button>
+    <div class="sep"></div>
+    <div class="field">♩= <span class="val" id="bpmVal">120</span></div>
+    <div class="field">Meter <span class="val">4/4</span></div>
+    <div class="field">Bar <span class="val" id="posVal">1</span></div>
+    <div class="sep"></div>
+    <button class="btn toggled" id="notationBtn" title="Show standard notation">♪ Notation</button>
+    <button class="btn" id="loopBtn" title="Loop">⟳ Loop</button>
+    <div class="spacer"></div>
+    <button class="btn" id="scoreThemeBtn">Dark sheet</button>
+  </div>
+
+  <div class="scoreWrap" id="scoreWrap">
+    <div class="sheet" id="sheet">
+      <div class="title">Demo Riff</div>
+      <div class="subtitle">griff preview — Guitar Pro–style tablature mockup</div>
+      <div class="trackhead">
+        <span class="tn" id="thName">Rhythm Gtr</span>
+        <span class="meta" id="thMeta"></span>
+      </div>
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+  </div>
+
+  <div class="trackstrip" id="trackstrip"></div>
+
+  <div class="statusbar">
+    <span id="stTrack"></span>
+    <span class="spacer"></span>
+    <span class="hint">space — play/pause · click a track below to switch · ♪ to hide notes</span>
+  </div>
+</div>
+
+<script>
+/* ──────────────────────────────────────────────────────────────────────
+   Guitar Pro–style tab/notation mockup. Hand-rolled SVG: standard staff
+   (treble, written 8vb for guitar) above a TAB staff, with rhythm stems and
+   beams below the tab, palm-mute spans, power chords and lead techniques.
+   Data is authored as measures → beats → notes (string + fret), so it reads
+   like a real tab rather than a piano-roll projection.
+─────────────────────────────────────────────────────────────────────── */
+const BPM = 120, BEATS_PER_BAR = 4;
+
+// Tunings: strings listed HIGH → LOW (top tab line first).
+const TUN = {
+  guitar: { name:"Standard E", labels:["e","B","G","D","A","E"], open:[64,59,55,50,45,40] },
+  bass:   { name:"Bass 4 (EADG)", labels:["G","D","A","E"],       open:[43,38,33,28] },
+};
+
+// duration in quarter-beats; flags = beams count for 8th/16th
+const DUR = { "1":4, "2":2, "4":1, "8":0.5, "16":0.25 };
+const FLAGS = { "8":1, "16":2 };
+
+// note: {s:stringIndex(0=top), f:fret, tech?:"H"|"P"|"/"|"\\"}
+// beat: {d:dur, n:[notes], pm?:true, lab?:"P.M."|"full"|"½"|"let ring"}
+const N = (s,f,tech) => ({s,f,tech});
+function gal(s,f){ return [ {d:"16",n:[N(s,f)],pm:true},{d:"16",n:[N(s,f)],pm:true},{d:"8",n:[N(s,f)],pm:true} ]; }
+
+const tracks = [
+  {
+    name:"Rhythm Gtr", color:"#ff7a45", tuning:"guitar", muted:false, solo:false,
+    measures:[
+      { beats:[ ...gal(5,0), ...gal(5,0), ...gal(5,0),
+                {d:"8",n:[N(5,3),N(4,5)],pm:true},{d:"8",n:[N(5,1),N(4,3)],pm:true} ] }, // M1
+      { beats:[ ...gal(5,0), ...gal(5,0), ...gal(5,0),
+                {d:"8",n:[N(5,3),N(4,5)],pm:true},{d:"8",n:[N(5,1),N(4,3)],pm:true} ] }, // M2
+      { beats:[ {d:"8",n:[N(5,0)],pm:true},{d:"8",n:[N(5,0)],pm:true},{d:"8",n:[N(5,0)],pm:true},{d:"8",n:[N(5,0)],pm:true},
+                {d:"8",n:[N(5,0)],pm:true},{d:"8",n:[N(5,0)],pm:true},{d:"8",n:[N(5,0)],pm:true},{d:"8",n:[N(5,0)],pm:true} ] }, // M3
+      { beats:[ {d:"4",n:[N(5,0),N(4,2)]},{d:"4",n:[N(4,5),N(3,7)]},
+                {d:"4",n:[N(4,3),N(3,5)]},{d:"4",n:[N(4,2),N(3,4)],lab:"let ring"} ] }, // M4 power chords
+    ],
+  },
+  {
+    name:"Lead Gtr", color:"#36cfc9", tuning:"guitar", muted:false, solo:false,
+    measures:[
+      { beats:[ {d:"4",n:[N(0,0)]},{d:"4",n:[N(0,3)]},{d:"4",n:[N(0,5)]},{d:"4",n:[N(0,7)]} ] },
+      { beats:[ {d:"4",n:[N(0,7)]},{d:"4",n:[N(0,5)]},{d:"4",n:[N(0,3)]},{d:"4",n:[N(0,0)]} ] },
+      { beats:[ {d:"8",n:[N(0,0)]},{d:"8",n:[N(0,3),"H"]},{d:"8",n:[N(0,5)]},{d:"8",n:[N(0,7)]},
+                {d:"8",n:[N(0,8)],lab:"½"},{d:"8",n:[N(0,7)]},{d:"4",n:[N(0,5)]} ] },
+      { beats:[ {d:"2",n:[N(0,7)],lab:"full"},{d:"8",n:[N(0,5)]},{d:"8",n:[N(0,3)]},{d:"4",n:[N(0,0)],lab:"let ring"} ] },
+    ],
+  },
+  {
+    name:"Bass", color:"#9254de", tuning:"bass", muted:false, solo:false,
+    measures:[
+      { beats:[ {d:"4",n:[N(3,0)]},{d:"4",n:[N(3,0)]},{d:"4",n:[N(3,0)]},{d:"4",n:[N(3,0)]} ] },
+      { beats:[ {d:"4",n:[N(3,0)]},{d:"4",n:[N(3,0)]},{d:"4",n:[N(3,0)]},{d:"4",n:[N(3,0)]} ] },
+      { beats:[ {d:"8",n:[N(3,0)]},{d:"8",n:[N(3,0)]},{d:"8",n:[N(3,0)]},{d:"8",n:[N(3,0)]},
+                {d:"8",n:[N(3,0)]},{d:"8",n:[N(3,0)]},{d:"8",n:[N(3,0)]},{d:"8",n:[N(3,0)]} ] },
+      { beats:[ {d:"4",n:[N(3,0)]},{d:"4",n:[N(2,5)]},{d:"4",n:[N(2,3)]},{d:"4",n:[N(2,2)]} ] },
+    ],
+  },
+];
+
+/* ── SVG helpers ──────────────────────────────────────────────────── */
+const SVGNS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("svg");
+function E(tag, attrs, parent) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  (parent || svg).appendChild(e);
+  return e;
+}
+function T(x, y, s, attrs, parent) {
+  const t = E("text", Object.assign({x, y}, attrs || {}), parent);
+  t.textContent = s; return t;
+}
+const cssv = n => getComputedStyle(document.body).getPropertyValue(n).trim();
+
+/* ── layout constants ─────────────────────────────────────────────── */
+const PAD_L = 8, HEAD_W = 64;     // clef / time-sig column
+const STD_GAP = 7;                 // standard staff line spacing
+const TAB_GAP = 12;                // tab line spacing
+const STD_TOP = 40;                // top of standard staff
+const GAP_STD_TAB = 30;            // between standard staff and tab
+const RHY = 30;                    // rhythm-stem area below tab
+const BEAT_PAD_L = 26, BEAT_PAD_R = 16;
+let showNotation = true;
+let active = 0;
+
+// diatonic step index for a MIDI pitch (for standard-staff placement)
+const STEP = [0,0,1,1,2,3,3,4,4,5,5,6];           // C C# D D# E F F# G G# A A# B
+const SHARP = [0,1,0,1,0,0,1,0,1,0,1,0];
+function diatonic(p){ return Math.floor(p/12)*7 + STEP[((p%12)+12)%12]; }
+const E4_STEP = diatonic(64);                      // treble bottom line = E4
+
+/* ── playback state ───────────────────────────────────────────────── */
+let playing=false, raf=null, last=0, posBeat=0, loopOn=false;
+let beatIndex=[];   // flat list of {mStart(beats), len, x, w} for the active track
+let totalBeats=0;
+
+/* ── build the score for the active track ─────────────────────────── */
+function build() {
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const tr = tracks[active];
+  const tun = TUN[tr.tuning];
+  const nStr = tun.open.length;
+  const stdH = 4 * STD_GAP;
+  const tabTop = STD_TOP + (showNotation ? stdH + GAP_STD_TAB : 0);
+  const tabH = (nStr - 1) * TAB_GAP;
+  const tabBot = tabTop + tabH;
+
+  // measure widths (denser measures get a bit more room)
+  const mW = tr.measures.map(m => 150 + m.beats.length * 17);
+  const totalW = HEAD_W + mW.reduce((a,b)=>a+b,0) + PAD_L*2;
+  const totalH = tabBot + RHY + 24;
+  svg.setAttribute("viewBox", `0 0 ${totalW} ${totalH}`);
+  svg.setAttribute("width", totalW);
+  svg.style.maxWidth = totalW + "px";
+
+  const staff = cssv("--staff"), ink = cssv("--ink"), rule = cssv("--rule");
+  const accent = tr.color, pm = cssv("--pm");
+  const x0 = PAD_L + HEAD_W;
+  const xEnd = PAD_L + HEAD_W + mW.reduce((a,b)=>a+b,0);
+
+  // staff lines (standard)
+  if (showNotation)
+    for (let i=0;i<5;i++){ const y=STD_TOP+i*STD_GAP;
+      E("line",{x1:PAD_L,y1:y,x2:xEnd,y2:y,stroke:staff,"stroke-width":1}); }
+  // tab lines
+  for (let i=0;i<nStr;i++){ const y=tabTop+i*TAB_GAP;
+    E("line",{x1:PAD_L,y1:y,x2:xEnd,y2:y,stroke:staff,"stroke-width":1}); }
+
+  // clef + tuning + time signature (head column)
+  if (showNotation) {
+    T(PAD_L+6, STD_TOP+stdH-2, "𝄞", {"font-size":34, fill:ink}); // 𝄞 (best-effort)
+    T(x0-26, STD_TOP+STD_GAP*1.4, "4", {"font-size":16,"font-weight":700,fill:ink,"text-anchor":"middle"});
+    T(x0-26, STD_TOP+STD_GAP*3.4, "4", {"font-size":16,"font-weight":700,fill:ink,"text-anchor":"middle"});
+  }
+  // TAB clef (vertical letters) + tuning labels
+  const tabMid = tabTop + tabH/2;
+  ["T","A","B"].forEach((c,i)=> T(PAD_L+9, tabMid-12+i*12, c,
+    {"font-size":13,"font-weight":700,fill:staff,"text-anchor":"middle","font-family":"Arial,sans-serif"}));
+  for (let i=0;i<nStr;i++)
+    T(x0-8, tabTop+i*TAB_GAP+4, tun.labels[i], {"font-size":10,fill:rule,"text-anchor":"end","font-family":"Arial,sans-serif"});
+
+  // left barline
+  E("line",{x1:x0,y1:(showNotation?STD_TOP:tabTop),x2:x0,y2:tabBot,stroke:staff,"stroke-width":1.4});
+
+  // ── render measures ──────────────────────────────────────────────
+  beatIndex = []; totalBeats = 0;
+  let mx = x0;
+  tr.measures.forEach((m, mi) => {
+    const w = mW[mi];
+    const innerL = mx + BEAT_PAD_L, innerW = w - BEAT_PAD_L - BEAT_PAD_R;
+    // bar number
+    T(mx+3, (showNotation?STD_TOP:tabTop)-7, String(mi+1), {"font-size":10,fill:rule,"font-family":"Arial,sans-serif"});
+
+    // time within measure for each beat
+    let t = 0;
+    const placed = m.beats.map(b => {
+      const len = DUR[b.d];
+      const x = innerL + (t/BEATS_PER_BAR)*innerW;
+      const rec = {b, x, len, tBeat: t};
+      beatIndex.push({x, w:(len/BEATS_PER_BAR)*innerW, tStart: totalBeats + t, len});
+      t += len; return rec;
+    });
+    totalBeats += BEATS_PER_BAR;
+
+    // beam groups within integer beats (consecutive 8/16)
+    const groups = []; let cur = null;
+    placed.forEach(p => {
+      const beamable = p.b.d==="8" || p.b.d==="16";
+      if (beamable && cur && Math.floor(cur.beat)===Math.floor(p.tBeat)) cur.items.push(p);
+      else { if (beamable){ cur={beat:p.tBeat, items:[p]}; groups.push(cur);} else cur=null; }
+    });
+
+    // palm-mute spans (contiguous pm beats)
+    let pmStart=null;
+    placed.forEach((p,idx)=>{
+      if (p.b.pm && pmStart===null) pmStart=p.x;
+      const end = !p.b.pm || idx===placed.length-1;
+      if (pmStart!==null && end){
+        const x2 = p.b.pm ? p.x+10 : placed[idx-1].x+10;
+        const yPM = (showNotation?STD_TOP:tabTop) - 16;
+        T(pmStart, yPM, "P.M.", {"font-size":10,"font-style":"italic",fill:pm,"font-family":"Georgia,serif"});
+        E("line",{x1:pmStart+24,y1:yPM-3,x2:x2,y2:yPM-3,stroke:pm,"stroke-width":1,"stroke-dasharray":"3 3"});
+        pmStart=null;
+      }
+    });
+
+    // notes
+    placed.forEach(p => {
+      const b = p.b;
+      // TAB fret numbers (with a paper-coloured halo cutting the line)
+      b.n.forEach(note => {
+        const y = tabTop + note.s*TAB_GAP;
+        const fs = String(note.f);
+        const halfW = 4 + fs.length*3.2;
+        E("rect",{x:p.x-halfW, y:y-6.5, width:halfW*2, height:13, fill:cssv("--paper")});
+        T(p.x, y+4, fs, {"font-size":12,"font-weight":700,fill:ink,"text-anchor":"middle","font-family":"Arial,sans-serif"});
+        // technique marks
+        if (note.tech==="H") T(p.x+9, y-7, "H", {"font-size":9,fill:accent,"font-family":"Arial,sans-serif"});
+        if (note.tech==="/"||note.tech==="\\") T(p.x+9, y, note.tech, {"font-size":12,fill:ink});
+      });
+      // bend / let-ring labels above tab
+      if (b.lab){
+        const y = tabTop - 4;
+        T(p.x, y, b.lab, {"font-size":9,"font-style":"italic",fill:accent,"text-anchor":"middle","font-family":"Georgia,serif"});
+      }
+
+      // standard-staff noteheads (written 8vb → +12)
+      if (showNotation){
+        b.n.forEach(note => {
+          const midi = tun.open[note.s] + note.f + 12;
+          const steps = diatonic(midi) - E4_STEP;        // 0 = bottom line
+          const ny = STD_TOP + stdH - steps*(STD_GAP/2);
+          // ledger lines
+          for (let ly = STD_TOP+stdH+STD_GAP; ly <= ny+0.1; ly+=STD_GAP)
+            E("line",{x1:p.x-6,y1:ly,x2:p.x+6,y2:ly,stroke:staff,"stroke-width":1});
+          for (let ly = STD_TOP-STD_GAP; ly >= ny-0.1; ly-=STD_GAP)
+            E("line",{x1:p.x-6,y1:ly,x2:p.x+6,y2:ly,stroke:staff,"stroke-width":1});
+          const open = (b.d==="1"||b.d==="2");
+          const head = E("ellipse",{cx:p.x,cy:ny,rx:4.6,ry:3.4,
+            fill:open?"none":ink, stroke:ink,"stroke-width":open?1.4:0,
+            transform:`rotate(-18 ${p.x} ${ny})`});
+          if (SHARP[((midi%12)+12)%12])
+            T(p.x-9, ny+3, "♯", {"font-size":12,fill:ink}); // ♯
+        });
+      }
+    });
+
+    // ── rhythm: stems + beams below the TAB (Guitar Pro style) ──────
+    const stemTop = tabBot + 6, stemLen = 16;
+    const stemY = stemTop + stemLen;
+    function stem(x){ E("line",{x1:x,y1:stemTop,x2:x,y2:stemY,stroke:ink,"stroke-width":1.3}); }
+    placed.forEach(p=>{ if (p.b.d!=="1") stem(p.x); });            // whole = no stem
+    // half-note: hollow tick; quarter handled by stem alone
+    placed.forEach(p=>{ if (p.b.d==="2")
+      E("circle",{cx:p.x,cy:stemY,r:2.4,fill:"none",stroke:ink,"stroke-width":1.2}); });
+    // beams / flags for 8th & 16th
+    groups.forEach(g=>{
+      if (g.items.length>1){
+        const a=g.items[0].x, z=g.items[g.items.length-1].x;
+        E("line",{x1:a,y1:stemY,x2:z,y2:stemY,stroke:ink,"stroke-width":2.6});
+        // secondary beams only over consecutive runs of 16ths (gallop-correct)
+        let i=0;
+        while (i<g.items.length){
+          if (g.items[i].b.d==="16"){
+            let j=i; while (j+1<g.items.length && g.items[j+1].b.d==="16") j++;
+            const x1=g.items[i].x, x2=(j>i)?g.items[j].x:g.items[i].x+6;
+            E("line",{x1,y1:stemY-4,x2,y2:stemY-4,stroke:ink,"stroke-width":2.6});
+            i=j+1;
+          } else i++;
+        }
+      }
+    });
+    // lone 8th/16th → flag
+    placed.forEach(p=>{
+      if ((p.b.d==="8"||p.b.d==="16") && !isGrouped(p,groups)){
+        E("line",{x1:p.x,y1:stemY,x2:p.x+6,y2:stemY-5,stroke:ink,"stroke-width":2.2});
+        if (p.b.d==="16") E("line",{x1:p.x,y1:stemY-4,x2:p.x+6,y2:stemY-9,stroke:ink,"stroke-width":2.2});
+      }
+    });
+    // dots / (none authored) — placeholder for dotted durations
+
+    mx += w;
+    // barline
+    E("line",{x1:mx,y1:(showNotation?STD_TOP:tabTop),x2:mx,y2:tabBot,stroke:staff,"stroke-width":1});
+  });
+  // final (thicker) barline
+  E("line",{x1:xEnd,y1:(showNotation?STD_TOP:tabTop),x2:xEnd,y2:tabBot,stroke:staff,"stroke-width":2.4});
+
+  // playback cursor (column highlight)
+  const cur = E("rect",{id:"cursor", x:x0, y:(showNotation?STD_TOP-18:tabTop-18),
+    width:2, height:(tabBot - (showNotation?STD_TOP:tabTop))+24,
+    fill:cssv("--cursor-line"), opacity:0.9});
+  cur.setAttribute("data-cursor","1");
+
+  // head meta
+  document.getElementById("thName").textContent = tr.name;
+  document.getElementById("thMeta").textContent = `${tun.name} · ♩=${BPM} · 4/4`;
+  document.getElementById("stTrack").textContent =
+    `${tr.name} — ${tr.measures.length} bars · ${tun.open.length}-string`;
+  positionCursor();
+}
+function isGrouped(p, groups){ return groups.some(g=>g.items.length>1 && g.items.includes(p)); }
+
+/* ── cursor / playback ────────────────────────────────────────────── */
+function beatToX(pos){
+  for (const bi of beatIndex){
+    if (pos >= bi.tStart && pos < bi.tStart + bi.len)
+      return bi.x + ((pos-bi.tStart)/bi.len)*bi.w;
+  }
+  const lastBi = beatIndex[beatIndex.length-1];
+  return lastBi ? lastBi.x + lastBi.w : 0;
+}
+function positionCursor(){
+  const c = svg.querySelector('[data-cursor]');
+  if (!c) return;
+  c.setAttribute("x", beatToX(posBeat));
+  document.getElementById("posVal").textContent = String(Math.floor(posBeat/BEATS_PER_BAR)+1);
+  // autoscroll
+  const wrap = document.getElementById("scoreWrap");
+  const sheet = document.getElementById("sheet");
+  const scale = svg.clientWidth / svg.viewBox.baseVal.width;
+  const px = sheet.offsetLeft + 30 + beatToX(posBeat)*scale;
+  if (px < wrap.scrollLeft+60 || px > wrap.scrollLeft+wrap.clientWidth-80)
+    wrap.scrollLeft = px - wrap.clientWidth*0.4;
+}
+const beatsPerMs = (BPM/60)/1000;
+function frame(ts){
+  if (!playing) return;
+  if (!last) last=ts;
+  posBeat += (ts-last)*beatsPerMs; last=ts;
+  if (posBeat >= totalBeats){ if (loopOn){ posBeat=0; } else { stop(); return; } }
+  positionCursor();
+  raf = requestAnimationFrame(frame);
+}
+function play(){ if(playing)return; playing=true; last=0; document.getElementById("playBtn").textContent="⏸"; raf=requestAnimationFrame(frame); }
+function pause(){ playing=false; document.getElementById("playBtn").textContent="▶"; cancelAnimationFrame(raf); }
+function stop(){ pause(); posBeat=0; positionCursor(); document.getElementById("scoreWrap").scrollLeft=0; }
+
+/* ── track strip ──────────────────────────────────────────────────── */
+function buildStrip(){
+  const strip = document.getElementById("trackstrip"); strip.innerHTML="";
+  tracks.forEach((tr,i)=>{
+    const tun = TUN[tr.tuning];
+    const card = document.createElement("div");
+    card.className = "tcard" + (i===active?" sel":"");
+    card.innerHTML = `
+      <span class="sw" style="background:${tr.color}"></span>
+      <span class="col"><span class="nm">${tr.name}</span><span class="tun">${tun.name}</span></span>
+      <span class="ms">
+        <button class="m ${tr.muted?'on':''}">M</button>
+        <button class="s ${tr.solo?'on':''}">S</button>
+      </span>`;
+    card.onclick = ()=>{ active=i; build(); buildStrip(); };
+    const [mb,sb]=card.querySelectorAll(".ms button");
+    mb.onclick=e=>{e.stopPropagation();tr.muted=!tr.muted;buildStrip();};
+    sb.onclick=e=>{e.stopPropagation();tr.solo=!tr.solo;buildStrip();};
+    strip.appendChild(card);
+  });
+}
+
+/* ── controls ─────────────────────────────────────────────────────── */
+document.getElementById("playBtn").onclick=()=>playing?pause():play();
+document.getElementById("stopBtn").onclick=stop;
+document.getElementById("toStart").onclick=()=>{posBeat=0;positionCursor();document.getElementById("scoreWrap").scrollLeft=0;};
+document.getElementById("loopBtn").onclick=function(){loopOn=!loopOn;this.classList.toggle("toggled",loopOn);};
+document.getElementById("notationBtn").onclick=function(){showNotation=!showNotation;this.classList.toggle("toggled",showNotation);build();};
+document.getElementById("scoreThemeBtn").onclick=function(){
+  const dark=document.body.classList.toggle("score-dark");
+  this.textContent=dark?"Light sheet":"Dark sheet"; build();
+};
+document.addEventListener("keydown",e=>{
+  if(e.code==="Space"){e.preventDefault();playing?pause():play();}
+});
+
+/* ── boot ─────────────────────────────────────────────────────────── */
+build();
+buildStrip();
+</script>
+</body>
+</html>
