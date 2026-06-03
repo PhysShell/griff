@@ -615,7 +615,31 @@ mod tests {
         assert_eq!(gp_note_midi_pitch(&note, &strings), None);
     }
 
-    // ── i64_to_u32_sat ────────────────────────────────────────────────────────
+    // ── gp_note_position ──────────────────────────────────────────────────────
+
+    #[test]
+    fn gp_note_position_reads_string_and_fret() {
+        // ADR-0018: Guitar Pro is a source of truth for (string, fret).
+        let note = guitarpro::Note {
+            value: 7, // fret 7
+            string: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            gp_note_position(&note),
+            Some(FretboardPosition { string: 3, fret: 7 })
+        );
+    }
+
+    #[test]
+    fn gp_note_position_rejects_invalid_string() {
+        let note = guitarpro::Note {
+            value: 5,
+            string: 0, // invalid (GP strings are 1-indexed)
+            ..Default::default()
+        };
+        assert_eq!(gp_note_position(&note), None);
+    }
 
     #[test]
     fn i64_to_u32_sat_positive() {
