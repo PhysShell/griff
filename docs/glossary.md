@@ -147,6 +147,14 @@ ADR-0014): Guitar Pro import supplies it directly, MIDI import leaves it absent
 or inferred. Pitch alone cannot express hand position; position is what makes
 `fret_jump_penalty` and human-plausible parts possible.
 
+### Position inference
+Assigning a plausible `(string, fret)` to each pitch of MIDI-sourced material —
+the *guitar fingering problem* — via a small, local, deterministic DP over
+per-note candidates, minimising hand movement / stretch / string changes under
+the track `Tuning` (ADR-0019). VI-independent geometry (distinct from the parked
+MIDI *technique* inference); output is marked `InferredFromMidi` with confidence.
+GP positions stay `Explicit` and are not inferred.
+
 ### Note
 A sounding note (`AtomNote`): `pitch`, `duration`, `velocity`, an optional
 `FretboardPosition`, and a set of `NoteMark`s, each technique carrying

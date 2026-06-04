@@ -24,6 +24,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0016](0016-shared-ui-core-across-frontends.md) | Share one UI core across the ratatui and egui frontends | Proposed |
 | [0017](0017-explainable-scoring-contract.md) | Unify scoring into axes, weights, rationale, and a derived aggregate | Proposed |
 | [0018](0018-rich-note-model-fretboard-and-techniques.md) | Rich note model — fretboard position and multi-technique with evidence | Proposed |
+| [0019](0019-infer-fretboard-position.md) | Infer fretboard position with a small local DP | Proposed |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
