@@ -44,6 +44,15 @@ We make the note **fretboard-aware and multi-technique, with provenance** — on
 migration on the note/group. (Carries ADR-0014's string/fret decision forward
 verbatim in spirit; adds the technique model.)
 
+> **Amendment (2026-06-04, during implementation).** §3–§4 are refined from the
+> original "each mark carries evidence": per-note **marks** are an evidence-free
+> `Copy` bitset, and `TechniqueEvidence` lives on **spans and positions only**.
+> Rationale: note-level marks (accent/ghost/harmonic/…) are near-boolean facts
+> where per-mark confidence is degenerate, while the inferred-with-confidence
+> cases are genuinely the spans (MIDI cues) and positions (string/fret guesses);
+> keeping marks a bitset preserves `AtomNote: Copy` (zero ripple across the
+> codebase). This is the ADR's own "reshape, don't fork" loop in action.
+
 1. **Fretboard position on the note (from ADR-0014).** `AtomNote` gains
    `position: Option<FretboardPosition>` (`string` + `fret`), interpreted under a
    `Tuning`. Optional: MIDI import usually cannot recover it (`None`/inferred),
@@ -61,6 +70,7 @@ verbatim in spirit; adds the technique model.)
    - *Per-note marks* (`NoteMark`): single-note attributes that **co-occur** —
      accent, ghost, staccato, dead/muted, natural/pinch harmonic, tap. The note
      carries a **set** (`marks`), replacing `articulation: Option<Articulation>`.
+     Stored as a `Copy` bitset (`NoteMarks`) and **evidence-free** (see §4).
    - *Spanning techniques* (`SpanTechnique` on `TechniqueSpan`): techniques that
      relate notes or cover a range — slide, hammer-on, pull-off (legato), bend,
      vibrato, palm-mute, let-ring, tremolo, sweep. They stay on the group/voice
@@ -72,9 +82,10 @@ verbatim in spirit; adds the technique model.)
    (vibrato, bend) get a canonical home documented in the glossary — a
    single-note span of length one rather than a second enum membership.
 
-4. **Evidence on every technique and position (the honesty rule).** Each mark,
-   span, and position carries `TechniqueEvidence { source: TechniqueSource,
-   confidence }`:
+4. **Evidence on spans and positions (the honesty rule).** Each `TechniqueSpan`
+   and `FretboardPosition` carries `TechniqueEvidence { source: TechniqueSource,
+   confidence }`; per-note `NoteMark`s are evidence-free flags (see the
+   amendment above):
    - `Explicit` — a source-of-truth format stored it (Guitar Pro); confidence 1.0.
    - `InferredFromMidi { cue }` — a heuristic from MIDI evidence (pitch-bend →
      bend/vibrato, dense repeats → tremolo); confidence `< 1.0`.

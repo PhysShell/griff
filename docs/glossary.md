@@ -463,7 +463,9 @@ marks set plus spans, each with evidence.
 ### NoteMark
 A per-note guitar technique that is intrinsic to one note and **co-occurs** with
 others: accent, ghost, staccato, dead/muted, natural/pinch harmonic, tap. A note
-carries a *set* of marks, replacing the old `Option<Articulation>` (ADR-0018).
+carries a *set* of marks (`NoteMarks`, a `Copy` bitset) replacing the old
+`Option<Articulation>`. Evidence-free — provenance lives on spans/positions
+(ADR-0018).
 
 ### SpanTechnique
 The kind of a `TechniqueSpan` — a technique that relates notes or covers a range
@@ -472,7 +474,7 @@ from `NoteMark` so illegal states are unrepresentable (a slide is not a note
 mark; an accent is not a span) (ADR-0018).
 
 ### TechniqueEvidence
-Provenance on a mark, span, or position: a `TechniqueSource`
+Provenance on a span or position: a `TechniqueSource`
 (`Explicit` = read from a source-of-truth format like Guitar Pro, confidence 1.0;
 `InferredFromMidi` = guessed from MIDI evidence, confidence `< 1.0`) plus the
 confidence. Keeps inferred techniques from masquerading as fact (ADR-0018). The
