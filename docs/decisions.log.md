@@ -173,3 +173,19 @@ Architectural decisions go to [`adr/`](adr/) instead.
   home, no drift). Accepted: this is the coarse named-section heuristic, not the
   S14 structure metrics; if per-voice section semantics are ever needed this is
   revisitable.
+
+- 2026-06-04 — In the context of ADR-0018's deferred MIDI inference, facing that
+  MIDI articulations/slides are virtual-instrument-specific (libraries encode
+  them as keyswitches on out-of-range low notes, mapped differently per VI) and
+  so are not reliably recoverable from plain MIDI, we decided to **park MIDI
+  technique inference** — Guitar Pro stays the source of truth for techniques,
+  and MIDI contributes notes, velocity, and timing only — and against building a
+  MIDI-articulation guesser (reaffirming glossary §17.3/§19 and SPEC's
+  "not a GP-articulation oracle"), accepting that
+  `TechniqueSource::InferredFromMidi` / `confidence` may stay unused for
+  techniques until a reliable signal exists (the field is cheap and stays for
+  that day). Distinct and **not** parked: position inference (pitch → string/fret)
+  is a VI-independent fretboard-geometry problem under the score `Tuning`, valid
+  but low-priority — it only matters for playability / `fret_jump_penalty` on
+  MIDI-sourced material. (Per-VI keyswitch notes are also import noise we do not
+  decode; out of scope.)
