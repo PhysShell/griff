@@ -17,11 +17,15 @@
 //! ZIP-based) is out of scope for S3.
 //!
 //! Every import produces a [`LossReport`] carried on [`Score`].  Losses
-//! include tied/dead notes, percussion tracks, and notes with multiple
-//! simultaneous articulations (only the primary one is kept).
+//! include tied/dead notes and percussion tracks. Co-occurring techniques are
+//! preserved (ADR-0018): harmonics/accent/ghost/staccato become per-note
+//! `NoteMark`s and each spanning technique its own `TechniqueSpan`.
 
 use crate::{
-    event::{Articulation, Pitch, Tempo, Ticks, TimeSignature, Velocity},
+    event::{
+        Articulation, FretboardPosition, NoteMark, NoteMarks, Pitch, Tempo, Ticks, TimeSignature,
+        Tuning, Velocity,
+    },
     score::{
         AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
         MasterBar, Score, SourceMeta, TechniqueSpan, Track, Voice,
@@ -209,6 +213,22 @@ fn build_gp_track(
         name: Some(gp_track.name.clone()),
         channel,
         voices,
+        tuning: gp_tuning(&gp_track.strings),
+    }
+}
+
+/// Builds a [`Tuning`] from a Guitar Pro `(string_number, open_midi)` array,
+/// ordered string 1 (highest) first (ADR-0018). Falls back to Standard E when
+/// the array carries no valid open-string pitches.
+fn gp_tuning(strings: &[(i8, i8)]) -> Tuning {
+    let open: Vec<Pitch> = strings
+        .iter()
+        .filter_map(|&(_, midi)| u8::try_from(midi).ok().and_then(|m| Pitch::new(m).ok()))
+        .collect();
+    if open.is_empty() {
+        Tuning::standard_e()
+    } else {
+        Tuning::new(open)
     }
 }
 
@@ -285,14 +305,15 @@ fn build_event_group(
                 let pitch = Pitch(midi);
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 let velocity = Velocity(note.velocity.clamp(0, 127) as u8);
-                let articulation =
-                    map_note_articulation(&note.effect, start, duration, &mut technique_spans);
+                let marks = map_gp_note_marks(&note.effect, start, duration, &mut technique_spans);
                 atoms.push(AtomEvent::Note(AtomNote {
                     absolute_start: start,
                     duration,
                     pitch,
                     velocity,
-                    articulation,
+                    marks,
+                    // Guitar Pro is a source of truth for (string, fret) — ADR-0018.
+                    position: gp_note_position(note),
                 }));
             }
             guitarpro::NoteType::Tie
@@ -353,44 +374,69 @@ fn gp_note_midi_pitch(note: &guitarpro::Note, strings: &[(i8, i8)]) -> Option<u8
     u8::try_from(midi.clamp(0, 127)).ok()
 }
 
+/// Reads the source-of-truth `(string, fret)` of a GP note as a
+/// [`FretboardPosition`] (ADR-0018). `None` when the GP string/fret is invalid.
+fn gp_note_position(note: &guitarpro::Note) -> Option<FretboardPosition> {
+    if note.string <= 0 || note.value < 0 {
+        return None;
+    }
+    let string = u8::try_from(note.string).ok()?;
+    let fret = u8::try_from(note.value).ok()?;
+    Some(FretboardPosition { string, fret })
+}
+
 // ── articulation mapping ──────────────────────────────────────────────────────
 
-/// Maps the primary GP note effect to a canonical [`Articulation`] and emits a
-/// [`TechniqueSpan`].  Only the highest-priority articulation is returned;
-/// secondary effects are silently dropped.
-fn map_note_articulation(
+/// Maps GP note effects onto the rich note model (ADR-0018): per-note harmonics
+/// become [`NoteMarks`], and each spanning technique present (hammer-on, slide,
+/// palm-mute, vibrato) emits its own [`TechniqueSpan`]. Replaces the former
+/// single-articulation flattening — marks and spans are now independent, so a
+/// note that is both hammered and a harmonic keeps both.
+fn map_gp_note_marks(
     effect: &GpNoteEffect,
     start: Ticks,
     duration: Ticks,
     spans: &mut Vec<TechniqueSpan>,
-) -> Option<Articulation> {
+) -> NoteMarks {
     let end = Ticks(start.0.saturating_add(duration.0));
     let tick_range = TickRange { start, end };
 
-    let articulation = if effect.hammer {
-        Some(Articulation::HammerOn)
-    } else if !effect.slides.is_empty() {
-        Some(Articulation::Slide)
-    } else if effect.palm_mute {
-        Some(Articulation::PalmMute)
-    } else if effect.vibrato {
-        Some(Articulation::Vibrato)
-    } else if let Some(h) = &effect.harmonic {
-        match h.kind {
-            guitarpro::HarmonicType::Pinch => Some(Articulation::HarmonicPinch),
-            _ => Some(Articulation::HarmonicNatural),
-        }
-    } else {
-        None
-    };
-
-    if let Some(a) = articulation {
+    let mut push_span = |technique| {
         spans.push(TechniqueSpan {
-            technique: a,
+            technique,
             tick_range,
         });
+    };
+    if effect.hammer {
+        push_span(Articulation::HammerOn);
     }
-    articulation
+    if !effect.slides.is_empty() {
+        push_span(Articulation::Slide);
+    }
+    if effect.palm_mute {
+        push_span(Articulation::PalmMute);
+    }
+    if effect.vibrato {
+        push_span(Articulation::Vibrato);
+    }
+
+    let mut marks = NoteMarks::empty();
+    if effect.accentuated_note || effect.heavy_accentuated_note {
+        marks.insert(NoteMark::Accent);
+    }
+    if effect.ghost_note {
+        marks.insert(NoteMark::Ghost);
+    }
+    if effect.staccato {
+        marks.insert(NoteMark::Staccato);
+    }
+    if let Some(h) = &effect.harmonic {
+        match h.kind {
+            guitarpro::HarmonicType::Pinch => marks.insert(NoteMark::HarmonicPinch),
+            _ => marks.insert(NoteMark::HarmonicNatural),
+        }
+    }
+    marks
 }
 
 // ── duration helpers ──────────────────────────────────────────────────────────
@@ -615,7 +661,50 @@ mod tests {
         assert_eq!(gp_note_midi_pitch(&note, &strings), None);
     }
 
-    // ── i64_to_u32_sat ────────────────────────────────────────────────────────
+    // ── gp_note_position ──────────────────────────────────────────────────────
+
+    #[test]
+    fn gp_note_position_reads_string_and_fret() {
+        // ADR-0018: Guitar Pro is a source of truth for (string, fret).
+        let note = guitarpro::Note {
+            value: 7, // fret 7
+            string: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            gp_note_position(&note),
+            Some(FretboardPosition { string: 3, fret: 7 })
+        );
+    }
+
+    #[test]
+    fn gp_note_position_rejects_invalid_string() {
+        let note = guitarpro::Note {
+            value: 5,
+            string: 0, // invalid (GP strings are 1-indexed)
+            ..Default::default()
+        };
+        assert_eq!(gp_note_position(&note), None);
+    }
+
+    // ── map_gp_note_marks ─────────────────────────────────────────────────────
+
+    #[test]
+    fn gp_note_marks_capture_accent_ghost_staccato() {
+        // GP accent/ghost/staccato are source-of-truth NoteMarks (ADR-0018).
+        let effect = GpNoteEffect {
+            accentuated_note: true,
+            ghost_note: true,
+            staccato: true,
+            ..GpNoteEffect::default()
+        };
+        let mut spans = Vec::new();
+        let marks = map_gp_note_marks(&effect, Ticks(0), Ticks(480), &mut spans);
+        assert!(marks.contains(NoteMark::Accent));
+        assert!(marks.contains(NoteMark::Ghost));
+        assert!(marks.contains(NoteMark::Staccato));
+        assert!(spans.is_empty(), "these are per-note marks, not spans");
+    }
 
     #[test]
     fn i64_to_u32_sat_positive() {

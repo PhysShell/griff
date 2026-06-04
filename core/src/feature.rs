@@ -97,7 +97,7 @@ pub fn voice_features(voice: &Voice) -> Result<VoiceFeatures, ValidationError> {
             match atom {
                 AtomEvent::Note(note) => {
                     features.note_count = increment(features.note_count)?;
-                    if note.articulation.is_some() {
+                    if !note.marks.is_empty() {
                         features.articulated_note_count =
                             increment(features.articulated_note_count)?;
                     }

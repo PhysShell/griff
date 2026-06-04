@@ -148,6 +148,167 @@ pub enum Articulation {
     HarmonicPinch,
 }
 
+// ── per-note technique marks ──────────────────────────────────────────────────
+
+/// A per-note guitar technique, intrinsic to a single note and able to co-occur
+/// with others (ADR-0018). Spanning techniques (slide, legato, palm-mute, …)
+/// live on [`crate::score::TechniqueSpan`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoteMark {
+    /// Accented (emphasised) note.
+    Accent,
+    /// Ghost (soft / muted) note.
+    Ghost,
+    /// Shortened, detached note.
+    Staccato,
+    /// Dead / fully-muted note.
+    DeadNote,
+    /// Natural harmonic.
+    HarmonicNatural,
+    /// Pinch (artificial) harmonic.
+    HarmonicPinch,
+    /// Tapped note.
+    Tap,
+}
+
+impl NoteMark {
+    /// All marks in declaration order — the order [`NoteMarks::iter`] yields.
+    pub const ALL: [Self; 7] = [
+        Self::Accent,
+        Self::Ghost,
+        Self::Staccato,
+        Self::DeadNote,
+        Self::HarmonicNatural,
+        Self::HarmonicPinch,
+        Self::Tap,
+    ];
+
+    /// This mark's bit within a [`NoteMarks`] set.
+    const fn bit(self) -> u16 {
+        match self {
+            Self::Accent => 0x01,
+            Self::Ghost => 0x02,
+            Self::Staccato => 0x04,
+            Self::DeadNote => 0x08,
+            Self::HarmonicNatural => 0x10,
+            Self::HarmonicPinch => 0x20,
+            Self::Tap => 0x40,
+        }
+    }
+}
+
+/// A `Copy` set of co-occurring [`NoteMark`]s on a note, stored as a bitset
+/// (ADR-0018). Evidence-free — provenance lives on spans and positions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct NoteMarks(u16);
+
+impl NoteMarks {
+    /// The empty mark set.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Whether no marks are set.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Whether `mark` is present.
+    #[must_use]
+    pub const fn contains(self, mark: NoteMark) -> bool {
+        self.0 & mark.bit() != 0
+    }
+
+    /// Adds `mark` to the set.
+    pub const fn insert(&mut self, mark: NoteMark) {
+        self.0 |= mark.bit();
+    }
+
+    /// Returns this set with `mark` added (builder style).
+    #[must_use]
+    pub const fn with(self, mark: NoteMark) -> Self {
+        Self(self.0 | mark.bit())
+    }
+
+    /// The number of marks set.
+    #[must_use]
+    pub const fn len(self) -> u32 {
+        self.0.count_ones()
+    }
+
+    /// Iterates the marks present, in [`NoteMark::ALL`] order.
+    pub fn iter(self) -> impl Iterator<Item = NoteMark> {
+        NoteMark::ALL.into_iter().filter(move |&m| self.contains(m))
+    }
+}
+
+// ── fretboard ───────────────────────────────────────────────────────────────
+
+/// A `(string, fret)` location on the fretboard, interpreted under a [`Tuning`]
+/// (ADR-0018).
+///
+/// `string` is 1-indexed in Guitar Pro order: string 1 is the highest-pitched
+/// (thinnest). Carried optionally on a note — Guitar Pro supplies it, MIDI
+/// usually cannot recover it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FretboardPosition {
+    /// 1-indexed string number (string 1 = highest-pitched).
+    pub string: u8,
+    /// Fret number (0 = open string).
+    pub fret: u8,
+}
+
+/// A guitar tuning: the open-string pitches ordered by string number
+/// (index 0 = string 1, the highest-pitched).
+///
+/// The reference that maps pitch ↔ (string, fret) (ADR-0018). Carried per
+/// [`crate::score::Track`]; defaults to [`Tuning::standard_e`] (ADR-0006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tuning {
+    open_strings: Vec<Pitch>,
+}
+
+impl Tuning {
+    /// Builds a tuning from open-string pitches, string 1 (highest) first.
+    #[must_use]
+    pub const fn new(open_strings: Vec<Pitch>) -> Self {
+        Self { open_strings }
+    }
+
+    /// Standard E tuning (ADR-0006): strings 1..6 = E4 B3 G3 D3 A2 E2.
+    #[must_use]
+    pub fn standard_e() -> Self {
+        Self {
+            open_strings: vec![
+                Pitch(64), // 1: E4 (high E)
+                Pitch(59), // 2: B3
+                Pitch(55), // 3: G3
+                Pitch(50), // 4: D3
+                Pitch(45), // 5: A2
+                Pitch(40), // 6: E2 (low E)
+            ],
+        }
+    }
+
+    /// The open-string pitches, string 1 (highest) first.
+    #[must_use]
+    pub fn open_strings(&self) -> &[Pitch] {
+        &self.open_strings
+    }
+
+    /// The pitch at `pos` under this tuning, or `None` when the string is out of
+    /// range or the resulting MIDI pitch would exceed 127.
+    #[must_use]
+    pub fn pitch_at(&self, pos: FretboardPosition) -> Option<Pitch> {
+        let idx = usize::from(pos.string.checked_sub(1)?);
+        let open = self.open_strings.get(idx)?;
+        let midi = open.0.checked_add(pos.fret)?;
+        Pitch::new(midi).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Pitch, Tempo, Ticks, TimeSignature, ValidationError, Velocity};

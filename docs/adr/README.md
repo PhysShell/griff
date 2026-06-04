@@ -19,10 +19,11 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0011](0011-retire-legacy-linear-model.md) | Retire the legacy linear model in favour of the canonical model | Accepted |
 | [0012](0012-complementary-part-generation.md) | Complementary part generation (ComplementArranger) | Proposed |
 | [0013](0013-dp-viterbi-traversal.md) | DP/Viterbi traversal over the phrase hypergraph | Proposed |
-| [0014](0014-fretboard-aware-model.md) | Fretboard-aware canonical model (string/fret positions) | Proposed |
+| [0014](0014-fretboard-aware-model.md) | Fretboard-aware canonical model (string/fret positions) | Superseded by ADR-0018 |
 | [0015](0015-structure-controls-and-metrics.md) | Separate structure controls and metrics from complexity | Proposed |
 | [0016](0016-shared-ui-core-across-frontends.md) | Share one UI core across the ratatui and egui frontends | Proposed |
 | [0017](0017-explainable-scoring-contract.md) | Unify scoring into axes, weights, rationale, and a derived aggregate | Proposed |
+| [0018](0018-rich-note-model-fretboard-and-techniques.md) | Rich note model — fretboard position and multi-technique with evidence | Proposed |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).

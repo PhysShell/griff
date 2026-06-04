@@ -117,6 +117,21 @@ Architectural decisions go to [`adr/`](adr/) instead.
   golden frames; the third is a semantic analysis-layer decision), to keep the
   refactor's "no behaviour change" contract intact and revisitable.
 
+- 2026-06-03 — In the context of the note still being pianoroll-shaped (a single
+  `Option<Articulation>`, no string/fret), facing whether to fix techniques and
+  fretboard position separately, we decided for one merged core-model migration
+  (ADR-0018, superseding ADR-0014) — a note gains an optional `FretboardPosition`
+  under a per-`Track` `Tuning`, a *set* of `NoteMark`s (replacing the single
+  `Option`), enriched `TechniqueSpan`s with a `SpanTechnique` kind, and
+  `TechniqueEvidence` (`Explicit` vs `InferredFromMidi` + confidence) on every
+  technique/position — and against two separate ADRs, because both live on the
+  same note/group and must migrate together (one shape change, one golden
+  re-bless). Accepted: this ships no code (phased — model+projection, then GP/MIDI
+  population, then playability/DP consumption, each characterization-gated);
+  `Articulation` survives only as a compatibility projection; position inference
+  and `NoteId` endpoint pinning stay deferred sub-problems; a corpus
+  `schema_version` bump is deferred to persistence.
+
 - 2026-06-03 — In the context of the same scoring-with-provenance shape recurring
   across the canon (boundary `score`/`BoundaryReason`/`weights`, complement
   `AxisScores`, the DP cost terms of ADR-0013, the `ComplexityProfile` of

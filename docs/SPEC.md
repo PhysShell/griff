@@ -70,7 +70,7 @@ timeline, `feature` / `slice` / `classify` / `generate` (the rule-based S6
 baseline), phrase-boundary detection (S4), the ComplementArranger first slice
 (`rhythm_lock`, S13), structure metrics (S14 Phase 0), a headless-testable
 ratatui preview, and the shared scoring vocabulary (ADR-0017). Not yet:
-string/fret positions and richer techniques (ADR-0014), the graph layer / DP
+string/fret positions and richer techniques (ADR-0018), the graph layer / DP
 traversal (S7), neural assistance (S12), and the CLAP plugin (S10). Earlier
 commit stage labels predate this spec and are reconciled in
 [`audit/2026-05-stage-label-reconciliation.md`](audit/2026-05-stage-label-reconciliation.md).

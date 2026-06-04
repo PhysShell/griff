@@ -1,7 +1,12 @@
 # ADR 0014: Fretboard-aware canonical model (string/fret positions)
 
 Date: 2026-05-31
-Status: Proposed
+Status: Superseded by ADR-0018
+
+> Superseded by [ADR-0018](0018-rich-note-model-fretboard-and-techniques.md),
+> which carries this string/fret decision forward and merges it with the
+> multi-technique + evidence model, because both live on the same note/group and
+> must migrate together (one core-model change, one golden re-bless).
 
 ## Context
 

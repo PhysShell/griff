@@ -23,10 +23,11 @@ use griff_core::{
         analyze_part, arrange_complement, validate_pair, ComplementError, ComplementSpec,
         RelationMode,
     },
-    event::{Pitch, Tempo, Ticks, TimeSignature, Velocity},
+    event::{Articulation, NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     generate::GenerationSeed,
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
+        TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
 };
@@ -41,7 +42,8 @@ fn quarter_note(start: u32, pitch: u8) -> AtomEvent {
         duration: Ticks(QUARTER),
         pitch: Pitch::new(pitch).expect("valid pitch"),
         velocity: Velocity::new(90).expect("valid velocity"),
-        articulation: None,
+        marks: NoteMarks::empty(),
+        position: None,
     })
 }
 
@@ -90,6 +92,7 @@ fn score_with_part_a(bar_count: usize, pitches: &[u8]) -> Score {
                 id: 0,
                 event_groups: groups,
             }],
+            tuning: Tuning::standard_e(),
         }],
         source_meta: None,
         loss: LossReport::new(),
@@ -343,6 +346,7 @@ fn rhythm_lock_preserves_irregular_grid_and_meter_change() {
                 id: 0,
                 event_groups: groups,
             }],
+            tuning: Tuning::standard_e(),
         }],
         source_meta: None,
         loss: LossReport::new(),
@@ -388,6 +392,7 @@ fn validate_pair_flags_coincident_dissonance() {
             id: 0,
             event_groups: b_groups,
         }],
+        tuning: Tuning::standard_e(),
     });
 
     let v = validate_pair(&score, 0, 1).expect("validate ok");
@@ -414,6 +419,7 @@ fn validate_pair_passes_consonant_octave_apart() {
             id: 0,
             event_groups: b_groups,
         }],
+        tuning: Tuning::standard_e(),
     });
 
     let v = validate_pair(&score, 0, 1).expect("validate ok");
@@ -423,4 +429,57 @@ fn validate_pair_passes_consonant_octave_apart() {
         "an octave of separation is not register mud"
     );
     assert!(v.is_clean());
+}
+
+#[test]
+fn analyze_part_includes_spanning_techniques() {
+    // Part A has a palm-mute span but no per-note marks. analyze_part must still
+    // surface the technique, otherwise a technique-free complement scores as a
+    // perfect technique match (jaccard of two empty sets = 1.0). Codex P2,
+    // ADR-0018 Slice 2.
+    let note = AtomEvent::Note(AtomNote {
+        absolute_start: Ticks(0),
+        duration: Ticks(QUARTER),
+        pitch: Pitch::new(60).expect("valid pitch"),
+        velocity: Velocity::new(90).expect("valid velocity"),
+        marks: NoteMarks::empty(),
+        position: None,
+    });
+    let group = EventGroup {
+        kind: EventGroupKind::Single,
+        atoms: vec![note],
+        technique_spans: vec![TechniqueSpan {
+            technique: Articulation::PalmMute,
+            tick_range: TickRange::new(Ticks(0), Ticks(QUARTER)).expect("ordered range"),
+        }],
+    };
+    let score = Score {
+        ticks_per_quarter: PPQN,
+        master_bars: vec![MasterBar {
+            index: 0,
+            tick_range: TickRange::new(Ticks(0), Ticks(BAR)).expect("ordered range"),
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            tempo: Tempo(120.0),
+        }],
+        tracks: vec![Track {
+            name: None,
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: vec![group],
+            }],
+            tuning: Tuning::standard_e(),
+        }],
+        source_meta: None,
+        loss: LossReport::default(),
+    };
+
+    let profile = analyze_part(&score, 0).expect("analyze");
+    assert!(
+        profile.techniques.contains("palm_mute"),
+        "spanning techniques must be in the profile, not only per-note marks"
+    );
 }
