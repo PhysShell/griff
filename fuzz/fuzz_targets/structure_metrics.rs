@@ -18,7 +18,7 @@ use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 
 use griff_core::{
-    event::{Pitch, Tempo, Ticks, TimeSignature, Velocity},
+    event::{Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
     },
@@ -68,6 +68,7 @@ fn build_score(bar_count: usize, ppqn: u16, pitches: &[u8]) -> Option<Score> {
                 pitch: Pitch::new(p.min(127)).ok()?,
                 velocity,
                 articulation: None,
+                position: None,
             })],
             technique_spans: Vec::new(),
         });
@@ -83,6 +84,7 @@ fn build_score(bar_count: usize, ppqn: u16, pitches: &[u8]) -> Option<Score> {
                 id: 0,
                 event_groups: groups,
             }],
+            tuning: Tuning::standard_e(),
         }],
         source_meta: None,
         loss: LossReport::new(),
