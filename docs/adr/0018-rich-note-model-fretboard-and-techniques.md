@@ -52,6 +52,18 @@ verbatim in spirit; adds the technique model.)
 > cases are genuinely the spans (MIDI cues) and positions (string/fret guesses);
 > keeping marks a bitset preserves `AtomNote: Copy` (zero ripple across the
 > codebase). This is the ADR's own "reshape, don't fork" loop in action.
+>
+> **Amendment 2 (2026-06-04, Slice 2b).** The span enum is named `SpanTechnique`
+> (the former `Articulation`), and its harmonic variants are removed — harmonics
+> are `NoteMark`s, so "a span is a harmonic" is now unrepresentable. The
+> `Articulation` *projection* (a dominant label) is **deferred** until a consumer
+> needs it — none does yet (feature reads `marks`, complement reads a label set),
+> so it would be speculative. `TechniqueEvidence { source, confidence: f64 }` is
+> attached to `TechniqueSpan` now (every Guitar Pro span is `Explicit`);
+> *position* evidence is **deferred** until position inference exists (all
+> positions are currently `Explicit` from GP, so the field would be a constant).
+> Accepted: the `f64` confidence removes `Eq` (not `PartialEq`) from
+> `TechniqueSpan`/`EventGroup`/`Voice`/`Track` — none is used as a hash key.
 
 1. **Fretboard position on the note (from ADR-0014).** `AtomNote` gains
    `position: Option<FretboardPosition>` (`string` + `fret`), interpreted under a
