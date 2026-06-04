@@ -17,7 +17,7 @@
 )]
 
 use griff_core::{
-    event::{FretboardPosition, Pitch, Ticks, Tuning, Velocity},
+    event::{FretboardPosition, NoteMarks, Pitch, Ticks, Tuning, Velocity},
     midi::import_score,
     score::{AtomNote, Track, Voice},
 };
@@ -71,7 +71,7 @@ fn atom_note_carries_optional_position() {
         duration: Ticks(480),
         pitch: Pitch(64),
         velocity: Velocity(90),
-        articulation: None,
+        marks: NoteMarks::empty(),
         position: Some(FretboardPosition { string: 1, fret: 0 }),
     };
     let without = AtomNote {

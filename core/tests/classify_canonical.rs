@@ -23,7 +23,7 @@ use griff_core::{
     classify::{
         bar_features_across_voices, bar_features_in_range, classify_bar, BarClass, BarFeatures,
     },
-    event::{Pitch, Ticks, Velocity},
+    event::{NoteMarks, Pitch, Ticks, Velocity},
     score::{AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, Voice},
     slice::TickRange,
 };
@@ -38,7 +38,7 @@ fn note_atom(start: u32, dur: u32, pitch: u8, vel: u8) -> AtomEvent {
         duration: Ticks(dur),
         pitch: Pitch::new(pitch).expect("valid pitch"),
         velocity: Velocity::new(vel).expect("valid velocity"),
-        articulation: None,
+        marks: NoteMarks::empty(),
         position: None,
     })
 }

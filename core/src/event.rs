@@ -148,6 +148,102 @@ pub enum Articulation {
     HarmonicPinch,
 }
 
+// ── per-note technique marks ──────────────────────────────────────────────────
+
+/// A per-note guitar technique, intrinsic to a single note and able to co-occur
+/// with others (ADR-0018). Spanning techniques (slide, legato, palm-mute, …)
+/// live on [`crate::score::TechniqueSpan`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoteMark {
+    /// Accented (emphasised) note.
+    Accent,
+    /// Ghost (soft / muted) note.
+    Ghost,
+    /// Shortened, detached note.
+    Staccato,
+    /// Dead / fully-muted note.
+    DeadNote,
+    /// Natural harmonic.
+    HarmonicNatural,
+    /// Pinch (artificial) harmonic.
+    HarmonicPinch,
+    /// Tapped note.
+    Tap,
+}
+
+impl NoteMark {
+    /// All marks in declaration order — the order [`NoteMarks::iter`] yields.
+    pub const ALL: [Self; 7] = [
+        Self::Accent,
+        Self::Ghost,
+        Self::Staccato,
+        Self::DeadNote,
+        Self::HarmonicNatural,
+        Self::HarmonicPinch,
+        Self::Tap,
+    ];
+
+    /// This mark's bit within a [`NoteMarks`] set.
+    const fn bit(self) -> u16 {
+        match self {
+            Self::Accent => 0x01,
+            Self::Ghost => 0x02,
+            Self::Staccato => 0x04,
+            Self::DeadNote => 0x08,
+            Self::HarmonicNatural => 0x10,
+            Self::HarmonicPinch => 0x20,
+            Self::Tap => 0x40,
+        }
+    }
+}
+
+/// A `Copy` set of co-occurring [`NoteMark`]s on a note, stored as a bitset
+/// (ADR-0018). Evidence-free — provenance lives on spans and positions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct NoteMarks(u16);
+
+impl NoteMarks {
+    /// The empty mark set.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Whether no marks are set.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Whether `mark` is present.
+    #[must_use]
+    pub const fn contains(self, mark: NoteMark) -> bool {
+        self.0 & mark.bit() != 0
+    }
+
+    /// Adds `mark` to the set.
+    pub const fn insert(&mut self, mark: NoteMark) {
+        self.0 |= mark.bit();
+    }
+
+    /// Returns this set with `mark` added (builder style).
+    #[must_use]
+    pub const fn with(self, mark: NoteMark) -> Self {
+        Self(self.0 | mark.bit())
+    }
+
+    /// The number of marks set.
+    #[must_use]
+    pub const fn len(self) -> u32 {
+        self.0.count_ones()
+    }
+
+    /// Iterates the marks present, in [`NoteMark::ALL`] order.
+    pub fn iter(self) -> impl Iterator<Item = NoteMark> {
+        NoteMark::ALL.into_iter().filter(move |&m| self.contains(m))
+    }
+}
+
 // ── fretboard ───────────────────────────────────────────────────────────────
 
 /// A `(string, fret)` location on the fretboard, interpreted under a [`Tuning`]

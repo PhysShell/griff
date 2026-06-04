@@ -15,7 +15,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::event::{Articulation, Pitch, Ticks, Tuning, Velocity};
+use crate::event::{NoteMark, NoteMarks, Pitch, Ticks, Tuning, Velocity};
 use crate::feature::PitchRange;
 use crate::generate::{GenerationError, GenerationSeed};
 use crate::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Score, Track, Voice};
@@ -79,8 +79,8 @@ pub struct PartProfile {
     pub density: f64,
     /// Distinct MIDI pitches present, ascending.
     pub pitches: Vec<u8>,
-    /// Distinct articulations present across the part.
-    pub techniques: BTreeSet<Articulation>,
+    /// Distinct note marks present across the part.
+    pub techniques: BTreeSet<NoteMark>,
 }
 
 /// Relation-as-provenance: per-axis scores describing how B relates to A.
@@ -236,7 +236,7 @@ struct NoteRef {
     duration: Ticks,
     pitch: u8,
     velocity: u8,
-    articulation: Option<Articulation>,
+    marks: NoteMarks,
 }
 
 /// Collects every note atom of a track's primary voice, sorted by onset.
@@ -254,7 +254,7 @@ fn voice_notes(track: &Track) -> Vec<NoteRef> {
                 duration: n.duration,
                 pitch: n.pitch.0,
                 velocity: n.velocity.0,
-                articulation: n.articulation,
+                marks: n.marks,
             }),
             AtomEvent::Rest(_) => None,
         })
@@ -303,7 +303,7 @@ pub fn analyze_part(score: &Score, track_index: usize) -> Result<PartProfile, Co
     pitches.sort_unstable();
     pitches.dedup();
 
-    let techniques: BTreeSet<Articulation> = notes.iter().filter_map(|n| n.articulation).collect();
+    let techniques: BTreeSet<NoteMark> = notes.iter().flat_map(|n| n.marks.iter()).collect();
 
     let note_count = notes.len();
     let bar_count = score.master_bars.len();
@@ -411,7 +411,7 @@ fn arrange_rhythm_lock(
                     duration: n.duration,
                     pitch,
                     velocity,
-                    articulation: None,
+                    marks: NoteMarks::empty(),
                     position: None,
                 })],
                 technique_spans: Vec::new(),
@@ -528,8 +528,7 @@ fn score_axes(
         band_overlap(a.lowest.0, a.highest.0, b_lo.0, b_hi.0)
     });
 
-    let b_techniques: BTreeSet<Articulation> =
-        b_notes.iter().filter_map(|n| n.articulation).collect();
+    let b_techniques: BTreeSet<NoteMark> = b_notes.iter().flat_map(|n| n.marks.iter()).collect();
     let technique_overlap = jaccard(&profile.techniques, &b_techniques);
 
     AxisScores {
@@ -562,7 +561,7 @@ fn band_overlap(a_lo: u8, a_hi: u8, b_lo: u8, b_hi: u8) -> f64 {
 
 /// Jaccard overlap of two technique sets; `1.0` when both are empty.
 #[allow(clippy::cast_precision_loss)]
-fn jaccard(a: &BTreeSet<Articulation>, b: &BTreeSet<Articulation>) -> f64 {
+fn jaccard(a: &BTreeSet<NoteMark>, b: &BTreeSet<NoteMark>) -> f64 {
     let inter = a.intersection(b).count();
     let union = a.union(b).count();
     if union == 0 {

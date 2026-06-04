@@ -23,7 +23,7 @@ use griff_core::{
         analyze_part, arrange_complement, validate_pair, ComplementError, ComplementSpec,
         RelationMode,
     },
-    event::{Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
+    event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     generate::GenerationSeed,
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
@@ -41,7 +41,7 @@ fn quarter_note(start: u32, pitch: u8) -> AtomEvent {
         duration: Ticks(QUARTER),
         pitch: Pitch::new(pitch).expect("valid pitch"),
         velocity: Velocity::new(90).expect("valid velocity"),
-        articulation: None,
+        marks: NoteMarks::empty(),
         position: None,
     })
 }

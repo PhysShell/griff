@@ -16,17 +16,11 @@
     clippy::missing_const_for_fn
 )]
 
-use griff_core::event::{Articulation, Pitch, Ticks, ValidationError, Velocity};
+use griff_core::event::{NoteMark, NoteMarks, Pitch, Ticks, ValidationError, Velocity};
 use griff_core::feature::{voice_features, PitchRange, VelocityRange, VoiceFeatures};
 use griff_core::score::{AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, Voice};
 
-fn note_group(
-    start: u32,
-    duration: u32,
-    pitch: u8,
-    velocity: u8,
-    art: Option<Articulation>,
-) -> EventGroup {
+fn note_group(start: u32, duration: u32, pitch: u8, velocity: u8, marks: NoteMarks) -> EventGroup {
     EventGroup {
         kind: EventGroupKind::Single,
         atoms: vec![AtomEvent::Note(AtomNote {
@@ -34,7 +28,7 @@ fn note_group(
             duration: Ticks(duration),
             pitch: Pitch(pitch),
             velocity: Velocity(velocity),
-            articulation: art,
+            marks,
             position: None,
         })],
         technique_spans: Vec::new(),
@@ -57,10 +51,10 @@ fn voice_features_extracts_counts_spans_and_duration() {
     let voice = Voice {
         id: 0,
         event_groups: vec![
-            note_group(0, 120, 64, 80, None),
+            note_group(0, 120, 64, 80, NoteMarks::empty()),
             rest_group(120, 60),
-            note_group(180, 240, 60, 100, Some(Articulation::PalmMute)),
-            note_group(420, 120, 67, 70, None),
+            note_group(180, 240, 60, 100, NoteMarks::empty().with(NoteMark::Accent)),
+            note_group(420, 120, 67, 70, NoteMarks::empty()),
         ],
     };
 
@@ -139,7 +133,7 @@ fn voice_features_counts_all_atoms_in_a_group() {
                     duration: Ticks(240),
                     pitch: Pitch(52),
                     velocity: Velocity(90),
-                    articulation: None,
+                    marks: NoteMarks::empty(),
                     position: None,
                 }),
                 AtomEvent::Note(AtomNote {
@@ -147,7 +141,7 @@ fn voice_features_counts_all_atoms_in_a_group() {
                     duration: Ticks(240),
                     pitch: Pitch(59),
                     velocity: Velocity(90),
-                    articulation: None,
+                    marks: NoteMarks::empty(),
                     position: None,
                 }),
             ],

@@ -19,7 +19,8 @@
 
 use crate::{
     event::{
-        Articulation, FretboardPosition, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity,
+        Articulation, FretboardPosition, NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning,
+        Velocity,
     },
     slice::TickRange,
 };
@@ -105,8 +106,10 @@ pub struct AtomNote {
     pub pitch: Pitch,
     /// MIDI velocity (0–127).
     pub velocity: Velocity,
-    /// Optional playing technique.
-    pub articulation: Option<Articulation>,
+    /// Per-note technique marks — a `Copy` set of co-occurring [`NoteMarks`]
+    /// (ADR-0018), replacing the former single `Option<Articulation>`. Spanning
+    /// techniques live on [`TechniqueSpan`].
+    pub marks: NoteMarks,
     /// Optional fretboard position under the track's [`Tuning`] (ADR-0018).
     /// Guitar Pro supplies it; MIDI import leaves it `None`.
     pub position: Option<FretboardPosition>,
@@ -255,7 +258,7 @@ pub struct Score {
 mod tests {
     use super::{AtomEvent, AtomNote, AtomRest, ImportWarning, LossReport, TechniqueSpan};
     use crate::{
-        event::{Articulation, Pitch, Ticks, Velocity},
+        event::{Articulation, NoteMarks, Pitch, Ticks, Velocity},
         slice::TickRange,
     };
 
@@ -269,7 +272,7 @@ mod tests {
             duration: Ticks(dur),
             pitch: Pitch::new(pitch).expect("valid pitch"),
             velocity: Velocity::new(80).expect("valid velocity"),
-            articulation: None,
+            marks: NoteMarks::empty(),
             position: None,
         })
     }

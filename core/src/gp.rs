@@ -22,7 +22,8 @@
 
 use crate::{
     event::{
-        Articulation, FretboardPosition, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity,
+        Articulation, FretboardPosition, NoteMark, NoteMarks, Pitch, Tempo, Ticks, TimeSignature,
+        Tuning, Velocity,
     },
     score::{
         AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
@@ -303,14 +304,13 @@ fn build_event_group(
                 let pitch = Pitch(midi);
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 let velocity = Velocity(note.velocity.clamp(0, 127) as u8);
-                let articulation =
-                    map_note_articulation(&note.effect, start, duration, &mut technique_spans);
+                let marks = map_gp_note_marks(&note.effect, start, duration, &mut technique_spans);
                 atoms.push(AtomEvent::Note(AtomNote {
                     absolute_start: start,
                     duration,
                     pitch,
                     velocity,
-                    articulation,
+                    marks,
                     // Guitar Pro is a source of truth for (string, fret) — ADR-0018.
                     position: gp_note_position(note),
                 }));
@@ -386,42 +386,47 @@ fn gp_note_position(note: &guitarpro::Note) -> Option<FretboardPosition> {
 
 // ── articulation mapping ──────────────────────────────────────────────────────
 
-/// Maps the primary GP note effect to a canonical [`Articulation`] and emits a
-/// [`TechniqueSpan`].  Only the highest-priority articulation is returned;
-/// secondary effects are silently dropped.
-fn map_note_articulation(
+/// Maps GP note effects onto the rich note model (ADR-0018): per-note harmonics
+/// become [`NoteMarks`], and each spanning technique present (hammer-on, slide,
+/// palm-mute, vibrato) emits its own [`TechniqueSpan`]. Replaces the former
+/// single-articulation flattening — marks and spans are now independent, so a
+/// note that is both hammered and a harmonic keeps both.
+fn map_gp_note_marks(
     effect: &GpNoteEffect,
     start: Ticks,
     duration: Ticks,
     spans: &mut Vec<TechniqueSpan>,
-) -> Option<Articulation> {
+) -> NoteMarks {
     let end = Ticks(start.0.saturating_add(duration.0));
     let tick_range = TickRange { start, end };
 
-    let articulation = if effect.hammer {
-        Some(Articulation::HammerOn)
-    } else if !effect.slides.is_empty() {
-        Some(Articulation::Slide)
-    } else if effect.palm_mute {
-        Some(Articulation::PalmMute)
-    } else if effect.vibrato {
-        Some(Articulation::Vibrato)
-    } else if let Some(h) = &effect.harmonic {
-        match h.kind {
-            guitarpro::HarmonicType::Pinch => Some(Articulation::HarmonicPinch),
-            _ => Some(Articulation::HarmonicNatural),
-        }
-    } else {
-        None
-    };
-
-    if let Some(a) = articulation {
+    let mut push_span = |technique| {
         spans.push(TechniqueSpan {
-            technique: a,
+            technique,
             tick_range,
         });
+    };
+    if effect.hammer {
+        push_span(Articulation::HammerOn);
     }
-    articulation
+    if !effect.slides.is_empty() {
+        push_span(Articulation::Slide);
+    }
+    if effect.palm_mute {
+        push_span(Articulation::PalmMute);
+    }
+    if effect.vibrato {
+        push_span(Articulation::Vibrato);
+    }
+
+    let mut marks = NoteMarks::empty();
+    if let Some(h) = &effect.harmonic {
+        match h.kind {
+            guitarpro::HarmonicType::Pinch => marks.insert(NoteMark::HarmonicPinch),
+            _ => marks.insert(NoteMark::HarmonicNatural),
+        }
+    }
+    marks
 }
 
 // ── duration helpers ──────────────────────────────────────────────────────────

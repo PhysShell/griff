@@ -121,7 +121,7 @@ mod tests {
     )]
 
     use super::*;
-    use griff_core::event::{Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::score::{
         AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Track, Voice,
     };
@@ -147,7 +147,7 @@ mod tests {
                     duration: Ticks(110),
                     pitch: Pitch::new(pitch).expect("pitch"),
                     velocity: Velocity::new(vel).expect("vel"),
-                    articulation: None,
+                    marks: NoteMarks::empty(),
                     position: None,
                 })
             })

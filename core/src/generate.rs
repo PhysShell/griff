@@ -1,6 +1,8 @@
 //! Deterministic phrase generation primitives.
 
-use crate::event::{Pitch, Tempo, Ticks, TimeSignature, Tuning, ValidationError, Velocity};
+use crate::event::{
+    NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, ValidationError, Velocity,
+};
 use crate::score::{
     AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
 };
@@ -232,7 +234,7 @@ fn bars_to_score(
                 duration: note.duration,
                 pitch: note.pitch,
                 velocity: note.velocity,
-                articulation: None,
+                marks: NoteMarks::empty(),
                 position: None,
             });
             cursor = cursor

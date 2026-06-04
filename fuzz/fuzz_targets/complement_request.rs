@@ -20,7 +20,7 @@ use libfuzzer_sys::fuzz_target;
 
 use griff_core::{
     complement::{analyze_part, arrange_complement, validate_pair, ComplementSpec, RelationMode},
-    event::{Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
+    event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     generate::GenerationSeed,
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
@@ -85,7 +85,7 @@ fn build_part_a(bar_count: usize, ppqn: u16, pitches: &[u8]) -> Option<Score> {
                     duration: Ticks(quarter),
                     pitch,
                     velocity,
-                    articulation: None,
+                    marks: NoteMarks::empty(),
                     position: None,
                 })],
                 technique_spans: Vec::new(),
