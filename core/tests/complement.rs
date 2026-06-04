@@ -23,7 +23,10 @@ use griff_core::{
         analyze_part, arrange_complement, validate_pair, ComplementError, ComplementSpec,
         RelationMode,
     },
-    event::{Articulation, NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
+    event::{
+        NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning,
+        Velocity,
+    },
     generate::GenerationSeed,
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
@@ -449,8 +452,9 @@ fn analyze_part_includes_spanning_techniques() {
         kind: EventGroupKind::Single,
         atoms: vec![note],
         technique_spans: vec![TechniqueSpan {
-            technique: Articulation::PalmMute,
+            technique: SpanTechnique::PalmMute,
             tick_range: TickRange::new(Ticks(0), Ticks(QUARTER)).expect("ordered range"),
+            evidence: TechniqueEvidence::explicit(),
         }],
     };
     let score = Score {

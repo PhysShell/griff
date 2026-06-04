@@ -23,8 +23,8 @@
 
 use crate::{
     event::{
-        Articulation, FretboardPosition, NoteMark, NoteMarks, Pitch, Tempo, Ticks, TimeSignature,
-        Tuning, Velocity,
+        FretboardPosition, NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo,
+        Ticks, TimeSignature, Tuning, Velocity,
     },
     score::{
         AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
@@ -401,23 +401,25 @@ fn map_gp_note_marks(
     let end = Ticks(start.0.saturating_add(duration.0));
     let tick_range = TickRange { start, end };
 
+    // Guitar Pro is a source of truth, so every span is Explicit (ADR-0018).
     let mut push_span = |technique| {
         spans.push(TechniqueSpan {
             technique,
             tick_range,
+            evidence: TechniqueEvidence::explicit(),
         });
     };
     if effect.hammer {
-        push_span(Articulation::HammerOn);
+        push_span(SpanTechnique::HammerOn);
     }
     if !effect.slides.is_empty() {
-        push_span(Articulation::Slide);
+        push_span(SpanTechnique::Slide);
     }
     if effect.palm_mute {
-        push_span(Articulation::PalmMute);
+        push_span(SpanTechnique::PalmMute);
     }
     if effect.vibrato {
-        push_span(Articulation::Vibrato);
+        push_span(SpanTechnique::Vibrato);
     }
 
     let mut marks = NoteMarks::empty();
@@ -704,6 +706,20 @@ mod tests {
         assert!(marks.contains(NoteMark::Ghost));
         assert!(marks.contains(NoteMark::Staccato));
         assert!(spans.is_empty(), "these are per-note marks, not spans");
+    }
+
+    #[test]
+    fn gp_hammer_emits_explicit_span() {
+        let effect = GpNoteEffect {
+            hammer: true,
+            ..GpNoteEffect::default()
+        };
+        let mut spans = Vec::new();
+        let _ = map_gp_note_marks(&effect, Ticks(0), Ticks(480), &mut spans);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].technique, SpanTechnique::HammerOn);
+        // Guitar Pro is a source of truth.
+        assert_eq!(spans[0].evidence, TechniqueEvidence::explicit());
     }
 
     #[test]

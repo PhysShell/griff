@@ -15,7 +15,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::event::{Articulation, NoteMark, NoteMarks, Pitch, Ticks, Tuning, Velocity};
+use crate::event::{NoteMark, NoteMarks, Pitch, SpanTechnique, Ticks, Tuning, Velocity};
 use crate::feature::PitchRange;
 use crate::generate::{GenerationError, GenerationSeed};
 use crate::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Score, Track, Voice};
@@ -299,17 +299,15 @@ const fn note_mark_label(mark: NoteMark) -> &'static str {
 }
 
 /// Stable label for a spanning technique.
-const fn span_label(technique: Articulation) -> &'static str {
+const fn span_label(technique: SpanTechnique) -> &'static str {
     match technique {
-        Articulation::Slide => "slide",
-        Articulation::Bend => "bend",
-        Articulation::Legato => "legato",
-        Articulation::PalmMute => "palm_mute",
-        Articulation::HammerOn => "hammer_on",
-        Articulation::PullOff => "pull_off",
-        Articulation::Vibrato => "vibrato",
-        Articulation::HarmonicNatural => "harmonic_natural",
-        Articulation::HarmonicPinch => "harmonic_pinch",
+        SpanTechnique::Slide => "slide",
+        SpanTechnique::Bend => "bend",
+        SpanTechnique::Legato => "legato",
+        SpanTechnique::PalmMute => "palm_mute",
+        SpanTechnique::HammerOn => "hammer_on",
+        SpanTechnique::PullOff => "pull_off",
+        SpanTechnique::Vibrato => "vibrato",
     }
 }
 

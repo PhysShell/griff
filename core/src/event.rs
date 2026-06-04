@@ -125,9 +125,14 @@ impl TimeSignature {
     }
 }
 
-/// Per-note guitar articulation carried as optional metadata.
+/// A spanning guitar technique — one that relates notes or covers a range
+/// (ADR-0018).
+///
+/// Per-note techniques (accent, ghost, harmonics, …) are [`NoteMark`]s;
+/// harmonics are deliberately absent here so "a span is a harmonic" is
+/// unrepresentable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Articulation {
+pub enum SpanTechnique {
     /// Slide into or out of the note.
     Slide,
     /// Pitch bend up or down.
@@ -142,10 +147,46 @@ pub enum Articulation {
     PullOff,
     /// Vibrato.
     Vibrato,
-    /// Natural harmonic.
-    HarmonicNatural,
-    /// Pinch harmonic.
-    HarmonicPinch,
+}
+
+/// Where a technique came from — import-side provenance (ADR-0018; the
+/// import-side sense of *evidence* reserved by ADR-0017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TechniqueSource {
+    /// Read from a source-of-truth format that stores it explicitly (Guitar Pro).
+    Explicit,
+    /// Inferred heuristically from MIDI evidence.
+    InferredFromMidi,
+}
+
+/// Provenance on a technique: its [`TechniqueSource`] plus a confidence in
+/// `[0, 1]` (ADR-0018). Keeps inferred techniques from masquerading as fact.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TechniqueEvidence {
+    /// Where the technique came from.
+    pub source: TechniqueSource,
+    /// Confidence in `[0, 1]`; `1.0` for `Explicit`.
+    pub confidence: f64,
+}
+
+impl TechniqueEvidence {
+    /// Source-of-truth evidence (e.g. Guitar Pro): `Explicit`, confidence `1.0`.
+    #[must_use]
+    pub const fn explicit() -> Self {
+        Self {
+            source: TechniqueSource::Explicit,
+            confidence: 1.0,
+        }
+    }
+
+    /// MIDI-inferred evidence with the given confidence.
+    #[must_use]
+    pub const fn inferred(confidence: f64) -> Self {
+        Self {
+            source: TechniqueSource::InferredFromMidi,
+            confidence,
+        }
+    }
 }
 
 // ── per-note technique marks ──────────────────────────────────────────────────

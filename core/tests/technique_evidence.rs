@@ -14,7 +14,7 @@
 )]
 
 use griff_core::{
-    event::{SpanTechnique, Ticks, TechniqueEvidence, TechniqueSource},
+    event::{SpanTechnique, TechniqueEvidence, TechniqueSource, Ticks},
     score::TechniqueSpan,
     slice::TickRange,
 };
