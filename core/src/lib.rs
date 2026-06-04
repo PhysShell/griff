@@ -10,6 +10,7 @@ pub mod complement;
 pub mod corpus;
 pub mod event;
 pub mod feature;
+pub mod fretboard;
 pub mod generate;
 pub mod gp;
 pub mod midi;

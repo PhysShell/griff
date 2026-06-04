@@ -348,6 +348,25 @@ impl Tuning {
         let midi = open.0.checked_add(pos.fret)?;
         Pitch::new(midi).ok()
     }
+
+    /// Every playable `(string, fret)` for `pitch` under this tuning, with `fret`
+    /// in `[0, max_fret]`, ordered by ascending string number (ADR-0019). Empty
+    /// when the pitch is below every open string or beyond `max_fret` on all.
+    #[must_use]
+    pub fn candidates(&self, pitch: Pitch, max_fret: u8) -> Vec<FretboardPosition> {
+        self.open_strings
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, open)| {
+                let fret = pitch.0.checked_sub(open.0)?;
+                if fret > max_fret {
+                    return None;
+                }
+                let string = u8::try_from(idx).ok()?.checked_add(1)?;
+                Some(FretboardPosition { string, fret })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
