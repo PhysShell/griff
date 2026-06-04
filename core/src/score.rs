@@ -19,8 +19,8 @@
 
 use crate::{
     event::{
-        Articulation, FretboardPosition, NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning,
-        Velocity,
+        FretboardPosition, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks,
+        TimeSignature, Tuning, Velocity,
     },
     slice::TickRange,
 };
@@ -84,13 +84,16 @@ pub struct SourceMeta {
 
 // ── technique spans ────────────────────────────────────────────────────────────
 
-/// A playing technique applied over a tick range within a voice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A spanning playing technique over a tick range within a voice, with its
+/// import-side evidence (ADR-0018).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TechniqueSpan {
-    /// The technique in effect.
-    pub technique: Articulation,
+    /// The spanning technique in effect.
+    pub technique: SpanTechnique,
     /// Absolute tick range over which the technique applies.
     pub tick_range: TickRange,
+    /// Where the technique came from (Guitar Pro = `Explicit`).
+    pub evidence: TechniqueEvidence,
 }
 
 // ── atom events ───────────────────────────────────────────────────────────────
@@ -176,7 +179,9 @@ pub enum EventGroupKind {
 }
 
 /// A group of [`AtomEvent`]s sharing a musical role, plus optional technique spans.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `Eq` is intentionally absent: `TechniqueSpan` carries an `f64` confidence
+// (ADR-0018 Slice 2b), so the tree from here up keeps `PartialEq` only.
+#[derive(Debug, Clone, PartialEq)]
 pub struct EventGroup {
     /// Structural role of this group.
     pub kind: EventGroupKind,
@@ -189,7 +194,7 @@ pub struct EventGroup {
 // ── voice, track, master bar, score ───────────────────────────────────────────
 
 /// An independent event stream within a track (needed for polyphony).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Voice {
     /// Voice identifier; 0 is the primary voice.
     pub id: u8,
@@ -198,7 +203,7 @@ pub struct Voice {
 }
 
 /// An instrument part or logical track layer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Track {
     /// Optional track name from the source format.
     pub name: Option<String>,
@@ -258,7 +263,7 @@ pub struct Score {
 mod tests {
     use super::{AtomEvent, AtomNote, AtomRest, ImportWarning, LossReport, TechniqueSpan};
     use crate::{
-        event::{Articulation, NoteMarks, Pitch, Ticks, Velocity},
+        event::{NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Ticks, Velocity},
         slice::TickRange,
     };
 
@@ -335,9 +340,10 @@ mod tests {
     #[test]
     fn technique_span_stores_fields() {
         let span = TechniqueSpan {
-            technique: Articulation::PalmMute,
+            technique: SpanTechnique::PalmMute,
             tick_range: tick_range(0, 480),
+            evidence: TechniqueEvidence::explicit(),
         };
-        assert_eq!(span.technique, Articulation::PalmMute);
+        assert_eq!(span.technique, SpanTechnique::PalmMute);
     }
 }

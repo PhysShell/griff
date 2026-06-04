@@ -455,10 +455,9 @@ lossy).
 ## 5. Articulations and guitar techniques
 
 ### Articulation
-A compatibility *projection* — a single dominant label over a note's `NoteMark`
-set and overlapping `TechniqueSpan`s — kept for summaries, views, and coarse
-corpus tags (ADR-0018). No longer how a note stores technique: the truth is the
-marks set plus spans, each with evidence.
+Renamed to `SpanTechnique` (ADR-0018 Slice 2b). The dominant-label *projection*
+over a note's marks and spans is deferred until a consumer needs it (none does
+yet): feature reads `marks`, complement reads a technique-label set.
 
 ### NoteMark
 A per-note guitar technique that is intrinsic to one note and **co-occurs** with
@@ -468,16 +467,17 @@ carries a *set* of marks (`NoteMarks`, a `Copy` bitset) replacing the old
 (ADR-0018).
 
 ### SpanTechnique
-The kind of a `TechniqueSpan` — a technique that relates notes or covers a range
-(slide, legato, bend, vibrato, palm-mute, let-ring, tremolo, sweep). Distinct
-from `NoteMark` so illegal states are unrepresentable (a slide is not a note
-mark; an accent is not a span) (ADR-0018).
+The kind of a `TechniqueSpan` — a technique that relates notes or covers a range:
+slide, bend, legato (hammer-on/pull-off), palm-mute, vibrato. The renamed former
+`Articulation` enum, **without** the harmonic variants (those are `NoteMark`s), so
+"a span is a harmonic" is unrepresentable (ADR-0018 Slice 2b).
 
 ### TechniqueEvidence
-Provenance on a span or position: a `TechniqueSource`
+Provenance on a `TechniqueSpan`: a `TechniqueSource`
 (`Explicit` = read from a source-of-truth format like Guitar Pro, confidence 1.0;
 `InferredFromMidi` = guessed from MIDI evidence, confidence `< 1.0`) plus the
-confidence. Keeps inferred techniques from masquerading as fact (ADR-0018). The
+`confidence` (`f64`). Keeps inferred techniques from masquerading as fact
+(ADR-0018). Position evidence is deferred until position inference exists. The
 import-side sense of *evidence* reserved by ADR-0017 (distinct from a scoring
 *rationale*).
 
