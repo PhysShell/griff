@@ -17,8 +17,9 @@
 //! ZIP-based) is out of scope for S3.
 //!
 //! Every import produces a [`LossReport`] carried on [`Score`].  Losses
-//! include tied/dead notes, percussion tracks, and notes with multiple
-//! simultaneous articulations (only the primary one is kept).
+//! include tied/dead notes and percussion tracks. Co-occurring techniques are
+//! preserved (ADR-0018): harmonics/accent/ghost/staccato become per-note
+//! `NoteMark`s and each spanning technique its own `TechniqueSpan`.
 
 use crate::{
     event::{
@@ -420,6 +421,15 @@ fn map_gp_note_marks(
     }
 
     let mut marks = NoteMarks::empty();
+    if effect.accentuated_note || effect.heavy_accentuated_note {
+        marks.insert(NoteMark::Accent);
+    }
+    if effect.ghost_note {
+        marks.insert(NoteMark::Ghost);
+    }
+    if effect.staccato {
+        marks.insert(NoteMark::Staccato);
+    }
     if let Some(h) = &effect.harmonic {
         match h.kind {
             guitarpro::HarmonicType::Pinch => marks.insert(NoteMark::HarmonicPinch),
@@ -675,6 +685,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(gp_note_position(&note), None);
+    }
+
+    // ── map_gp_note_marks ─────────────────────────────────────────────────────
+
+    #[test]
+    fn gp_note_marks_capture_accent_ghost_staccato() {
+        // GP accent/ghost/staccato are source-of-truth NoteMarks (ADR-0018).
+        let effect = GpNoteEffect {
+            accentuated_note: true,
+            ghost_note: true,
+            staccato: true,
+            ..GpNoteEffect::default()
+        };
+        let mut spans = Vec::new();
+        let marks = map_gp_note_marks(&effect, Ticks(0), Ticks(480), &mut spans);
+        assert!(marks.contains(NoteMark::Accent));
+        assert!(marks.contains(NoteMark::Ghost));
+        assert!(marks.contains(NoteMark::Staccato));
+        assert!(spans.is_empty(), "these are per-note marks, not spans");
     }
 
     #[test]
