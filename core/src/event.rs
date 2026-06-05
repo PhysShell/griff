@@ -301,6 +301,37 @@ pub struct FretboardPosition {
     pub fret: u8,
 }
 
+/// A note's chosen fretboard position together with its import-side evidence
+/// (ADR-0019). Guitar Pro positions are `Explicit`; positions inferred from MIDI
+/// carry `InferredFromMidi` plus a confidence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NotePosition {
+    /// The `(string, fret)` location.
+    pub position: FretboardPosition,
+    /// Where the position came from.
+    pub evidence: TechniqueEvidence,
+}
+
+impl NotePosition {
+    /// A source-of-truth position (e.g. Guitar Pro): `Explicit`, confidence 1.0.
+    #[must_use]
+    pub const fn explicit(position: FretboardPosition) -> Self {
+        Self {
+            position,
+            evidence: TechniqueEvidence::explicit(),
+        }
+    }
+
+    /// A MIDI-inferred position with the given confidence.
+    #[must_use]
+    pub const fn inferred(position: FretboardPosition, confidence: f64) -> Self {
+        Self {
+            position,
+            evidence: TechniqueEvidence::inferred(confidence),
+        }
+    }
+}
+
 /// A guitar tuning: the open-string pitches ordered by string number
 /// (index 0 = string 1, the highest-pitched).
 ///
@@ -347,6 +378,25 @@ impl Tuning {
         let open = self.open_strings.get(idx)?;
         let midi = open.0.checked_add(pos.fret)?;
         Pitch::new(midi).ok()
+    }
+
+    /// Every playable `(string, fret)` for `pitch` under this tuning, with `fret`
+    /// in `[0, max_fret]`, ordered by ascending string number (ADR-0019). Empty
+    /// when the pitch is below every open string or beyond `max_fret` on all.
+    #[must_use]
+    pub fn candidates(&self, pitch: Pitch, max_fret: u8) -> Vec<FretboardPosition> {
+        self.open_strings
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, open)| {
+                let fret = pitch.0.checked_sub(open.0)?;
+                if fret > max_fret {
+                    return None;
+                }
+                let string = u8::try_from(idx).ok()?.checked_add(1)?;
+                Some(FretboardPosition { string, fret })
+            })
+            .collect()
     }
 }
 

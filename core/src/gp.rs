@@ -23,8 +23,8 @@
 
 use crate::{
     event::{
-        FretboardPosition, NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo,
-        Ticks, TimeSignature, Tuning, Velocity,
+        FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, SpanTechnique,
+        TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
     },
     score::{
         AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
@@ -313,7 +313,7 @@ fn build_event_group(
                     velocity,
                     marks,
                     // Guitar Pro is a source of truth for (string, fret) — ADR-0018.
-                    position: gp_note_position(note),
+                    position: gp_note_position(note).map(NotePosition::explicit),
                 }));
             }
             guitarpro::NoteType::Tie
