@@ -11,6 +11,7 @@ use griff_core::{
     corpus::{
         ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, SourceFormat, SourceRef, SwancoreTag,
     },
+    event::{NoteMarks, NotePosition, TechniqueSource},
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::TickRange,
@@ -146,7 +147,17 @@ fn cmd_inspect(path: &Path) -> Result<(), CliError> {
     println!("PPQN: {}", score.ticks_per_quarter);
     for (ti, track) in score.tracks.iter().enumerate() {
         let name = track.name.as_deref().unwrap_or("<unnamed>");
-        println!("Track {ti} ch={ch} \"{name}\":", ch = track.channel);
+        let tuning: Vec<String> = track
+            .tuning
+            .open_strings()
+            .iter()
+            .map(|p| p.0.to_string())
+            .collect();
+        println!(
+            "Track {ti} ch={ch} \"{name}\"  tuning={}",
+            tuning.join(","),
+            ch = track.channel,
+        );
         let voice = primary_voice(track);
         for mb in &score.master_bars {
             let notes = voice.map_or(0, |v| note_count_in_range(v, mb.tick_range));
@@ -158,8 +169,47 @@ fn cmd_inspect(path: &Path) -> Result<(), CliError> {
                 bpm = mb.tempo.0,
             );
         }
+        if let Some(v) = voice {
+            for group in &v.event_groups {
+                for atom in &group.atoms {
+                    if let AtomEvent::Note(n) = atom {
+                        println!(
+                            "    t={t:<6} p={p:<3} pos={pos:<16} marks={marks}",
+                            t = n.absolute_start.0,
+                            p = n.pitch.0,
+                            pos = fmt_position(n.position),
+                            marks = fmt_marks(n.marks),
+                        );
+                    }
+                }
+            }
+        }
     }
     Ok(())
+}
+
+/// Renders an optional fretboard position as `string/fret source`, or `-`.
+fn fmt_position(pos: Option<NotePosition>) -> String {
+    pos.map_or_else(
+        || "-".to_owned(),
+        |np| {
+            let source = match np.evidence.source {
+                TechniqueSource::Explicit => "explicit",
+                TechniqueSource::InferredFromMidi => "inferred",
+            };
+            format!("{}/{} {source}", np.position.string, np.position.fret)
+        },
+    )
+}
+
+/// Renders a note's marks as a comma list, or `-` when empty.
+fn fmt_marks(marks: NoteMarks) -> String {
+    let names: Vec<String> = marks.iter().map(|m| format!("{m:?}")).collect();
+    if names.is_empty() {
+        "-".to_owned()
+    } else {
+        names.join(",")
+    }
 }
 
 fn cmd_export(input: &Path, output: &Path) -> Result<(), CliError> {
