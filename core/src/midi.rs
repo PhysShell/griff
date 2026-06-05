@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, ValidationError, Velocity},
+    fretboard::{self, assign_inferred_positions, FingeringWeights},
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, ImportWarning, LossReport, MasterBar,
         Score, SourceMeta, Track as ScoreTrack, Voice,
@@ -292,6 +293,20 @@ pub fn import_score(data: &[u8]) -> Result<Score, MidiError> {
 
     let end_tick = score_end_tick(&score_tracks);
     let master_bars = build_master_bars(ppqn, &tempos, &time_sigs, end_tick)?;
+
+    // MIDI carries no string/fret; infer a plausible fingering per voice so the
+    // notes gain positions (marked `InferredFromMidi`) — ADR-0019.
+    for track in &mut score_tracks {
+        let tuning = track.tuning.clone();
+        for voice in &mut track.voices {
+            assign_inferred_positions(
+                voice,
+                &tuning,
+                &FingeringWeights::v1(),
+                fretboard::STANDARD_MAX_FRET,
+            );
+        }
+    }
 
     Ok(Score {
         ticks_per_quarter: ppqn.0,

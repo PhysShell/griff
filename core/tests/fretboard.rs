@@ -17,7 +17,7 @@
 )]
 
 use griff_core::{
-    event::{FretboardPosition, NoteMarks, Pitch, Ticks, Tuning, Velocity},
+    event::{FretboardPosition, NoteMarks, NotePosition, Pitch, Ticks, Tuning, Velocity},
     midi::import_score,
     score::{AtomNote, Track, Voice},
 };
@@ -72,7 +72,10 @@ fn atom_note_carries_optional_position() {
         pitch: Pitch(64),
         velocity: Velocity(90),
         marks: NoteMarks::empty(),
-        position: Some(FretboardPosition { string: 1, fret: 0 }),
+        position: Some(NotePosition::explicit(FretboardPosition {
+            string: 1,
+            fret: 0,
+        })),
     };
     let without = AtomNote {
         position: None,
@@ -80,7 +83,10 @@ fn atom_note_carries_optional_position() {
     };
     assert_eq!(
         with.position,
-        Some(FretboardPosition { string: 1, fret: 0 })
+        Some(NotePosition::explicit(FretboardPosition {
+            string: 1,
+            fret: 0
+        }))
     );
     assert_eq!(without.position, None);
 }

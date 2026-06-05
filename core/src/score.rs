@@ -19,7 +19,7 @@
 
 use crate::{
     event::{
-        FretboardPosition, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks,
+        NoteMarks, NotePosition, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks,
         TimeSignature, Tuning, Velocity,
     },
     slice::TickRange,
@@ -99,7 +99,9 @@ pub struct TechniqueSpan {
 // ── atom events ───────────────────────────────────────────────────────────────
 
 /// A note event in the canonical model, carrying absolute position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `Eq` is absent: a `NotePosition` carries an `f64` confidence (ADR-0019), so
+// `AtomNote`/`AtomEvent` keep `PartialEq` only.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtomNote {
     /// Absolute tick onset.
     pub absolute_start: Ticks,
@@ -113,9 +115,9 @@ pub struct AtomNote {
     /// (ADR-0018), replacing the former single `Option<Articulation>`. Spanning
     /// techniques live on [`TechniqueSpan`].
     pub marks: NoteMarks,
-    /// Optional fretboard position under the track's [`Tuning`] (ADR-0018).
-    /// Guitar Pro supplies it; MIDI import leaves it `None`.
-    pub position: Option<FretboardPosition>,
+    /// Optional fretboard position with its evidence (ADR-0018/0019). Guitar Pro
+    /// supplies it (`Explicit`); MIDI import infers it (`InferredFromMidi`).
+    pub position: Option<NotePosition>,
 }
 
 /// A rest (silence) in the canonical model, carrying absolute position.
@@ -128,7 +130,7 @@ pub struct AtomRest {
 }
 
 /// The minimal event unit in the canonical model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AtomEvent {
     /// A sounding note.
     Note(AtomNote),

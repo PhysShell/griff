@@ -10,7 +10,16 @@
 //! the S7 graph traversal (ADR-0013/0015) — linear in notes × strings, so no
 //! beam search is needed. Out-of-range pitches yield `None` and reset the path.
 
-use crate::event::{FretboardPosition, Pitch, Tuning};
+use crate::event::{FretboardPosition, NotePosition, Pitch, Tuning};
+use crate::score::{AtomEvent, Voice};
+
+/// Conventional highest fret considered when enumerating candidates.
+pub const STANDARD_MAX_FRET: u8 = 24;
+
+/// Confidence assigned to a MIDI-inferred position. A documented placeholder —
+/// a margin-based confidence (best vs runner-up path) is a future refinement
+/// (ADR-0019).
+const INFERRED_CONFIDENCE: f64 = 0.5;
 
 /// Named, versioned cost weights for the fingering DP.
 ///
@@ -166,4 +175,43 @@ pub fn infer_positions(
     }
 
     result
+}
+
+/// Writes inferred `(string, fret)` positions onto a voice's notes (ADR-0019 P1b).
+///
+/// Runs the fingering DP over the voice's note pitches in order and marks each
+/// result `InferredFromMidi`; notes with no playable position are left untouched.
+///
+/// Monophonic: a chord's notes are treated as a sequence (chord voicing is a
+/// deferred follow-up). Intended for MIDI-sourced material; Guitar Pro keeps its
+/// own `Explicit` positions.
+pub fn assign_inferred_positions(
+    voice: &mut Voice,
+    tuning: &Tuning,
+    weights: &FingeringWeights,
+    max_fret: u8,
+) {
+    let pitches: Vec<Pitch> = voice
+        .event_groups
+        .iter()
+        .flat_map(|g| g.atoms.iter())
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some(n.pitch),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+
+    let inferred = infer_positions(&pitches, tuning, weights, max_fret);
+
+    let mut idx = 0usize;
+    for group in &mut voice.event_groups {
+        for atom in &mut group.atoms {
+            if let AtomEvent::Note(note) = atom {
+                if let Some(Some(pos)) = inferred.get(idx).copied() {
+                    note.position = Some(NotePosition::inferred(pos, INFERRED_CONFIDENCE));
+                }
+                idx = idx.saturating_add(1);
+            }
+        }
+    }
 }
