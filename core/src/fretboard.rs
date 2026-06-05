@@ -10,8 +10,10 @@
 //! the S7 graph traversal (ADR-0013/0015) — linear in notes × strings, so no
 //! beam search is needed. Out-of-range pitches yield `None` and reset the path.
 
+use std::collections::HashMap;
+
 use crate::event::{FretboardPosition, NotePosition, Pitch, Tuning};
-use crate::score::{AtomEvent, Voice};
+use crate::score::{AtomEvent, AtomNote, Voice};
 
 /// Conventional highest fret considered when enumerating candidates.
 pub const STANDARD_MAX_FRET: u8 = 24;
@@ -179,39 +181,64 @@ pub fn infer_positions(
 
 /// Writes inferred `(string, fret)` positions onto a voice's notes (ADR-0019 P1b).
 ///
-/// Runs the fingering DP over the voice's note pitches in order and marks each
-/// result `InferredFromMidi`; notes with no playable position are left untouched.
+/// Runs the fingering DP over the voice's *monophonic* note pitches in order and
+/// marks each result `InferredFromMidi`. Returns the number of out-of-range notes
+/// (no playable position) so the importer can report the loss (ADR-0019 §1).
 ///
-/// Monophonic: a chord's notes are treated as a sequence (chord voicing is a
-/// deferred follow-up). Intended for MIDI-sourced material; Guitar Pro keeps its
-/// own `Explicit` positions.
+/// Notes that share an onset (a chord) are left unknown rather than misvoiced
+/// onto one string — chord voicing is a deferred follow-up (ADR-0019 §7) — and
+/// are *not* counted as losses. Intended for MIDI-sourced material; Guitar Pro
+/// keeps its own `Explicit` positions.
+#[must_use]
 pub fn assign_inferred_positions(
     voice: &mut Voice,
     tuning: &Tuning,
     weights: &FingeringWeights,
     max_fret: u8,
-) {
+) -> usize {
+    // Count notes per onset: a note is monophonic iff its onset is unique.
+    let mut per_onset: HashMap<u32, usize> = HashMap::new();
+    for group in &voice.event_groups {
+        for atom in &group.atoms {
+            if let AtomEvent::Note(n) = atom {
+                let c = per_onset.entry(n.absolute_start.0).or_insert(0);
+                *c = c.saturating_add(1);
+            }
+        }
+    }
+    let is_mono = |n: &AtomNote| per_onset.get(&n.absolute_start.0).copied().unwrap_or(0) == 1;
+
     let pitches: Vec<Pitch> = voice
         .event_groups
         .iter()
         .flat_map(|g| g.atoms.iter())
         .filter_map(|a| match a {
-            AtomEvent::Note(n) => Some(n.pitch),
-            AtomEvent::Rest(_) => None,
+            AtomEvent::Note(n) if is_mono(n) => Some(n.pitch),
+            _ => None,
         })
         .collect();
 
     let inferred = infer_positions(&pitches, tuning, weights, max_fret);
 
     let mut idx = 0usize;
+    let mut out_of_range = 0usize;
     for group in &mut voice.event_groups {
         for atom in &mut group.atoms {
             if let AtomEvent::Note(note) = atom {
-                if let Some(Some(pos)) = inferred.get(idx).copied() {
-                    note.position = Some(NotePosition::inferred(pos, INFERRED_CONFIDENCE));
+                if is_mono(note) {
+                    match inferred.get(idx).copied() {
+                        Some(Some(pos)) => {
+                            note.position = Some(NotePosition::inferred(pos, INFERRED_CONFIDENCE));
+                        }
+                        // Monophonic but no playable string: a genuine loss.
+                        Some(None) => out_of_range = out_of_range.saturating_add(1),
+                        None => {}
+                    }
+                    idx = idx.saturating_add(1);
                 }
-                idx = idx.saturating_add(1);
+                // Chord notes are left as-is (unknown), not a loss.
             }
         }
     }
+    out_of_range
 }

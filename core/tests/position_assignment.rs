@@ -16,10 +16,28 @@
 )]
 
 use griff_core::{
-    event::{FretboardPosition, NotePosition, TechniqueSource, Tuning},
+    event::{
+        FretboardPosition, NoteMarks, NotePosition, Pitch, TechniqueSource, Ticks, Tuning, Velocity,
+    },
+    fretboard::{assign_inferred_positions, FingeringWeights, STANDARD_MAX_FRET},
     midi::import_score,
-    score::AtomEvent,
+    score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Voice},
 };
+
+fn note_at(onset: u32, pitch: u8) -> EventGroup {
+    EventGroup {
+        kind: EventGroupKind::Single,
+        atoms: vec![AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(onset),
+            duration: Ticks(480),
+            pitch: Pitch(pitch),
+            velocity: Velocity(90),
+            marks: NoteMarks::empty(),
+            position: None,
+        })],
+        technique_spans: Vec::new(),
+    }
+}
 
 const SIMPLE_4_4_MID: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -63,4 +81,48 @@ fn midi_import_assigns_inferred_positions() {
         Tuning::standard_e().pitch_at(np.position),
         Some(first.pitch)
     );
+}
+
+#[test]
+fn chord_notes_are_left_unknown_not_misvoiced() {
+    // E4 (64) and G4 (67) at the same tick: a chord. The monophonic DP must not
+    // place both on string 1 — leave them unknown (ADR-0019 §7, chords deferred).
+    let mut voice = Voice {
+        id: 0,
+        event_groups: vec![note_at(0, 64), note_at(0, 67)],
+    };
+    let oor = assign_inferred_positions(
+        &mut voice,
+        &Tuning::standard_e(),
+        &FingeringWeights::v1(),
+        STANDARD_MAX_FRET,
+    );
+    assert_eq!(oor, 0, "chord notes are not out-of-range losses");
+    for g in &voice.event_groups {
+        for a in &g.atoms {
+            if let AtomEvent::Note(n) = a {
+                assert!(n.position.is_none(), "a chord note must be left unknown");
+            }
+        }
+    }
+}
+
+#[test]
+fn out_of_range_pitch_is_counted_and_left_none() {
+    // 30 is below the low-E open string: no playable position.
+    let mut voice = Voice {
+        id: 0,
+        event_groups: vec![note_at(0, 30)],
+    };
+    let oor = assign_inferred_positions(
+        &mut voice,
+        &Tuning::standard_e(),
+        &FingeringWeights::v1(),
+        STANDARD_MAX_FRET,
+    );
+    assert_eq!(oor, 1, "the out-of-range note is reported as a loss");
+    let AtomEvent::Note(n) = &voice.event_groups[0].atoms[0] else {
+        panic!("note");
+    };
+    assert!(n.position.is_none());
 }
