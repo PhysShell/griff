@@ -8,9 +8,12 @@ Term definitions live in [`glossary.md`](glossary.md). Decisions live in
 
 `griff` is a **swancore-first guitar riff engine**. It analyzes, slices,
 generates, and regenerates guitar parts as a **structured symbolic model**,
-not as audio. Input is symbolic (MIDI now; Guitar Pro later); output is
-symbolic (MIDI now). The long-term delivery target is a **MIDI-oriented CLAP
-plugin** with human-in-the-loop curation.
+not as audio. Input is symbolic, and **Guitar Pro / tablature is the primary,
+source-of-truth format** (strings, frets, techniques, tuning); **MIDI is a
+lossy interchange adapter** (pitch, velocity, timing only — techniques and
+fretboard positions are inferred or absent). Output is symbolic (MIDI today).
+The long-term delivery target is a **MIDI-oriented CLAP plugin** with
+human-in-the-loop curation.
 
 ## What griff is not
 

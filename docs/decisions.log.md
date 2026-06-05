@@ -189,3 +189,34 @@ Architectural decisions go to [`adr/`](adr/) instead.
   but low-priority — it only matters for playability / `fret_jump_penalty` on
   MIDI-sourced material. (Per-VI keyswitch notes are also import noise we do not
   decode; out of scope.)
+
+- 2026-06-05 — In the context of where griff sits relative to formats, facing
+  whether MIDI is the engine's orientation, we decided that **Guitar Pro /
+  tablature is the primary, source-of-truth import format** (strings, frets,
+  techniques, tuning) and **MIDI is a lossy interchange adapter** (pitch /
+  velocity / timing only) — and against treating MIDI as the primary or defining
+  format — to match the rich note model (ADR-0018/0019): everything that model
+  wants, GP gives directly, while MIDI must be inferred (positions, ADR-0019) or
+  parked (techniques, the keyswitch decision). The canonical model stays the
+  internal truth (hard rule #1); this is about *import* only. Accepted: MIDI
+  import remains, just demoted; the CLAP MIDI-out delivery target (ADR-0007 / S10)
+  is unchanged here.
+
+- 2026-06-05 — *(Unresolved future direction, not a decision.)* The inverse of the
+  parked MIDI technique-inference is promising on **export**: because griff holds
+  rich techniques internally (from GP), it could emit **technique-aware MIDI
+  against a chosen instrument's articulation profile** (technique → keyswitch /
+  CC / channel), automating the manual "fix articulations per VI in the DAW
+  piano-roll" chore. The VI-specificity that kills *import* inference is
+  manageable on *export* because the target is chosen. Constraints: per-VI
+  articulation-map profiles are data to design; MIDI cannot express everything
+  (continuous/polyphonic bends need pitch-bend automation / MPE; some timbres not
+  at all), so export stays **lossy-with-LossReport**. Captured so it is not lost;
+  no commitment to build.
+
+- 2026-06-05 — In the context of how to choose between building and reusing, we
+  adopted a **prior-art-first** workflow rule in `AGENTS.md`: search for existing
+  solutions before inventing, reuse the *idea* by default and *code* only when
+  licence- and dependency-posture-compatible (so usually a native
+  reimplementation, not a new crate). Reaffirms the lean-dependency posture
+  (the `insta` rejection) and records the practice that worked for ADR-0019.
