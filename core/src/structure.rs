@@ -15,11 +15,16 @@
 //! self-similarity autocorrelation over per-bar signatures. Sub-bar (beat-level)
 //! periods and the full per-axis complexity profile are later increments.
 //!
+//! Bar similarity is contour-aware: two bars are compared by their onset grid
+//! (rhythm) and their pitches, and a *transposed* repeat — identical rhythm,
+//! constant non-zero interval shift (`A A' A''`) — earns partial pitch credit.
+//! So identical tiles read as high repeatability, transposed tiles as medium,
+//! rhythm-only tiles as partial, and unrelated material as low. (This closes
+//! the Phase-0 "transposed repeats" limitation; `structural_complexity` still
+//! counts *exact* distinct signatures on purpose — a transposed sequence is
+//! genuinely more material than a verbatim loop.)
+//!
 //! Known limitations (Phase 0, deferred refinements — ADR-0015):
-//! - Bar signatures compare `(onset, absolute pitch)`, so a motif transposed
-//!   bar-to-bar (`A A' A''`) reads as *low* repeatability rather than *medium*.
-//!   A later pass may compare rhythm + interval contour. The intended use is a
-//!   user-tunable control, so an exact-pitch baseline is acceptable for now.
 //! - Metrics are computed over the score's master bars as given. A trailing
 //!   empty bar lowers `loopability_score` (it reads as a whole-bar seam gap) and
 //!   dilutes the period/repeatability scores. Note the MIDI importer appends one
@@ -32,6 +37,15 @@ use crate::score::{AtomEvent, Score, Track};
 
 /// Minimum mean self-similarity at a lag for it to count as a pattern period.
 const PERIOD_THRESHOLD: f64 = 0.5;
+
+/// Weight of the rhythm (onset-grid) component in [`bar_similarity`]; the
+/// remainder weights the pitch component.
+const RHYTHM_WEIGHT: f64 = 0.5;
+
+/// Pitch-component credit for a transposed repeat — identical rhythm, constant
+/// non-zero interval shift. Half of an exact pitch match, so transposed tiles
+/// land between verbatim tiles and rhythm-only tiles.
+const TRANSPOSITION_CREDIT: f64 = 0.5;
 
 /// The measured structural character of a span (S14, ADR-0015).
 ///
@@ -168,7 +182,7 @@ fn detect_period(signatures: &[Vec<(u32, u8)>]) -> (Option<usize>, f64) {
         let mut sum = 0.0_f64;
         for (i, a) in signatures.iter().enumerate().take(pairs) {
             if let Some(b) = signatures.get(i.saturating_add(lag)) {
-                sum += jaccard(a, b);
+                sum += bar_similarity(a, b);
             }
         }
         let mean = sum / pairs as f64;
@@ -184,22 +198,69 @@ fn detect_period(signatures: &[Vec<(u32, u8)>]) -> (Option<usize>, f64) {
     }
 }
 
-/// Jaccard similarity of two bar signatures (sets of `(onset, pitch)` pairs).
+/// Contour-aware similarity of two bar signatures, in `[0, 1]`.
+///
+/// A weighted sum of a rhythm component (Jaccard over onset sets) and a pitch
+/// component (Jaccard over `(onset, pitch)` pairs). A *transposed* repeat —
+/// identical rhythm with every pitch shifted by one constant non-zero interval
+/// — lifts the pitch component to [`TRANSPOSITION_CREDIT`], so `A A' A''`
+/// sequences read as medium similarity instead of none.
 ///
 /// Two empty signatures (whole-bar rests) are treated as identical (`1.0`), so a
 /// rest bar that is part of a repeated phrase still counts toward the period; an
 /// empty bar against a non-empty one is fully dissimilar (`0.0`).
+fn bar_similarity(a: &[(u32, u8)], b: &[(u32, u8)]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let rhythm = set_jaccard(
+        &a.iter().map(|&(o, _)| o).collect(),
+        &b.iter().map(|&(o, _)| o).collect(),
+    );
+    let exact = set_jaccard(&a.iter().copied().collect(), &b.iter().copied().collect());
+    let pitch = if transposition_interval(a, b).is_some() {
+        exact.max(TRANSPOSITION_CREDIT)
+    } else {
+        exact
+    };
+    RHYTHM_WEIGHT.mul_add(rhythm, (1.0 - RHYTHM_WEIGHT) * pitch)
+}
+
+/// Jaccard similarity of two sets; two empty sets count as identical (`1.0`).
 #[allow(clippy::cast_precision_loss)]
-fn jaccard(a: &[(u32, u8)], b: &[(u32, u8)]) -> f64 {
-    let sa: BTreeSet<(u32, u8)> = a.iter().copied().collect();
-    let sb: BTreeSet<(u32, u8)> = b.iter().copied().collect();
-    let inter = sa.intersection(&sb).count();
-    let union = sa.union(&sb).count();
+fn set_jaccard<T: Ord>(sa: &BTreeSet<T>, sb: &BTreeSet<T>) -> f64 {
+    let inter = sa.intersection(sb).count();
+    let union = sa.union(sb).count();
     if union == 0 {
         1.0
     } else {
         inter as f64 / union as f64
     }
+}
+
+/// The constant non-zero interval by which `b` transposes `a`, if any.
+///
+/// Requires the same note count and pairwise-identical onsets; signatures are
+/// sorted by `(onset, pitch)`, so chord notes align positionally and a chord
+/// transposes only if every voice shifts by the same interval. Returns `None`
+/// for empty bars and for a zero shift (that is an exact repeat).
+fn transposition_interval(a: &[(u32, u8)], b: &[(u32, u8)]) -> Option<i32> {
+    if a.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    let mut delta: Option<i32> = None;
+    for (&(oa, pa), &(ob, pb)) in a.iter().zip(b.iter()) {
+        if oa != ob {
+            return None;
+        }
+        let d = i32::from(pb).saturating_sub(i32::from(pa));
+        match delta {
+            None => delta = Some(d),
+            Some(prev) if prev != d => return None,
+            Some(_) => {}
+        }
+    }
+    delta.filter(|&d| d != 0)
 }
 
 /// Fraction of distinct bar signatures: low for looped, high for through-composed.
