@@ -361,3 +361,27 @@ Architectural decisions go to [`adr/`](adr/) instead.
   level (distributions, not note content), accepting that the closure axis
   and the guard land as backlog (no code in this increment) and that
   swancore-specific weights await S5 corpus calibration and S9 feedback.
+
+- 2026-06-10 — In the context of landing closure axis v1
+  (`core/src/closure.rs`, melodic-closure note §7.2), facing how each axis
+  should be made concrete, we decided for: a referee `BoundaryConfig` derived
+  from the score's own PPQN (snap 1/16, min-gap two quarters — the S4
+  defaults assume PPQN 960) with default weights/threshold;
+  `internal_continuity = 1 − strongest boundary strictly inside (first
+  onset, last note end)`; a simplified Krumhansl-inspired stability tier
+  table (root 1.0 unconditional; in-material fifth 0.8 / third 0.7 / other
+  0.5; outside 0.2) with a landing chord taking its most stable note;
+  `final_lengthening = landing duration / (2 × mean)` clamped to `[0, 1]`
+  (equal-to-mean reads 0.5); gap-fill tiers over the
+  highest-pitch-per-onset line (unresolved final leap > 7 st → 0.0;
+  ≥ 5 st leap answered by a smaller opposite interval → 1.0; stepwise ≤ 2 st
+  → 0.8; else 0.4; fewer than two line notes → 0.5 neutral); and the uniform
+  `closure` v1 `WeightPolicy` — and against porting Krumhansl–Kessler
+  profile values verbatim (false precision over an arbitrary
+  `PitchMaterial`), against audio-side cues, and against a multi-phrase
+  seam-aware referee now (the track is treated as a single phrase; S14-tile
+  composition is the next increment). Accepted: the S4 hard-rest rule makes
+  a long mid-phrase hole collapse continuity to exactly 0.0 (the red suite
+  expected a partial break; the bound was relaxed to `< 0.5` in the green
+  step with the reason documented inline), and the tier/tier-constant
+  choices are v1 placeholders the S5 corpus and S9 feedback recalibrate.

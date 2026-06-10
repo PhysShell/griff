@@ -678,6 +678,17 @@ techniques, register, tags.
 ### Distance metric
 A distance function between objects. Music rarely needs only one.
 
+### Closure (melodic)
+The perceptual sense that a phrase is *finished* rather than broken off
+(Meyer / Narmour; survey in `audit/2026-06-melodic-closure-research.md`). In
+`griff` it is a scored axis set under the ADR-0017 vocabulary
+(`core/src/closure.rs`): `internal_continuity` (the S4 boundary detector
+re-used as the generation-side referee), `ending_stability`
+(Krumhansl-inspired tiers over the pitch material), `final_lengthening`, and
+`gap_fill` (implication-realization mini-rules), weighted by the uniform
+`closure` v1 policy. Ambiguity warning: always the music-cognition term here,
+never a Rust closure.
+
 ## 8. Generation
 
 ### Generator
