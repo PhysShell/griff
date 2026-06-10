@@ -57,12 +57,9 @@ fn curate_nonexistent_file_exits_nonzero() {
 /// the first note-bearing track, equal to what `measure_structure` reports.
 #[test]
 fn curate_records_structure_metrics_of_the_first_note_bearing_track() {
-    let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple_4_4.mid");
-    let out_path = std::env::temp_dir().join(format!(
-        "griff_curate_p3_{}.chunk.json",
-        std::process::id()
-    ));
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple_4_4.mid");
+    let out_path =
+        std::env::temp_dir().join(format!("griff_curate_p3_{}.chunk.json", std::process::id()));
 
     let mut child = Command::new(griff_bin())
         .arg("curate")
@@ -89,7 +86,8 @@ fn curate_records_structure_metrics_of_the_first_note_bearing_track() {
     );
 
     let json = std::fs::read_to_string(&out_path).expect("curate wrote the record");
-    let _ = std::fs::remove_file(&out_path);
+    // Cleanup is best-effort; the named binding satisfies let-underscore lints.
+    let _cleanup = std::fs::remove_file(&out_path);
     let meta: ChunkMeta = serde_json::from_str(&json).expect("record parses as ChunkMeta");
 
     let bytes = std::fs::read(&fixture).expect("fixture bytes");

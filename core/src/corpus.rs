@@ -7,6 +7,16 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::structure::StructureMetrics;
+
+/// Current corpus schema version.
+///
+/// - v1 — the S5 baseline schema.
+/// - v2 — S14 Phase 3: `ChunkMeta` gains optional measured
+///   [`StructureMetrics`]; v1 records (no `structure` key) keep loading and
+///   re-serialize losslessly.
+pub const SCHEMA_VERSION: u32 = 2;
+
 // ── identifiers ───────────────────────────────────────────────────────────────
 
 /// Unique, stable identifier for a corpus chunk (e.g. `"dgd_001"`).
@@ -168,7 +178,9 @@ pub struct BoundaryEntry {
 
 /// Full annotation for one corpus chunk.
 ///
-/// All fields are required; `reviewer` is `None` until a curator has decided.
+/// All fields are required except the two curation-state options: `reviewer`
+/// is `None` until a curator has decided, and `structure` is `None` for v1
+/// records predating the schema-v2 bump (S14 Phase 3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChunkMeta {
     pub id: ChunkId,
@@ -187,6 +199,11 @@ pub struct ChunkMeta {
     pub techniques: Vec<String>,
     pub quality_flags: Vec<QualityFlag>,
     pub reviewer: Option<ReviewerDecision>,
+    /// Measured structural metrics of the chunk's first note-bearing track
+    /// (S14 Phase 3, schema v2). Absent in v1 records; skipped — not written
+    /// as `null` — when unmeasured, so v1 files round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure: Option<StructureMetrics>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-modified timestamp.
@@ -198,7 +215,7 @@ pub struct ChunkMeta {
 /// Top-level corpus manifest: a versioned list of all chunk metadata records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CorpusManifest {
-    /// Monotonically increasing schema version (current: 1).
+    /// Monotonically increasing schema version (current: [`SCHEMA_VERSION`]).
     pub schema_version: u32,
     pub chunks: Vec<ChunkMeta>,
 }

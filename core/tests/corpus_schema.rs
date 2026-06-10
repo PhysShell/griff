@@ -12,12 +12,12 @@ use griff_core::corpus::{
     SourceRef, SwancoreTag, SCHEMA_VERSION,
 };
 use griff_core::structure::StructureMetrics;
-use proptest::{collection::vec as prop_vec, prelude::*};
+use proptest::{collection::vec as prop_vec, option::of as prop_opt, prelude::*};
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 /// Exactly-representable f64 values keep JSON round-trips byte-identical.
-fn sample_metrics() -> StructureMetrics {
+const fn sample_metrics() -> StructureMetrics {
     StructureMetrics {
         bar_count: 4,
         detected_pattern_period_bars: Some(1),
@@ -268,24 +268,24 @@ fn arb_reviewer() -> impl Strategy<Value = Option<ReviewerDecision>> {
 fn arb_structure() -> impl Strategy<Value = Option<StructureMetrics>> {
     let metrics = (
         1_usize..=8,
-        proptest::option::of(1_usize..=4),
+        prop_opt(1_usize..=4),
         0_u32..=16,
         0_u32..=16,
         0_u32..=16,
     )
-        .prop_map(|(bar_count, period_bars, rep16, loop16, cx16)| {
-            StructureMetrics {
+        .prop_map(
+            |(bar_count, period_bars, rep16, loop16, cx16)| StructureMetrics {
                 bar_count,
                 detected_pattern_period_bars: period_bars,
                 detected_pattern_period_ticks: period_bars
-                    .map(|p| u32::try_from(p).unwrap_or(1) * 1920),
+                    .map(|p| u32::try_from(p).unwrap_or(1).saturating_mul(1920)),
                 repeatability_score: f64::from(rep16) / 16.0,
                 variation_score: 1.0 - f64::from(rep16) / 16.0,
                 loopability_score: f64::from(loop16) / 16.0,
                 structural_complexity: f64::from(cx16) / 16.0,
-            }
-        });
-    proptest::option::of(metrics)
+            },
+        );
+    prop_opt(metrics)
 }
 
 proptest! {

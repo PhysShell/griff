@@ -15,6 +15,7 @@ use griff_core::{
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::TickRange,
+    structure,
 };
 
 /// griff — guitar riff engine.
@@ -289,6 +290,24 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
         .and_then(|n| n.to_str())
         .map_or_else(|| "unknown.mid".to_owned(), ToOwned::to_owned);
 
+    // S14 Phase 3: measure the structure of the first note-bearing track and
+    // persist it with the record (schema v2).
+    let structure = score
+        .tracks
+        .iter()
+        .position(|t| track_note_count(t) > 0)
+        .and_then(|idx| structure::measure_structure(&score, idx).ok());
+    if let Some(m) = &structure {
+        let period = m
+            .detected_pattern_period_bars
+            .map_or_else(|| "through-composed".to_owned(), |p| format!("{p} bar(s)"));
+        println!(
+            "Structure: period={period}  repeatability={rep:.2}  loopability={lp:.2}",
+            rep = m.repeatability_score,
+            lp = m.loopability_score,
+        );
+    }
+
     let now = "2026-05-20T00:00:00Z".to_owned();
     let meta = ChunkMeta {
         id: ChunkId(inputs.id),
@@ -307,6 +326,7 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
         techniques: Vec::new(),
         quality_flags: inputs.quality_flags,
         reviewer: inputs.reviewer,
+        structure,
         created_at: now.clone(),
         updated_at: now,
     };
