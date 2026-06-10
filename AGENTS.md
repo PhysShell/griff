@@ -46,6 +46,17 @@ history see
 - A term? → `docs/glossary.md`
 - Scope question? → `docs/SPEC.md`
 
+## Prior art first
+
+Before designing or implementing anything non-trivial, search for existing
+solutions — papers, algorithms, open-source projects — and prefer adopting a
+proven approach over inventing one. Reuse the **idea** by default; reuse **code**
+only when the licence is compatible (MIT/Apache — never copy GPL into this MIT
+crate) and it does not violate the dependency posture (cargo-deny, MSRV, lean
+tree). In practice this usually means reimplementing a known algorithm natively,
+not adding a dependency. Record the prior art surveyed in the ADR / decisions
+log (e.g. ADR-0019 cites `guitar_dp` / `tuttut`).
+
 ## TDD workflow (mandatory)
 
 Every new module or non-trivial change follows the red-green cycle strictly:
