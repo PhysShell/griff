@@ -170,7 +170,9 @@ stance (S4: "calibrate on S5 corpus").
    composition remains with the multi-phrase seam increment).
 3. **Novelty guard v1**: interval+rhythm n-gram / LCS overlap against the
    corpus manifest; the measure for the `novelty` axis plus a caller-side
-   threshold cut.
+   threshold cut. ✅ landed 2026-06-10 (`core/src/novelty.rs` —
+   `measure_novelty` over transition sequences; references are passed as
+   scores, since the manifest carries no note content).
 4. **S14 Phase 3 addition**: burst / rest gesture statistics among the
    persisted chunk axes.
 5. **Parked**: IDyOM-lite expectancy behind S9 data (revisit before S12).

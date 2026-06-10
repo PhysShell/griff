@@ -402,3 +402,23 @@ Architectural decisions go to [`adr/`](adr/) instead.
   their first note-bearing track's metrics, and the gates this opens
   (similarity / alchemy rerank / corpus map, decisions 2026-06-10 AudioMuse
   entry) still wait on corpus scale.
+
+- 2026-06-10 — In the context of landing the novelty guard v1
+  (`core/src/novelty.rs`, melodic-closure note §7.3), facing what
+  representation makes a verbatim quote detectable, we decided for
+  **transition sequences** — `(pitch interval, IOI rescaled to a 480-per-
+  quarter grid)` between successive notes of the highest-pitch-per-onset
+  line (the closure/curate conventions) — so quotes survive transposition
+  and PPQN changes; references enter as `&[Score]` reading each one's first
+  note-bearing track (the manifest carries no note content); the longest
+  common run uses a direct O(n·m·len) scan with ties going to the first
+  reference; n-grams are 4 transitions (≈ a five-note figure) in a
+  `BTreeSet`; axes are computed as single correctly-rounded *free-share*
+  divisions (`(total−taken)/total`, not `1 − taken/total`) so exact shares
+  compare equal to literals — and against absolute-pitch or duration-exact
+  matching (transposition/notation would hide quotes), against a built-in
+  rejection threshold (the caller cuts on `NoveltyReport`, per ADR-0017
+  spirit), and against a suffix automaton now (parked until corpus scale
+  demands it). Accepted: rhythm matching is onset-based (note durations are
+  ignored), sub-grid IOI remainders truncate, and a chord participates only
+  through its top note.

@@ -689,6 +689,16 @@ re-used as the generation-side referee), `ending_stability`
 `closure` v1 policy. Ambiguity warning: always the music-cognition term here,
 never a Rust closure.
 
+### Novelty guard
+The measure that keeps corpus learning at the schema level: how much of a
+candidate is a *verbatim quote* of reference material
+(`core/src/novelty.rs`). Compares `(interval, normalised IOI)` transition
+sequences of the melodic line — so a quote is caught through transposition
+and tick-resolution changes — and reports the longest common run plus n-gram
+overlap. Gives the §8 "Quality score" `novelty` axis its concrete measure
+(`quote_novelty` / `ngram_novelty`, ADR-0017); the rejection threshold (e.g.
+quotes longer than 1–2 bars) is the caller's cut, not code.
+
 ## 8. Generation
 
 ### Generator
