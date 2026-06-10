@@ -35,8 +35,7 @@ use griff_core::{
         measure_novelty, novelty_axes, novelty_weights_v1, NoveltyError, NOVELTY_AXIS_LABELS,
     },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track,
-        Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
     },
     scoring::{rank_indices, Scored},
     slice::TickRange,
@@ -171,7 +170,10 @@ fn a_verbatim_copy_scores_zero_novelty() {
     let report = measure_novelty(&candidate, 0, &[reference()]).expect("report");
 
     assert_eq!(report.candidate_notes, 8);
-    assert_eq!(report.longest_match_notes, 8, "the whole candidate is a quote");
+    assert_eq!(
+        report.longest_match_notes, 8,
+        "the whole candidate is a quote"
+    );
     assert_eq!(report.longest_match_reference, Some(0));
 
     let axes = novelty_axes(&report);
@@ -187,7 +189,10 @@ fn a_transposed_copy_is_still_a_quote() {
     let candidate = build_score(480, vec![track_of(quarters(480, &transposed))]);
     let report = measure_novelty(&candidate, 0, &[reference()]).expect("report");
 
-    assert_eq!(report.longest_match_notes, 8, "transposition must not hide a quote");
+    assert_eq!(
+        report.longest_match_notes, 8,
+        "transposition must not hide a quote"
+    );
     assert_eq!(novelty_axes(&report).get("quote_novelty").unwrap(), 0.0);
 }
 
@@ -371,7 +376,12 @@ fn fresh_material_outranks_a_copy() {
     .enumerate()
     .map(|(i, s)| {
         let report = measure_novelty(s, 0, &refs).expect("report");
-        Scored::new(u32::try_from(i).unwrap(), novelty_axes(&report), &policy, None)
+        Scored::new(
+            u32::try_from(i).unwrap(),
+            novelty_axes(&report),
+            &policy,
+            None,
+        )
     })
     .collect();
 

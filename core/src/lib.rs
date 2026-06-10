@@ -15,6 +15,7 @@ pub mod fretboard;
 pub mod generate;
 pub mod gp;
 pub mod midi;
+pub mod novelty;
 pub mod score;
 pub mod scoring;
 pub mod slice;
