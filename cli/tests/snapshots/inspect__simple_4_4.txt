@@ -2,7 +2,19 @@ $ griff inspect <OUT>
 exit: 0
 --- stdout ---
 PPQN: 480
-Track 0 ch=0 "Lead":
+Track 0 ch=0 "Lead"  tuning=64,59,55,50,45,40
   Bar    0  4/4  120.0 BPM  4 notes
   Bar    1  4/4  120.0 BPM  8 notes
+    t=0      p=40  pos=6/0 inferred     marks=-
+    t=480    p=52  pos=4/2 inferred     marks=-
+    t=960    p=64  pos=1/0 inferred     marks=-
+    t=1440   p=40  pos=6/0 inferred     marks=-
+    t=1920   p=60  pos=2/1 inferred     marks=-
+    t=2160   p=62  pos=2/3 inferred     marks=-
+    t=2400   p=63  pos=2/4 inferred     marks=-
+    t=2640   p=65  pos=1/1 inferred     marks=-
+    t=2880   p=67  pos=1/3 inferred     marks=-
+    t=3120   p=65  pos=1/1 inferred     marks=-
+    t=3360   p=63  pos=2/4 inferred     marks=-
+    t=3600   p=62  pos=2/3 inferred     marks=-
 --- stderr ---
