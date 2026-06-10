@@ -313,3 +313,173 @@ fn propagates_s6_errors() {
         Err(StructureGenError::Generation(_))
     ));
 }
+
+// ── Phase 2: scoring loop (rerank by control ↔ metrics distance) ──────────────
+
+use griff_core::structure::{
+    generate_structured_set, rank_structured, structure_axes, structure_weights_v1,
+    StructureMetrics, STRUCTURE_AXIS_LABELS,
+};
+
+/// Hand-built metrics for pure axis tests.
+fn metrics(period: Option<usize>, repeatability: f64) -> StructureMetrics {
+    StructureMetrics {
+        bar_count: 4,
+        detected_pattern_period_bars: period,
+        detected_pattern_period_ticks: period.map(|p| u32::try_from(p).unwrap() * BAR),
+        repeatability_score: repeatability,
+        variation_score: 1.0 - repeatability,
+        loopability_score: 0.5,
+        structural_complexity: 0.5,
+    }
+}
+
+#[test]
+fn axes_are_perfect_for_an_exact_structure_match() {
+    let control = StructureControl {
+        pattern_period_bars: Some(1),
+        repeatability: 1.0,
+        variation_rate: 0.0,
+    };
+    let c = generate_structured(&request(4, control)).expect("generate ok");
+
+    let axes = structure_axes(&c.control, &c.metrics);
+    assert_eq!(axes.len(), STRUCTURE_AXIS_LABELS.len());
+    for label in STRUCTURE_AXIS_LABELS {
+        assert_eq!(
+            axes.get(label),
+            Some(1.0),
+            "axis {label} must be perfect for a verbatim tile",
+        );
+    }
+
+    let scored = c.scored(&structure_weights_v1());
+    assert!(
+        (scored.aggregate() - 1.0).abs() < 1e-9,
+        "uniform policy over all-1.0 axes aggregates to 1.0",
+    );
+}
+
+#[test]
+fn period_match_degrades_with_mismatch() {
+    let control = |period| StructureControl {
+        pattern_period_bars: period,
+        repeatability: 1.0,
+        variation_rate: 0.0,
+    };
+
+    // Requested 2, detected 1 → ratio credit (half).
+    let axes = structure_axes(&control(Some(2)), &metrics(Some(1), 1.0));
+    assert_eq!(axes.get("period_match"), Some(0.5));
+
+    // Requested a period, detected none → no credit.
+    let axes = structure_axes(&control(Some(2)), &metrics(None, 0.1));
+    assert_eq!(axes.get("period_match"), Some(0.0));
+
+    // Requested through-composed, material came out periodic → no credit.
+    let axes = structure_axes(&control(None), &metrics(Some(1), 1.0));
+    assert_eq!(axes.get("period_match"), Some(0.0));
+
+    // Requested through-composed and got it → full credit.
+    let axes = structure_axes(&control(None), &metrics(None, 0.1));
+    assert_eq!(axes.get("period_match"), Some(1.0));
+}
+
+#[test]
+fn repeatability_and_variation_axes_measure_distance() {
+    let control = StructureControl {
+        pattern_period_bars: Some(1),
+        repeatability: 0.8,
+        variation_rate: 0.3,
+    };
+    // Measured repeatability 0.5 → distance 0.3 → match 0.7; measured
+    // variation 0.5 vs requested 0.3 → match 0.8.
+    let axes = structure_axes(&control, &metrics(Some(1), 0.5));
+    assert!((axes.get("repeatability_match").unwrap() - 0.7).abs() < 1e-9);
+    assert!((axes.get("variation_match").unwrap() - 0.8).abs() < 1e-9);
+}
+
+#[test]
+fn scored_carries_policy_and_seed_provenance() {
+    let control = StructureControl {
+        pattern_period_bars: Some(1),
+        repeatability: 1.0,
+        variation_rate: 0.0,
+    };
+    let c = generate_structured(&request(4, control)).expect("generate ok");
+    let scored = c.scored(&structure_weights_v1());
+    assert_eq!(scored.provenance.policy_id, "structure");
+    assert_eq!(scored.provenance.policy_version, 1);
+    assert_eq!(scored.provenance.seed, Some(7));
+}
+
+#[test]
+fn rank_puts_the_best_matching_candidate_first() {
+    let control = StructureControl {
+        pattern_period_bars: Some(1),
+        repeatability: 1.0,
+        variation_rate: 0.0,
+    };
+    let good = generate_structured(&request(4, control)).expect("generate ok");
+
+    // Same produced material, but claimed against a control it does not match:
+    // a through-composed request that came out as a verbatim 1-bar loop.
+    let mut bad = good.clone();
+    bad.control = StructureControl {
+        pattern_period_bars: None,
+        repeatability: 0.0,
+        variation_rate: 1.0,
+    };
+
+    let policy = structure_weights_v1();
+    assert!(
+        good.scored(&policy).aggregate() > bad.scored(&policy).aggregate(),
+        "the matching candidate must outscore the mismatched one",
+    );
+    let ranked = rank_structured(&[bad, good], &policy);
+    assert_eq!(ranked, vec![1, 0], "best match ranks first");
+}
+
+#[test]
+fn candidate_set_is_deterministic_with_distinct_seeds() {
+    let control = StructureControl {
+        pattern_period_bars: Some(1),
+        repeatability: 0.5,
+        variation_rate: 0.5,
+    };
+    let a = generate_structured_set(&request(4, control), 3).expect("set ok");
+    let b = generate_structured_set(&request(4, control), 3).expect("set ok");
+
+    assert_eq!(a.len(), 3);
+    let seeds: Vec<u64> = a.iter().map(|c| c.seed.0).collect();
+    assert_eq!(seeds[0], 7, "candidate 0 uses the request seed as-is");
+    assert!(seeds[1] != seeds[0] && seeds[2] != seeds[0] && seeds[1] != seeds[2]);
+
+    for (x, y) in a.iter().zip(b.iter()) {
+        assert_eq!(x.seed, y.seed);
+        assert_eq!(note_tuples(&x.score), note_tuples(&y.score));
+        assert_eq!(x.metrics, y.metrics);
+    }
+
+    let single = generate_structured(&request(4, control)).expect("ok");
+    assert_eq!(
+        note_tuples(&a[0].score),
+        note_tuples(&single.score),
+        "candidate 0 is exactly the single-pass output",
+    );
+}
+
+#[test]
+fn candidate_set_propagates_generation_errors() {
+    let control = StructureControl {
+        pattern_period_bars: Some(1),
+        repeatability: 1.0,
+        variation_rate: 0.0,
+    };
+    let mut r = request(4, control);
+    r.pitch_material.intervals.clear();
+    assert!(matches!(
+        generate_structured_set(&r, 3),
+        Err(StructureGenError::Generation(_))
+    ));
+}
