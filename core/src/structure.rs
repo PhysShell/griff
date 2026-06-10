@@ -42,6 +42,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::event::{Pitch, Ticks, Tuning};
 use crate::generate::{
     bar_duration_ticks, generate, GenerationConstraints, GenerationError, GenerationSeed,
@@ -69,7 +71,9 @@ const TRANSPOSITION_CREDIT: f64 = 0.5;
 ///
 /// The provenance counterpart of a `StructureControl`: it describes what a
 /// produced or imported span *is*, for reranking and (later) graph attributes.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Serialisable since S14 Phase 3, where it persists into corpus `ChunkMeta`
+/// records (schema v2).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct StructureMetrics {
     /// Number of master bars analysed.
     pub bar_count: usize,

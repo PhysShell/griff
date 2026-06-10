@@ -6,6 +6,7 @@
 
 pub mod boundary;
 pub mod classify;
+pub mod closure;
 pub mod complement;
 pub mod corpus;
 pub mod event;
@@ -14,6 +15,7 @@ pub mod fretboard;
 pub mod generate;
 pub mod gp;
 pub mod midi;
+pub mod novelty;
 pub mod score;
 pub mod scoring;
 pub mod slice;

@@ -361,3 +361,64 @@ Architectural decisions go to [`adr/`](adr/) instead.
   level (distributions, not note content), accepting that the closure axis
   and the guard land as backlog (no code in this increment) and that
   swancore-specific weights await S5 corpus calibration and S9 feedback.
+
+- 2026-06-10 — In the context of landing closure axis v1
+  (`core/src/closure.rs`, melodic-closure note §7.2), facing how each axis
+  should be made concrete, we decided for: a referee `BoundaryConfig` derived
+  from the score's own PPQN (snap 1/16, min-gap two quarters — the S4
+  defaults assume PPQN 960) with default weights/threshold;
+  `internal_continuity = 1 − strongest boundary strictly inside (first
+  onset, last note end)`; a simplified Krumhansl-inspired stability tier
+  table (root 1.0 unconditional; in-material fifth 0.8 / third 0.7 / other
+  0.5; outside 0.2) with a landing chord taking its most stable note;
+  `final_lengthening = landing duration / (2 × mean)` clamped to `[0, 1]`
+  (equal-to-mean reads 0.5); gap-fill tiers over the
+  highest-pitch-per-onset line (unresolved final leap > 7 st → 0.0;
+  ≥ 5 st leap answered by a smaller opposite interval → 1.0; stepwise ≤ 2 st
+  → 0.8; else 0.4; fewer than two line notes → 0.5 neutral); and the uniform
+  `closure` v1 `WeightPolicy` — and against porting Krumhansl–Kessler
+  profile values verbatim (false precision over an arbitrary
+  `PitchMaterial`), against audio-side cues, and against a multi-phrase
+  seam-aware referee now (the track is treated as a single phrase; S14-tile
+  composition is the next increment). Accepted: the S4 hard-rest rule makes
+  a long mid-phrase hole collapse continuity to exactly 0.0 (the red suite
+  expected a partial break; the bound was relaxed to `< 0.5` in the green
+  step with the reason documented inline), and the tier/tier-constant
+  choices are v1 placeholders the S5 corpus and S9 feedback recalibrate.
+
+- 2026-06-10 — In the context of S14 Phase 3 (persist measured structure into
+  the corpus schema), facing how a schema bump should treat existing v1
+  records, we decided for an optional `ChunkMeta.structure:
+  Option<StructureMetrics>` — `serde(default)` on read,
+  `skip_serializing_if` on write (the key is absent, never `null`), so v1
+  records load as `None` and round-trip byte-identically — plus a
+  `SCHEMA_VERSION = 2` constant, serde derives on `StructureMetrics` itself,
+  and `griff curate` measuring the *first note-bearing track* — and against
+  a required field with a forced migration pass (the corpus is git-ignored
+  and tiny; a rewrite buys nothing), against a parallel serialisable
+  metrics DTO (drift risk against the analysis type), and against per-track
+  metric lists (chunks are single-part by S5 convention). Accepted: a v1
+  record reads as unmeasured until re-curated, multi-track chunks carry only
+  their first note-bearing track's metrics, and the gates this opens
+  (similarity / alchemy rerank / corpus map, decisions 2026-06-10 AudioMuse
+  entry) still wait on corpus scale.
+
+- 2026-06-10 — In the context of landing the novelty guard v1
+  (`core/src/novelty.rs`, melodic-closure note §7.3), facing what
+  representation makes a verbatim quote detectable, we decided for
+  **transition sequences** — `(pitch interval, IOI rescaled to a 480-per-
+  quarter grid)` between successive notes of the highest-pitch-per-onset
+  line (the closure/curate conventions) — so quotes survive transposition
+  and PPQN changes; references enter as `&[Score]` reading each one's first
+  note-bearing track (the manifest carries no note content); the longest
+  common run uses a direct O(n·m·len) scan with ties going to the first
+  reference; n-grams are 4 transitions (≈ a five-note figure) in a
+  `BTreeSet`; axes are computed as single correctly-rounded *free-share*
+  divisions (`(total−taken)/total`, not `1 − taken/total`) so exact shares
+  compare equal to literals — and against absolute-pitch or duration-exact
+  matching (transposition/notation would hide quotes), against a built-in
+  rejection threshold (the caller cuts on `NoveltyReport`, per ADR-0017
+  spirit), and against a suffix automaton now (parked until corpus scale
+  demands it). Accepted: rhythm matching is onset-based (note durations are
+  ignored), sub-grid IOI remainders truncate, and a chord participates only
+  through its top note.
