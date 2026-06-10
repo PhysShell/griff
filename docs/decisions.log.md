@@ -341,3 +341,23 @@ Architectural decisions go to [`adr/`](adr/) instead.
   reusing the extractor shared with `PartProfile` / `StructureMetrics`,
   accepting that audio-only references depend on external transcription
   quality and carry no technique evidence.
+
+- 2026-06-10 — In the context of the "nonsense generator" concern (DGD-style
+  burst-and-rest writing risking three-notes-plus-awkward-rests output that
+  feels broken off), facing how to make "this melody feels finished"
+  operational without mining verbatim phrases from real songs, we decided for
+  recording the melodic-closure survey as
+  `audit/2026-06-melodic-closure-research.md` and adopting its backlog — a
+  rule-based **closure axis** under the ADR-0017 vocabulary (the S4 boundary
+  detector re-used as the generation-side referee, plus ending-stability
+  (Krumhansl–Kessler) and gap-fill/reversal (Narmour) components) and a
+  **novelty guard** (interval+rhythm n-gram / LCS overlap cap against the
+  corpus) as the concrete measure for the glossary's `novelty` axis — and
+  against a trained closure classifier now (ADR-0008 / S12 gate) and against
+  verbatim corpus-pattern reuse as a musicality guarantee, to achieve
+  explainable completeness scoring grounded in the closure literature
+  (expectation realization, tonal stability, phrase-final lengthening,
+  recurrence-makes-intention) while keeping corpus learning at the schema
+  level (distributions, not note content), accepting that the closure axis
+  and the guard land as backlog (no code in this increment) and that
+  swancore-specific weights await S5 corpus calibration and S9 feedback.
