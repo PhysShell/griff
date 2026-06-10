@@ -385,3 +385,20 @@ Architectural decisions go to [`adr/`](adr/) instead.
   expected a partial break; the bound was relaxed to `< 0.5` in the green
   step with the reason documented inline), and the tier/tier-constant
   choices are v1 placeholders the S5 corpus and S9 feedback recalibrate.
+
+- 2026-06-10 — In the context of S14 Phase 3 (persist measured structure into
+  the corpus schema), facing how a schema bump should treat existing v1
+  records, we decided for an optional `ChunkMeta.structure:
+  Option<StructureMetrics>` — `serde(default)` on read,
+  `skip_serializing_if` on write (the key is absent, never `null`), so v1
+  records load as `None` and round-trip byte-identically — plus a
+  `SCHEMA_VERSION = 2` constant, serde derives on `StructureMetrics` itself,
+  and `griff curate` measuring the *first note-bearing track* — and against
+  a required field with a forced migration pass (the corpus is git-ignored
+  and tiny; a rewrite buys nothing), against a parallel serialisable
+  metrics DTO (drift risk against the analysis type), and against per-track
+  metric lists (chunks are single-part by S5 convention). Accepted: a v1
+  record reads as unmeasured until re-curated, multi-track chunks carry only
+  their first note-bearing track's metrics, and the gates this opens
+  (similarity / alchemy rerank / corpus map, decisions 2026-06-10 AudioMuse
+  entry) still wait on corpus scale.
