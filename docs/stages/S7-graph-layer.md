@@ -1,9 +1,21 @@
 # S7: Graph layer (late)
 
-Status: planned (deliberately late)
+Status: in progress — first slice (chunk similarity edge) landed (2026-06-10);
+the full graph stays deliberately late
 Depends on: S6 acceptance
 ADRs: ADR-0013 (DP/Viterbi traversal), ADR-0018 (rich note model: fretboard +
 multi-technique with evidence; supersedes ADR-0014)
+
+> Progress: the similarity edge has its first concrete measure —
+> `core/src/similarity.rs` computes per-axis agreement (detected pattern
+> period, repeatability, loopability, structural complexity, tag sets)
+> between `ChunkMeta` records over the axes S14 Phase 3 persisted (corpus
+> schema v2), and `find_similar_chunks` ranks a query's neighbours as
+> explainable `Scored<ChunkId>` envelopes under the uniform `similarity` v1
+> policy (ADR-0017). Brute-force by design at micro-corpus scale (no ANN;
+> decisions.log 2026-06-10 AudioMuse entry, idea (a)). Nodes, transition /
+> co-occurrence edges, complement hyperedges, and the DP/Viterbi traversal
+> remain gated on S6 acceptance and corpus scale.
 
 ## Goal
 

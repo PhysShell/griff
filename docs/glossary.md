@@ -894,6 +894,16 @@ user preference.
 ### Edge weight
 The relation weight, used in traversal/generation/reranking.
 
+### Chunk similarity (similarity edge)
+The first concrete S7 edge (`core/src/similarity.rs`): per-axis agreement
+between two corpus chunks over facts already persisted in `ChunkMeta` —
+detected pattern period (min/max bar ratio; through-composed pairs agree),
+repeatability / loopability / structural complexity (`1 − |Δ|`), and tag-set
+Jaccard — as named ADR-0017 axes under the uniform `similarity` v1 policy.
+`find_similar_chunks` is the brute-force query over the edge (no ANN at
+micro-corpus scale; decisions.log 2026-06-10 AudioMuse entry, idea (a));
+unmeasured schema-v1 records cannot sit on the edge until re-curated.
+
 ### Phrase graph
 A graph whose nodes are phrases or phrase chunks.
 
