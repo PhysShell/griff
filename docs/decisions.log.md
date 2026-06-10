@@ -242,3 +242,27 @@ Architectural decisions go to [`adr/`](adr/) instead.
   licence- and dependency-posture-compatible (so usually a native
   reimplementation, not a new crate). Reaffirms the lean-dependency posture
   (the `insta` rejection) and records the practice that worked for ADR-0019.
+
+- 2026-06-10 — In the context of S14 Phase 1 (the tile/vary compiler over S6,
+  ADR-0015 §4), facing how a varied copy should mutate while staying "the same
+  motif" — and how the two control knobs divide the work — we decided for
+  **two-level seed-deterministic gating with transposition as the only
+  variation operator**: `repeatability` is the per-copy probability of a
+  verbatim repeat (copy 0 always verbatim), `variation_rate` is the per-bar
+  mutation probability inside a varied copy, and a mutated bar is transposed
+  by a per-copy interval from a fixed list (`±3/±5/±7`, seed-offset cyclic so
+  adjacent and lag-2 copies never coincide) with rhythm preserved — exactly
+  the operator the contour-aware bar similarity (2026-06-09) reads as a
+  medium repeat, so the compiler and its referee agree by construction — and
+  against pitch-substitute mutation (reads as rhythm-only repeat, weaker
+  identity) and against per-bar random intervals (adjacent copies could
+  coincide and shift the detected period to an accidental multiple).
+  Decisions in the same increment: `pattern_period_bars = None` delegates to
+  plain S6 (through-composed), a truncated final copy restarts from the
+  base's first bar, a transposed note drops any carried fretboard position,
+  and `StructuredCandidate` returns measured `StructureMetrics` as provenance
+  (Phase 2 reranks by control↔metrics distance). Accepted: the P2
+  `structured_request` fuzz target is deferred (no nightly toolchain in the
+  landing environment) and is named in the stage doc as remaining work;
+  variation strength (interval magnitude scaling) and loopability targets
+  stay future increments.

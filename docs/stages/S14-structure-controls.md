@@ -1,16 +1,23 @@
 # S14: Structure controls and metrics
 
-Status: in progress — Phase 0 (metrics) landed (2026-06-02)
+Status: in progress — Phase 1 (controls + tile/vary compiler) landed (2026-06-10)
 Depends on: S6 (rule generator), S4 (phrase boundaries, for `phrase_length`)
 ADRs: ADR-0015
 
 > Progress: Phase 0 ships the `structure` module — `measure_structure` →
 > `StructureMetrics` (detected pattern period in bars + ticks, repeatability,
 > variation, loopability, structural complexity) via per-bar self-similarity
-> autocorrelation, plus the P2 `structure_metrics` fuzz target. Pure,
-> deterministic, and independent of the graph layer / DP. Remaining: sub-bar
-> (beat-level) period detection, the full per-axis `ComplexityProfile`, then
-> Phases 1–4 below.
+> autocorrelation (contour-aware since 2026-06-09), plus the P2
+> `structure_metrics` fuzz target. Phase 1 adds `StructureControl` +
+> `generate_structured` — the tile/vary constraint compiler over S6:
+> `pattern_period`-length base via S6, tiling across the target span,
+> seed-deterministic variation (repeatability gates verbatim copies,
+> variation_rate gates per-bar rhythm-preserving transposition), measured
+> metrics returned as provenance; `None` period = through-composed S6
+> passthrough. Pure, deterministic, and independent of the graph layer / DP.
+> Remaining: sub-bar (beat-level) period detection, the full per-axis
+> `ComplexityProfile`, a P2 `structured_request` fuzz target (deferred: no
+> nightly toolchain in the landing environment), then Phases 2–4 below.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label history in [`../audit/`](../audit/)). Logically it sits beside the
@@ -82,7 +89,9 @@ of onset & contour features / motif recurrence / loop-seam), deterministic
 - **Phase 0 — metrics.** ✅ `StructureMetrics` over a score track (no generation
   change). Bar-resolution period detection; sub-bar cells + full complexity
   vector deferred.
-- **Phase 1 — controls.** `StructureControl` + the tile/vary compiler over S6.
+- **Phase 1 — controls.** ✅ `StructureControl` + the tile/vary compiler over S6
+  (`generate_structured`); loopability targets + `ComplexityProfile` controls
+  deferred to the Phase-2 scoring loop and the complexity increment.
 - **Phase 2 — scoring loop.** Reject / rerank candidates by metric distance
   (simple scoring + sort over a small candidate set — *not* DP).
 - **Phase 3 — corpus.** Compute the same metrics on imported material; persist as
