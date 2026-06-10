@@ -9,6 +9,10 @@ needs it surfaced:
    pitches" — without leaving griff for Guitar Pro.
 2. **Chord-progression spec** — "Am(add9) | Fmaj7 | C | G, one per bar" as a
    first-class generation input.
+3. **Guitar-roll entry mode** (added same day, §2.3) — the preview grid as an
+   *input* surface: note entry with explicit string assignment, live
+   playability, lock + regenerate. Long intended; its pieces are canon, the
+   editing mode itself was fixed nowhere until this note.
 
 Like the other 2026-06 notes, this is a **backlog and a map**, not a ratified
 decision. Items marked *→ candidate ADR* graduate into a real ADR before code.
@@ -126,7 +130,50 @@ Where arithmetic stops and other layers take over:
   `PitchMaterial` compiler in S6, harmonic context in S13. Voicing stays
   deferred. Effort: M. Risk: low (pure symbolic layer).
 
-### 2.3 Performance-constraint input spec (smaller, backlog)
+### 2.3 Guitar-roll note entry — the missing "editor" word *→ candidate ADR*
+
+Long-standing intent, until now fixed only in pieces: the preview grid is also
+an **input surface** — a "guitar roll", a piano roll whose note lane carries
+string assignment. Every piece exists in the canon except the editing mode
+itself:
+
+| Piece | Fixed in |
+| --- | --- |
+| Piano-roll grid, shared view-model, intents | S8 (ratatui landed; egui target), ADR-0016 |
+| String/fret on the note, one pitch on several strings, `Tuning` | ADR-0014 → ADR-0018 (`Explicit` provenance fits user-set strings) |
+| Playability as a computable property of positions | ADR-0019 fingering DP, S6 playability gate |
+| Lock a liked part, regenerate the rest | S11 (`FrozenRegion`, `AnchorPoint`, byte-stable locks) |
+| Tab projection alongside the roll | S8 design mockup `tab.html` |
+
+The gap: S8 is specced as a **viewer + curation** tool; no doc says notes can
+be *entered or edited* in it. Record the intent here:
+
+- **Entry mode.** The grid accepts note entry/edit (pitch × time × string);
+  string assignment is explicit at entry (ADR-0018 `Explicit` position
+  provenance — the user said which string, the model believes it).
+- **Live playability.** On each edit, the existing playability machinery
+  (ADR-0019 costs / S6 gate) re-checks the affected span and flags violations
+  in place — the gate run incrementally, not a new validator.
+- **Lock + regenerate** is the same editor: selection → `FrozenRegion`,
+  regenerate the complement (S11). Entry, locking, and regeneration are one
+  surface, not three tools.
+- **Rhythm-only entry** is the degenerate case of the same mode: events
+  entered with rhythm but no pitch *are* the §2.1 rhythm intent — the engine
+  fills pitches. (Conversely §2.1's pattern string is the textual shorthand
+  for this grid mode.) Normal mode = with pitches; rhythm mode = without.
+- **Why an ADR**: editing crosses the ADR-0016 boundary — the view-model is
+  today a *pure projection* of a `Score`, and intents are read-only
+  navigation. An editing intent mutates the score (undo, dirty state,
+  re-analysis). That contract change must be decided, not slipped in.
+- **Not a tab editor.** This stays a grid editor on the existing roll;
+  notation/tab remains a read-only projection (`tab.html`). The "no Guitar
+  Pro clone" stance of this note is unchanged.
+
+Lands at: S8 follow-up increments (after the egui slice) + an ADR-0016
+amendment or successor ADR for the mutable-intent contract. Effort: L (the
+largest item in this note). Risk: medium — UI-core contract change.
+
+### 2.4 Performance-constraint input spec (smaller, backlog)
 
 The discussion's `performance_constraints` block (articulation default,
 picking mode, dynamics policy, allowed durations) maps onto vocabulary that
@@ -153,8 +200,10 @@ has no consumer.
    user value, no ADR needed at the onset/sustain/rest/mute level).
 2. §2.2 `ChordSymbol` + progression ADR (parser + `PitchMaterial` compiler
    first; voicing stays with ADR-0019's deferred chord phase).
-3. Preview step-grid entry for §2.1 (after the request surface exists).
-4. §2.3 `PerformancePolicy` once §2.1/§2.2 give it a consumer.
+3. §2.3 guitar-roll entry ADR (the mutable-intent contract on ADR-0016), then
+   its first slice: rhythm-only grid entry — which *is* §2.1 on the grid —
+   before full pitch × string entry.
+4. §2.4 `PerformancePolicy` once §2.1/§2.2 give it a consumer.
 
 ## 5. One-line thesis
 
