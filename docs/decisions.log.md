@@ -266,3 +266,24 @@ Architectural decisions go to [`adr/`](adr/) instead.
   landing environment) and is named in the stage doc as remaining work;
   variation strength (interval magnitude scaling) and loopability targets
   stay future increments.
+
+- 2026-06-10 — In the context of S14 Phase 2 (reject / rerank structure
+  candidates by metric distance, ADR-0015), facing how "distance between what
+  was asked and what was produced" should be represented, we decided for
+  **agreement axes under the shared ADR-0017 vocabulary** — `period_match`
+  (equal periods or both through-composed = 1.0, `min/max` ratio for a wrong
+  period, 0.0 across the periodic/aperiodic divide), `repeatability_match`
+  and `variation_match` (`1 − |requested − measured|`) — scored by a uniform
+  `structure` v1 `WeightPolicy`, wrapped per candidate in the `Scored`
+  envelope (value = candidate seed; provenance = seed + policy version), and
+  ranked by the existing `rank_indices` tie-break; `generate_structured_set`
+  derives per-candidate seeds via the SplitMix mix (candidate 0 keeps the
+  request seed, so the set extends the single pass) — and against a bespoke
+  distance scalar (the anti-scalar rule, ADR-0017 §2) and against a built-in
+  rejection threshold (rejection is the caller's cut on the aggregate; the
+  threshold is a future tunable, not code). Accepted: the repeatability /
+  variation knobs and their measured scores are different quantities (per-copy
+  / per-bar probabilities vs mean self-similarity); the absolute distance is
+  documented as the honest v1 proxy, and the weight surface is where S9
+  recalibrates later. A loopability axis is deferred until the control carries
+  a loopability target.
