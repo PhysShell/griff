@@ -6,6 +6,7 @@
 
 pub mod boundary;
 pub mod classify;
+pub mod closure;
 pub mod complement;
 pub mod corpus;
 pub mod event;

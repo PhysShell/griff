@@ -206,9 +206,12 @@ fn closed_phrase_scores_high_across_axes() {
 fn broken_stub_scores_low_across_axes() {
     let axes = closure_axes(&broken_stub(), 0, &c_major()).expect("axes");
 
+    // The 1.5-bar hole trips the S4 hard-rest rule (score 1.0), so
+    // continuity collapses to 0.0 — any value clearly below the closed
+    // phrase's 1.0 satisfies the contract.
     let continuity = axes.get("internal_continuity").unwrap();
     assert!(
-        continuity > 0.0 && continuity < 0.9,
+        continuity < 0.5,
         "the mid-phrase hole is a detected internal break: {continuity}"
     );
     assert_eq!(
