@@ -44,7 +44,7 @@ fn minimal_chunk() -> ChunkMeta {
     }
 }
 
-fn snapshot() -> StructureSnapshot {
+const fn snapshot() -> StructureSnapshot {
     StructureSnapshot {
         bar_count: 4,
         pattern_period_bars: Some(1),

@@ -51,7 +51,7 @@ fn curate_persists_structure_metrics_in_the_chunk_json() {
 
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple_4_4.mid");
     let out_path = std::env::temp_dir().join("griff_curate_structure_test.chunk.json");
-    let _ = std::fs::remove_file(&out_path);
+    drop(std::fs::remove_file(&out_path));
 
     let mut child = Command::new(griff_bin())
         .args([
@@ -80,8 +80,11 @@ fn curate_persists_structure_metrics_in_the_chunk_json() {
         .get("structure")
         .expect("chunk meta must carry a structure snapshot (S14 Phase 3)");
     assert!(
-        structure.get("bar_count").and_then(serde_json::Value::as_u64) >= Some(1),
+        structure
+            .get("bar_count")
+            .and_then(serde_json::Value::as_u64)
+            >= Some(1),
         "snapshot must describe at least one bar: {structure}"
     );
-    let _ = std::fs::remove_file(&out_path);
+    drop(std::fs::remove_file(&out_path));
 }

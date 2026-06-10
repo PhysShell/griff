@@ -9,12 +9,14 @@ use clap::{Parser, Subcommand};
 use griff_core::{
     classify::{self, BarClass},
     corpus::{
-        ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, SourceFormat, SourceRef, SwancoreTag,
+        ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, SourceFormat, SourceRef,
+        StructureSnapshot, SwancoreTag,
     },
     event::{NoteMarks, NotePosition, TechniqueSource},
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::TickRange,
+    structure,
 };
 
 /// griff — guitar riff engine.
@@ -289,6 +291,14 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
         .and_then(|n| n.to_str())
         .map_or_else(|| "unknown.mid".to_owned(), ToOwned::to_owned);
 
+    // Structure snapshot of the first note-bearing track (S14 Phase 3).
+    let structure = score
+        .tracks
+        .iter()
+        .position(|t| track_note_count(t) > 0)
+        .and_then(|idx| structure::measure_structure(&score, idx).ok())
+        .map(StructureSnapshot::from);
+
     let now = "2026-05-20T00:00:00Z".to_owned();
     let meta = ChunkMeta {
         id: ChunkId(inputs.id),
@@ -307,6 +317,7 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
         techniques: Vec::new(),
         quality_flags: inputs.quality_flags,
         reviewer: inputs.reviewer,
+        structure,
         created_at: now.clone(),
         updated_at: now,
     };

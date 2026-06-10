@@ -7,6 +7,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::structure::StructureMetrics;
+
+/// Current corpus schema version (ADR-0015 Phase 3: `ChunkMeta` gained the
+/// optional `structure` snapshot; v1 records without it still parse).
+pub const CORPUS_SCHEMA_VERSION: u32 = 2;
+
 // ── identifiers ───────────────────────────────────────────────────────────────
 
 /// Unique, stable identifier for a corpus chunk (e.g. `"dgd_001"`).
@@ -164,6 +170,48 @@ pub struct BoundaryEntry {
     pub score: f64,
 }
 
+// ── structure snapshot (schema v2) ────────────────────────────────────────────
+
+/// The persisted form of measured [`StructureMetrics`] on a chunk
+/// (S14 Phase 3, ADR-0015 §3).
+///
+/// A snapshot of what the chunk's material *is* — detected pattern period,
+/// repeatability, variation, loopability, structural complexity — computed at
+/// curation time. Decoupled from the analysis struct so the corpus schema does
+/// not chase its refinements (sub-bar periods, the complexity vector); later it
+/// also feeds S7 node attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StructureSnapshot {
+    /// Number of master bars analysed.
+    pub bar_count: usize,
+    /// Detected pattern period in bars, or `None` if through-composed.
+    pub pattern_period_bars: Option<usize>,
+    /// The same period in ticks, or `None`.
+    pub pattern_period_ticks: Option<u32>,
+    /// Measured repeatability, in `[0, 1]`.
+    pub repeatability: f64,
+    /// Measured variation (`1 − repeatability`), in `[0, 1]`.
+    pub variation: f64,
+    /// Measured loop-seam smoothness, in `[0, 1]`.
+    pub loopability: f64,
+    /// Fraction of distinct bar signatures, in `[0, 1]`.
+    pub structural_complexity: f64,
+}
+
+impl From<StructureMetrics> for StructureSnapshot {
+    fn from(m: StructureMetrics) -> Self {
+        Self {
+            bar_count: m.bar_count,
+            pattern_period_bars: m.detected_pattern_period_bars,
+            pattern_period_ticks: m.detected_pattern_period_ticks,
+            repeatability: m.repeatability_score,
+            variation: m.variation_score,
+            loopability: m.loopability_score,
+            structural_complexity: m.structural_complexity,
+        }
+    }
+}
+
 // ── chunk metadata ────────────────────────────────────────────────────────────
 
 /// Full annotation for one corpus chunk.
@@ -187,6 +235,11 @@ pub struct ChunkMeta {
     pub techniques: Vec<String>,
     pub quality_flags: Vec<QualityFlag>,
     pub reviewer: Option<ReviewerDecision>,
+    /// Measured structure snapshot (schema v2, S14 Phase 3). Omitted from the
+    /// JSON when absent, so unanalysed chunks keep the v1 shape and v1 records
+    /// parse as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure: Option<StructureSnapshot>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-modified timestamp.
@@ -198,7 +251,7 @@ pub struct ChunkMeta {
 /// Top-level corpus manifest: a versioned list of all chunk metadata records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CorpusManifest {
-    /// Monotonically increasing schema version (current: 1).
+    /// Monotonically increasing schema version (current: [`CORPUS_SCHEMA_VERSION`]).
     pub schema_version: u32,
     pub chunks: Vec<ChunkMeta>,
 }
