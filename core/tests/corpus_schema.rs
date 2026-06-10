@@ -9,8 +9,9 @@
 
 use griff_core::corpus::{
     BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, QualityFlag, ReviewerDecision, SourceFormat,
-    SourceRef, SwancoreTag,
+    SourceRef, StructureSnapshot, SwancoreTag, CORPUS_SCHEMA_VERSION,
 };
+use griff_core::structure::StructureMetrics;
 use proptest::{collection::vec as prop_vec, prelude::*};
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -37,8 +38,21 @@ fn minimal_chunk() -> ChunkMeta {
         techniques: vec!["hammer_on".to_owned()],
         quality_flags: vec![QualityFlag::Clean],
         reviewer: Some(ReviewerDecision::Accepted),
+        structure: None,
         created_at: "2026-05-20T00:00:00Z".to_owned(),
         updated_at: "2026-05-20T00:00:00Z".to_owned(),
+    }
+}
+
+fn snapshot() -> StructureSnapshot {
+    StructureSnapshot {
+        bar_count: 4,
+        pattern_period_bars: Some(1),
+        pattern_period_ticks: Some(1920),
+        repeatability: 1.0,
+        variation: 0.0,
+        loopability: 0.75,
+        structural_complexity: 0.25,
     }
 }
 
@@ -151,6 +165,70 @@ fn fixture_minimal_chunk_loads() {
     assert_eq!(meta.reviewer, Some(ReviewerDecision::Accepted));
 }
 
+// ── structure snapshot (schema v2, S14 Phase 3) ────────────────────────────────
+
+#[test]
+fn corpus_schema_version_is_bumped_to_2() {
+    assert_eq!(
+        CORPUS_SCHEMA_VERSION, 2,
+        "persisting structure metrics bumps the schema (ADR-0015)"
+    );
+}
+
+#[test]
+fn chunk_meta_with_structure_roundtrips() {
+    let mut meta = minimal_chunk();
+    meta.structure = Some(snapshot());
+
+    let json = serde_json::to_string(&meta).expect("serialize");
+    assert!(
+        json.contains("\"pattern_period_bars\""),
+        "snapshot fields serialize snake_case: {json}"
+    );
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(json, json2, "JSON round-trip must be byte-identical");
+    assert_eq!(back.structure, Some(snapshot()));
+}
+
+#[test]
+fn chunk_without_structure_omits_the_field_and_v1_records_still_parse() {
+    // Serialising a None snapshot omits the field entirely, so a v2 writer
+    // emits v1-shaped JSON for unanalysed chunks…
+    let json = serde_json::to_string(&minimal_chunk()).expect("serialize");
+    assert!(
+        !json.contains("\"structure\""),
+        "None snapshot must not serialize: {json}"
+    );
+
+    // …and a v1 record (no `structure` key) deserialises as None — the
+    // existing fixture is exactly such a record.
+    let fixture = include_str!("fixtures/minimal_chunk.json");
+    let meta: ChunkMeta = serde_json::from_str(fixture).expect("v1 fixture must parse");
+    assert_eq!(meta.structure, None);
+}
+
+#[test]
+fn structure_snapshot_converts_from_measured_metrics() {
+    let metrics = StructureMetrics {
+        bar_count: 8,
+        detected_pattern_period_bars: Some(2),
+        detected_pattern_period_ticks: Some(3840),
+        repeatability_score: 0.75,
+        variation_score: 0.25,
+        loopability_score: 0.5,
+        structural_complexity: 0.5,
+    };
+    let snap = StructureSnapshot::from(metrics);
+    assert_eq!(snap.bar_count, 8);
+    assert_eq!(snap.pattern_period_bars, Some(2));
+    assert_eq!(snap.pattern_period_ticks, Some(3840));
+    assert!((snap.repeatability - 0.75).abs() < 1e-12);
+    assert!((snap.variation - 0.25).abs() < 1e-12);
+    assert!((snap.loopability - 0.5).abs() < 1e-12);
+    assert!((snap.structural_complexity - 0.5).abs() < 1e-12);
+}
+
 // ── property tests ─────────────────────────────────────────────────────────────
 
 fn arb_swancore_tag() -> impl Strategy<Value = SwancoreTag> {
@@ -229,6 +307,7 @@ proptest! {
             techniques: Vec::new(),
             quality_flags: flags,
             reviewer,
+            structure: None,
             created_at: "2026-05-20T00:00:00Z".to_owned(),
             updated_at: "2026-05-20T00:00:00Z".to_owned(),
         };

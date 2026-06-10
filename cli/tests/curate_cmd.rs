@@ -44,3 +44,44 @@ fn curate_nonexistent_file_exits_nonzero() {
         "curate on missing file must exit non-zero"
     );
 }
+
+#[test]
+fn curate_persists_structure_metrics_in_the_chunk_json() {
+    use std::io::Write as _;
+
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple_4_4.mid");
+    let out_path = std::env::temp_dir().join("griff_curate_structure_test.chunk.json");
+    let _ = std::fs::remove_file(&out_path);
+
+    let mut child = Command::new(griff_bin())
+        .args([
+            "curate",
+            fixture.to_str().expect("fixture path"),
+            "--output",
+            out_path.to_str().expect("out path"),
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn griff curate");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        // id, title, tuning (default), tags (none), flags (default), decision (none)
+        .write_all(b"test_001\nStructure Test\n\n\n\n\n")
+        .expect("write answers");
+    let status = child.wait().expect("wait");
+    assert!(status.success(), "curate must exit 0");
+
+    let json = std::fs::read_to_string(&out_path).expect("output written");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    let structure = value
+        .get("structure")
+        .expect("chunk meta must carry a structure snapshot (S14 Phase 3)");
+    assert!(
+        structure.get("bar_count").and_then(serde_json::Value::as_u64) >= Some(1),
+        "snapshot must describe at least one bar: {structure}"
+    );
+    let _ = std::fs::remove_file(&out_path);
+}
