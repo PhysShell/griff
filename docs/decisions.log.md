@@ -287,3 +287,57 @@ Architectural decisions go to [`adr/`](adr/) instead.
   documented as the honest v1 proxy, and the weight surface is where S9
   recalibrates later. A loopability axis is deferred until the control carries
   a loopability target.
+
+- 2026-06-10 — In the context of surveying NeptuneHub/AudioMuse-AI (AGPL-3.0;
+  self-hosted *audio* retrieval: Voyager ANN similarity, radius-walk ordering,
+  song-path interpolation, ADD/SUBTRACT "alchemy" centroids, evolutionary
+  clustering, 2D music map, recency-weighted sonic fingerprint) as prior art
+  for the retrieval / corpus-exploration layer (high relevance: S5/S7/S9/S14),
+  facing which of its mechanisms to adopt without scope creep, we decided for
+  **ideas only — no code, no dependency** (AGPL-3.0 is incompatible with this
+  MIT crate; per the AGENTS.md prior-art rule), adopting four shapes mapped
+  onto existing canon: (a) chunk similarity as the first S7 slice —
+  brute-force cosine over *named* symbolic feature axes with a per-axis
+  rationale (ADR-0017; no ANN index at micro-corpus scale); (b) ADD/SUBTRACT
+  alchemy as a deterministic add/avoid-centroid rerank under a versioned
+  `WeightPolicy` — the query-time complement of the S9 profile (whose EMA
+  update already *is* the fingerprint's exponential recency decay); (c)
+  feature-space interpolation as a transition *constraint schedule* compiled
+  onto S6 (the ADR-0012/0015 compiler pattern) — interpolate density /
+  register / dissonance / period targets per bar, never audio vectors; (d) a
+  corpus map as a curation dev-tool, gated on S14 Phase 3 persisting numeric
+  axes into `ChunkMeta` and on corpus scale (~50+ chunks) — scatter over two
+  named axes or a natively implemented 2-component PCA, SVG export from CLI
+  tooling, no UMAP dependency, never a runtime path — and against adopting its
+  greedy radius walk (it re-states the locally-best traversal ADR-0013 already
+  rejected; only its 70/30 prev/anchor balance survives, as calibration input
+  for the `phrase_continuity` vs `style_fit` cost terms), against whole-track
+  audio embeddings as core features (an unexplainable scalar — the anti-scalar
+  rule, ADR-0017 §2), against ANN / media-server machinery, and against
+  evolutionary generator-config tuning now (parked S9-late at the earliest;
+  reproducibility would ride on ADR-0017 policy versioning), to achieve a
+  production-validated confirmation of the planned retrieval shape instead of
+  new architecture, accepting that all adopted ideas wait on their gates (S14
+  Phase 3 schema bump, S9 feedback logging, corpus growth) and none lands
+  today.
+
+- 2026-06-10 — In the context of the same survey raising "audio in, vibe out"
+  — extract the vibe of a real song and turn it into generation parameters —
+  facing audio analysis in core vs symbolic-first, we decided for
+  **reference-as-intent staying symbolic and in-core**: the
+  profile-extractor primitive of
+  `audit/2026-06-expressive-control-and-scoring.md` §2.4 (consumer 4 — a
+  profile extracted from a reference phrase / selected region *is* a
+  generation intent, "formalisation by example") over GP/MIDI references
+  through the normal import path, with **audio entering only via an
+  out-of-workspace transcription sidecar** (audio → GP/MIDI → import → axes →
+  constraints); the derived intent must mark which axes the lossy path
+  supports — tempo, density, syncopation, register, contour, structure period
+  survive; techniques do not (no articulation oracle from plain MIDI, SPEC /
+  glossary §17.3; loss-report mindset, SPEC hard rule 7) — and against an
+  in-workspace audio stack (librosa-equivalent DSP / CLAP-style audio-text
+  embedding dependencies, even optional), to achieve "vibe from a reference"
+  without breaking the audio boundary or the lean dependency tree while
+  reusing the extractor shared with `PartProfile` / `StructureMetrics`,
+  accepting that audio-only references depend on external transcription
+  quality and carry no technique evidence.
