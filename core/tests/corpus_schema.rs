@@ -9,11 +9,25 @@
 
 use griff_core::corpus::{
     BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, QualityFlag, ReviewerDecision, SourceFormat,
-    SourceRef, SwancoreTag,
+    SourceRef, SwancoreTag, SCHEMA_VERSION,
 };
+use griff_core::structure::StructureMetrics;
 use proptest::{collection::vec as prop_vec, prelude::*};
 
 // ── helpers ────────────────────────────────────────────────────────────────────
+
+/// Exactly-representable f64 values keep JSON round-trips byte-identical.
+fn sample_metrics() -> StructureMetrics {
+    StructureMetrics {
+        bar_count: 4,
+        detected_pattern_period_bars: Some(1),
+        detected_pattern_period_ticks: Some(1920),
+        repeatability_score: 0.9375,
+        variation_score: 0.0625,
+        loopability_score: 0.875,
+        structural_complexity: 0.25,
+    }
+}
 
 fn minimal_chunk() -> ChunkMeta {
     ChunkMeta {
@@ -37,9 +51,58 @@ fn minimal_chunk() -> ChunkMeta {
         techniques: vec!["hammer_on".to_owned()],
         quality_flags: vec![QualityFlag::Clean],
         reviewer: Some(ReviewerDecision::Accepted),
+        structure: None,
         created_at: "2026-05-20T00:00:00Z".to_owned(),
         updated_at: "2026-05-20T00:00:00Z".to_owned(),
     }
+}
+
+// ── schema v2: structure metrics (S14 Phase 3) ────────────────────────────────
+
+#[test]
+fn schema_version_is_2() {
+    assert_eq!(SCHEMA_VERSION, 2, "S14 Phase 3 bumps the corpus schema");
+}
+
+#[test]
+fn chunk_meta_with_structure_roundtrips() {
+    let mut meta = minimal_chunk();
+    meta.structure = Some(sample_metrics());
+
+    let json = serde_json::to_string(&meta).expect("serialize");
+    assert!(
+        json.contains("\"structure\""),
+        "v2 records carry the structure key"
+    );
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.structure, Some(sample_metrics()));
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(json, json2, "JSON round-trip must be byte-identical");
+}
+
+#[test]
+fn chunk_meta_without_structure_serializes_without_the_key() {
+    // A record with no measured structure stays byte-identical to a v1
+    // record: the key is skipped, not written as null.
+    let json = serde_json::to_string(&minimal_chunk()).expect("serialize");
+    assert!(
+        !json.contains("\"structure\""),
+        "absent metrics must not introduce a key: {json}"
+    );
+}
+
+#[test]
+fn v1_json_without_structure_field_loads_as_none() {
+    // A v1 record predating the schema bump parses, reads as None, and
+    // re-serializes without inventing the key (lossless v1 round-trip).
+    let mut meta = minimal_chunk();
+    meta.structure = None;
+    let v1_json = serde_json::to_string(&meta).expect("serialize");
+
+    let back: ChunkMeta = serde_json::from_str(&v1_json).expect("v1 record must parse");
+    assert!(back.structure.is_none());
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(v1_json, json2);
 }
 
 // ── unit tests ─────────────────────────────────────────────────────────────────
@@ -149,6 +212,10 @@ fn fixture_minimal_chunk_loads() {
     assert_eq!(meta.tags.len(), 2);
     assert_eq!(meta.quality_flags, vec![QualityFlag::Clean]);
     assert_eq!(meta.reviewer, Some(ReviewerDecision::Accepted));
+    assert!(
+        meta.structure.is_none(),
+        "the v1 fixture predates structure metrics"
+    );
 }
 
 // ── property tests ─────────────────────────────────────────────────────────────
@@ -196,6 +263,31 @@ fn arb_reviewer() -> impl Strategy<Value = Option<ReviewerDecision>> {
     ]
 }
 
+/// Sixteenth-step f64 values are exactly representable, so JSON round-trips
+/// stay byte-identical (the same trick as the integer-BPM strategy below).
+fn arb_structure() -> impl Strategy<Value = Option<StructureMetrics>> {
+    let metrics = (
+        1_usize..=8,
+        proptest::option::of(1_usize..=4),
+        0_u32..=16,
+        0_u32..=16,
+        0_u32..=16,
+    )
+        .prop_map(|(bar_count, period_bars, rep16, loop16, cx16)| {
+            StructureMetrics {
+                bar_count,
+                detected_pattern_period_bars: period_bars,
+                detected_pattern_period_ticks: period_bars
+                    .map(|p| u32::try_from(p).unwrap_or(1) * 1920),
+                repeatability_score: f64::from(rep16) / 16.0,
+                variation_score: 1.0 - f64::from(rep16) / 16.0,
+                loopability_score: f64::from(loop16) / 16.0,
+                structural_complexity: f64::from(cx16) / 16.0,
+            }
+        });
+    proptest::option::of(metrics)
+}
+
 proptest! {
     #[test]
     fn prop_chunk_meta_json_roundtrip(
@@ -211,6 +303,7 @@ proptest! {
         tags in prop_vec(arb_swancore_tag(), 0..4),
         flags in prop_vec(arb_quality_flag(), 0..3),
         reviewer in arb_reviewer(),
+        structure in arb_structure(),
     ) {
         let meta = ChunkMeta {
             id: ChunkId(id),
@@ -229,6 +322,7 @@ proptest! {
             techniques: Vec::new(),
             quality_flags: flags,
             reviewer,
+            structure,
             created_at: "2026-05-20T00:00:00Z".to_owned(),
             updated_at: "2026-05-20T00:00:00Z".to_owned(),
         };
