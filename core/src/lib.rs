@@ -18,5 +18,6 @@ pub mod midi;
 pub mod novelty;
 pub mod score;
 pub mod scoring;
+pub mod similarity;
 pub mod slice;
 pub mod structure;

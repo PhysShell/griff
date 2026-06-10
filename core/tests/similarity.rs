@@ -8,12 +8,16 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
+    clippy::panic,
     clippy::indexing_slicing,
     clippy::missing_assert_message,
-    clippy::float_cmp
+    clippy::float_cmp,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation
 )]
 
 use griff_core::corpus::{ChunkId, ChunkMeta, SourceFormat, SourceRef, SwancoreTag};
+use griff_core::scoring::Axes;
 use griff_core::similarity::{
     find_similar_chunks, similarity_axes, similarity_weights_v1, SimilarityError,
     SIMILARITY_AXIS_LABELS,
@@ -68,7 +72,7 @@ fn chunk(id: &str, structure: Option<StructureMetrics>, tags: Vec<SwancoreTag>) 
     }
 }
 
-fn axis(axes: &griff_core::scoring::Axes, label: &str) -> f64 {
+fn axis(axes: &Axes, label: &str) -> f64 {
     axes.get(label)
         .unwrap_or_else(|| panic!("axis {label} missing"))
 }
@@ -105,8 +109,16 @@ fn weights_v1_is_uniform_over_the_axes() {
 #[test]
 fn identical_chunks_score_one_on_every_axis() {
     let m = metrics(Some(2), 0.75, 0.5, 0.25);
-    let a = chunk("a", Some(m), vec![SwancoreTag::CleanRiff, SwancoreTag::Maj7]);
-    let b = chunk("b", Some(m), vec![SwancoreTag::CleanRiff, SwancoreTag::Maj7]);
+    let a = chunk(
+        "a",
+        Some(m),
+        vec![SwancoreTag::CleanRiff, SwancoreTag::Maj7],
+    );
+    let b = chunk(
+        "b",
+        Some(m),
+        vec![SwancoreTag::CleanRiff, SwancoreTag::Maj7],
+    );
 
     let axes = similarity_axes(&a, &b).expect("both sides measured");
     assert_eq!(axes.len(), SIMILARITY_AXIS_LABELS.len());
@@ -174,23 +186,35 @@ fn scalar_axes_measure_absolute_distance() {
     let a = chunk("a", Some(metrics(Some(1), 0.75, 1.0, 0.5)), Vec::new());
     let b = chunk("b", Some(metrics(Some(1), 0.25, 0.25, 0.25)), Vec::new());
     let axes = similarity_axes(&a, &b).expect("measured");
-    assert_eq!(axis(&axes, "repeatability_similarity"), 0.5, "1 − |0.75 − 0.25|");
-    assert_eq!(axis(&axes, "loopability_similarity"), 0.25, "1 − |1.0 − 0.25|");
-    assert_eq!(axis(&axes, "complexity_similarity"), 0.75, "1 − |0.5 − 0.25|");
+    assert_eq!(
+        axis(&axes, "repeatability_similarity"),
+        0.5,
+        "1 − |0.75 − 0.25|"
+    );
+    assert_eq!(
+        axis(&axes, "loopability_similarity"),
+        0.25,
+        "1 − |1.0 − 0.25|"
+    );
+    assert_eq!(
+        axis(&axes, "complexity_similarity"),
+        0.75,
+        "1 − |0.5 − 0.25|"
+    );
 }
 
 #[test]
 fn tag_axis_is_jaccard_over_tag_sets() {
-    let m = metrics(Some(1), 0.5, 0.5, 0.5);
+    let shared = metrics(Some(1), 0.5, 0.5, 0.5);
     // Overlap 2, union 4 → 0.5 (exactly representable).
-    let a = chunk(
+    let two_tags = chunk(
         "a",
-        Some(m),
+        Some(shared),
         vec![SwancoreTag::CleanRiff, SwancoreTag::PalmMute],
     );
-    let b = chunk(
+    let four_tags = chunk(
         "b",
-        Some(m),
+        Some(shared),
         vec![
             SwancoreTag::CleanRiff,
             SwancoreTag::PalmMute,
@@ -198,29 +222,29 @@ fn tag_axis_is_jaccard_over_tag_sets() {
             SwancoreTag::Maj7,
         ],
     );
-    let axes = similarity_axes(&a, &b).expect("measured");
-    assert_eq!(axis(&axes, "tag_similarity"), 0.5);
+    let overlap_axes = similarity_axes(&two_tags, &four_tags).expect("measured");
+    assert_eq!(axis(&overlap_axes, "tag_similarity"), 0.5);
 
     // Disjoint sets → 0.0.
-    let c = chunk("c", Some(m), vec![SwancoreTag::TappingPassage]);
-    let axes = similarity_axes(&a, &c).expect("measured");
-    assert_eq!(axis(&axes, "tag_similarity"), 0.0);
+    let disjoint = chunk("c", Some(shared), vec![SwancoreTag::TappingPassage]);
+    let disjoint_axes = similarity_axes(&two_tags, &disjoint).expect("measured");
+    assert_eq!(axis(&disjoint_axes, "tag_similarity"), 0.0);
 
     // Duplicate tags count once: {X, X} vs {X} is identical as a set.
-    let d = chunk(
+    let duplicated = chunk(
         "d",
-        Some(m),
+        Some(shared),
         vec![SwancoreTag::CleanRiff, SwancoreTag::CleanRiff],
     );
-    let e = chunk("e", Some(m), vec![SwancoreTag::CleanRiff]);
-    let axes = similarity_axes(&d, &e).expect("measured");
-    assert_eq!(axis(&axes, "tag_similarity"), 1.0);
+    let single = chunk("e", Some(shared), vec![SwancoreTag::CleanRiff]);
+    let dedup_axes = similarity_axes(&duplicated, &single).expect("measured");
+    assert_eq!(axis(&dedup_axes, "tag_similarity"), 1.0);
 
     // Two untagged chunks agree (the empty-set convention of set_jaccard).
-    let f = chunk("f", Some(m), Vec::new());
-    let g = chunk("g", Some(m), Vec::new());
-    let axes = similarity_axes(&f, &g).expect("measured");
-    assert_eq!(axis(&axes, "tag_similarity"), 1.0);
+    let untagged_a = chunk("f", Some(shared), Vec::new());
+    let untagged_b = chunk("g", Some(shared), Vec::new());
+    let untagged_axes = similarity_axes(&untagged_a, &untagged_b).expect("measured");
+    assert_eq!(axis(&untagged_axes, "tag_similarity"), 1.0);
 }
 
 // ── retrieval ─────────────────────────────────────────────────────────────────
@@ -228,7 +252,11 @@ fn tag_axis_is_jaccard_over_tag_sets() {
 #[test]
 fn find_similar_requires_a_measured_query() {
     let query = chunk("q", None, Vec::new());
-    let candidates = vec![chunk("a", Some(metrics(Some(1), 0.5, 0.5, 0.5)), Vec::new())];
+    let candidates = vec![chunk(
+        "a",
+        Some(metrics(Some(1), 0.5, 0.5, 0.5)),
+        Vec::new(),
+    )];
     let policy = similarity_weights_v1();
 
     assert_eq!(
@@ -241,7 +269,10 @@ fn find_similar_requires_a_measured_query() {
 fn find_similar_excludes_the_query_itself() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
     let query = chunk("q", Some(m), Vec::new());
-    let candidates = vec![chunk("q", Some(m), Vec::new()), chunk("a", Some(m), Vec::new())];
+    let candidates = vec![
+        chunk("q", Some(m), Vec::new()),
+        chunk("a", Some(m), Vec::new()),
+    ];
     let policy = similarity_weights_v1();
 
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
@@ -296,7 +327,11 @@ fn find_similar_ranks_closer_chunks_first() {
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
     let ids: Vec<&str> = ranked.iter().map(|s| s.value.0.as_str()).collect();
     assert_eq!(ids, ["near", "middle", "far"]);
-    assert_eq!(ranked[0].aggregate(), 1.0, "identical chunk aggregates to 1");
+    assert_eq!(
+        ranked[0].aggregate(),
+        1.0,
+        "identical chunk aggregates to 1"
+    );
     assert!(ranked[1].aggregate() > ranked[2].aggregate());
 }
 
@@ -312,7 +347,11 @@ fn find_similar_ties_break_by_candidate_order() {
 
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
     let ids: Vec<&str> = ranked.iter().map(|s| s.value.0.as_str()).collect();
-    assert_eq!(ids, ["first", "second"], "equal aggregates keep input order");
+    assert_eq!(
+        ids,
+        ["first", "second"],
+        "equal aggregates keep input order"
+    );
 }
 
 #[test]
