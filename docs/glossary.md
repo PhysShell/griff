@@ -858,6 +858,13 @@ complexity. Used to rerank candidates and — later — as graph node attributes
 Computed by self-similarity / autocorrelation analysis; does not depend on the
 graph layer or DP/Viterbi (ADR-0015).
 
+### Structure snapshot
+The persisted (corpus) form of structure metrics: an optional
+`StructureSnapshot` on `ChunkMeta` (schema v2, S14 Phase 3), written by
+`griff curate` at curation time. Decoupled from the analysis struct so the
+corpus schema does not chase its refinements; omitted from JSON when absent,
+so v1 records parse unchanged.
+
 ## 9. Graph layer
 
 ### Graph layer

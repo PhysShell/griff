@@ -287,3 +287,23 @@ Architectural decisions go to [`adr/`](adr/) instead.
   documented as the honest v1 proxy, and the weight surface is where S9
   recalibrates later. A loopability axis is deferred until the control carries
   a loopability target.
+
+- 2026-06-10 — In the context of S14 Phase 3 (persist structure metrics on
+  imported material, ADR-0015 §3), facing whether `ChunkMeta` should embed the
+  analysis struct `StructureMetrics` directly or a dedicated persistence
+  shape, we decided for **a separate `StructureSnapshot`** — a serializable
+  mirror (`bar_count`, `pattern_period_bars/ticks`, `repeatability`,
+  `variation`, `loopability`, `structural_complexity`) with
+  `From<StructureMetrics>`, carried as `ChunkMeta.structure:
+  Option<StructureSnapshot>` under `#[serde(default,
+  skip_serializing_if = Option::is_none)]`, with `CORPUS_SCHEMA_VERSION`
+  bumped 1 → 2 — and against deriving serde on `StructureMetrics` itself
+  (the analysis struct will chase refinements — sub-bar periods, the
+  complexity vector — that the corpus schema must not), and against a
+  required field or a `null` placeholder (omitting the key keeps unanalysed
+  chunks byte-identical to v1 and lets every existing v1 record parse as
+  `None`, no migration pass needed). The producer is `griff curate`: it
+  measures the first note-bearing track at curation time. Accepted: chunks
+  curated before v2 carry no snapshot until re-curated; the S7
+  node-attribute half of Phase 3 lands with the graph layer; the manifest
+  version is data, so readers treat 1 and 2 alike apart from the new field.

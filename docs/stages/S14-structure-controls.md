@@ -1,6 +1,6 @@
 # S14: Structure controls and metrics
 
-Status: in progress — Phase 2 (scoring loop) landed (2026-06-10)
+Status: in progress — Phase 3 (corpus persistence) landed (2026-06-10)
 Depends on: S6 (rule generator), S4 (phrase boundaries, for `phrase_length`)
 ADRs: ADR-0015
 
@@ -20,10 +20,13 @@ ADRs: ADR-0015
 > `StructuredCandidate::scored` (explainable `Scored` envelope with seed +
 > policy provenance), `rank_structured` (fixed tie-break), and
 > `generate_structured_set` (deterministic candidate set over derived seeds).
+> Phase 3 persists the same metrics on imported material: `StructureSnapshot`
+> (the corpus form of `StructureMetrics`) on `ChunkMeta`, schema v2 with v1
+> backward compatibility, measured by `griff curate` at curation time.
 > Pure, deterministic, and independent of the graph layer / DP.
 > Remaining: sub-bar (beat-level) period detection, the full per-axis
 > `ComplexityProfile`, a P2 `structured_request` fuzz target (deferred: no
-> nightly toolchain in the landing environment), then Phases 3–4 below.
+> nightly toolchain in the landing environment), then Phase 4 below.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label history in [`../audit/`](../audit/)). Logically it sits beside the
@@ -103,8 +106,10 @@ of onset & contour features / motif recurrence / loop-seam), deterministic
   set, rank by control↔metrics agreement under the shared `Scored` vocabulary;
   rejection is the caller's threshold cut on the aggregate. A loopability
   agreement axis joins when the control grows a loopability target.
-- **Phase 3 — corpus.** Compute the same metrics on imported material; persist as
-  `ChunkMeta` fields (schema bump) and, later, S7 node attributes.
+- **Phase 3 — corpus.** ✅ Compute the same metrics on imported material; persist
+  as `ChunkMeta.structure` (`StructureSnapshot`, schema v2; v1 records parse as
+  `None`), measured by `griff curate` on the first note-bearing track. The
+  "S7 node attributes" half lands with the graph layer.
 - **Phase 4 — UI / edit-ops.** Basic/advanced/expert tiers; "make less
   repetitive", "double pattern length", "add variation every 2nd bar"
   (S11 region regeneration).
@@ -125,7 +130,7 @@ of onset & contour features / motif recurrence / loop-seam), deterministic
 
 - No graph layer, no DP/Viterbi here (ADR-0015 §7). Metrics are *designed to feed*
   S7 / DP later, not to consume them.
-- No corpus-schema persistence until Phase 3.
+- ~~No corpus-schema persistence until Phase 3.~~ (Phase 3 landed: schema v2.)
 
 ## See also
 
