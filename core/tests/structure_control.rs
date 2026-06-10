@@ -369,20 +369,20 @@ fn period_match_degrades_with_mismatch() {
     };
 
     // Requested 2, detected 1 → ratio credit (half).
-    let axes = structure_axes(&control(Some(2)), &metrics(Some(1), 1.0));
-    assert_eq!(axes.get("period_match"), Some(0.5));
+    let halved = structure_axes(&control(Some(2)), &metrics(Some(1), 1.0));
+    assert_eq!(halved.get("period_match"), Some(0.5));
 
     // Requested a period, detected none → no credit.
-    let axes = structure_axes(&control(Some(2)), &metrics(None, 0.1));
-    assert_eq!(axes.get("period_match"), Some(0.0));
+    let aperiodic = structure_axes(&control(Some(2)), &metrics(None, 0.1));
+    assert_eq!(aperiodic.get("period_match"), Some(0.0));
 
     // Requested through-composed, material came out periodic → no credit.
-    let axes = structure_axes(&control(None), &metrics(Some(1), 1.0));
-    assert_eq!(axes.get("period_match"), Some(0.0));
+    let unwanted_loop = structure_axes(&control(None), &metrics(Some(1), 1.0));
+    assert_eq!(unwanted_loop.get("period_match"), Some(0.0));
 
     // Requested through-composed and got it → full credit.
-    let axes = structure_axes(&control(None), &metrics(None, 0.1));
-    assert_eq!(axes.get("period_match"), Some(1.0));
+    let through = structure_axes(&control(None), &metrics(None, 0.1));
+    assert_eq!(through.get("period_match"), Some(1.0));
 }
 
 #[test]

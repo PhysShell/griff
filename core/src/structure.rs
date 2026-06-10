@@ -50,6 +50,7 @@ use crate::generate::{
 use crate::score::{
     AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
 };
+use crate::scoring::{rank_indices, Axes, Axis, Scored, WeightPolicy};
 use crate::slice::TickRange;
 
 /// Minimum mean self-similarity at a lag for it to count as a pattern period.
@@ -627,4 +628,144 @@ const fn mix(seed: u64, salt: u64) -> u64 {
 fn hash_unit(seed: u64, salt: u64) -> f64 {
     const TWO_POW_53: f64 = 9_007_199_254_740_992.0;
     ((mix(seed, salt) >> 11) as f64) / TWO_POW_53
+}
+
+// ── S14 Phase 2: scoring loop — rerank by control ↔ metrics distance ──────────
+
+// Stable structure-axis labels — the join keys between [`structure_axes`] facts
+// and a scoring [`WeightPolicy`] (ADR-0017). Named once so the labels and the
+// axis order cannot drift apart.
+const AXIS_PERIOD_MATCH: &str = "period_match";
+const AXIS_REPEATABILITY_MATCH: &str = "repeatability_match";
+const AXIS_VARIATION_MATCH: &str = "variation_match";
+
+/// The structure agreement axes, in their canonical order (ADR-0017).
+pub const STRUCTURE_AXIS_LABELS: [&str; 3] = [
+    AXIS_PERIOD_MATCH,
+    AXIS_REPEATABILITY_MATCH,
+    AXIS_VARIATION_MATCH,
+];
+
+/// Salt for deriving per-candidate seeds in [`generate_structured_set`].
+const CANDIDATE_SALT: u64 = 0x4341_4E44_4944_4154; // "CANDIDAT"
+
+/// How well `metrics` agree with what `control` asked for, as labelled scoring
+/// facts in `[0, 1]` (ADR-0017) — higher is closer.
+///
+/// - `period_match` — `1.0` when the detected period equals the requested one
+///   (or both are through-composed); the `min/max` ratio for a wrong period
+///   (off by 2× = `0.5`); `0.0` when one side is periodic and the other not.
+/// - `repeatability_match` / `variation_match` — `1 − |requested − measured|`.
+///   The knobs and the scores are different quantities (a per-copy / per-bar
+///   probability vs a mean self-similarity), but both are normalised monotone
+///   proxies for the same axis; the absolute distance is the honest v1 measure.
+#[must_use]
+#[allow(clippy::cast_precision_loss)] // bar periods are tiny; no precision concern
+pub fn structure_axes(control: &StructureControl, metrics: &StructureMetrics) -> Axes {
+    let period_match = match (
+        control.pattern_period_bars,
+        metrics.detected_pattern_period_bars,
+    ) {
+        (None, None) => 1.0,
+        (None, Some(_)) | (Some(_), None) => 0.0,
+        (Some(requested), Some(detected)) => {
+            let lo = requested.min(detected);
+            let hi = requested.max(detected);
+            if hi == 0 {
+                0.0
+            } else {
+                lo as f64 / hi as f64
+            }
+        }
+    };
+    let repeatability_match = 1.0
+        - (control.repeatability - metrics.repeatability_score)
+            .abs()
+            .clamp(0.0, 1.0);
+    let variation_match = 1.0
+        - (control.variation_rate - metrics.variation_score)
+            .abs()
+            .clamp(0.0, 1.0);
+
+    Axes::new(vec![
+        Axis {
+            label: AXIS_PERIOD_MATCH,
+            value: period_match,
+        },
+        Axis {
+            label: AXIS_REPEATABILITY_MATCH,
+            value: repeatability_match,
+        },
+        Axis {
+            label: AXIS_VARIATION_MATCH,
+            value: variation_match,
+        },
+    ])
+}
+
+/// The baseline structure weight policy (`structure` v1): uniform over the
+/// three agreement axes.
+///
+/// Untuned by design — weights are *data* the feedback layer (S9) learns
+/// (ADR-0017 §3). Under the uniform policy the aggregate reads as "how closely
+/// the produced span matches the requested structure".
+#[must_use]
+pub fn structure_weights_v1() -> WeightPolicy {
+    WeightPolicy::uniform("structure", 1, &STRUCTURE_AXIS_LABELS)
+}
+
+impl StructuredCandidate {
+    /// An explainable [`Scored`] view of this candidate under `policy`
+    /// (ADR-0017): how well its measured metrics hit its control.
+    ///
+    /// The value is the candidate's seed; the provenance carries that seed and
+    /// the weight-policy version, so the aggregate and any ranking are
+    /// reproducible relative to `(seed, policy version)` (ADR-0017 §7).
+    #[must_use]
+    pub fn scored(&self, policy: &WeightPolicy) -> Scored<GenerationSeed> {
+        Scored::new(
+            self.seed,
+            structure_axes(&self.control, &self.metrics),
+            policy,
+            Some(self.seed.0),
+        )
+    }
+}
+
+/// Ranks structure candidates under `policy`, closest-to-request first, ties
+/// broken by candidate order (the fixed tie-break rule, ADR-0017 §7).
+///
+/// Returns indices into `candidates`. Deterministic for fixed inputs and a
+/// fixed policy version. Rejection is the caller's cut: take the top of the
+/// ranking, or filter by aggregate threshold.
+#[must_use]
+pub fn rank_structured(candidates: &[StructuredCandidate], policy: &WeightPolicy) -> Vec<usize> {
+    let scored: Vec<Scored<GenerationSeed>> = candidates.iter().map(|c| c.scored(policy)).collect();
+    rank_indices(&scored)
+}
+
+/// Generates `count` candidates for one request.
+///
+/// Candidate 0 uses the request seed as-is (so the set extends, not replaces,
+/// the single pass); each further candidate uses a seed derived
+/// deterministically from it.
+///
+/// The whole set is deterministic for a fixed request; rerank it with
+/// [`rank_structured`] and keep the best (the Phase-2 scoring loop, ADR-0015).
+pub fn generate_structured_set(
+    request: &StructuredRequest,
+    count: usize,
+) -> Result<Vec<StructuredCandidate>, StructureGenError> {
+    let mut candidates = Vec::with_capacity(count);
+    for i in 0..count {
+        let seed = if i == 0 {
+            request.seed
+        } else {
+            GenerationSeed(mix(request.seed.0, CANDIDATE_SALT ^ salt_of(i)))
+        };
+        let mut derived = request.clone();
+        derived.seed = seed;
+        candidates.push(generate_structured(&derived)?);
+    }
+    Ok(candidates)
 }
