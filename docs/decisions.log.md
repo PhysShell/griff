@@ -190,6 +190,28 @@ Architectural decisions go to [`adr/`](adr/) instead.
   MIDI-sourced material. (Per-VI keyswitch notes are also import noise we do not
   decode; out of scope.)
 
+- 2026-06-09 — In the context of preparing S14 Phase 1 (the tile/vary
+  compiler needs a motif-identity measure, and Phase 2 reranks by metric
+  distance), facing that exact-pitch bar signatures read any pitch-varied
+  repeat — including the S6 pitch-substitute and motif-transpose strategies'
+  output — as no repeat at all (the documented Phase-0 "transposed repeats"
+  limitation, which would make the structure metrics a blind referee for the
+  very compiler they are meant to grade), we decided for **contour-aware bar
+  similarity** in `structure::detect_period` — a weighted sum of onset-grid
+  Jaccard (`RHYTHM_WEIGHT`) and exact `(onset, pitch)` Jaccard, where a
+  transposed repeat (identical rhythm, constant non-zero interval shift,
+  chord-safe via sorted positional alignment) lifts the pitch component to
+  `TRANSPOSITION_CREDIT` — so verbatim tiles read high, transposed tiles
+  medium, rhythm-only tiles partial, unrelated material low — and against a
+  full interval-contour signature (overkill before sub-bar periods exist) and
+  against changing `structural_complexity` (it deliberately keeps counting
+  exact distinct signatures: a transposed sequence is genuinely more material
+  than a verbatim loop). Accepted: this is an intended behaviour change to
+  `repeatability_score` / `variation_score` / period detection behind red
+  tests (the old through-composed fixture — a chromatic sequence over a
+  constant rhythm — was itself a transposed repeat and was re-fixtured); the
+  two weights are compile-time constants for now and graduate to data
+  (ADR-0017) when a consumer needs to tune them.
 - 2026-06-05 — In the context of where griff sits relative to formats, facing
   whether MIDI is the engine's orientation, we decided that **Guitar Pro /
   tablature is the primary, source-of-truth import format** (strings, frets,

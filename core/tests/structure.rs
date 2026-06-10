@@ -135,11 +135,16 @@ fn detects_two_bar_period_in_an_abab_pattern() {
 
 #[test]
 fn reports_no_period_for_through_composed_material() {
+    // Genuinely through-composed: the onset grid *and* the pitch material
+    // change every bar, with no constant interval shift between bars. (The
+    // previous fixture — a chromatic sequence over a constant rhythm — is a
+    // transposed repeat, which the contour-aware signature rightly reads as
+    // structure; see `transposed_repeats_read_as_medium_repeatability`.)
     let score = build_score(&[
         vec![60, 61, 62, 63],
-        vec![64, 65, 66, 67],
-        vec![68, 69, 70, 71],
-        vec![72, 73, 74, 75],
+        vec![72],
+        vec![65, 71],
+        vec![58, 64, 59],
     ]);
     let m = measure_structure(&score, 0).expect("measure ok");
 
@@ -147,6 +152,67 @@ fn reports_no_period_for_through_composed_material() {
     assert_eq!(m.detected_pattern_period_ticks, None);
     assert!(m.repeatability_score < 0.3, "little to no repetition");
     assert_eq!(m.structural_complexity, 1.0, "every bar distinct");
+}
+
+// ── contour-aware bar similarity ───────────────────────────────────────────────
+
+#[test]
+fn transposed_repeats_read_as_medium_repeatability() {
+    // A A' A'' A''' — one motif climbing a fourth per bar: identical rhythm,
+    // constant interval shift. Exact-pitch comparison is blind to this (the
+    // documented Phase-0 limitation); the contour-aware signature must read
+    // it as a 1-bar period with *medium* repeatability — clearly above
+    // unrelated material, clearly below identical tiles.
+    let score = build_score(&[
+        vec![60, 62, 64, 65],
+        vec![65, 67, 69, 70],
+        vec![70, 72, 74, 75],
+        vec![75, 77, 79, 80],
+    ]);
+    let m = measure_structure(&score, 0).expect("measure ok");
+
+    assert_eq!(
+        m.detected_pattern_period_bars,
+        Some(1),
+        "a transposed tile is still a tile"
+    );
+    assert_eq!(m.detected_pattern_period_ticks, Some(BAR));
+    assert!(
+        (0.6..0.9).contains(&m.repeatability_score),
+        "transposed repeats are medium, not high or low: {}",
+        m.repeatability_score,
+    );
+    assert!(
+        (0.1..0.4).contains(&m.variation_score),
+        "variation mirrors repeatability: {}",
+        m.variation_score,
+    );
+}
+
+#[test]
+fn rhythm_only_repeats_read_as_partial_repeatability() {
+    // The same onset grid every bar, but unrelated pitches with no constant
+    // interval shift: the tile is purely rhythmic. That is still structure
+    // (a rhythm cell looping), but only partial repeatability — between
+    // through-composed and a transposed repeat.
+    let score = build_score(&[
+        vec![60, 67, 62, 65],
+        vec![66, 60, 71, 61],
+        vec![63, 70, 59, 72],
+        vec![68, 58, 66, 64],
+    ]);
+    let m = measure_structure(&score, 0).expect("measure ok");
+
+    assert_eq!(
+        m.detected_pattern_period_bars,
+        Some(1),
+        "a repeating onset grid is a rhythmic period"
+    );
+    assert!(
+        (0.4..0.6).contains(&m.repeatability_score),
+        "rhythm-only repeats are partial: {}",
+        m.repeatability_score,
+    );
 }
 
 #[test]

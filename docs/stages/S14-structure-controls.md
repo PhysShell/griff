@@ -23,9 +23,14 @@ Documented now, to be addressed in later increments (ADR-0015 framed Phase 0 as
 a first pass). The metrics are intended to become user-tunable, so an honest
 exact-pitch baseline is acceptable for the first cut.
 
-- [ ] **Transposed repeats.** Bar signatures compare `(onset, absolute pitch)`,
-      so a motif transposed bar-to-bar (`A A' A''`) reads as low repeatability
-      rather than medium. A later pass may compare rhythm + interval contour.
+- [x] **Transposed repeats.** *Fixed in the metrics.* Bar similarity is now
+      contour-aware (`structure::bar_similarity`): a weighted onset-grid
+      (rhythm) + pitch comparison, where a transposed repeat — identical
+      rhythm, constant non-zero interval shift — earns partial pitch credit.
+      `A A' A''` reads as a 1-bar period with medium repeatability, rhythm-only
+      tiles as partial, unrelated material as low (decisions.log 2026-06-09).
+      This is the motif-identity measure the Phase-1 tile/vary compiler will
+      grade its variations against.
 - [x] **Trailing empty bars.** *Fixed at the importer.* `build_master_bars` now
       loops `while bar_start < end_tick || master_bars.is_empty()`, so content
       ending exactly on a barline no longer appends a sentinel bar that lowered
