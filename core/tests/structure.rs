@@ -710,3 +710,17 @@ fn a_varied_copy_breaks_the_verbatim_subbar_tile() {
         "a varied final cell breaks the half-bar tile"
     );
 }
+
+#[test]
+fn a_subbar_tile_must_be_observed_twice() {
+    // Codex P2 (PR #38), round three: A B C A in one 4/4 bar — the single
+    // lag-3 pair (cell 0 == cell 3) is consistent with a 3-beat tile, but a
+    // tile seen once is no period. Sub-bar lags stop at half the cell count,
+    // the same evidence rule as the bar-level `max_lag = n / 2`.
+    let score = build_score(&[vec![60, 62, 64, 60]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "one recurrence of the first cell is not a tiling of the bar"
+    );
+}
