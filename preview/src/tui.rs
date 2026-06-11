@@ -614,6 +614,21 @@ mod tests {
         );
     }
 
+    // TDD red phase: Codex P2 (PR #41, round 2) — overscrolling must not
+    // accumulate hidden excess: one PgUp from the bottom moves the dock,
+    // because the render writes the clamped offset back.
+    #[test]
+    fn pgup_responds_immediately_after_overscroll() {
+        let mut app = demo_app();
+        for _ in 0..30 {
+            app.vp.apply(Intent::InspectorScrollDown, &app.ctx.clone());
+        }
+        let bottom = app.snapshot(80, 12).expect("snapshot");
+        app.vp.apply(Intent::InspectorScrollUp, &app.ctx.clone());
+        let up = app.snapshot(80, 12).expect("snapshot");
+        assert_ne!(bottom, up, "one PgUp from the bottom moves the dock");
+    }
+
     #[test]
     fn page_keys_map_to_inspector_scroll() {
         assert_eq!(
