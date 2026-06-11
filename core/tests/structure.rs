@@ -21,12 +21,16 @@
 )]
 
 use griff_core::{
-    event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
+    event::{
+        NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature,
+        Tuning, Velocity,
+    },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
+        TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
-    structure::{measure_structure, StructureError},
+    structure::{measure_complexity, measure_structure, StructureError},
 };
 
 const PPQN: u16 = 480;
@@ -546,4 +550,130 @@ fn rest_aligned_sparse_repeats_still_read_as_a_subbar_period() {
         Some(2 * QUARTER),
         "the sounded cells alone carry the half-bar tile"
     );
+}
+
+// ── ComplexityProfile (S14 deferred refinement: the per-axis vector) ──────────
+//
+// TDD red phase: `measure_complexity` derives a `ComplexityProfile` — the
+// rhythmic / pitch / technical / harmonic / playability / structural vector
+// the stage doc separates from length and period (ADR-0015, glossary §7).
+// Every axis is a fact in [0, 1], untuned v1 measures; measurement only, no
+// corpus persistence yet ("measure before target"). References an API that
+// does not exist yet, so the suite fails to compile until the green step.
+
+#[test]
+fn complexity_axes_are_low_for_a_uniform_pulse() {
+    // Four identical bars of the same open-string quarter pulse.
+    let score = build_score(&[vec![40; 4], vec![40; 4], vec![40; 4], vec![40; 4]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(c.rhythmic, 0.0, "one distinct inter-onset interval");
+    assert_eq!(c.pitch, 0.0, "one distinct melodic interval (unison)");
+    assert_eq!(c.technical, 0.0, "no marks, no spans");
+    assert_eq!(c.harmonic, 0.0, "a single pitch class fits its key exactly");
+    assert_eq!(c.playability, 0.0, "an open-string pedal needs no travel");
+    assert_eq!(c.structural, 0.25, "one distinct bar signature out of four");
+}
+
+#[test]
+fn rhythmic_axis_reads_inter_onset_variety() {
+    // Onsets 0, 480, 720, 960: inter-onset intervals {480, 240, 240} — two
+    // distinct values out of three intervals.
+    let mut score = build_score(&[vec![]]);
+    for onset in [0_u32, 480, 720, 960] {
+        score.tracks[0].voices[0].event_groups.push(EventGroup {
+            kind: EventGroupKind::Single,
+            atoms: vec![quarter_note(onset, 40)],
+            technique_spans: Vec::new(),
+        });
+    }
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(c.rhythmic, 0.5, "(2 distinct − 1) / (3 intervals − 1)");
+    assert_eq!(c.pitch, 0.0, "a single pitch has no interval variety");
+}
+
+#[test]
+fn pitch_axis_reads_melodic_interval_variety() {
+    // Line 40 42 45 47: absolute intervals {2, 3, 2} — two distinct out of
+    // three; the rhythm is a uniform quarter grid.
+    let score = build_score(&[vec![40, 42, 45, 47]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(c.pitch, 0.5, "(2 distinct − 1) / (3 intervals − 1)");
+    assert_eq!(c.rhythmic, 0.0);
+}
+
+#[test]
+fn technical_axis_reads_marked_and_spanned_share() {
+    // Four notes: one accented (mark), one covered by a palm-mute span on its
+    // group — half the notes carry technique.
+    let mut score = build_score(&[vec![40, 40, 40, 40]]);
+    let groups = &mut score.tracks[0].voices[0].event_groups;
+    if let AtomEvent::Note(n) = &mut groups[0].atoms[0] {
+        n.marks = NoteMarks::empty().with(NoteMark::Accent);
+    }
+    groups[2].technique_spans.push(TechniqueSpan {
+        technique: SpanTechnique::PalmMute,
+        tick_range: TickRange::new(Ticks(2 * QUARTER), Ticks(3 * QUARTER)).expect("ordered"),
+        evidence: TechniqueEvidence::explicit(),
+    });
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(c.technical, 0.5, "2 of 4 notes carry a mark or sit in a span");
+}
+
+#[test]
+fn harmonic_axis_reads_chromaticism() {
+    // The C major scale plus a chromatic C#: scale fit 8/9, so the harmonic
+    // complexity is 1/9 (the off-scale share of the estimated key).
+    let score = build_score(&[vec![60, 61, 62, 64, 65, 67, 69, 71, 72]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert!(
+        (c.harmonic - 1.0 / 9.0).abs() < 1e-9,
+        "one chromatic note out of nine, got {}",
+        c.harmonic
+    );
+}
+
+#[test]
+fn playability_axis_is_max_for_an_unreachable_note() {
+    // Pitch 5 sits below Standard E's lowest open string: unreachable.
+    let score = build_score(&[vec![5, 40]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(c.playability, 1.0, "an unpositionable line note maxes the axis");
+}
+
+#[test]
+fn structural_axis_matches_structure_metrics() {
+    let score = build_score(&[vec![60, 62, 64, 65], vec![40, 47, 40, 47]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        c.structural, m.structural_complexity,
+        "one structural fact, measured once"
+    );
+}
+
+#[test]
+fn complexity_is_deterministic_and_in_unit_range() {
+    let score = build_score(&[vec![40, 52, 45, 47], vec![60, 62, 40, 65]]);
+    let a = measure_complexity(&score, 0).expect("measure");
+    let b = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(a, b, "pure and deterministic (SPEC §6)");
+    for (label, v) in [
+        ("rhythmic", a.rhythmic),
+        ("pitch", a.pitch),
+        ("technical", a.technical),
+        ("harmonic", a.harmonic),
+        ("playability", a.playability),
+        ("structural", a.structural),
+    ] {
+        assert!((0.0..=1.0).contains(&v), "{label} out of range: {v}");
+    }
+}
+
+#[test]
+fn complexity_rejects_out_of_range_track() {
+    let score = build_score(&[vec![40]]);
+    assert!(matches!(
+        measure_complexity(&score, 9),
+        Err(StructureError::TrackIndexOutOfRange)
+    ));
 }
