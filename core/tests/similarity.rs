@@ -317,8 +317,18 @@ fn tag_axis_is_jaccard_over_tag_sets() {
 #[test]
 fn burst_length_axis_is_the_min_max_ratio() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
-    let short = chunk("a", Some(m), Some(gesture(2.0, 1.0, 1.0, 0.5, 0.5)), Vec::new());
-    let long = chunk("b", Some(m), Some(gesture(4.0, 1.0, 1.0, 0.5, 0.5)), Vec::new());
+    let short = chunk(
+        "a",
+        Some(m),
+        Some(gesture(2.0, 1.0, 1.0, 0.5, 0.5)),
+        Vec::new(),
+    );
+    let long = chunk(
+        "b",
+        Some(m),
+        Some(gesture(4.0, 1.0, 1.0, 0.5, 0.5)),
+        Vec::new(),
+    );
     let axes = similarity_axes(&short, &long).expect("measured");
     assert_eq!(
         axis(&axes, "burst_length_similarity"),
@@ -332,8 +342,18 @@ fn rest_length_axis_two_restless_chunks_agree() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
     // Restless chunks measure mean_rest_quarters = 0.0 and a vacuous grid
     // share of 1.0; two of them are the same gesture.
-    let a = chunk("a", Some(m), Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)), Vec::new());
-    let b = chunk("b", Some(m), Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)), Vec::new());
+    let a = chunk(
+        "a",
+        Some(m),
+        Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)),
+        Vec::new(),
+    );
+    let b = chunk(
+        "b",
+        Some(m),
+        Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)),
+        Vec::new(),
+    );
     let axes = similarity_axes(&a, &b).expect("measured");
     assert_eq!(axis(&axes, "rest_length_similarity"), 1.0);
 }
@@ -341,8 +361,18 @@ fn rest_length_axis_two_restless_chunks_agree() {
 #[test]
 fn rest_length_axis_restless_vs_resting_is_zero() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
-    let restless = chunk("a", Some(m), Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)), Vec::new());
-    let resting = chunk("b", Some(m), Some(gesture(4.0, 1.5, 1.0, 0.5, 0.5)), Vec::new());
+    let restless = chunk(
+        "a",
+        Some(m),
+        Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)),
+        Vec::new(),
+    );
+    let resting = chunk(
+        "b",
+        Some(m),
+        Some(gesture(4.0, 1.5, 1.0, 0.5, 0.5)),
+        Vec::new(),
+    );
     let axes = similarity_axes(&restless, &resting).expect("measured");
     assert_eq!(
         axis(&axes, "rest_length_similarity"),
@@ -354,8 +384,18 @@ fn rest_length_axis_restless_vs_resting_is_zero() {
 #[test]
 fn rest_length_axis_is_the_min_max_ratio() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
-    let short = chunk("a", Some(m), Some(gesture(4.0, 1.0, 1.0, 0.5, 0.5)), Vec::new());
-    let long = chunk("b", Some(m), Some(gesture(4.0, 2.0, 1.0, 0.5, 0.5)), Vec::new());
+    let short = chunk(
+        "a",
+        Some(m),
+        Some(gesture(4.0, 1.0, 1.0, 0.5, 0.5)),
+        Vec::new(),
+    );
+    let long = chunk(
+        "b",
+        Some(m),
+        Some(gesture(4.0, 2.0, 1.0, 0.5, 0.5)),
+        Vec::new(),
+    );
     let axes = similarity_axes(&short, &long).expect("measured");
     assert_eq!(
         axis(&axes, "rest_length_similarity"),
@@ -367,8 +407,18 @@ fn rest_length_axis_is_the_min_max_ratio() {
 #[test]
 fn gesture_share_axes_measure_absolute_distance() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
-    let a = chunk("a", Some(m), Some(gesture(4.0, 1.0, 0.75, 1.0, 0.5)), Vec::new());
-    let b = chunk("b", Some(m), Some(gesture(4.0, 1.0, 0.25, 0.25, 0.25)), Vec::new());
+    let a = chunk(
+        "a",
+        Some(m),
+        Some(gesture(4.0, 1.0, 0.75, 1.0, 0.5)),
+        Vec::new(),
+    );
+    let b = chunk(
+        "b",
+        Some(m),
+        Some(gesture(4.0, 1.0, 0.25, 0.25, 0.25)),
+        Vec::new(),
+    );
     let axes = similarity_axes(&a, &b).expect("measured");
     assert_eq!(
         axis(&axes, "rest_grid_similarity"),
@@ -433,7 +483,11 @@ fn find_similar_skips_unmeasured_candidates() {
     let policy = similarity_weights_v2();
 
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
-    assert_eq!(ranked.len(), 1, "v1 and v2 records sit out until re-curated");
+    assert_eq!(
+        ranked.len(),
+        1,
+        "v1 and v2 records sit out until re-curated"
+    );
     assert_eq!(ranked[0].value, ChunkId("measured".to_owned()));
 }
 
