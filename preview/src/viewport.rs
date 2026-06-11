@@ -69,6 +69,9 @@ pub struct Viewport {
     pub show_inspector: bool,
     /// The pending curation decision, or `None` until the curator acts.
     pub decision: Option<CurationDecision>,
+    /// Inspector dock scroll offset in rows. Renderers clamp it to their own
+    /// content overflow at draw time; the reducer only steps and resets it.
+    pub inspector_scroll: u16,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -97,6 +100,10 @@ pub enum Intent {
     NextSection,
     /// Show/hide the inspector dock.
     ToggleInspector,
+    /// Scroll the inspector dock down one row.
+    InspectorScrollDown,
+    /// Scroll the inspector dock up one row.
+    InspectorScrollUp,
     /// Jump back to the start of the score.
     Home,
     /// Mark the viewed chunk approved; repeating it clears the decision.
@@ -132,6 +139,7 @@ impl Viewport {
             play_tick: ctx.tick_start,
             show_inspector: true,
             decision: None,
+            inspector_scroll: 0,
         }
     }
 
@@ -175,7 +183,17 @@ impl Viewport {
             }
             Intent::PrevSection => self.select_section(self.sel_section.saturating_sub(1), ctx),
             Intent::NextSection => self.select_section(self.sel_section.saturating_add(1), ctx),
-            Intent::ToggleInspector => self.show_inspector = !self.show_inspector,
+            Intent::ToggleInspector => {
+                self.show_inspector = !self.show_inspector;
+                // A hidden dock forgets its scroll; reopening starts at the top.
+                self.inspector_scroll = 0;
+            }
+            Intent::InspectorScrollDown => {
+                self.inspector_scroll = self.inspector_scroll.saturating_add(1);
+            }
+            Intent::InspectorScrollUp => {
+                self.inspector_scroll = self.inspector_scroll.saturating_sub(1);
+            }
             Intent::Home => {
                 self.scroll_tick = ctx.tick_start;
                 self.play_tick = ctx.tick_start;
@@ -260,6 +278,35 @@ mod tests {
             tempo_bpm: 120.0,
             section_starts: vec![0, 960],
         }
+    }
+
+    // TDD red phase: the scrollable inspector (the S8 follow-up recorded
+    // with the PR #38 liveness decision). References a field and intents
+    // that do not exist yet, so the crate fails to compile until green.
+
+    #[test]
+    fn inspector_scroll_intents_step_and_saturate() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        assert_eq!(vp.inspector_scroll, 0, "starts unscrolled");
+        vp.apply(Intent::InspectorScrollDown, &c);
+        vp.apply(Intent::InspectorScrollDown, &c);
+        assert_eq!(vp.inspector_scroll, 2);
+        vp.apply(Intent::InspectorScrollUp, &c);
+        assert_eq!(vp.inspector_scroll, 1);
+        vp.apply(Intent::InspectorScrollUp, &c);
+        vp.apply(Intent::InspectorScrollUp, &c);
+        assert_eq!(vp.inspector_scroll, 0, "saturates at the top");
+    }
+
+    #[test]
+    fn hiding_the_inspector_resets_its_scroll() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::InspectorScrollDown, &c);
+        vp.apply(Intent::ToggleInspector, &c);
+        assert_eq!(vp.inspector_scroll, 0, "a hidden dock forgets its scroll");
+        assert!(!vp.show_inspector);
     }
 
     #[test]

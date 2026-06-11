@@ -156,6 +156,8 @@ impl App {
             KeyCode::Char('[') => Intent::PrevSection,
             KeyCode::Char(']') | KeyCode::Tab => Intent::NextSection,
             KeyCode::Char('i') => Intent::ToggleInspector,
+            KeyCode::PageDown => Intent::InspectorScrollDown,
+            KeyCode::PageUp => Intent::InspectorScrollUp,
             KeyCode::Char('0') | KeyCode::Home => Intent::Home,
             KeyCode::Char('a') => Intent::Approve,
             KeyCode::Char('x') => Intent::Reject,
@@ -233,13 +235,33 @@ impl App {
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    fn render_inspector(&self, area: Rect, frame: &mut Frame<'_>) {
+    fn render_inspector(&mut self, area: Rect, frame: &mut Frame<'_>) {
         let block = Block::bordered()
             .title(" Inspector ")
             .border_style(Style::new().fg(Color::Rgb(70, 70, 78)));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // The reducer steps the offset blindly; clamp to the real overflow so
+        // the dock never scrolls past its last line. Ratatui scrolls *after*
+        // wrapping, so the overflow must count post-wrap rows — line_count,
+        // not the pre-wrap Line entries (Codex P2, PR #41).
+        let paragraph = Paragraph::new(self.inspector_lines()).wrap(Wrap { trim: true });
+        let overflow = u16::try_from(paragraph.line_count(inner.width))
+            .unwrap_or(u16::MAX)
+            .saturating_sub(inner.height);
+        let scroll = self.vp.inspector_scroll.min(overflow);
+        // Write the clamp back (the autoscroll precedent: render owns the
+        // bounds), so overscrolling leaves no hidden excess for PgUp to burn
+        // through (Codex P2, PR #41).
+        self.vp.inspector_scroll = scroll;
+        frame.render_widget(paragraph.scroll((scroll, 0)), inner);
+    }
+
+    /// Builds the inspector's content lines: track, section, curation,
+    /// transport (live state first — the PR #38 liveness ordering), then the
+    /// static structure and complexity blocks.
+    fn inspector_lines(&self) -> Vec<Line<'static>> {
         let dim = Style::new().fg(Color::Rgb(120, 120, 128));
         let accent = Style::new().fg(Color::Rgb(59, 157, 255));
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -320,7 +342,7 @@ impl App {
             lines.push(Line::raw("—"));
         }
 
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+        lines
     }
 
     // ── helpers ─────────────────────────────────────────────────────────
@@ -554,6 +576,72 @@ mod tests {
             actual, expected,
             "rendered frame drifted from golden `{name}`. If intended, \
              re-bless with `GRIFF_BLESS=1 cargo test -p griff-preview`."
+        );
+    }
+
+    // TDD red phase: scrolling the inspector reveals the clipped metrics
+    // tail on a short terminal (the PR #38 liveness decision deliberately
+    // let the tail clip; the scroll is the real fix).
+    #[test]
+    fn inspector_scroll_reveals_the_clipped_tail() {
+        let mut app = demo_app();
+        let before = app.snapshot(80, 12).expect("snapshot");
+        assert!(
+            !before.iter().any(|l| l.contains("ply")),
+            "the complexity tail clips on a 12-row terminal"
+        );
+        for _ in 0..12 {
+            app.vp.apply(Intent::InspectorScrollDown, &app.ctx.clone());
+        }
+        let after = app.snapshot(80, 12).expect("snapshot");
+        assert!(
+            after.iter().any(|l| l.contains("ply")),
+            "scrolling brings the tail into view"
+        );
+    }
+
+    // TDD red phase: Codex P2 (PR #41) — the scroll clamp must count
+    // post-wrap rows. A long track name wraps in the 30-column dock, so the
+    // pre-wrap clamp leaves the final wrapped rows unreachable.
+    #[test]
+    fn wrapped_inspector_lines_stay_reachable() {
+        let mut app = demo_app();
+        app.view.lanes[0].name =
+            "An Extremely Long Imported MIDI Track Name That Wraps".to_string();
+        for _ in 0..30 {
+            app.vp.apply(Intent::InspectorScrollDown, &app.ctx.clone());
+        }
+        let after = app.snapshot(80, 12).expect("snapshot");
+        assert!(
+            after.iter().any(|l| l.contains("ply")),
+            "the tail stays reachable when lines wrap"
+        );
+    }
+
+    // TDD red phase: Codex P2 (PR #41, round 2) — overscrolling must not
+    // accumulate hidden excess: one PgUp from the bottom moves the dock,
+    // because the render writes the clamped offset back.
+    #[test]
+    fn pgup_responds_immediately_after_overscroll() {
+        let mut app = demo_app();
+        for _ in 0..30 {
+            app.vp.apply(Intent::InspectorScrollDown, &app.ctx.clone());
+        }
+        let bottom = app.snapshot(80, 12).expect("snapshot");
+        app.vp.apply(Intent::InspectorScrollUp, &app.ctx.clone());
+        let up = app.snapshot(80, 12).expect("snapshot");
+        assert_ne!(bottom, up, "one PgUp from the bottom moves the dock");
+    }
+
+    #[test]
+    fn page_keys_map_to_inspector_scroll() {
+        assert_eq!(
+            App::key_intent(KeyCode::PageDown),
+            Some(Intent::InspectorScrollDown)
+        );
+        assert_eq!(
+            App::key_intent(KeyCode::PageUp),
+            Some(Intent::InspectorScrollUp)
         );
     }
 

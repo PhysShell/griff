@@ -987,3 +987,40 @@ Architectural decisions go to [`adr/`](adr/) instead.
   origin divider there is deliberate: the band already names the section
   at the left edge). Accepted: a boundary at tick 0 of an unscrolled view
   now renders a left-edge marker (harmless, and consistent).
+
+- 2026-06-11 — In the context of the scrollable-inspector follow-up
+  (`preview/src/viewport.rs` / `tui.rs`, deferred by the PR #38 liveness
+  decision), facing where the scroll bound should live when the shared
+  reducer cannot know any renderer's content height, we decided for **a
+  blind saturating offset in the viewport core clamped by each renderer
+  at draw time** (`inspector_scroll` steps freely above zero; the TUI
+  caps it at `lines − inner.height` when drawing), with hiding the dock
+  resetting the offset — and against teaching `ViewContext` a content
+  height (the dock's line count is renderer layout, not shared
+  interaction state), and against unclamped Paragraph scrolling (a dock
+  scrolled past its last line looks empty and broken). Accepted: the
+  stored offset can exceed the real overflow until the next draw; the
+  clamp makes that harmless and invisible.
+
+- 2026-06-11 — In the context of Codex P2 on PR #41 (the inspector scroll
+  clamp, `preview/src/tui.rs`), facing the clamp counting pre-wrap `Line`
+  entries while ratatui scrolls *after* wrapping (a long imported track
+  name left the final wrapped rows unreachable), we decided for **the
+  exact post-wrap row count via `Paragraph::line_count`**, enabling
+  ratatui 0.29's `unstable-rendered-line-info` feature — and against
+  dropping `Wrap` (truncation; the wrap predates this PR and long names
+  should stay readable), and against estimating rows as
+  `ceil(width/cols)` (word wrap can exceed the estimate, leaving the same
+  bug in pathological cases). Accepted: a feature flagged unstable by
+  upstream, pinned at 0.29 and isolated to one call site.
+
+- 2026-06-11 — In the context of Codex P2 round 2 on PR #41 (overscroll,
+  `preview/src/tui.rs`), facing the stored `inspector_scroll` keeping a
+  hidden excess after PgDn past the bottom (the render clamped only its
+  local copy, so PgUp felt dead until the excess burned off), we decided
+  for **writing the clamp back at render** — the `autoscroll` precedent:
+  the reducer steps blindly by design and only the draw knows the
+  post-wrap overflow — and against clamping in the reducer (it would need
+  the renderer's wrapped row count and terminal size, leaking layout into
+  the interaction core). Accepted: `render_inspector` takes `&mut self`,
+  and a snapshot can now normalise the stored offset as a side effect.

@@ -62,6 +62,10 @@ front-ends and audio build on them:
       PPQN-scaled default config, the scene places `BoundaryMark` columns
       (sections keep precedence on shared columns), the TUI styles them.
       Remaining: candidate history.
+- [x] Scrollable inspector dock (2026-06-11): `Viewport.inspector_scroll`
+      steps via `InspectorScrollUp/Down` (PgUp/PgDn in the TUI), hiding the
+      dock resets it, renderers clamp to their own content overflow — the
+      follow-up the PR #38 liveness decision deferred.
 
 ## Goal
 

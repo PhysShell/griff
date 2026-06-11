@@ -16,7 +16,9 @@ path = "src/main.rs"
 
 [dependencies]
 griff-core = { path = "../core" }
-ratatui    = "0.29"
+# unstable-rendered-line-info: Paragraph::line_count, the post-wrap row
+# count the inspector's scroll clamp needs (Codex P2, PR #41).
+ratatui    = { version = "0.29", features = ["unstable-rendered-line-info"] }
 serde_json = { workspace = true }
 
 [lints]
