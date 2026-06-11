@@ -55,6 +55,7 @@ const fn metrics(
             Some(p) => Some(1920 * p as u32),
             None => None,
         },
+        detected_subbar_period_ticks: None,
         repeatability_score: repeatability,
         variation_score: 1.0 - repeatability,
         loopability_score: loopability,

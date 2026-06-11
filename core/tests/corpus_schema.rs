@@ -25,6 +25,7 @@ const fn sample_metrics() -> StructureMetrics {
         bar_count: 4,
         detected_pattern_period_bars: Some(1),
         detected_pattern_period_ticks: Some(1920),
+        detected_subbar_period_ticks: Some(960),
         repeatability_score: 0.9375,
         variation_score: 0.0625,
         loopability_score: 0.875,
@@ -78,15 +79,53 @@ fn minimal_chunk() -> ChunkMeta {
     }
 }
 
-// ── schema v4: style cohort + ensemble groups (decisions 2026-06-11) ──────────
+// ── schema v5: sub-bar period (S14 sub-bar detection) ─────────────────────────
 
 #[test]
-fn schema_version_is_4() {
+fn schema_version_is_5() {
     assert_eq!(
-        SCHEMA_VERSION, 4,
-        "the cohort + ensemble additions bump the corpus schema"
+        SCHEMA_VERSION, 5,
+        "the sub-bar period field bumps the corpus schema"
     );
 }
+
+#[test]
+fn pre_v5_structure_without_subbar_key_loads_as_none() {
+    // A pre-v5 record's structure block has no sub-bar key; it parses as
+    // None and re-serializes without inventing the key.
+    let mut metrics = sample_metrics();
+    metrics.detected_subbar_period_ticks = None;
+    let mut meta = minimal_chunk();
+    meta.structure = Some(metrics);
+    let old_json = serde_json::to_string(&meta).expect("serialize");
+    assert!(
+        !old_json.contains("detected_subbar_period_ticks"),
+        "an absent sub-bar period must not introduce a key: {old_json}"
+    );
+
+    let back: ChunkMeta = serde_json::from_str(&old_json).expect("pre-v5 record must parse");
+    assert_eq!(back.structure, Some(metrics));
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(old_json, json2, "JSON round-trip must be byte-identical");
+}
+
+#[test]
+fn structure_with_subbar_period_roundtrips() {
+    let mut meta = minimal_chunk();
+    meta.structure = Some(sample_metrics());
+
+    let json = serde_json::to_string(&meta).expect("serialize");
+    assert!(
+        json.contains("\"detected_subbar_period_ticks\":960"),
+        "v5 records carry the sub-bar period: {json}"
+    );
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.structure, Some(sample_metrics()));
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(json, json2, "JSON round-trip must be byte-identical");
+}
+
+// ── schema v4: style cohort + ensemble groups (decisions 2026-06-11) ──────────
 
 #[test]
 fn chunk_meta_with_cohort_and_ensemble_roundtrips() {
@@ -446,16 +485,18 @@ fn arb_structure() -> impl Strategy<Value = Option<StructureMetrics>> {
     let metrics = (
         1_usize..=8,
         prop_opt(1_usize..=4),
+        prop_opt(1_u32..=8),
         0_u32..=16,
         0_u32..=16,
         0_u32..=16,
     )
         .prop_map(
-            |(bar_count, period_bars, rep16, loop16, cx16)| StructureMetrics {
+            |(bar_count, period_bars, subbar_beats, rep16, loop16, cx16)| StructureMetrics {
                 bar_count,
                 detected_pattern_period_bars: period_bars,
                 detected_pattern_period_ticks: period_bars
                     .map(|p| u32::try_from(p).unwrap_or(1).saturating_mul(1920)),
+                detected_subbar_period_ticks: subbar_beats.map(|b| b.saturating_mul(480)),
                 repeatability_score: f64::from(rep16) / 16.0,
                 variation_score: 1.0 - f64::from(rep16) / 16.0,
                 loopability_score: f64::from(loop16) / 16.0,

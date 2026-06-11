@@ -419,3 +419,94 @@ fn rejects_score_without_master_bars() {
         Err(StructureError::EmptyScore)
     ));
 }
+
+// ── sub-bar (beat-level) period detection (S14 deferred refinement) ───────────
+//
+// TDD red phase: `StructureMetrics` grows `detected_subbar_period_ticks` — the
+// strongest verbatim-tiling lag shorter than one bar, found by autocorrelation
+// over per-beat cell signatures on a uniform timeline. Cells are compared by
+// exact `(onset, pitch)` signatures: at one-onset granularity the bar-level
+// rhythm floor and transposition credit are degenerate (almost any two
+// single-note cells would "match"), so the sub-bar pass demands verbatim
+// repeats. References a field that does not exist yet, so the suite fails to
+// compile until the green step.
+
+#[test]
+fn detects_a_half_bar_subbar_period() {
+    // The two-pitch alternation tiles every half bar (two beats).
+    let score = build_score(&[vec![40, 47, 40, 47], vec![40, 47, 40, 47]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks,
+        Some(2 * QUARTER),
+        "the alternation tiles every half bar"
+    );
+    assert_eq!(
+        m.detected_pattern_period_bars,
+        Some(1),
+        "the bar-level period is unchanged by the refinement"
+    );
+}
+
+#[test]
+fn a_uniform_pulse_reads_as_a_one_beat_subbar_period() {
+    let score = build_score(&[vec![40, 40, 40, 40], vec![40, 40, 40, 40]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks,
+        Some(QUARTER),
+        "every beat is identical; ties resolve to the shortest lag"
+    );
+}
+
+#[test]
+fn no_subbar_period_for_whole_bar_material() {
+    // A scale run: no beat cell repeats verbatim at a sub-bar lag.
+    let score = build_score(&[vec![60, 62, 64, 65], vec![60, 62, 64, 65]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "the repeating idea is the whole bar, not a sub-bar cell"
+    );
+    assert_eq!(m.detected_pattern_period_bars, Some(1));
+}
+
+#[test]
+fn no_subbar_period_for_a_silent_track() {
+    let score = build_score(&[vec![], vec![]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "silence has no repeating sub-bar idea"
+    );
+}
+
+#[test]
+fn no_subbar_period_on_a_mixed_meter_timeline() {
+    // A 4/4 bar followed by a 3/4 bar: beat cells do not align across bars,
+    // so the sub-bar pass abstains instead of measuring a misaligned grid.
+    let mut score = build_score(&[vec![40, 47, 40, 47]]);
+    let start = BAR;
+    let end = BAR + 3 * QUARTER;
+    score.master_bars.push(MasterBar {
+        index: 1,
+        tick_range: TickRange::new(Ticks(start), Ticks(end)).expect("ordered"),
+        time_signature: TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        },
+        tempo: Tempo::new(120.0).expect("120 BPM"),
+    });
+    for (i, &p) in [40_u8, 47, 40].iter().enumerate() {
+        score.tracks[0].voices[0].event_groups.push(EventGroup {
+            kind: EventGroupKind::Single,
+            atoms: vec![quarter_note(start + u32::try_from(i).unwrap() * QUARTER, p)],
+            technique_spans: Vec::new(),
+        });
+    }
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "a non-uniform timeline has no shared beat grid to autocorrelate"
+    );
+}

@@ -327,6 +327,7 @@ fn metrics(period: Option<usize>, repeatability: f64) -> StructureMetrics {
         bar_count: 4,
         detected_pattern_period_bars: period,
         detected_pattern_period_ticks: period.map(|p| u32::try_from(p).unwrap() * BAR),
+        detected_subbar_period_ticks: None,
         repeatability_score: repeatability,
         variation_score: 1.0 - repeatability,
         loopability_score: 0.5,
