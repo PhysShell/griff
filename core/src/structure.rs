@@ -15,8 +15,9 @@
 //! self-similarity autocorrelation over per-bar signatures. A sub-bar
 //! refinement autocorrelates per-*beat* cell signatures on uniform timelines
 //! and reports the strongest verbatim-tiling lag shorter than one bar
-//! (`detected_subbar_period_ticks`); the full per-axis complexity profile is a
-//! later increment.
+//! (`detected_subbar_period_ticks`). [`measure_complexity`] derives the
+//! per-axis [`ComplexityProfile`] — measurement only; persistence and
+//! control-side targets are later increments.
 //!
 //! Bar similarity is contour-aware: two bars are compared by their onset grid
 //! (rhythm) and their pitches, and a *transposed* repeat — identical rhythm,

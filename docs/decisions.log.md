@@ -775,3 +775,30 @@ Architectural decisions go to [`adr/`](adr/) instead.
   a sub-bar period can now be carried by very few sounded cells on mostly
   silent material — the verbatim rule still requires them to actually
   repeat.
+
+- 2026-06-11 — In the context of the S14 deferred refinement "the full
+  per-axis `ComplexityProfile`" (`core/src/structure.rs`), facing what each
+  axis should measure before any corpus exists to calibrate against, we
+  decided for **untuned v1 facts in `[0, 1]`, built on existing seams**:
+  rhythmic and pitch complexity as normalised variety
+  (`(distinct − 1) / (count − 1)` — 0 for one repeated value, 1 for
+  all-distinct) over inter-onset intervals and over absolute melodic
+  intervals along the highest-pitch-per-onset line (the shared line
+  convention), technical as the share of notes carrying a per-note mark or
+  sitting inside a technique span (both ADR-0018 surfaces), harmonic as
+  `1 − scale_fit` of the S13 Krumhansl–Schmuckler key estimate (the
+  estimator becomes a `pub(crate)` seam over `(pitch, duration)` pairs so
+  complement and structure share one implementation), playability as
+  `max_fret_jump / 12` on the ADR-0019 optimal fingering path capped at an
+  octave with unreachable notes maxing the axis, and structural as the
+  distinct-bar-signature ratio (`bar_signatures` extracted as a shared
+  helper; the same fact as `StructureMetrics::structural_complexity`) — and
+  against persisting the profile into `ChunkMeta` in the same increment
+  (measure before target, ADR-0015: the schema bump joins once the vector
+  has consumers), against weighting or aggregating the axes (weights are S9
+  data, ADR-0017), and against a syncopation-based rhythmic axis (off-grid
+  share needs a grid-resolution choice — a calibration knob; variety needs
+  none). Accepted: the axes are coarse (a two-value rhythm scores the same
+  variety wherever it sits), playability reads fret travel only (the same
+  ADR-0019 limitation the pair validator accepted), and harmonic complexity
+  inherits the relative-key confusions of the profile method.

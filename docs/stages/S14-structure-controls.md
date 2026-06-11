@@ -1,7 +1,8 @@
 # S14: Structure controls and metrics
 
 Status: in progress — Phase 3 (corpus persistence) landed (2026-06-10);
-sub-bar period detection landed (2026-06-11)
+sub-bar period detection and the `ComplexityProfile` measurement landed
+(2026-06-11)
 Depends on: S6 (rule generator), S4 (phrase boundaries, for `phrase_length`)
 ADRs: ADR-0015
 
@@ -33,9 +34,15 @@ ADRs: ADR-0015
 > `detected_subbar_period_ticks` reports the strongest *verbatim*-tiling lag
 > shorter than one bar (exact per-beat cell autocorrelation on uniform
 > timelines; corpus schema v5).
-> Remaining: the full per-axis `ComplexityProfile`, a P2 `structured_request`
-> fuzz target (deferred: no nightly toolchain in the landing environment), S7
-> node attributes (with the graph layer), then Phase 4 below.
+> The per-axis `ComplexityProfile` landed 2026-06-11 (measurement only):
+> `measure_complexity` derives the rhythmic / pitch / technical / harmonic /
+> playability / structural vector — normalised interval variety, the marked /
+> spanned note share, `1 − scale_fit` of the S13 key estimate, fret travel on
+> the ADR-0019 optimal path, and the distinct-bar-signature ratio. Corpus
+> persistence and control-side complexity targets are later increments.
+> Remaining: a P2 `structured_request` fuzz target (deferred: no nightly
+> toolchain in the landing environment), S7 node attributes (with the graph
+> layer), then Phase 4 below.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label history in [`../audit/`](../audit/)). Logically it sits beside the
@@ -67,7 +74,10 @@ exact-pitch baseline is acceptable for the first cut.
       uniform timelines and reports the strongest verbatim-tiling lag shorter
       than one bar; persists with the record (corpus schema v5). Verbatim-only
       by design at this granularity (decisions.log 2026-06-11).
-- [ ] The full per-axis `ComplexityProfile`.
+- [x] **The per-axis `ComplexityProfile`.** *Measurement landed 2026-06-11.*
+      `measure_complexity` returns the six-axis vector as untuned v1 facts in
+      `[0, 1]` (decisions.log 2026-06-11); persistence and control-side
+      targets stay deferred.
 
 ## Goal
 
