@@ -322,3 +322,63 @@ fn curate_ensemble_links_parts_and_measures_relations() {
     assert_eq!(group.relations[0].parts, (0, 1));
     assert_eq!(group.relations[0].axes, expected);
 }
+
+/// Corpus schema v6: the written record also carries the measured per-axis
+/// complexity profile of the same track, equal to what `measure_complexity`
+/// reports. Fails to compile until `ChunkMeta.complexity` exists.
+#[test]
+fn curate_records_complexity_of_the_first_note_bearing_track() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple_4_4.mid");
+    let out_path =
+        std::env::temp_dir().join(format!("griff_curate_v6_{}.chunk.json", std::process::id()));
+
+    let mut child = Command::new(griff_bin())
+        .arg("curate")
+        .arg(&fixture)
+        .arg("--output")
+        .arg(&out_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn griff curate");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        // id, title, tuning (default), tags (none), flags (default), decision (none)
+        .write_all(b"v6_001\nSchema Six\n\n\n\n\n")
+        .expect("write curate answers");
+    let out = child.wait_with_output().expect("wait for curate");
+    assert!(
+        out.status.success(),
+        "curate must exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&out_path).expect("curate wrote the record");
+    // Cleanup is best-effort; the named binding satisfies let-underscore lints.
+    let _cleanup = std::fs::remove_file(&out_path);
+    let meta: ChunkMeta = serde_json::from_str(&json).expect("record parses as ChunkMeta");
+
+    let bytes = std::fs::read(&fixture).expect("fixture bytes");
+    let score = midi::import_score(&bytes).expect("fixture imports");
+    let track = score
+        .tracks
+        .iter()
+        .position(|t| {
+            t.voices
+                .iter()
+                .flat_map(|v| &v.event_groups)
+                .flat_map(|g| &g.atoms)
+                .any(|a| matches!(a, AtomEvent::Note(_)))
+        })
+        .expect("fixture has a note-bearing track");
+    let expected = structure::measure_complexity(&score, track).expect("complexity measures");
+
+    assert_eq!(
+        meta.complexity,
+        Some(expected),
+        "curate persists the measured complexity profile"
+    );
+}

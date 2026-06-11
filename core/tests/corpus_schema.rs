@@ -14,7 +14,7 @@ use griff_core::corpus::{
     SCHEMA_VERSION,
 };
 use griff_core::gesture::GestureStats;
-use griff_core::structure::StructureMetrics;
+use griff_core::structure::{ComplexityProfile, StructureMetrics};
 use proptest::{collection::vec as prop_vec, option::of as prop_opt, prelude::*};
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -30,6 +30,18 @@ const fn sample_metrics() -> StructureMetrics {
         variation_score: 0.0625,
         loopability_score: 0.875,
         structural_complexity: 0.25,
+    }
+}
+
+/// Exactly-representable f64 values keep JSON round-trips byte-identical.
+const fn sample_complexity() -> ComplexityProfile {
+    ComplexityProfile {
+        rhythmic: 0.25,
+        pitch: 0.5,
+        technical: 0.0,
+        harmonic: 0.125,
+        playability: 0.0625,
+        structural: 0.5,
     }
 }
 
@@ -72,6 +84,7 @@ fn minimal_chunk() -> ChunkMeta {
         reviewer: Some(ReviewerDecision::Accepted),
         structure: None,
         gesture: None,
+        complexity: None,
         style_cohort: None,
         ensemble: None,
         created_at: "2026-05-20T00:00:00Z".to_owned(),
@@ -79,15 +92,49 @@ fn minimal_chunk() -> ChunkMeta {
     }
 }
 
-// ── schema v5: sub-bar period (S14 sub-bar detection) ─────────────────────────
+// ── schema v6: the per-axis complexity profile (S14) ──────────────────────────
 
 #[test]
-fn schema_version_is_5() {
+fn schema_version_is_6() {
     assert_eq!(
-        SCHEMA_VERSION, 5,
-        "the sub-bar period field bumps the corpus schema"
+        SCHEMA_VERSION, 6,
+        "the complexity profile bumps the corpus schema"
     );
 }
+
+#[test]
+fn chunk_meta_with_complexity_roundtrips() {
+    let mut meta = minimal_chunk();
+    meta.complexity = Some(sample_complexity());
+
+    let json = serde_json::to_string(&meta).expect("serialize");
+    assert!(
+        json.contains("\"complexity\""),
+        "v6 records carry the complexity key"
+    );
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.complexity, Some(sample_complexity()));
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(json, json2, "JSON round-trip must be byte-identical");
+}
+
+#[test]
+fn pre_v6_record_without_complexity_loads_as_none() {
+    // A pre-v6 record has no complexity key; it parses as None and
+    // re-serializes without inventing the key.
+    let old_json = serde_json::to_string(&minimal_chunk()).expect("serialize");
+    assert!(
+        !old_json.contains("\"complexity\""),
+        "an absent profile must not introduce a key: {old_json}"
+    );
+
+    let back: ChunkMeta = serde_json::from_str(&old_json).expect("pre-v6 record must parse");
+    assert!(back.complexity.is_none());
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(old_json, json2, "JSON round-trip must be byte-identical");
+}
+
+// ── schema v5: sub-bar period (S14 sub-bar detection) ─────────────────────────
 
 #[test]
 fn pre_v5_structure_without_subbar_key_loads_as_none() {
@@ -533,6 +580,28 @@ fn arb_gesture() -> impl Strategy<Value = Option<GestureStats>> {
     prop_opt(stats)
 }
 
+/// Sixteenth-step f64 values are exactly representable, so JSON round-trips
+/// stay byte-identical (the same trick as [`arb_structure`]).
+fn arb_complexity() -> impl Strategy<Value = Option<ComplexityProfile>> {
+    let profile = (
+        0_u32..=16,
+        0_u32..=16,
+        0_u32..=16,
+        0_u32..=16,
+        0_u32..=16,
+        0_u32..=16,
+    )
+        .prop_map(|(rhy16, pit16, tec16, har16, ply16, str16)| ComplexityProfile {
+            rhythmic: f64::from(rhy16) / 16.0,
+            pitch: f64::from(pit16) / 16.0,
+            technical: f64::from(tec16) / 16.0,
+            harmonic: f64::from(har16) / 16.0,
+            playability: f64::from(ply16) / 16.0,
+            structural: f64::from(str16) / 16.0,
+        });
+    prop_opt(profile)
+}
+
 fn arb_cohort() -> impl Strategy<Value = Option<StyleCohort>> {
     prop_oneof![
         Just(None),
@@ -566,6 +635,7 @@ proptest! {
         reviewer in arb_reviewer(),
         structure in arb_structure(),
         gesture in arb_gesture(),
+        complexity in arb_complexity(),
         style_cohort in arb_cohort(),
         ensemble in arb_ensemble(),
     ) {
@@ -588,6 +658,7 @@ proptest! {
             reviewer,
             structure,
             gesture,
+            complexity,
             style_cohort,
             ensemble,
             created_at: "2026-05-20T00:00:00Z".to_owned(),
