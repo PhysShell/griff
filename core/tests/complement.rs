@@ -772,3 +772,122 @@ fn support_layer_rhythm_similarity_is_the_onset_jaccard() {
     // B's 2 onsets are a subset of A's 8: |∩| / |∪| = 2/8.
     assert_eq!(cand.axis_scores.rhythm_similarity, 0.25);
 }
+
+// ── call_response ───────────────────────────────────────────────────────────────
+
+/// A score whose single track plays exactly `notes` (`(onset, duration, pitch)`).
+fn score_with_notes(bar_count: usize, notes: &[(u32, u32, u8)]) -> Score {
+    let mut score = score_with_part_a(bar_count, &[60]);
+    score.tracks[0].voices[0].event_groups = notes
+        .iter()
+        .map(|&(onset, duration, pitch)| {
+            single_group(AtomEvent::Note(AtomNote {
+                absolute_start: Ticks(onset),
+                duration: Ticks(duration),
+                pitch: Pitch::new(pitch).expect("valid pitch"),
+                velocity: Velocity::new(90).expect("valid velocity"),
+                marks: NoteMarks::empty(),
+                position: None,
+            }))
+        })
+        .collect();
+    score
+}
+
+#[test]
+fn call_response_answers_in_a_gaps() {
+    // A plays the first half of the bar; the second half is one 2-quarter gap.
+    let score = score_with_notes(1, &[(0, QUARTER, 60), (QUARTER, QUARTER, 64)]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(13)).expect("arrange ok");
+
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        vec![2 * QUARTER],
+        "one answer at the gap start"
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        vec![2 * QUARTER],
+        "the answer sustains through the gap"
+    );
+    // A's band [60, 64] shifted down an octave; A's pitch classes are {0, 4}.
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            [48, 52].contains(&p),
+            "B pitch {p} must come from A's pitch classes in the shifted band"
+        );
+    }
+    assert_eq!(
+        cand.axis_scores.rhythm_similarity, 0.0,
+        "call and response onsets are disjoint by construction"
+    );
+}
+
+#[test]
+fn call_response_answers_every_gap_across_bars() {
+    let score = score_with_notes(2, &[(0, QUARTER, 60), (BAR, QUARTER, 62)]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(13)).expect("arrange ok");
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        vec![QUARTER, BAR + QUARTER],
+        "one answer per gap, in both bars"
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        vec![3 * QUARTER, 3 * QUARTER],
+    );
+}
+
+#[test]
+fn call_response_ignores_leading_silence_and_sub_quarter_gaps() {
+    // Leading silence (no call yet), then only sub-quarter holes: nothing to
+    // answer anywhere.
+    let score = score_with_notes(
+        1,
+        &[(QUARTER, QUARTER, 60), (1200, 240, 62), (1560, 360, 64)],
+    );
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    assert!(matches!(
+        arrange_complement(&score, 0, spec, GenerationSeed(13)),
+        Err(ComplementError::NoGapsToAnswer),
+    ));
+}
+
+#[test]
+fn call_response_on_a_wall_to_wall_part_is_an_error() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    assert!(matches!(
+        arrange_complement(&score, 0, spec, GenerationSeed(13)),
+        Err(ComplementError::NoGapsToAnswer),
+    ));
+}
+
+#[test]
+fn call_response_is_deterministic_for_fixed_seed() {
+    let score = score_with_notes(2, &[(0, QUARTER, 60), (BAR, QUARTER, 64)]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    let a = arrange_complement(&score, 0, spec, GenerationSeed(21)).expect("arrange ok");
+    let b = arrange_complement(&score, 0, spec, GenerationSeed(21)).expect("arrange ok");
+    assert_eq!(
+        note_pitches(&a.score, a.part_b_index),
+        note_pitches(&b.score, b.part_b_index),
+    );
+}
