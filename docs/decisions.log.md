@@ -820,3 +820,24 @@ Architectural decisions go to [`adr/`](adr/) instead.
   labels trade self-evidence for fit (the doc comment spells them out),
   and the demo frame shows a hand-filled profile rather than a measured
   one (the demo `Analysis` is a literal, not an `analyze` result).
+
+- 2026-06-11 — In the context of Codex P2 on PR #38, round two (the
+  sub-bar period pass, `core/src/structure.rs`), facing `A A B B` reading
+  as a one-beat period (two of three lag-1 pairs match, mean 2/3 clears
+  `PERIOD_THRESHOLD`) although the documented contract says *verbatim
+  tiling*, we decided for **replacing the lag mean with a tiling test**:
+  a lag qualifies only when every aligned cell pair matches exactly, the
+  shortest qualifying lag wins, and `PERIOD_THRESHOLD` drops out of the
+  sub-bar pass entirely (it stays the bar-level mechanism, where graded
+  similarity is the point) — this supersedes the same-day "empty-empty
+  pairs sit out of the mean" rule, which the all-pairs test subsumes:
+  empty cells match empty cells inside a tile, but any mismatch against a
+  sounded cell vetoes the lag, so silence still cannot establish a
+  period — and against keeping the mean with a higher threshold (any
+  threshold below 1.0 admits some non-tiling mix; exactly 1.0 *is* the
+  all-pairs test, stated less directly), and against a verbatim-majority
+  rule (calibration with no corpus to calibrate on). Accepted: the pass
+  is all-or-nothing — a single varied cell hides a sub-bar tile the ear
+  would still group (the bar-level repeatability continues to carry
+  graded repetition), and the result is no longer accompanied by a
+  strength value (a verbatim tile's strength is definitionally 1).
