@@ -242,19 +242,16 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let lines = self.inspector_lines();
         // The reducer steps the offset blindly; clamp to the real overflow so
-        // the dock never scrolls past its last line.
-        let overflow = u16::try_from(lines.len())
+        // the dock never scrolls past its last line. Ratatui scrolls *after*
+        // wrapping, so the overflow must count post-wrap rows — line_count,
+        // not the pre-wrap Line entries (Codex P2, PR #41).
+        let paragraph = Paragraph::new(self.inspector_lines()).wrap(Wrap { trim: true });
+        let overflow = u16::try_from(paragraph.line_count(inner.width))
             .unwrap_or(u16::MAX)
             .saturating_sub(inner.height);
         let scroll = self.vp.inspector_scroll.min(overflow);
-        frame.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: true })
-                .scroll((scroll, 0)),
-            inner,
-        );
+        frame.render_widget(paragraph.scroll((scroll, 0)), inner);
     }
 
     /// Builds the inspector's content lines: track, section, curation,
