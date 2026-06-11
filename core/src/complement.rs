@@ -7,17 +7,31 @@
 //! generation core (ADR-0012); modes that synthesise fresh pitch sequences will
 //! delegate to the S6 generator ([`crate::generate::generate`]).
 //!
-//! This module is the first vertical slice: the `rhythm_lock` mode plus a
-//! minimal pair validator. `rhythm_lock` places B on A's exact onset grid, so it
-//! reuses A's onsets directly rather than the S6 generator. The other relation
-//! modes are named but not yet implemented; they return
-//! [`ComplementError::ModeNotImplemented`].
+//! All six relation modes are implemented, each on its defining axis:
+//!
+//! - `rhythm_lock` — B on A's exact onset grid, pitches substituted from A's
+//!   harmony in a shifted band (reuses A's onsets directly, no S6 round-trip).
+//! - `register_contrast` — the same grid lock, but the shifted band must stay
+//!   **disjoint** from A's after MIDI clamping ([`ComplementError::InvalidSpec`]
+//!   otherwise).
+//! - `support_layer` — one root-pedal note per non-empty bar at A's first
+//!   onset; strictly sparser than A wherever A plays more than one note a bar.
+//! - `call_response` — B answers in A's gaps (the onset complement); a part
+//!   with no answerable gap is [`ComplementError::NoGapsToAnswer`].
+//! - `octave_double` — A's contour copied a non-zero whole number of octaves
+//!   away, marks preserved.
+//! - `counter_melody` — an independent line delegated to the S6
+//!   `ConstrainedRandomWalk` over a request derived from A; needs a uniform
+//!   master-bar timeline ([`ComplementError::NonUniformTimeline`]).
 
 use std::collections::BTreeSet;
 
 use crate::event::{NoteMark, NoteMarks, Pitch, SpanTechnique, Ticks, Tuning, Velocity};
 use crate::feature::PitchRange;
-use crate::generate::{GenerationError, GenerationSeed};
+use crate::generate::{
+    generate, GenerationConstraints, GenerationError, GenerationSeed, GenerationStrategy,
+    PitchMaterial, RuleGenerationRequest,
+};
 use crate::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Score, Track, Voice};
 use crate::scoring::{rank_indices, Axes, Axis, Scored, WeightPolicy};
 
@@ -224,14 +238,16 @@ pub enum ComplementError {
     TrackIndexOutOfRange,
     /// The requested part has no note atoms to analyse.
     PartHasNoNotes,
-    /// The relation mode is named but not yet implemented in this slice.
-    ModeNotImplemented(RelationMode),
     /// The spec is incompatible with the mode's contract (e.g. `octave_double`
     /// with a `register_offset` that is not a non-zero whole octave).
     InvalidSpec(RelationMode),
     /// `call_response` found no gap in part A long enough to answer (at least
     /// one quarter note of silence after A's first sound).
     NoGapsToAnswer,
+    /// `counter_melody` needs every master bar to share one meter and span:
+    /// the S6 delegate lays bars back-to-back from a single time signature,
+    /// which cannot align with a mid-score meter change.
+    NonUniformTimeline,
     /// The underlying S6 generator rejected the derived request.
     Generation(GenerationError),
 }
@@ -426,8 +442,102 @@ pub fn arrange_complement(
         RelationMode::OctaveDouble => {
             arrange_octave_double(score, track_index, &profile, spec, seed)
         }
-        other @ RelationMode::CounterMelody => Err(ComplementError::ModeNotImplemented(other)),
+        RelationMode::CounterMelody => {
+            arrange_counter_melody(score, track_index, &profile, spec, seed)
+        }
     }
+}
+
+/// `counter_melody`: an independent line against A, delegated to the S6
+/// generator's `ConstrainedRandomWalk` — the one mode that synthesises a fresh
+/// sequence instead of deriving B from A's grid.
+///
+/// The request is compiled from A: A's pitch classes as the scale, A's band
+/// shifted by `spec.register_offset` as the pitch bounds, A's bar count /
+/// meter / tempo / PPQN as constraints, A's bar rhythms as templates. The
+/// generated line is lifted onto A's master bars, which therefore must share
+/// one meter and span ([`ComplementError::NonUniformTimeline`] otherwise — S6
+/// lays bars back-to-back from a single time signature).
+fn arrange_counter_melody(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
+
+    let first = score
+        .master_bars
+        .first()
+        .ok_or(ComplementError::EmptyScore)?;
+    let first_span = first
+        .tick_range
+        .end
+        .0
+        .saturating_sub(first.tick_range.start.0);
+    let uniform = score.master_bars.iter().all(|mb| {
+        mb.time_signature == first.time_signature
+            && mb.tick_range.end.0.saturating_sub(mb.tick_range.start.0) == first_span
+    });
+    if !uniform {
+        return Err(ComplementError::NonUniformTimeline);
+    }
+
+    let request = RuleGenerationRequest {
+        seed,
+        pitch_material: PitchMaterial {
+            root: Pitch::new(band_lo).unwrap_or(register.lowest),
+            intervals: scale_intervals_from(profile),
+        },
+        constraints: GenerationConstraints {
+            bar_count: score.master_bars.len(),
+            time_signature: first.time_signature,
+            tempo: first.tempo,
+            ticks_per_quarter: Ticks(u32::from(score.ticks_per_quarter)),
+            pitch_lo: Pitch::new(band_lo).unwrap_or(register.lowest),
+            pitch_hi: Pitch::new(band_hi).unwrap_or(register.highest),
+        },
+        source_rhythms: profile.bar_rhythms.clone(),
+        strategy: GenerationStrategy::ConstrainedRandomWalk,
+    };
+    let candidate = generate(&request).map_err(ComplementError::Generation)?;
+
+    // Lift the generated line onto A's timeline (S6 lays bars from tick 0).
+    let offset = first.tick_range.start.0;
+    let event_groups: Vec<EventGroup> = candidate
+        .score
+        .tracks
+        .first()
+        .into_iter()
+        .flat_map(|t| &t.voices)
+        .flat_map(|v| &v.event_groups)
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => {
+                let mut out = *n;
+                out.absolute_start = Ticks(n.absolute_start.0.saturating_add(offset));
+                Some(EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![AtomEvent::Note(out)],
+                    technique_spans: Vec::new(),
+                })
+            }
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
+    ))
 }
 
 /// `octave_double`: reproduce A's contour a whole octave (or several) away —
