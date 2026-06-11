@@ -640,3 +640,30 @@ Architectural decisions go to [`adr/`](adr/) instead.
   persisted pair axes duplicate what S7 could recompute from members
   (stored anyway as provenance, for mining speed and curation-time
   inspection).
+
+- 2026-06-11 — In the context of implementing corpus schema v4 (the cohort
+  and ensemble direction entries above, realised as one combined bump),
+  facing the remaining implementation choices, we decided for: a
+  `StyleCohort` enum (`core` / `adjacent`, `None` = unlabeled pre-v4
+  record) and an `EnsembleRef { group_id, part_index }` on `ChunkMeta`,
+  plus manifest-level `EnsembleGroup` records whose `PairRelation`s persist
+  `AxisScores` measured by the new `complement::measure_pair_axes`
+  (built on `analyze_part` + the shared band/Jaccard helpers;
+  `PartHasNoNotes` on empty parts; `density_ratio` oriented *b relative to
+  a*, lower part index first); `griff curate` gains a cohort prompt after
+  tuning (blank = core, so EOF-driven scripts keep working) and an
+  `--ensemble` mode writing `<stem>.p<N>.chunk.json` per note-bearing
+  track plus `<stem>.group.json`, with shared tags/flags across parts as
+  the v1 simplification (records are editable text) — and against
+  per-part interactive prompts (seven prompts × N parts is curation
+  hostility), against role labels anywhere in the flow, and against
+  weakening the failing test to approximate float equality. That failing
+  test exposed a real defect: **serde_json's default fast float parser can
+  be one ULP off** (the multi-track fixture's 11/12 loopability parsed
+  back unequal to the written value), silently breaking the schema's
+  lossless-roundtrip promise for real measured values — the earlier
+  property tests missed it by deliberately using exactly-representable
+  sixteenth-step values. The workspace now enables serde_json's
+  `float_roundtrip` feature, making value round-trips exact. Accepted: a
+  modest float-parse slowdown (irrelevant at corpus scale), and that
+  ensemble parts share tags until a per-part tagging pass exists.
