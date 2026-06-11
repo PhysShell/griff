@@ -1,6 +1,7 @@
 # S14: Structure controls and metrics
 
-Status: in progress — Phase 3 (corpus persistence) landed (2026-06-10)
+Status: in progress — Phase 3 (corpus persistence) landed (2026-06-10);
+sub-bar period detection landed (2026-06-11)
 Depends on: S6 (rule generator), S4 (phrase boundaries, for `phrase_length`)
 ADRs: ADR-0015
 
@@ -28,10 +29,13 @@ ADRs: ADR-0015
 > the burst/rest gesture statistics (melodic-closure note §7.4) into the
 > schema as `ChunkMeta.gesture` (corpus schema v3, `SCHEMA_VERSION = 3`,
 > 2026-06-11), also measured and persisted by `griff curate`.
-> Remaining: sub-bar (beat-level) period detection, the full per-axis
-> `ComplexityProfile`, a P2 `structured_request` fuzz target (deferred: no
-> nightly toolchain in the landing environment), S7 node attributes (with the
-> graph layer), then Phase 4 below.
+> Sub-bar (beat-level) period detection landed 2026-06-11:
+> `detected_subbar_period_ticks` reports the strongest *verbatim*-tiling lag
+> shorter than one bar (exact per-beat cell autocorrelation on uniform
+> timelines; corpus schema v5).
+> Remaining: the full per-axis `ComplexityProfile`, a P2 `structured_request`
+> fuzz target (deferred: no nightly toolchain in the landing environment), S7
+> node attributes (with the graph layer), then Phase 4 below.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label history in [`../audit/`](../audit/)). Logically it sits beside the
@@ -58,8 +62,12 @@ exact-pitch baseline is acceptable for the first cut.
       `loopability_score` and diluted period/repeatability. Re-blessed the
       import / inspect / classify / roundtrip / characterize goldens
       (decisions.log 2026-06-03).
-- [ ] Sub-bar (beat-level) period detection and the full per-axis
-      `ComplexityProfile`.
+- [x] **Sub-bar (beat-level) period detection.** *Landed 2026-06-11.*
+      `detected_subbar_period_ticks` autocorrelates per-beat cell signatures on
+      uniform timelines and reports the strongest verbatim-tiling lag shorter
+      than one bar; persists with the record (corpus schema v5). Verbatim-only
+      by design at this granularity (decisions.log 2026-06-11).
+- [ ] The full per-axis `ComplexityProfile`.
 
 ## Goal
 

@@ -731,3 +731,33 @@ Architectural decisions go to [`adr/`](adr/) instead.
   for all minor variants, and that the enriched material changes the
   seed-deterministic pitch picks of the substitution modes (S13 is still
   pre-corpus; no golden output depends on them).
+
+- 2026-06-11 — In the context of the S14 deferred refinement "sub-bar
+  (beat-level) period detection" (`core/src/structure.rs`), facing how to
+  compare beat-sized cells when the bar-level similarity was tuned for
+  bar-sized signatures, we decided for **exact-signature autocorrelation at
+  beat resolution, verbatim repeats only** (prior art: lag-domain
+  autocorrelation of musical surfaces — Brown 1993, *Determination of meter
+  of musical scores by autocorrelation*, JASA; self-similarity matrices,
+  Foote 1999 — the idea reused natively, no dependency): per-beat
+  `(onset-within-cell, pitch)` signatures across a uniform timeline (one
+  shared time signature and bar span, the bar dividing evenly into
+  `numerator` beats), Jaccard-compared at sub-bar lags `1..numerator` beats,
+  gated by the existing `PERIOD_THRESHOLD` with ties to the shortest lag,
+  reported as `StructureMetrics::detected_subbar_period_ticks` and persisted
+  under corpus schema v5 (optional, default `None`, key skipped when absent
+  — the v2/v3/v4 compatibility pattern) — and against reusing
+  `bar_similarity` at cell granularity (with at most one onset per cell the
+  rhythm floor makes *any* constant-rhythm material clear the threshold at
+  a 1-beat lag, and the transposition credit makes almost any two
+  single-note cells "transpositions": both components are degenerate at
+  this scale and would report a vacuous 1-beat period for nearly
+  everything), against a separate sub-bar threshold (a second calibration
+  knob with no corpus to calibrate it), and against folding the result into
+  `detected_pattern_period_bars`/`_ticks` (their bar-level semantics are
+  documented and consumed by `structure_axes`; the refinement is a new
+  fact, not a redefinition). Accepted: rhythm-only sub-bar tiles (same
+  rhythm, changing pitches) read as *no* sub-bar period under the verbatim
+  rule, mixed-meter timelines and non-dividing bars abstain entirely, and
+  `StructureControl` cannot yet *request* a sub-bar period (the control-side
+  increment stays deferred).
