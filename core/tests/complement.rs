@@ -704,3 +704,71 @@ fn register_contrast_is_deterministic_for_fixed_seed() {
         note_pitches(&b.score, b.part_b_index),
     );
 }
+
+// ── support_layer ───────────────────────────────────────────────────────────────
+
+#[test]
+fn support_layer_is_sparser_and_pedals_the_shifted_root() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::SupportLayer,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(5)).expect("arrange ok");
+
+    // One note per bar: A's first onset in each bar, A's lowest pitch − 12.
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        vec![0, BAR],
+        "one B note at each bar's first A onset"
+    );
+    assert_eq!(note_pitches(&cand.score, cand.part_b_index), vec![48, 48]);
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        vec![QUARTER, QUARTER],
+        "B keeps the duration of the A note it shadows"
+    );
+
+    assert_eq!(
+        cand.axis_scores.density_ratio, 0.25,
+        "1 note/bar against A's 4 notes/bar"
+    );
+    assert!(
+        cand.axis_scores.density_ratio < 1.0,
+        "support layer must be sparser than A"
+    );
+}
+
+#[test]
+fn support_layer_skips_bars_where_a_is_silent() {
+    let mut score = score_with_part_a(2, &[60, 62]);
+    // Silence bar 1: keep only the groups whose notes start inside bar 0.
+    score.tracks[0].voices[0]
+        .event_groups
+        .retain(|g| match &g.atoms[0] {
+            AtomEvent::Note(n) => n.absolute_start.0 < BAR,
+            AtomEvent::Rest(_) => false,
+        });
+    let spec = ComplementSpec {
+        mode: RelationMode::SupportLayer,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(5)).expect("arrange ok");
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        vec![0],
+        "no pedal in a bar where A is silent"
+    );
+}
+
+#[test]
+fn support_layer_rhythm_similarity_is_the_onset_jaccard() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::SupportLayer,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(5)).expect("arrange ok");
+    // B's 2 onsets are a subset of A's 8: |∩| / |∪| = 2/8.
+    assert_eq!(cand.axis_scores.rhythm_similarity, 0.25);
+}
