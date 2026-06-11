@@ -327,6 +327,8 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
         quality_flags: inputs.quality_flags,
         reviewer: inputs.reviewer,
         structure,
+        // Wired in the next increment: curate will measure gesture stats too.
+        gesture: None,
         created_at: now.clone(),
         updated_at: now,
     };

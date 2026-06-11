@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::gesture::GestureStats;
 use crate::structure::StructureMetrics;
 
 /// Current corpus schema version.
@@ -15,7 +16,11 @@ use crate::structure::StructureMetrics;
 /// - v2 — S14 Phase 3: `ChunkMeta` gains optional measured
 ///   [`StructureMetrics`]; v1 records (no `structure` key) keep loading and
 ///   re-serialize losslessly.
-pub const SCHEMA_VERSION: u32 = 2;
+/// - v3 — burst/rest gesture statistics (melodic-closure note §7.4):
+///   `ChunkMeta` gains optional measured [`GestureStats`] under the same
+///   pattern; v1/v2 records (no `gesture` key) keep loading and re-serialize
+///   losslessly.
+pub const SCHEMA_VERSION: u32 = 3;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
 
@@ -204,6 +209,12 @@ pub struct ChunkMeta {
     /// as `null` — when unmeasured, so v1 files round-trip byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structure: Option<StructureMetrics>,
+    /// Measured burst/rest gesture statistics of the same track (schema v3,
+    /// melodic-closure note §7.4). Absent in v1/v2 records; skipped — not
+    /// written as `null` — when unmeasured, so older files round-trip
+    /// byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture: Option<GestureStats>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-modified timestamp.
