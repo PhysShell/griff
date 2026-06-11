@@ -20,8 +20,8 @@
 
 use griff_core::{
     complement::{
-        analyze_part, arrange_complement, validate_pair, ComplementError, ComplementSpec,
-        RelationMode,
+        analyze_part, arrange_complement, measure_pair_axes, validate_pair, ComplementError,
+        ComplementSpec, RelationMode,
     },
     event::{
         NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature,
@@ -952,4 +952,102 @@ fn counter_melody_rejects_a_non_uniform_timeline() {
         arrange_complement(&score, 0, spec, GenerationSeed(1)),
         Err(ComplementError::NonUniformTimeline),
     ));
+}
+
+// ── measure_pair_axes: relation between two real tracks (schema v4) ───────────
+
+/// Appends a second track playing `atoms` to a one-bar part-A score.
+fn with_part_b(mut score: Score, atoms: Vec<AtomEvent>) -> Score {
+    score.tracks.push(Track {
+        name: Some("B".to_string()),
+        channel: 1,
+        voices: vec![Voice {
+            id: 0,
+            event_groups: atoms.into_iter().map(single_group).collect(),
+        }],
+        tuning: Tuning::standard_e(),
+    });
+    score
+}
+
+#[test]
+fn identical_parts_measure_unit_axes() {
+    let pitches = [60, 62, 64, 65];
+    let base = score_with_part_a(1, &pitches);
+    let b_atoms: Vec<AtomEvent> = pitches
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| quarter_note(u32::try_from(i).unwrap() * QUARTER, p))
+        .collect();
+    let score = with_part_b(base, b_atoms);
+
+    let axes = measure_pair_axes(&score, 0, 1).expect("measure");
+    assert_eq!(axes.rhythm_similarity, 1.0, "same onset set");
+    assert_eq!(axes.register_overlap, 1.0, "same band");
+    assert_eq!(axes.density_ratio, 1.0, "same density");
+    assert_eq!(axes.technique_overlap, 1.0, "both technique sets empty");
+}
+
+#[test]
+fn sparse_disjoint_pair_measures_exact_shares() {
+    // A: four quarters 60 62 64 65. B: two notes at onsets 0 and 960 (a
+    // subset of A's onsets — Jaccard 2/4), an octave-plus below (disjoint
+    // band), half A's density.
+    let base = score_with_part_a(1, &[60, 62, 64, 65]);
+    let score = with_part_b(
+        base,
+        vec![quarter_note(0, 40), quarter_note(2 * QUARTER, 41)],
+    );
+
+    let axes = measure_pair_axes(&score, 0, 1).expect("measure");
+    assert_eq!(axes.rhythm_similarity, 0.5);
+    assert_eq!(axes.register_overlap, 0.0);
+    assert_eq!(axes.density_ratio, 0.5);
+    assert_eq!(axes.technique_overlap, 1.0);
+}
+
+#[test]
+fn density_ratio_reads_the_second_part_relative_to_the_first() {
+    let base = score_with_part_a(1, &[60, 62, 64, 65]);
+    let score = with_part_b(
+        base,
+        vec![quarter_note(0, 40), quarter_note(2 * QUARTER, 41)],
+    );
+
+    let forward = measure_pair_axes(&score, 0, 1).expect("measure");
+    let swapped = measure_pair_axes(&score, 1, 0).expect("measure");
+    assert_eq!(forward.density_ratio, 0.5);
+    assert_eq!(swapped.density_ratio, 2.0, "orientation is (b relative to a)");
+    assert_eq!(
+        forward.rhythm_similarity, swapped.rhythm_similarity,
+        "Jaccard axes are symmetric"
+    );
+}
+
+#[test]
+fn measure_pair_rejects_bad_tracks() {
+    let base = score_with_part_a(1, &[60, 62, 64, 65]);
+    let score = with_part_b(base, Vec::new());
+
+    assert!(matches!(
+        measure_pair_axes(&score, 0, 5),
+        Err(ComplementError::TrackIndexOutOfRange),
+    ));
+    assert!(matches!(
+        measure_pair_axes(&score, 0, 1),
+        Err(ComplementError::PartHasNoNotes),
+    ));
+}
+
+#[test]
+fn measured_axes_are_deterministic_and_comparable() {
+    let base = score_with_part_a(1, &[60, 62, 64, 65]);
+    let score = with_part_b(
+        base,
+        vec![quarter_note(0, 40), quarter_note(2 * QUARTER, 41)],
+    );
+
+    let a = measure_pair_axes(&score, 0, 1).expect("measure");
+    let b = measure_pair_axes(&score, 0, 1).expect("measure");
+    assert_eq!(a, b, "AxisScores must be comparable for persistence");
 }

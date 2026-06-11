@@ -7,9 +7,11 @@
     clippy::missing_assert_message
 )]
 
+use griff_core::complement::AxisScores;
 use griff_core::corpus::{
-    BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, QualityFlag, ReviewerDecision, SourceFormat,
-    SourceRef, SwancoreTag, SCHEMA_VERSION,
+    BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef, PairRelation,
+    QualityFlag, ReviewerDecision, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
+    SCHEMA_VERSION,
 };
 use griff_core::gesture::GestureStats;
 use griff_core::structure::StructureMetrics;
@@ -69,18 +71,134 @@ fn minimal_chunk() -> ChunkMeta {
         reviewer: Some(ReviewerDecision::Accepted),
         structure: None,
         gesture: None,
+        style_cohort: None,
+        ensemble: None,
         created_at: "2026-05-20T00:00:00Z".to_owned(),
         updated_at: "2026-05-20T00:00:00Z".to_owned(),
     }
 }
 
+// ── schema v4: style cohort + ensemble groups (decisions 2026-06-11) ──────────
+
+#[test]
+fn schema_version_is_4() {
+    assert_eq!(
+        SCHEMA_VERSION, 4,
+        "the cohort + ensemble additions bump the corpus schema"
+    );
+}
+
+#[test]
+fn chunk_meta_with_cohort_and_ensemble_roundtrips() {
+    let mut meta = minimal_chunk();
+    meta.style_cohort = Some(StyleCohort::Adjacent);
+    meta.ensemble = Some(EnsembleRef {
+        group_id: "dgd_042".to_owned(),
+        part_index: 1,
+    });
+
+    let json = serde_json::to_string(&meta).expect("serialize");
+    assert!(
+        json.contains("\"adjacent\""),
+        "cohort serializes snake_case: {json}"
+    );
+    assert!(json.contains("\"ensemble\""), "v4 records carry the link");
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.style_cohort, Some(StyleCohort::Adjacent));
+    assert_eq!(
+        back.ensemble,
+        Some(EnsembleRef {
+            group_id: "dgd_042".to_owned(),
+            part_index: 1,
+        })
+    );
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(json, json2, "JSON round-trip must be byte-identical");
+}
+
+#[test]
+fn absent_v4_fields_serialize_without_keys() {
+    // A record predating v4 stays byte-identical: neither key is written.
+    let json = serde_json::to_string(&minimal_chunk()).expect("serialize");
+    assert!(
+        !json.contains("\"style_cohort\""),
+        "absent cohort must not introduce a key: {json}"
+    );
+    assert!(
+        !json.contains("\"ensemble\""),
+        "absent link must not introduce a key: {json}"
+    );
+}
+
+#[test]
+fn both_cohorts_roundtrip() {
+    for cohort in [StyleCohort::Core, StyleCohort::Adjacent] {
+        let json = serde_json::to_string(&cohort).expect("serialize");
+        let back: StyleCohort = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(cohort, back);
+    }
+}
+
+#[test]
+fn manifest_groups_roundtrip() {
+    // Exactly-representable axis values keep the round-trip byte-identical.
+    let group = EnsembleGroup {
+        id: "dgd_042".to_owned(),
+        members: vec![
+            ChunkId("dgd_042_p0".to_owned()),
+            ChunkId("dgd_042_p1".to_owned()),
+        ],
+        relations: vec![PairRelation {
+            parts: (0, 1),
+            axes: AxisScores {
+                rhythm_similarity: 0.5,
+                register_overlap: 0.0,
+                density_ratio: 0.5,
+                technique_overlap: 1.0,
+            },
+        }],
+    };
+    let manifest = CorpusManifest {
+        schema_version: SCHEMA_VERSION,
+        chunks: vec![minimal_chunk()],
+        groups: vec![group.clone()],
+    };
+
+    let json = serde_json::to_string(&manifest).expect("serialize");
+    let back: CorpusManifest = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.groups, vec![group]);
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(json, json2, "manifest round-trip must be byte-identical");
+}
+
+#[test]
+fn a_pre_v4_manifest_without_groups_loads_and_stays_lossless() {
+    // A v3 manifest (no `groups` key) parses with an empty group list and
+    // re-serializes without inventing the key.
+    let v3_manifest = CorpusManifest {
+        schema_version: 3,
+        chunks: vec![minimal_chunk()],
+        groups: Vec::new(),
+    };
+    let v3_json = serde_json::to_string(&v3_manifest).expect("serialize");
+    assert!(
+        !v3_json.contains("\"groups\""),
+        "empty groups must not introduce a key: {v3_json}"
+    );
+
+    let back: CorpusManifest = serde_json::from_str(&v3_json).expect("v3 manifest must parse");
+    assert!(back.groups.is_empty());
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(v3_json, json2);
+}
+
 // ── schema v3: gesture statistics (melodic-closure note §7.4) ─────────────────
 
 #[test]
-fn schema_version_is_3() {
-    assert_eq!(
-        SCHEMA_VERSION, 3,
-        "the burst/rest gesture-stats addition bumps the corpus schema"
+fn gesture_field_landed_in_v3() {
+    assert!(
+        SCHEMA_VERSION >= 3,
+        "the burst/rest gesture-stats addition arrived with schema v3"
     );
 }
 
@@ -186,6 +304,7 @@ fn corpus_manifest_json_roundtrip() {
     let manifest = CorpusManifest {
         schema_version: 1,
         chunks: vec![minimal_chunk()],
+        groups: Vec::new(),
     };
     let json = serde_json::to_string(&manifest).expect("serialize");
     let back: CorpusManifest = serde_json::from_str(&json).expect("deserialize");
@@ -198,6 +317,7 @@ fn empty_manifest_roundtrip() {
     let manifest = CorpusManifest {
         schema_version: 1,
         chunks: Vec::new(),
+        groups: Vec::new(),
     };
     let json = serde_json::to_string(&manifest).expect("serialize");
     let back: CorpusManifest = serde_json::from_str(&json).expect("deserialize");
@@ -380,6 +500,22 @@ fn arb_gesture() -> impl Strategy<Value = Option<GestureStats>> {
     prop_opt(stats)
 }
 
+fn arb_cohort() -> impl Strategy<Value = Option<StyleCohort>> {
+    prop_oneof![
+        Just(None),
+        Just(Some(StyleCohort::Core)),
+        Just(Some(StyleCohort::Adjacent)),
+    ]
+}
+
+fn arb_ensemble() -> impl Strategy<Value = Option<EnsembleRef>> {
+    let link = ("[a-z][a-z0-9_]{2,12}", 0_u32..=3).prop_map(|(group_id, part_index)| EnsembleRef {
+        group_id,
+        part_index,
+    });
+    prop_opt(link)
+}
+
 proptest! {
     #[test]
     fn prop_chunk_meta_json_roundtrip(
@@ -397,6 +533,8 @@ proptest! {
         reviewer in arb_reviewer(),
         structure in arb_structure(),
         gesture in arb_gesture(),
+        style_cohort in arb_cohort(),
+        ensemble in arb_ensemble(),
     ) {
         let meta = ChunkMeta {
             id: ChunkId(id),
@@ -417,6 +555,8 @@ proptest! {
             reviewer,
             structure,
             gesture,
+            style_cohort,
+            ensemble,
             created_at: "2026-05-20T00:00:00Z".to_owned(),
             updated_at: "2026-05-20T00:00:00Z".to_owned(),
         };
