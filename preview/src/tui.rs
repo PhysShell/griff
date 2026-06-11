@@ -156,6 +156,8 @@ impl App {
             KeyCode::Char('[') => Intent::PrevSection,
             KeyCode::Char(']') | KeyCode::Tab => Intent::NextSection,
             KeyCode::Char('i') => Intent::ToggleInspector,
+            KeyCode::PageDown => Intent::InspectorScrollDown,
+            KeyCode::PageUp => Intent::InspectorScrollUp,
             KeyCode::Char('0') | KeyCode::Home => Intent::Home,
             KeyCode::Char('a') => Intent::Approve,
             KeyCode::Char('x') => Intent::Reject,
@@ -240,6 +242,25 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        let lines = self.inspector_lines();
+        // The reducer steps the offset blindly; clamp to the real overflow so
+        // the dock never scrolls past its last line.
+        let overflow = u16::try_from(lines.len())
+            .unwrap_or(u16::MAX)
+            .saturating_sub(inner.height);
+        let scroll = self.vp.inspector_scroll.min(overflow);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: true })
+                .scroll((scroll, 0)),
+            inner,
+        );
+    }
+
+    /// Builds the inspector's content lines: track, section, curation,
+    /// transport (live state first — the PR #38 liveness ordering), then the
+    /// static structure and complexity blocks.
+    fn inspector_lines(&self) -> Vec<Line<'static>> {
         let dim = Style::new().fg(Color::Rgb(120, 120, 128));
         let accent = Style::new().fg(Color::Rgb(59, 157, 255));
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -320,7 +341,7 @@ impl App {
             lines.push(Line::raw("—"));
         }
 
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+        lines
     }
 
     // ── helpers ─────────────────────────────────────────────────────────

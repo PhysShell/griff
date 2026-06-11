@@ -468,6 +468,7 @@ mod tests {
             play_tick: 0,
             show_inspector: true,
             decision: None,
+            inspector_scroll: 0,
         };
         (view, analysis, vp)
     }

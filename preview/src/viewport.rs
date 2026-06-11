@@ -69,6 +69,9 @@ pub struct Viewport {
     pub show_inspector: bool,
     /// The pending curation decision, or `None` until the curator acts.
     pub decision: Option<CurationDecision>,
+    /// Inspector dock scroll offset in rows. Renderers clamp it to their own
+    /// content overflow at draw time; the reducer only steps and resets it.
+    pub inspector_scroll: u16,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -97,6 +100,10 @@ pub enum Intent {
     NextSection,
     /// Show/hide the inspector dock.
     ToggleInspector,
+    /// Scroll the inspector dock down one row.
+    InspectorScrollDown,
+    /// Scroll the inspector dock up one row.
+    InspectorScrollUp,
     /// Jump back to the start of the score.
     Home,
     /// Mark the viewed chunk approved; repeating it clears the decision.
@@ -132,6 +139,7 @@ impl Viewport {
             play_tick: ctx.tick_start,
             show_inspector: true,
             decision: None,
+            inspector_scroll: 0,
         }
     }
 
@@ -175,7 +183,17 @@ impl Viewport {
             }
             Intent::PrevSection => self.select_section(self.sel_section.saturating_sub(1), ctx),
             Intent::NextSection => self.select_section(self.sel_section.saturating_add(1), ctx),
-            Intent::ToggleInspector => self.show_inspector = !self.show_inspector,
+            Intent::ToggleInspector => {
+                self.show_inspector = !self.show_inspector;
+                // A hidden dock forgets its scroll; reopening starts at the top.
+                self.inspector_scroll = 0;
+            }
+            Intent::InspectorScrollDown => {
+                self.inspector_scroll = self.inspector_scroll.saturating_add(1);
+            }
+            Intent::InspectorScrollUp => {
+                self.inspector_scroll = self.inspector_scroll.saturating_sub(1);
+            }
             Intent::Home => {
                 self.scroll_tick = ctx.tick_start;
                 self.play_tick = ctx.tick_start;
