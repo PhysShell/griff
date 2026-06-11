@@ -872,3 +872,23 @@ Architectural decisions go to [`adr/`](adr/) instead.
   dock). Accepted: on short terminals the structure/complexity tail is
   what clips, and a scrollable or collapsible inspector remains the real
   fix (an S8 follow-up).
+
+- 2026-06-11 — In the context of persisting the S14 `ComplexityProfile`
+  (`core/src/corpus.rs`, schema v6), facing when the vector's shape is
+  settled enough to freeze into records, we decided for **persisting now
+  that a consumer exists**: the preview inspector renders the six axes and
+  exercised the shape, so `ChunkMeta` gains the optional `complexity`
+  field under the established compatibility pattern (default `None`, key
+  skipped when absent; pre-v6 records round-trip byte-identically) and
+  `griff curate` measures and stores it with structure and gesture — and
+  against folding the profile into `StructureMetrics` (it is a per-track
+  complexity fact, not a time-organisation fact; the structural axis
+  already shares its value with `structural_complexity` by construction),
+  and against a similarity-axes join in the same increment (the
+  similarity edge deliberately treats "measured" as an all-or-nothing
+  vocabulary per policy version; growing it to v3 with six more axes is
+  its own red→green step). Accepted: re-curation is needed before v6
+  fields appear on existing records (the established healing path), and
+  the v1 axis definitions are now load-bearing for stored data — future
+  refinements bump the schema again rather than silently re-meaning
+  stored values.

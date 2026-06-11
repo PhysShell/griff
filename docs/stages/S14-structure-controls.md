@@ -34,12 +34,14 @@ ADRs: ADR-0015
 > `detected_subbar_period_ticks` reports the strongest *verbatim*-tiling lag
 > shorter than one bar (exact per-beat cell autocorrelation on uniform
 > timelines; corpus schema v5).
-> The per-axis `ComplexityProfile` landed 2026-06-11 (measurement only):
+> The per-axis `ComplexityProfile` landed 2026-06-11 (and persists since
+> corpus schema v6, measured by `griff curate` alongside structure and
+> gesture; the preview inspector shows it as the first consumer):
 > `measure_complexity` derives the rhythmic / pitch / technical / harmonic /
 > playability / structural vector — normalised interval variety, the marked /
 > spanned note share, `1 − scale_fit` of the S13 key estimate, fret travel on
-> the ADR-0019 optimal path, and the distinct-bar-signature ratio. Corpus
-> persistence and control-side complexity targets are later increments.
+> the ADR-0019 optimal path, and the distinct-bar-signature ratio.
+> Control-side complexity targets are a later increment.
 > Remaining: a P2 `structured_request` fuzz target (deferred: no nightly
 > toolchain in the landing environment), S7 node attributes (with the graph
 > layer), then Phase 4 below.
@@ -74,10 +76,11 @@ exact-pitch baseline is acceptable for the first cut.
       uniform timelines and reports the strongest verbatim-tiling lag shorter
       than one bar; persists with the record (corpus schema v5). Verbatim-only
       by design at this granularity (decisions.log 2026-06-11).
-- [x] **The per-axis `ComplexityProfile`.** *Measurement landed 2026-06-11.*
-      `measure_complexity` returns the six-axis vector as untuned v1 facts in
-      `[0, 1]` (decisions.log 2026-06-11); persistence and control-side
-      targets stay deferred.
+- [x] **The per-axis `ComplexityProfile`.** *Measurement and persistence
+      landed 2026-06-11.* `measure_complexity` returns the six-axis vector as
+      untuned v1 facts in `[0, 1]` (decisions.log 2026-06-11); it persists as
+      `ChunkMeta.complexity` (corpus schema v6) and shows in the preview
+      inspector. Control-side targets stay deferred.
 
 ## Goal
 
