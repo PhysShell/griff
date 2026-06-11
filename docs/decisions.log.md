@@ -545,3 +545,65 @@ Architectural decisions go to [`adr/`](adr/) instead.
   (denominator-aware beat grids deferred), the modal class is a crude
   root proxy, vacuous shares read as predictable (`1.0`) and absent rests
   as zero length, and a chord participates only through its top note.
+
+- 2026-06-11 — In the context of joining the persisted gesture statistics
+  to the chunk-similarity edge (`core/src/similarity.rs`, the follow-up
+  the gesture-v1 entry above explicitly deferred), facing which gesture
+  facts may become similarity axes and what an unmeasured side now means,
+  we decided for five new agreement axes over the *intensive*
+  distributions only — `burst_length_similarity` and
+  `rest_length_similarity` as min/max ratios (the period-axis convention
+  on a continuous fact: two restless chunks agree at 1.0, wall-to-wall
+  against gestured writing reads 0.0), `rest_grid_similarity`,
+  `modal_landing_similarity`, and `final_lengthening_similarity` as
+  `1 − |Δ|` on the unit shares — appended after the five v1 axes under a
+  uniform `similarity` v2 policy, with *measured* tightened to structure
+  **and** gesture (an unmeasured query stays the typed `QueryUnmeasured`;
+  v1/v2 candidates are skipped until re-curated, which `griff curate` now
+  heals in one pass) — and against axes over the extensive facts
+  (note / burst / rest counts, max burst scale with chunk length; a
+  length echo would shadow the style facts, the same double-weighting
+  argument that excluded `variation_score` in v1), against partial axis
+  sets for gesture-less pairs (aggregates over different axis counts are
+  not comparable under one policy, and an absent fact is not a
+  zero-similarity fact), and against keeping a `similarity_weights_v1`
+  constructor alongside v2 (superseded weights are data in git history,
+  not API surface; nothing persists rankings yet), to achieve a similarity
+  edge that hears burst-and-rest writing, accepting that re-tightening
+  "measured" temporarily shrinks the edge until v2 records are re-curated
+  and that the uniform v2 weights await S9 tuning.
+
+- 2026-06-11 — In the context of making the gesture statistics actual S6
+  constraint inputs (`core/src/gesture.rs`, the destination the
+  melodic-closure note §3.5 and the gesture-v1 entry assigned them),
+  facing how a target distribution should constrain a generator whose
+  strategies write wall-to-wall, we decided for a **constraint compiler
+  over the S6 generator** (the ComplementArranger / StructureControl
+  pattern, ADR-0012/0015), not a request-struct change: `GestureControl`
+  (`burst_notes`, `rest_quarters`) is the *ask* counterpart of the
+  measured `GestureStats`, derivable from a corpus chunk via
+  `from_stats` (burst mean rounded with a floor of 1; rest mean clamped
+  to the one-quarter gesture floor — a restless chunk derives the
+  minimal gesture, callers wanting wall-to-wall skip the compiler);
+  `generate_gestured` runs the plain S6 pass, then carves
+  deterministically — after every `burst_notes` kept notes it drops
+  following notes until at least `rest_quarters` of line silence opens —
+  and returns the score with its re-measured `GestureStats` as
+  provenance (ask vs is); invalid controls are the typed
+  `InvalidControl`; a `gesture_request` fuzz target (P2, ADR-0010) pins
+  no-panic, the untouched master timeline, carve-only-removes (every
+  survivor is an unmoved plain-S6 note), provenance-equals-remeasure,
+  and seed determinism — and against extending `RuleGenerationRequest`
+  with an optional gesture field (every construction site incl. the fuzz
+  crate breaks for a concern that composes cleanly on top; the sibling
+  compilers already set the layering), against carving inside the
+  strategy loop (strategies stay gesture-blind; the carve is one
+  inspectable pass), against an RNG in the carve (the only randomness
+  stays the seeded S6 PRNG), and against padding the trailing rest (the
+  carve does not invent material; a short final burst is honest output),
+  accepting that carved rest lengths quantise to the dropped notes'
+  durations (rests can overshoot the target, and a trailing carve can
+  undershoot it), that grid alignment of rests follows the strategy's
+  rhythm rather than being enforced, and that the carve assumes the S6
+  output shape (back-to-back single-note groups, which `generate`
+  guarantees).

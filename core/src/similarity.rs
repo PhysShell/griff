@@ -1,10 +1,12 @@
-//! Chunk similarity v1 — the first S7 edge, over persisted corpus axes.
+//! Chunk similarity v2 — the first S7 edge, over persisted corpus axes.
 //!
 //! Computes the *similarity* edge of the graph layer (S7, glossary §9) between
 //! corpus chunks, using only facts already persisted in `ChunkMeta`: the
-//! [`StructureMetrics`] that S14 Phase 3 wrote into the schema (v2) and the
-//! swancore tag set. No note content is read — the manifest carries none — so
-//! retrieval works straight off the corpus file.
+//! [`StructureMetrics`] that S14 Phase 3 wrote into the schema (v2), the
+//! swancore tag set, and the burst/rest
+//! [`GestureStats`](crate::gesture::GestureStats) of schema v3. No note
+//! content is read — the manifest carries none — so retrieval works straight
+//! off the corpus file.
 //!
 //! Shape per the 2026-06-10 `AudioMuse` prior-art decision (idea (a)): a
 //! brute-force pass over *named* symbolic feature axes with a per-axis
@@ -23,13 +25,25 @@
 //! - `tag_similarity` — Jaccard over the [`SwancoreTag`] sets; two untagged
 //!   chunks agree (the empty-set convention shared with
 //!   `structure::set_jaccard`).
+//! - `burst_length_similarity` / `rest_length_similarity` — min/max ratio of
+//!   the mean burst length (line notes) and mean gesture-rest length
+//!   (quarters); two restless chunks agree (`1.0`), wall-to-wall against
+//!   gestured writing does not (`0.0`, the period-axis convention).
+//! - `rest_grid_similarity` / `modal_landing_similarity` /
+//!   `final_lengthening_similarity` — `1 − |Δ|` on the corresponding
+//!   [`GestureStats`](crate::gesture::GestureStats) unit-range shares. The
+//!   *extensive* gesture facts (note / burst / rest counts, max burst) are
+//!   deliberately not axes: they scale with chunk length, and a length echo
+//!   would shadow the style facts the intensive distributions carry.
 //!
 //! [`find_similar_chunks`] ranks candidates against a query under a versioned
 //! [`WeightPolicy`] via the shared [`Scored`] envelope, so every neighbour
 //! carries its per-axis rationale and the ranking is reproducible relative to
-//! the policy version (ADR-0017 §7). Unmeasured records (schema-v1, no
-//! `structure` key) cannot sit on this edge: an unmeasured *query* is an
-//! error, unmeasured *candidates* are skipped until re-curated. Pure and
+//! the policy version (ADR-0017 §7). Unmeasured records cannot sit on this
+//! edge — *measured* means structure **and** gesture (an absent fact is not a
+//! zero-similarity fact, and a pair scored on fewer axes is not comparable
+//! under one policy): an unmeasured *query* is an error, unmeasured
+//! *candidates* (schema v1 or v2) are skipped until re-curated. Pure and
 //! deterministic (SPEC §6).
 
 use std::collections::HashSet;
@@ -46,33 +60,49 @@ const AXIS_REPEATABILITY: &str = "repeatability_similarity";
 const AXIS_LOOPABILITY: &str = "loopability_similarity";
 const AXIS_COMPLEXITY: &str = "complexity_similarity";
 const AXIS_TAGS: &str = "tag_similarity";
+const AXIS_BURST_LENGTH: &str = "burst_length_similarity";
+const AXIS_REST_LENGTH: &str = "rest_length_similarity";
+const AXIS_REST_GRID: &str = "rest_grid_similarity";
+const AXIS_MODAL_LANDING: &str = "modal_landing_similarity";
+const AXIS_FINAL_LENGTHENING: &str = "final_lengthening_similarity";
 
-/// The similarity axes, in their canonical order (ADR-0017).
-pub const SIMILARITY_AXIS_LABELS: [&str; 5] = [
+/// The similarity axes, in their canonical order (ADR-0017): the five
+/// structure/tag axes of v1, then the five gesture axes of v2 (append-only).
+pub const SIMILARITY_AXIS_LABELS: [&str; 10] = [
     AXIS_PERIOD,
     AXIS_REPEATABILITY,
     AXIS_LOOPABILITY,
     AXIS_COMPLEXITY,
     AXIS_TAGS,
+    AXIS_BURST_LENGTH,
+    AXIS_REST_LENGTH,
+    AXIS_REST_GRID,
+    AXIS_MODAL_LANDING,
+    AXIS_FINAL_LENGTHENING,
 ];
 
 /// Errors chunk-similarity retrieval can emit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimilarityError {
-    /// The query chunk carries no measured structure (a schema-v1 record);
-    /// re-curate it before asking for its neighbours.
+    /// The query chunk carries no measured structure or no measured gesture
+    /// (a schema-v1 or v2 record); re-curate it before asking for its
+    /// neighbours.
     QueryUnmeasured,
 }
 
 /// The similarity facts between two measured chunks, as labelled axes in
 /// `[0, 1]` (ADR-0017) — higher is more alike; symmetric in its arguments.
 ///
-/// Returns `None` when either side is unmeasured (no persisted
-/// [`StructureMetrics`]): an absent fact is not a zero-similarity fact.
+/// Returns `None` when either side is unmeasured — missing persisted
+/// [`StructureMetrics`] *or* [`GestureStats`](crate::gesture::GestureStats):
+/// an absent fact is not a zero-similarity fact, and a pair scored on fewer
+/// axes would not be comparable under one policy.
 #[must_use]
 pub fn similarity_axes(a: &ChunkMeta, b: &ChunkMeta) -> Option<Axes> {
     let ma = a.structure.as_ref()?;
     let mb = b.structure.as_ref()?;
+    let ga = a.gesture.as_ref()?;
+    let gb = b.gesture.as_ref()?;
 
     Some(Axes::new(vec![
         Axis {
@@ -95,15 +125,37 @@ pub fn similarity_axes(a: &ChunkMeta, b: &ChunkMeta) -> Option<Axes> {
             label: AXIS_TAGS,
             value: tag_similarity(&a.tags, &b.tags),
         },
+        Axis {
+            label: AXIS_BURST_LENGTH,
+            value: ratio_similarity(ga.mean_burst_notes, gb.mean_burst_notes),
+        },
+        Axis {
+            label: AXIS_REST_LENGTH,
+            value: ratio_similarity(ga.mean_rest_quarters, gb.mean_rest_quarters),
+        },
+        Axis {
+            label: AXIS_REST_GRID,
+            value: scalar_similarity(ga.rest_on_grid_share, gb.rest_on_grid_share),
+        },
+        Axis {
+            label: AXIS_MODAL_LANDING,
+            value: scalar_similarity(ga.modal_landing_share, gb.modal_landing_share),
+        },
+        Axis {
+            label: AXIS_FINAL_LENGTHENING,
+            value: scalar_similarity(ga.mean_final_lengthening, gb.mean_final_lengthening),
+        },
     ]))
 }
 
-/// The baseline similarity weight policy (`similarity` v1): uniform over the
-/// five axes. Untuned by design — weights are data the feedback layer (S9)
-/// learns (ADR-0017 §3).
+/// The current similarity weight policy (`similarity` v2): uniform over the
+/// ten axes — v1's five structure/tag axes plus the five gesture axes.
+///
+/// Untuned by design — weights are data the feedback layer (S9) learns
+/// (ADR-0017 §3); the superseded v1 weights live in git history, not API.
 #[must_use]
-pub fn similarity_weights_v1() -> WeightPolicy {
-    WeightPolicy::uniform("similarity", 1, &SIMILARITY_AXIS_LABELS)
+pub fn similarity_weights_v2() -> WeightPolicy {
+    WeightPolicy::uniform("similarity", 2, &SIMILARITY_AXIS_LABELS)
 }
 
 /// Ranks `candidates` by similarity to `query` under `policy`, most similar
@@ -119,7 +171,7 @@ pub fn find_similar_chunks(
     candidates: &[ChunkMeta],
     policy: &WeightPolicy,
 ) -> Result<Vec<Scored<ChunkId>>, SimilarityError> {
-    if query.structure.is_none() {
+    if query.structure.is_none() || query.gesture.is_none() {
         return Err(SimilarityError::QueryUnmeasured);
     }
 
@@ -166,6 +218,20 @@ fn period_similarity(a: &StructureMetrics, b: &StructureMetrics) -> f64 {
 /// `1 − |a − b|` over unit-range scalars, clamped against malformed records.
 fn scalar_similarity(a: f64, b: f64) -> f64 {
     1.0 - (a - b).abs().clamp(0.0, 1.0)
+}
+
+/// Min/max ratio of two non-negative scalars (the [`period_similarity`]
+/// convention on a continuous fact): two zeros agree (`1.0` — e.g. two
+/// restless chunks), a zero against a non-zero is fully dissimilar (`0.0`),
+/// clamped against malformed records.
+fn ratio_similarity(a: f64, b: f64) -> f64 {
+    let lo = a.min(b);
+    let hi = a.max(b);
+    if hi <= 0.0 {
+        1.0
+    } else {
+        (lo / hi).clamp(0.0, 1.0)
+    }
 }
 
 /// Jaccard similarity of two tag sets; duplicates count once, and two
