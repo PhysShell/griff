@@ -482,6 +482,21 @@ mod tests {
     // and a role that do not exist yet, so the crate fails to compile until
     // the green step.
     #[test]
+    fn a_boundary_at_the_scroll_origin_still_renders() {
+        // Codex P2 (PR #39): a boundary scrolled exactly to the viewport's
+        // left edge maps to the leftmost plot column and must render there;
+        // only ticks *before* the scroll origin are invisible.
+        let (view, mut analysis, mut vp) = fixture();
+        analysis.boundaries = vec![480];
+        vp.scroll_tick = 480;
+        let scene = resolve(&view, &analysis, &vp, GridSize { cols: 40, rows: 14 });
+        let has_mark = (0..14).any(|r| {
+            scene.plane_cell(r, GUTTER).map(|c| c.role) == Some(CellRole::BoundaryMark)
+        });
+        assert!(has_mark, "the left-edge boundary column carries the mark");
+    }
+
+    #[test]
     fn boundary_marks_overlay_the_plane() {
         let (view, mut analysis, vp) = fixture();
         analysis.boundaries = vec![480];
