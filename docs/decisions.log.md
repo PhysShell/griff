@@ -987,3 +987,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   origin divider there is deliberate: the band already names the section
   at the left edge). Accepted: a boundary at tick 0 of an unscrolled view
   now renders a left-edge marker (harmless, and consistent).
+
+- 2026-06-11 — In the context of the scrollable-inspector follow-up
+  (`preview/src/viewport.rs` / `tui.rs`, deferred by the PR #38 liveness
+  decision), facing where the scroll bound should live when the shared
+  reducer cannot know any renderer's content height, we decided for **a
+  blind saturating offset in the viewport core clamped by each renderer
+  at draw time** (`inspector_scroll` steps freely above zero; the TUI
+  caps it at `lines − inner.height` when drawing), with hiding the dock
+  resetting the offset — and against teaching `ViewContext` a content
+  height (the dock's line count is renderer layout, not shared
+  interaction state), and against unclamped Paragraph scrolling (a dock
+  scrolled past its last line looks empty and broken). Accepted: the
+  stored offset can exceed the real overflow until the next draw; the
+  clamp makes that harmless and invisible.
