@@ -554,33 +554,30 @@ fn interval_variety(line: &[u8]) -> f64 {
 }
 
 /// Share of the track's notes that carry a per-note mark or whose onset sits
-/// inside a technique span.
+/// inside a technique span *of the same voice* — a span lives in the voice it
+/// was recorded in, so a simultaneous plain note in another voice is not
+/// covered by it (Codex P2, PR #38).
 #[allow(clippy::cast_precision_loss)]
 fn technique_share(track: &Track) -> f64 {
-    let spans: Vec<&TechniqueSpan> = track
-        .voices
-        .iter()
-        .flat_map(|v| &v.event_groups)
-        .flat_map(|g| &g.technique_spans)
-        .collect();
-
     let mut total = 0_usize;
     let mut technical = 0_usize;
-    for atom in track
-        .voices
-        .iter()
-        .flat_map(|v| &v.event_groups)
-        .flat_map(|g| &g.atoms)
-    {
-        if let AtomEvent::Note(n) = atom {
-            total = total.saturating_add(1);
-            let onset = n.absolute_start.0;
-            let covered = !n.marks.is_empty()
-                || spans
-                    .iter()
-                    .any(|s| onset >= s.tick_range.start.0 && onset < s.tick_range.end.0);
-            if covered {
-                technical = technical.saturating_add(1);
+    for voice in &track.voices {
+        let spans: Vec<&TechniqueSpan> = voice
+            .event_groups
+            .iter()
+            .flat_map(|g| &g.technique_spans)
+            .collect();
+        for atom in voice.event_groups.iter().flat_map(|g| &g.atoms) {
+            if let AtomEvent::Note(n) = atom {
+                total = total.saturating_add(1);
+                let onset = n.absolute_start.0;
+                let covered = !n.marks.is_empty()
+                    || spans
+                        .iter()
+                        .any(|s| onset >= s.tick_range.start.0 && onset < s.tick_range.end.0);
+                if covered {
+                    technical = technical.saturating_add(1);
+                }
             }
         }
     }
