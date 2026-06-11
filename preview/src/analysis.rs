@@ -191,6 +191,49 @@ mod tests {
         }
     }
 
+    // TDD red phase: `Analysis` grows the focus track's `ComplexityProfile`
+    // (S14, the vector's first consumer). References a field that does not
+    // exist yet, so the crate fails to compile until the green step.
+
+    #[test]
+    fn analysis_measures_complexity_of_the_focus_track() {
+        let score = score_from(vec![vec![
+            (40, 100),
+            (43, 100),
+            (45, 100),
+            (47, 100),
+            (40, 100),
+        ]]);
+        let a = analyze(&score);
+        let c = a
+            .complexity
+            .expect("a non-empty score has a complexity profile");
+        let m = a.metrics.expect("a non-empty score has metrics");
+        assert_eq!(
+            c.structural, m.structural_complexity,
+            "one structural fact, measured once"
+        );
+        for v in [
+            c.rhythmic,
+            c.pitch,
+            c.technical,
+            c.harmonic,
+            c.playability,
+            c.structural,
+        ] {
+            assert!((0.0..=1.0).contains(&v), "axis out of range: {v}");
+        }
+    }
+
+    #[test]
+    fn empty_score_has_no_complexity() {
+        let a = analyze(&score_from(vec![]));
+        assert!(
+            a.complexity.is_none(),
+            "an empty score yields no complexity profile"
+        );
+    }
+
     #[test]
     fn merges_consecutive_equal_classes() {
         // Two loud riff bars (then one clean bar) → two sections.
