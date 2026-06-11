@@ -235,11 +235,10 @@ fn resolve_plane(
 
     // S4 phrase-boundary markers, over blank cells or gridlines. Placed
     // after the section marks so a section keeps precedence when both land
-    // on one column.
+    // on one column. No scroll-origin guard: a boundary at the viewport's
+    // left edge is visible, and `visible_col` already drops earlier ticks
+    // (Codex P2, PR #39).
     for &tick in &analysis.boundaries {
-        if tick <= vp.scroll_tick {
-            continue;
-        }
         if let Some(col) = visible_col(vp, plot_w, tick) {
             paint_column(plane, cols, rows, col, |c| {
                 if c.glyph == ' ' || c.glyph == '│' {
@@ -490,9 +489,8 @@ mod tests {
         analysis.boundaries = vec![480];
         vp.scroll_tick = 480;
         let scene = resolve(&view, &analysis, &vp, GridSize { cols: 40, rows: 14 });
-        let has_mark = (0..14).any(|r| {
-            scene.plane_cell(r, GUTTER).map(|c| c.role) == Some(CellRole::BoundaryMark)
-        });
+        let has_mark = (0..14)
+            .any(|r| scene.plane_cell(r, GUTTER).map(|c| c.role) == Some(CellRole::BoundaryMark));
         assert!(has_mark, "the left-edge boundary column carries the mark");
     }
 
