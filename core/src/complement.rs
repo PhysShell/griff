@@ -414,6 +414,9 @@ pub fn arrange_complement(
         RelationMode::RegisterContrast => {
             arrange_register_contrast(score, track_index, &profile, spec, seed)
         }
+        RelationMode::SupportLayer => {
+            arrange_support_layer(score, track_index, &profile, spec, seed)
+        }
         RelationMode::OctaveDouble => {
             arrange_octave_double(score, track_index, &profile, spec, seed)
         }
@@ -552,6 +555,64 @@ fn arrange_register_contrast(
     ))
 }
 
+/// `support_layer`: a sparser pedal layer beneath A — one note per non-empty
+/// master bar, placed at A's first onset in that bar with that note's duration
+/// and velocity, pitched at A's lowest pitch shifted by
+/// `spec.register_offset` (a root pedal; typically an octave down).
+///
+/// Bars where A is silent get no pedal, so `density(B) < density(A)` whenever
+/// A plays more than one note in any bar. Purely analytic: the seed is
+/// provenance only.
+fn arrange_support_layer(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let pedal = shift_pitch(register.lowest.0, spec.register_offset);
+    let a_track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+    let a_notes = voice_notes(a_track);
+
+    let event_groups: Vec<EventGroup> = score
+        .master_bars
+        .iter()
+        .filter_map(|mb| {
+            let first = a_notes
+                .iter()
+                .find(|n| n.onset >= mb.tick_range.start.0 && n.onset < mb.tick_range.end.0)?;
+            // `first.velocity` originates from a valid AtomNote, so it is in range.
+            Some(EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(AtomNote {
+                    absolute_start: Ticks(first.onset),
+                    duration: first.duration,
+                    pitch: Pitch::new(pedal).unwrap_or(register.lowest),
+                    velocity: Velocity::new(first.velocity).unwrap_or(Velocity(0)),
+                    marks: NoteMarks::empty(),
+                    position: None,
+                })],
+                technique_spans: Vec::new(),
+            })
+        })
+        .collect();
+
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(pedal).unwrap_or(register.lowest),
+        Pitch::new(pedal).unwrap_or(register.lowest),
+    ))
+}
+
 /// A's register band shifted by `offset` semitones, MIDI-clamped and ordered.
 fn shifted_band(register: PitchRange, offset: i8) -> (u8, u8) {
     let lo = shift_pitch(register.lowest.0, offset);
@@ -633,7 +694,7 @@ fn finish_candidate(
     combined.tracks.push(b_track);
     let part_b_index = combined.tracks.len().saturating_sub(1);
 
-    let axis_scores = score_axes(profile, &combined, part_b_index, b_lo, b_hi);
+    let axis_scores = score_axes(profile, &combined, track_index, part_b_index, b_lo, b_hi);
 
     ComplementCandidate {
         score: combined,
@@ -706,9 +767,11 @@ fn pitch_index(seed: u64, index: usize, modulo: usize) -> usize {
 }
 
 /// Computes per-axis provenance scores for the produced pair.
+#[allow(clippy::too_many_arguments)] // a private provenance seam shared by every mode
 fn score_axes(
     profile: &PartProfile,
     combined: &Score,
+    a_index: usize,
     part_b_index: usize,
     b_lo: Pitch,
     b_hi: Pitch,
@@ -736,9 +799,19 @@ fn score_axes(
         .unwrap_or_default();
     let technique_overlap = jaccard(&profile.techniques, &b_techniques);
 
+    // Onset-set Jaccard: exactly 1.0 for the grid-locked modes (B reuses A's
+    // onsets), the shared fraction for sparse / gap-filling modes.
+    let a_onsets: BTreeSet<u32> = combined
+        .tracks
+        .get(a_index)
+        .map_or_else(BTreeSet::new, |t| {
+            voice_notes(t).iter().map(|n| n.onset).collect()
+        });
+    let b_onsets: BTreeSet<u32> = b_notes.iter().map(|n| n.onset).collect();
+    let rhythm_similarity = jaccard(&a_onsets, &b_onsets);
+
     AxisScores {
-        // rhythm_lock reproduces A's onset grid exactly.
-        rhythm_similarity: 1.0,
+        rhythm_similarity,
         register_overlap,
         density_ratio,
         technique_overlap,
@@ -764,9 +837,9 @@ fn band_overlap(a_lo: u8, a_hi: u8, b_lo: u8, b_hi: u8) -> f64 {
     f64::from(overlap) / f64::from(narrower)
 }
 
-/// Jaccard overlap of two technique sets; `1.0` when both are empty.
+/// Jaccard overlap of two sets; `1.0` when both are empty.
 #[allow(clippy::cast_precision_loss)]
-fn jaccard(a: &BTreeSet<&'static str>, b: &BTreeSet<&'static str>) -> f64 {
+fn jaccard<T: Ord>(a: &BTreeSet<T>, b: &BTreeSet<T>) -> f64 {
     let inter = a.intersection(b).count();
     let union = a.union(b).count();
     if union == 0 {
