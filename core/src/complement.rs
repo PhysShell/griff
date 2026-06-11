@@ -226,6 +226,9 @@ pub enum ComplementError {
     PartHasNoNotes,
     /// The relation mode is named but not yet implemented in this slice.
     ModeNotImplemented(RelationMode),
+    /// The spec is incompatible with the mode's contract (e.g. `octave_double`
+    /// with a `register_offset` that is not a non-zero whole octave).
+    InvalidSpec(RelationMode),
     /// The underlying S6 generator rejected the derived request.
     Generation(GenerationError),
 }
@@ -408,8 +411,64 @@ pub fn arrange_complement(
 
     match spec.mode {
         RelationMode::RhythmLock => arrange_rhythm_lock(score, track_index, &profile, spec, seed),
+        RelationMode::OctaveDouble => {
+            arrange_octave_double(score, track_index, &profile, spec, seed)
+        }
         other => Err(ComplementError::ModeNotImplemented(other)),
     }
+}
+
+/// `octave_double`: reproduce A's contour a whole octave (or several) away —
+/// every B note copies A's onset, duration, velocity, and marks, with the
+/// pitch shifted by `spec.register_offset` and clamped to the MIDI range.
+///
+/// The offset must be a non-zero whole-octave shift; anything else is an
+/// [`ComplementError::InvalidSpec`] — a third-doubling is a different relation,
+/// not a sloppy octave. Purely analytic: the seed is recorded as provenance
+/// but draws nothing.
+fn arrange_octave_double(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    if spec.register_offset == 0 || spec.register_offset.checked_rem(12) != Some(0) {
+        return Err(ComplementError::InvalidSpec(RelationMode::OctaveDouble));
+    }
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let a_track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+
+    let event_groups: Vec<EventGroup> = voice_atom_notes(a_track)
+        .iter()
+        .map(|n| {
+            let mut out = *n;
+            out.pitch = Pitch(shift_pitch(n.pitch.0, spec.register_offset));
+            // A shifted pitch invalidates any carried fretboard position.
+            out.position = None;
+            EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(out)],
+                technique_spans: Vec::new(),
+            }
+        })
+        .collect();
+
+    let b_lo = shift_pitch(register.lowest.0, spec.register_offset);
+    let b_hi = shift_pitch(register.highest.0, spec.register_offset);
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch(b_lo.min(b_hi)),
+        Pitch(b_lo.max(b_hi)),
+    ))
 }
 
 /// `rhythm_lock`: place B on A's *actual* per-bar onset grid — every B note
@@ -467,12 +526,34 @@ fn arrange_rhythm_lock(
         })
         .collect();
 
-    let b_voice = Voice {
-        id: 0,
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
         event_groups,
-    };
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
+    ))
+}
 
-    let a_channel = a_track.channel;
+/// Assembles the produced part B into a [`ComplementCandidate`]: appends the
+/// event groups as a new track on A's master bars (channel after A's, standard
+/// tuning — positions are not derived yet) and computes the axis provenance
+/// against the `[b_lo, b_hi]` register band the mode targeted.
+#[allow(clippy::too_many_arguments)] // a private assembly seam shared by every mode
+fn finish_candidate(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    mode: RelationMode,
+    seed: GenerationSeed,
+    event_groups: Vec<EventGroup>,
+    b_lo: Pitch,
+    b_hi: Pitch,
+) -> ComplementCandidate {
+    let a_channel = score.tracks.get(track_index).map_or(0, |t| t.channel);
     let b_channel = if a_channel >= 15 {
         0
     } else {
@@ -480,10 +561,12 @@ fn arrange_rhythm_lock(
     };
 
     let b_track = Track {
-        name: Some(format!("Complement ({})", spec.mode.label())),
+        name: Some(format!("Complement ({})", mode.label())),
         channel: b_channel,
-        voices: vec![b_voice],
-        // Part B inherits the standard tuning; positions are not derived yet.
+        voices: vec![Voice {
+            id: 0,
+            event_groups,
+        }],
         tuning: Tuning::standard_e(),
     };
 
@@ -491,23 +574,34 @@ fn arrange_rhythm_lock(
     combined.tracks.push(b_track);
     let part_b_index = combined.tracks.len().saturating_sub(1);
 
-    let band_lo_pitch = Pitch::new(band_lo).unwrap_or(register.lowest);
-    let band_hi_pitch = Pitch::new(band_hi).unwrap_or(register.highest);
-    let axis_scores = score_axes(
-        profile,
-        &combined,
-        part_b_index,
-        band_lo_pitch,
-        band_hi_pitch,
-    );
+    let axis_scores = score_axes(profile, &combined, part_b_index, b_lo, b_hi);
 
-    Ok(ComplementCandidate {
+    ComplementCandidate {
         score: combined,
         part_b_index,
-        mode: spec.mode,
+        mode,
         seed,
         axis_scores,
-    })
+    }
+}
+
+/// Collects every note atom of a track's primary voice as full [`AtomNote`]s
+/// (marks included), sorted by onset — for modes that copy A's notes verbatim.
+fn voice_atom_notes(track: &Track) -> Vec<AtomNote> {
+    let Some(voice) = track.voices.first() else {
+        return Vec::new();
+    };
+    let mut notes: Vec<AtomNote> = voice
+        .event_groups
+        .iter()
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some(*n),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+    notes.sort_by_key(|n| n.absolute_start.0);
+    notes
 }
 
 /// A's distinct pitch classes (semitone offsets from A's lowest pitch), sorted
