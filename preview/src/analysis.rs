@@ -3,7 +3,9 @@
 //! Named sections (from [`griff_core::classify`]) and structure metrics (from
 //! [`griff_core::structure`]). Pure and headless-testable.
 
+use griff_core::boundary::{detect_phrase_boundaries, BoundaryConfig};
 use griff_core::classify::{bar_features_across_voices, classify_bar, BarClass};
+use griff_core::event::Ticks;
 use griff_core::score::{AtomEvent, Score, Voice};
 use griff_core::structure::{
     measure_complexity, measure_structure, ComplexityProfile, StructureMetrics,
@@ -48,6 +50,8 @@ pub struct Analysis {
     pub metrics: Option<StructureMetrics>,
     /// The focus track's per-axis complexity (S14); `None` for an empty score.
     pub complexity: Option<ComplexityProfile>,
+    /// Start ticks of the focus track's S4 phrase boundaries, in order.
+    pub boundaries: Vec<u32>,
 }
 
 /// Derives the [`Analysis`] for a score: pick the busiest track, classify each
@@ -58,12 +62,33 @@ pub fn analyze(score: &Score) -> Analysis {
     let sections = sections_for(score, focus_track);
     let metrics = measure_structure(score, focus_track).ok();
     let complexity = measure_complexity(score, focus_track).ok();
+    let boundaries = phrase_boundary_ticks(score, focus_track);
     Analysis {
         focus_track,
         sections,
         metrics,
         complexity,
+        boundaries,
     }
+}
+
+/// The focus track's phrase-boundary start ticks under the PPQN-scaled
+/// default config (the S4 defaults assume PPQN 960; the `closure.rs` referee
+/// precedent): snap grid 1/16, minimum boundary gap two quarter notes.
+fn phrase_boundary_ticks(score: &Score, track_index: usize) -> Vec<u32> {
+    let ppqn = u32::from(score.ticks_per_quarter);
+    // Reason: ppqn / 4 and ppqn * 2 on a u32 PPQN cannot overflow or
+    // divide by zero.
+    #[allow(clippy::arithmetic_side_effects)]
+    let config = BoundaryConfig {
+        quantize_ticks: Ticks(ppqn / 4),
+        min_gap: Ticks(ppqn.saturating_mul(2)),
+        ..BoundaryConfig::default()
+    };
+    detect_phrase_boundaries(score, track_index, &config)
+        .iter()
+        .map(|b| b.start_tick.0)
+        .collect()
 }
 
 /// Counts note atoms across all voices of a track.
