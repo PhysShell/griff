@@ -18,6 +18,18 @@
 //
 // These reference `similarity_weights_v2` and the gesture axes, which do
 // not exist yet, so the suite fails until the green step.
+//
+// v3 (the complexity join, schema v6): the five per-axis complexity facts
+// that are not already on the edge — rhythmic / pitch / technical /
+// harmonic / playability — become five more `1 − |Δ|` agreement axes under
+// a uniform `similarity` v3 policy. `ComplexityProfile.structural` is
+// deliberately not an axis: it is the same fact as
+// `StructureMetrics.structural_complexity` (already `complexity_similarity`),
+// and a duplicate axis would silently double-weight it — the
+// `variation_score` rule. "Measured" now also requires the persisted
+// profile; v≤5 records re-curate to heal. References
+// `similarity_weights_v3` and the new axes, so the suite fails until the
+// green step.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -33,10 +45,10 @@ use griff_core::corpus::{ChunkId, ChunkMeta, SourceFormat, SourceRef, SwancoreTa
 use griff_core::gesture::GestureStats;
 use griff_core::scoring::Axes;
 use griff_core::similarity::{
-    find_similar_chunks, similarity_axes, similarity_weights_v2, SimilarityError,
+    find_similar_chunks, similarity_axes, similarity_weights_v3, SimilarityError,
     SIMILARITY_AXIS_LABELS,
 };
-use griff_core::structure::StructureMetrics;
+use griff_core::structure::{ComplexityProfile, StructureMetrics};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -91,10 +103,25 @@ fn default_gesture() -> GestureStats {
     gesture(4.0, 1.0, 1.0, 0.5, 0.5)
 }
 
+/// The shared default complexity profile: identical on both sides of a
+/// pair, every complexity axis reads 1.0, so structure/gesture/tag
+/// expectations stay undisturbed.
+const fn default_complexity() -> ComplexityProfile {
+    ComplexityProfile {
+        rhythmic: 0.5,
+        pitch: 0.5,
+        technical: 0.25,
+        harmonic: 0.125,
+        playability: 0.0,
+        structural: 0.5,
+    }
+}
+
 fn chunk(
     id: &str,
     structure: Option<StructureMetrics>,
     gesture: Option<GestureStats>,
+    complexity: Option<ComplexityProfile>,
     tags: Vec<SwancoreTag>,
 ) -> ChunkMeta {
     ChunkMeta {
@@ -116,7 +143,7 @@ fn chunk(
         reviewer: None,
         structure,
         gesture,
-        complexity: None,
+        complexity,
         style_cohort: None,
         ensemble: None,
         created_at: "2026-06-10T00:00:00Z".to_owned(),
@@ -126,7 +153,13 @@ fn chunk(
 
 /// A fully measured chunk with the shared default gesture.
 fn measured(id: &str, structure: StructureMetrics, tags: Vec<SwancoreTag>) -> ChunkMeta {
-    chunk(id, Some(structure), Some(default_gesture()), tags)
+    chunk(
+        id,
+        Some(structure),
+        Some(default_gesture()),
+        Some(default_complexity()),
+        tags,
+    )
 }
 
 fn axis(axes: &Axes, label: &str) -> f64 {
@@ -151,17 +184,26 @@ fn axis_labels_are_canonical() {
             "rest_grid_similarity",
             "modal_landing_similarity",
             "final_lengthening_similarity",
+            "rhythmic_complexity_similarity",
+            "pitch_complexity_similarity",
+            "technical_complexity_similarity",
+            "harmonic_complexity_similarity",
+            "playability_complexity_similarity",
         ]
     );
 }
 
 #[test]
-fn weights_v2_is_uniform_over_the_axes() {
-    let policy = similarity_weights_v2();
+fn weights_v3_is_uniform_over_the_axes() {
+    let policy = similarity_weights_v3();
     assert_eq!(policy.id, "similarity");
-    assert_eq!(policy.version, 2);
+    assert_eq!(policy.version, 3);
     for label in SIMILARITY_AXIS_LABELS {
-        assert_eq!(policy.weight(label), 0.1, "uniform weight on {label}");
+        assert_eq!(
+            policy.weight(label),
+            1.0 / 15.0,
+            "uniform weight on {label}"
+        );
     }
     assert_eq!(policy.weight("no_such_axis"), 0.0);
 }
@@ -184,7 +226,13 @@ fn identical_chunks_score_one_on_every_axis() {
 #[test]
 fn structure_unmeasured_side_yields_no_axes() {
     let full = measured("a", metrics(Some(1), 0.5, 0.5, 0.5), Vec::new());
-    let no_structure = chunk("b", None, Some(default_gesture()), Vec::new());
+    let no_structure = chunk(
+        "b",
+        None,
+        Some(default_gesture()),
+        Some(default_complexity()),
+        Vec::new(),
+    );
 
     assert!(similarity_axes(&full, &no_structure).is_none());
     assert!(similarity_axes(&no_structure, &full).is_none());
@@ -197,7 +245,13 @@ fn gesture_unmeasured_side_yields_no_axes() {
     // is not a zero-similarity fact, and a pair scored on fewer axes is not
     // comparable under one policy — so the pair has no axes at all.
     let full = measured("a", metrics(Some(1), 0.5, 0.5, 0.5), Vec::new());
-    let v2_record = chunk("b", Some(metrics(Some(1), 0.5, 0.5, 0.5)), None, Vec::new());
+    let v2_record = chunk(
+        "b",
+        Some(metrics(Some(1), 0.5, 0.5, 0.5)),
+        None,
+        Some(default_complexity()),
+        Vec::new(),
+    );
 
     assert!(similarity_axes(&full, &v2_record).is_none());
     assert!(similarity_axes(&v2_record, &full).is_none());
@@ -210,12 +264,14 @@ fn axes_are_symmetric() {
         "a",
         Some(metrics(Some(2), 0.75, 1.0, 0.5)),
         Some(gesture(2.0, 0.0, 1.0, 0.75, 0.5)),
+        Some(default_complexity()),
         vec![SwancoreTag::CleanRiff, SwancoreTag::PalmMute],
     );
     let b = chunk(
         "b",
         Some(metrics(Some(4), 0.25, 0.25, 0.25)),
         Some(gesture(4.0, 1.5, 0.25, 0.25, 0.25)),
+        Some(default_complexity()),
         vec![SwancoreTag::PalmMute, SwancoreTag::Syncopated],
     );
 
@@ -325,12 +381,14 @@ fn burst_length_axis_is_the_min_max_ratio() {
         "a",
         Some(m),
         Some(gesture(2.0, 1.0, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let long = chunk(
         "b",
         Some(m),
         Some(gesture(4.0, 1.0, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let axes = similarity_axes(&short, &long).expect("measured");
@@ -350,12 +408,14 @@ fn rest_length_axis_two_restless_chunks_agree() {
         "a",
         Some(m),
         Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let b = chunk(
         "b",
         Some(m),
         Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let axes = similarity_axes(&a, &b).expect("measured");
@@ -369,12 +429,14 @@ fn rest_length_axis_restless_vs_resting_is_zero() {
         "a",
         Some(m),
         Some(gesture(4.0, 0.0, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let resting = chunk(
         "b",
         Some(m),
         Some(gesture(4.0, 1.5, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let axes = similarity_axes(&restless, &resting).expect("measured");
@@ -392,12 +454,14 @@ fn rest_length_axis_is_the_min_max_ratio() {
         "a",
         Some(m),
         Some(gesture(4.0, 1.0, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let long = chunk(
         "b",
         Some(m),
         Some(gesture(4.0, 2.0, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let axes = similarity_axes(&short, &long).expect("measured");
@@ -415,12 +479,14 @@ fn gesture_share_axes_measure_absolute_distance() {
         "a",
         Some(m),
         Some(gesture(4.0, 1.0, 0.75, 1.0, 0.5)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let b = chunk(
         "b",
         Some(m),
         Some(gesture(4.0, 1.0, 0.25, 0.25, 0.25)),
+        Some(default_complexity()),
         Vec::new(),
     );
     let axes = similarity_axes(&a, &b).expect("measured");
@@ -446,17 +512,23 @@ fn gesture_share_axes_measure_absolute_distance() {
 #[test]
 fn find_similar_requires_a_measured_query() {
     let candidates = vec![measured("a", metrics(Some(1), 0.5, 0.5, 0.5), Vec::new())];
-    let policy = similarity_weights_v2();
+    let policy = similarity_weights_v3();
 
     // No structure at all (schema v1).
-    let v1_query = chunk("q", None, None, Vec::new());
+    let v1_query = chunk("q", None, None, None, Vec::new());
     assert_eq!(
         find_similar_chunks(&v1_query, &candidates, &policy).unwrap_err(),
         SimilarityError::QueryUnmeasured
     );
 
     // Structure but no gesture (schema v2) is still unmeasured for this edge.
-    let v2_query = chunk("q", Some(metrics(Some(1), 0.5, 0.5, 0.5)), None, Vec::new());
+    let v2_query = chunk(
+        "q",
+        Some(metrics(Some(1), 0.5, 0.5, 0.5)),
+        None,
+        None,
+        Vec::new(),
+    );
     assert_eq!(
         find_similar_chunks(&v2_query, &candidates, &policy).unwrap_err(),
         SimilarityError::QueryUnmeasured
@@ -468,7 +540,7 @@ fn find_similar_excludes_the_query_itself() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
     let query = measured("q", m, Vec::new());
     let candidates = vec![measured("q", m, Vec::new()), measured("a", m, Vec::new())];
-    let policy = similarity_weights_v2();
+    let policy = similarity_weights_v3();
 
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
     assert_eq!(ranked.len(), 1);
@@ -480,17 +552,24 @@ fn find_similar_skips_unmeasured_candidates() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
     let query = measured("q", m, Vec::new());
     let candidates = vec![
-        chunk("v1_record", None, None, Vec::new()),
-        chunk("v2_record", Some(m), None, Vec::new()),
+        chunk("v1_record", None, None, None, Vec::new()),
+        chunk("v2_record", Some(m), None, None, Vec::new()),
+        chunk(
+            "v5_record",
+            Some(m),
+            Some(default_gesture()),
+            None,
+            Vec::new(),
+        ),
         measured("measured", m, Vec::new()),
     ];
-    let policy = similarity_weights_v2();
+    let policy = similarity_weights_v3();
 
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
     assert_eq!(
         ranked.len(),
         1,
-        "v1 and v2 records sit out until re-curated"
+        "v1, v2, and v5 records sit out until re-curated"
     );
     assert_eq!(ranked[0].value, ChunkId("measured".to_owned()));
 }
@@ -501,6 +580,7 @@ fn find_similar_ranks_closer_chunks_first() {
         "q",
         Some(metrics(Some(2), 0.75, 0.75, 0.25)),
         Some(gesture(4.0, 1.0, 1.0, 0.5, 0.5)),
+        Some(default_complexity()),
         vec![SwancoreTag::CleanRiff, SwancoreTag::PalmMute],
     );
     let candidates = vec![
@@ -510,6 +590,14 @@ fn find_similar_ranks_closer_chunks_first() {
             "far",
             Some(metrics(None, 0.0, 0.0, 1.0)),
             Some(gesture(1.0, 4.0, 0.0, 1.0, 1.0)),
+            Some(ComplexityProfile {
+                rhythmic: 1.0,
+                pitch: 0.0,
+                technical: 1.0,
+                harmonic: 1.0,
+                playability: 1.0,
+                structural: 1.0,
+            }),
             vec![SwancoreTag::TappingPassage],
         ),
         // Near: identical metrics, tags, and gesture.
@@ -517,6 +605,7 @@ fn find_similar_ranks_closer_chunks_first() {
             "near",
             Some(metrics(Some(2), 0.75, 0.75, 0.25)),
             Some(gesture(4.0, 1.0, 1.0, 0.5, 0.5)),
+            Some(default_complexity()),
             vec![SwancoreTag::CleanRiff, SwancoreTag::PalmMute],
         ),
         // Middle: same period, scalars off by 0.25, half-overlapping tags,
@@ -525,10 +614,11 @@ fn find_similar_ranks_closer_chunks_first() {
             "middle",
             Some(metrics(Some(2), 0.5, 0.5, 0.5)),
             Some(gesture(2.0, 1.0, 1.0, 0.5, 0.5)),
+            Some(default_complexity()),
             vec![SwancoreTag::CleanRiff],
         ),
     ];
-    let policy = similarity_weights_v2();
+    let policy = similarity_weights_v3();
 
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
     let ids: Vec<&str> = ranked.iter().map(|s| s.value.0.as_str()).collect();
@@ -548,7 +638,7 @@ fn find_similar_ties_break_by_candidate_order() {
         measured("first", m, Vec::new()),
         measured("second", m, Vec::new()),
     ];
-    let policy = similarity_weights_v2();
+    let policy = similarity_weights_v3();
 
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
     let ids: Vec<&str> = ranked.iter().map(|s| s.value.0.as_str()).collect();
@@ -564,7 +654,7 @@ fn scored_envelope_carries_policy_provenance() {
     let m = metrics(Some(1), 0.5, 0.5, 0.5);
     let query = measured("q", m, Vec::new());
     let candidates = vec![measured("a", m, Vec::new())];
-    let policy = similarity_weights_v2();
+    let policy = similarity_weights_v3();
 
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
     let scored = &ranked[0];
@@ -582,4 +672,102 @@ fn scored_envelope_carries_policy_provenance() {
         .map(|e| e.contribution)
         .sum();
     assert_eq!(scored.aggregate(), contributions, "aggregate is derived");
+}
+
+// ── complexity axes (similarity v3, corpus schema v6) ─────────────────────────
+
+#[test]
+fn complexity_unmeasured_side_yields_no_axes() {
+    // A schema-v5 record: measured structure and gesture, no complexity
+    // profile. The all-or-nothing measured rule extends to the new facts.
+    let full = measured("a", metrics(Some(1), 0.5, 0.5, 0.5), Vec::new());
+    let v5_record = chunk(
+        "b",
+        Some(metrics(Some(1), 0.5, 0.5, 0.5)),
+        Some(default_gesture()),
+        None,
+        Vec::new(),
+    );
+
+    assert!(similarity_axes(&full, &v5_record).is_none());
+    assert!(similarity_axes(&v5_record, &full).is_none());
+    assert!(similarity_axes(&v5_record, &v5_record).is_none());
+}
+
+#[test]
+fn complexity_axes_measure_absolute_distance() {
+    let m = metrics(Some(1), 0.5, 0.5, 0.5);
+    let a = chunk(
+        "a",
+        Some(m),
+        Some(default_gesture()),
+        Some(ComplexityProfile {
+            rhythmic: 0.5,
+            pitch: 1.0,
+            technical: 0.75,
+            harmonic: 0.625,
+            playability: 1.0,
+            structural: 0.5,
+        }),
+        Vec::new(),
+    );
+    let b = chunk(
+        "b",
+        Some(m),
+        Some(default_gesture()),
+        Some(ComplexityProfile {
+            rhythmic: 0.25,
+            pitch: 0.25,
+            technical: 0.75,
+            harmonic: 0.125,
+            playability: 0.0,
+            structural: 0.5,
+        }),
+        Vec::new(),
+    );
+    let axes = similarity_axes(&a, &b).expect("measured");
+    assert_eq!(
+        axis(&axes, "rhythmic_complexity_similarity"),
+        0.75,
+        "1 − |0.5 − 0.25|"
+    );
+    assert_eq!(
+        axis(&axes, "pitch_complexity_similarity"),
+        0.25,
+        "1 − |1.0 − 0.25|"
+    );
+    assert_eq!(
+        axis(&axes, "technical_complexity_similarity"),
+        1.0,
+        "identical technical shares"
+    );
+    assert_eq!(
+        axis(&axes, "harmonic_complexity_similarity"),
+        0.5,
+        "1 − |0.625 − 0.125|"
+    );
+    assert_eq!(
+        axis(&axes, "playability_complexity_similarity"),
+        0.0,
+        "open-position line vs an unreachable one"
+    );
+}
+
+#[test]
+fn find_similar_rejects_a_query_without_complexity() {
+    // A v5 query: structure and gesture measured, no complexity profile —
+    // unmeasured for this edge until re-curated.
+    let candidates = vec![measured("a", metrics(Some(1), 0.5, 0.5, 0.5), Vec::new())];
+    let policy = similarity_weights_v3();
+    let v5_query = chunk(
+        "q",
+        Some(metrics(Some(1), 0.5, 0.5, 0.5)),
+        Some(default_gesture()),
+        None,
+        Vec::new(),
+    );
+    assert_eq!(
+        find_similar_chunks(&v5_query, &candidates, &policy).unwrap_err(),
+        SimilarityError::QueryUnmeasured
+    );
 }
