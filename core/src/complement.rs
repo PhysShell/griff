@@ -81,6 +81,45 @@ pub struct ComplementSpec {
     pub register_offset: i8,
 }
 
+/// Major or natural minor — the two scale shapes the key estimate considers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyMode {
+    /// The major (Ionian) scale.
+    Major,
+    /// The natural minor (Aeolian) scale.
+    Minor,
+}
+
+impl KeyMode {
+    /// Semitone offsets of this mode's scale above its tonic.
+    #[must_use]
+    pub const fn scale_offsets(self) -> [u8; 7] {
+        match self {
+            Self::Major => [0, 2, 4, 5, 7, 9, 11],
+            Self::Minor => [0, 2, 3, 5, 7, 8, 10],
+        }
+    }
+}
+
+/// The part's estimated key and how well its notes fit that key's scale —
+/// the harmonic context of a part profile (glossary §8).
+///
+/// Estimated with the Krumhansl–Schmuckler key-finding algorithm: the part's
+/// duration-weighted pitch-class histogram is correlated (Pearson) against
+/// the 24 rotated Krumhansl–Kessler tonal-hierarchy profiles and the best
+/// correlation wins, ties resolving to the earliest key in the
+/// major-then-minor, C-upward scan. `scale_fit` is a fact, not a verdict —
+/// what counts as "fitting well enough" is corpus/S9 calibration territory.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HarmonicContext {
+    /// Tonic pitch class: `0` = C … `11` = B.
+    pub tonic_pitch_class: u8,
+    /// Major or natural minor.
+    pub mode: KeyMode,
+    /// Duration-weighted fraction of notes on the key's scale, in `[0, 1]`.
+    pub scale_fit: f64,
+}
+
 /// The per-part feature summary derived from part A (glossary §8).
 ///
 /// Richer than `VoiceFeatures`: it is bucketed against the master-bar timeline
@@ -101,6 +140,8 @@ pub struct PartProfile {
     /// Distinct technique labels across the part — per-note marks *and* spanning
     /// techniques (ADR-0018), so the overlap axis sees both.
     pub techniques: BTreeSet<&'static str>,
+    /// The estimated key and scale fit, or `None` when the part has no notes.
+    pub harmony: Option<HarmonicContext>,
 }
 
 /// Relation-as-provenance: per-axis scores describing how B relates to A.
@@ -394,6 +435,7 @@ pub fn analyze_part(score: &Score, track_index: usize) -> Result<PartProfile, Co
     pitches.dedup();
 
     let techniques = voice_technique_labels(track);
+    let harmony = estimate_harmony(&notes);
 
     let note_count = notes.len();
     let bar_count = score.master_bars.len();
@@ -406,7 +448,103 @@ pub fn analyze_part(score: &Score, track_index: usize) -> Result<PartProfile, Co
         density,
         pitches,
         techniques,
+        harmony,
     })
+}
+
+/// Krumhansl–Kessler major tonal-hierarchy profile (probe-tone ratings).
+const KK_MAJOR: [f64; 12] = [
+    6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
+];
+/// Krumhansl–Kessler natural-minor tonal-hierarchy profile.
+const KK_MINOR: [f64; 12] = [
+    6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
+];
+
+/// Estimates the part's key from its notes (Krumhansl–Schmuckler), or `None`
+/// when there are none.
+///
+/// Histogram weights are note durations in ticks; a part whose notes all have
+/// zero duration falls back to counting notes so the estimate stays defined.
+// Float-only arithmetic over fixed 12-bin histograms; pitch-class indices are
+// mod-12 by construction.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+fn estimate_harmony(notes: &[NoteRef]) -> Option<HarmonicContext> {
+    if notes.is_empty() {
+        return None;
+    }
+
+    let total_ticks: u64 = notes.iter().map(|n| u64::from(n.duration.0)).sum();
+    let mut histogram = [0.0_f64; 12];
+    for n in notes {
+        let pc = usize::from(n.pitch) % 12;
+        let weight = if total_ticks == 0 {
+            1.0
+        } else {
+            f64::from(n.duration.0)
+        };
+        histogram[pc] += weight;
+    }
+
+    let mut best: Option<(f64, u8, KeyMode)> = None;
+    for mode in [KeyMode::Major, KeyMode::Minor] {
+        let profile = match mode {
+            KeyMode::Major => &KK_MAJOR,
+            KeyMode::Minor => &KK_MINOR,
+        };
+        for tonic in 0..12_u8 {
+            let r = rotated_correlation(&histogram, profile, tonic);
+            if best.map_or(true, |(b, _, _)| r > b) {
+                best = Some((r, tonic, mode));
+            }
+        }
+    }
+    let (_, tonic_pitch_class, mode) = best?;
+
+    let total: f64 = histogram.iter().sum();
+    let on_scale: f64 = mode
+        .scale_offsets()
+        .iter()
+        .map(|&s| histogram[usize::from(tonic_pitch_class + s) % 12])
+        .sum();
+    let scale_fit = if total > 0.0 { on_scale / total } else { 0.0 };
+
+    Some(HarmonicContext {
+        tonic_pitch_class,
+        mode,
+        scale_fit,
+    })
+}
+
+/// Pearson correlation between `histogram` and `profile` rotated so the
+/// profile's tonic sits on pitch class `tonic`.
+// Float-only arithmetic over fixed 12-bin arrays; indices are mod-12.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+fn rotated_correlation(histogram: &[f64; 12], profile: &[f64; 12], tonic: u8) -> f64 {
+    let mut rotated = [0.0_f64; 12];
+    for (pc, slot) in rotated.iter_mut().enumerate() {
+        *slot = profile[(pc + 12 - usize::from(tonic)) % 12];
+    }
+
+    let n = 12.0_f64;
+    let mean_x: f64 = histogram.iter().sum::<f64>() / n;
+    let mean_y: f64 = rotated.iter().sum::<f64>() / n;
+    let mut numerator = 0.0_f64;
+    let mut var_x = 0.0_f64;
+    let mut var_y = 0.0_f64;
+    for (x, y) in histogram.iter().zip(rotated.iter()) {
+        let dx = x - mean_x;
+        let dy = y - mean_y;
+        numerator += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+    let denominator = (var_x * var_y).sqrt();
+    if denominator > 0.0 {
+        numerator / denominator
+    } else {
+        0.0
+    }
 }
 
 /// Measures the complement relation between two *existing* tracks.
@@ -518,7 +656,7 @@ pub fn arrange_complement(
 /// generator's `ConstrainedRandomWalk` — the one mode that synthesises a fresh
 /// sequence instead of deriving B from A's grid.
 ///
-/// The request is compiled from A: A's pitch classes as the scale, A's band
+/// The request is compiled from A: A's harmonic context as the scale, A's band
 /// shifted by `spec.register_offset` as the pitch bounds, A's bar count /
 /// meter / tempo / PPQN as constraints, A's bar rhythms as templates. The
 /// generated line is lifted onto A's master bars, which therefore must share
@@ -801,7 +939,7 @@ fn arrange_support_layer(
 /// first sound and the end of the last master bar (leading silence has no call
 /// to answer). Every gap at least one quarter long gets exactly one answer: a
 /// B note at the gap start sustaining through the gap, at the velocity of the
-/// preceding A note, pitched seed-deterministically from A's pitch classes in
+/// preceding A note, pitched seed-deterministically from A's harmonic context in
 /// the band shifted by `spec.register_offset`. B's onsets are disjoint from
 /// A's by construction. No qualifying gap is
 /// [`ComplementError::NoGapsToAnswer`].
@@ -902,7 +1040,7 @@ fn shifted_band(register: PitchRange, offset: i8) -> (u8, u8) {
 
 /// B's event groups on A's exact onset grid: every B note keeps A's onset,
 /// duration, and velocity, with the pitch substituted seed-deterministically
-/// from A's pitch classes mapped into the `[band_lo, band_hi]` register band.
+/// from A's harmonic context mapped into the `[band_lo, band_hi]` register band.
 fn grid_locked_groups(
     a_track: &Track,
     profile: &PartProfile,
@@ -910,7 +1048,7 @@ fn grid_locked_groups(
     band_hi: u8,
     seed: GenerationSeed,
 ) -> Vec<EventGroup> {
-    // Scale: A's distinct pitch classes, as intervals above the band's low note.
+    // Scale: A's harmonic context, as intervals above the band's low note.
     let intervals = scale_intervals_from(profile);
 
     voice_notes(a_track)
@@ -1004,8 +1142,11 @@ fn voice_atom_notes(track: &Track) -> Vec<AtomNote> {
     notes
 }
 
-/// A's distinct pitch classes (semitone offsets from A's lowest pitch), sorted
-/// and non-empty — the scale B substitutes pitches from.
+/// The scale B substitutes pitches from, as semitone offsets above A's lowest
+/// pitch (mod 12), sorted and non-empty: A's distinct pitch classes *plus*
+/// the inferred key's scale (the harmonic context — enrich, don't replace),
+/// so B can always echo A's actual notes and a sparse part still opens a
+/// whole scale of material.
 fn scale_intervals_from(profile: &PartProfile) -> Vec<u8> {
     let min_a = profile.pitches.first().copied().unwrap_or(0);
     let mut intervals: Vec<u8> = profile
@@ -1013,6 +1154,24 @@ fn scale_intervals_from(profile: &PartProfile) -> Vec<u8> {
         .iter()
         .map(|&p| p.saturating_sub(min_a).checked_rem(12).unwrap_or(0))
         .collect();
+    if let Some(harmony) = profile.harmony {
+        let min_pc = min_a.checked_rem(12).unwrap_or(0);
+        for offset in harmony.mode.scale_offsets() {
+            let pc = harmony
+                .tonic_pitch_class
+                .saturating_add(offset)
+                .checked_rem(12)
+                .unwrap_or(0);
+            // The scale pitch class as an offset above A's lowest pitch class,
+            // wrapped into [0, 12).
+            let interval = pc
+                .saturating_add(12)
+                .saturating_sub(min_pc)
+                .checked_rem(12)
+                .unwrap_or(0);
+            intervals.push(interval);
+        }
+    }
     intervals.sort_unstable();
     intervals.dedup();
     if intervals.is_empty() {
