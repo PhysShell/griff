@@ -975,3 +975,15 @@ Architectural decisions go to [`adr/`](adr/) instead.
   band is the classification strip; boundaries are plane events like
   gridlines). Accepted: boundary scores and reasons are dropped at the
   view seam (ticks only) until an inspector surface wants them.
+
+- 2026-06-11 — In the context of Codex P2 on PR #39 (boundary overlays,
+  `preview/src/scene.rs`), facing a phrase boundary disappearing when
+  scrolled exactly to the viewport's left edge (the loop copied the
+  section-mark guard `tick <= scroll_tick`, dropping a tick that maps to
+  the leftmost plot column), we decided for **no scroll-origin guard on
+  boundaries**: `visible_col` already drops ticks before the scroll
+  origin, and a boundary at the edge is information the curator scrolled
+  to see — and against also changing the section-mark loop (skipping the
+  origin divider there is deliberate: the band already names the section
+  at the left edge). Accepted: a boundary at tick 0 of an unscrolled view
+  now renders a left-edge marker (harmless, and consistent).
