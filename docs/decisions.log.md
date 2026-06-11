@@ -488,3 +488,34 @@ Architectural decisions go to [`adr/`](adr/) instead.
   complement-aware rhythm model (S7's cost terms take over there), and
   removing `ModeNotImplemented` is a breaking enum change inside the
   pre-1.0 workspace.
+
+- 2026-06-11 — In the context of landing burst/rest gesture statistics
+  (`core/src/gesture.rs`, melodic-closure note §3.5/§7.4) as persisted
+  chunk axes (corpus schema v3), facing what to measure and how to segment
+  a gesture, we decided for **distributions, not content**: burst
+  count/mean/max over maximal melodic-line runs, with a *gesture rest*
+  defined as at least one quarter of line silence after a sounded note
+  (the trailing gap to the span end included, leading silence excluded —
+  a rest belongs to the gesture before it; sub-quarter holes are
+  phrasing); rest placement as the share of rests starting on the quarter
+  grid of their bar (the §1.3 metrical-predictability cue); landing degree
+  as the share of bursts ending on the line's modal pitch class (ties to
+  the smallest class — a key-free root proxy until `PartProfile` grows
+  harmonic context); burst-final lengthening under the closure-v1
+  normalisation (`landing / (2 × mean)`, clamped, equal-to-mean reads
+  0.5); the highest-pitch-per-onset line convention shared with
+  closure / novelty / curate; the Phase-3 serde pattern for persistence
+  (`SCHEMA_VERSION = 3`, absent key on older records, byte-identical
+  v1/v2 round-trips); and `griff curate` measuring the same first
+  note-bearing track it already measures structure on — and against
+  persisting raw histograms (compact scalars serialize stably and suffice
+  at micro-corpus scale), against a key-aware landing degree now
+  (`ChunkMeta` carries no key; verbatim Krumhansl porting was already
+  rejected in closure v1), against an eighth-based rest threshold
+  (syncopated eighth holes inside a flurry are phrasing, not rests), and
+  against making the stats `Scored` axes now (they are corpus facts and
+  future S6 constraint inputs; a similarity / scoring join is a
+  follow-up). Accepted: the grid check uses the quarter grid only
+  (denominator-aware beat grids deferred), the modal class is a crude
+  root proxy, vacuous shares read as predictable (`1.0`) and absent rests
+  as zero length, and a chord participates only through its top note.

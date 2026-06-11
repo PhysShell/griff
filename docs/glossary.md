@@ -699,6 +699,17 @@ overlap. Gives the §8 "Quality score" `novelty` axis its concrete measure
 (`quote_novelty` / `ngram_novelty`, ADR-0017); the rejection threshold (e.g.
 quotes longer than 1–2 bars) is the caller's cut, not code.
 
+### Gesture statistics (burst/rest)
+The distributions that describe burst-and-rest writing without its content
+(`core/src/gesture.rs`; melodic-closure note §3.5 — the DGD case): burst
+length (maximal melodic-line runs between gesture rests), rest length and
+quarter-grid placement (a rest reads as part of the gesture when metrically
+predictable, as a hole when not), the share of bursts landing on the line's
+modal pitch class, and burst-final lengthening (closure-v1 normalisation). A
+*gesture rest* is at least one quarter of line silence after a sounded note;
+sub-quarter holes are phrasing. Persisted per chunk as `ChunkMeta.gesture`
+(corpus schema v3); intended as S6 constraint inputs.
+
 ## 8. Generation
 
 ### Generator
