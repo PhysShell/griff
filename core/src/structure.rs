@@ -451,9 +451,10 @@ fn loopability(notes: &[NoteRef], score: &Score) -> f64 {
 /// A *vector*, not a scalar (glossary §7): each axis is an untuned v1 measure
 /// in `[0, 1]` — a fact for reranking and (later) graph node attributes, not a
 /// verdict. Orthogonal to target span and pattern period by construction.
-/// Measurement only for now: corpus persistence and control-side targets join
-/// as later increments ("measure before target", ADR-0015).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Serialisable since corpus schema v6, where it persists into `ChunkMeta`
+/// alongside the structure metrics; control-side complexity targets remain a
+/// later increment ("measure before target", ADR-0015).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ComplexityProfile {
     /// Inter-onset-interval variety over distinct onsets:
     /// `(distinct − 1) / (count − 1)`; `0.0` below two intervals.

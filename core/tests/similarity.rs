@@ -116,6 +116,7 @@ fn chunk(
         reviewer: None,
         structure,
         gesture,
+        complexity: None,
         style_cohort: None,
         ensemble: None,
         created_at: "2026-06-10T00:00:00Z".to_owned(),

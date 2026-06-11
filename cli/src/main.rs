@@ -448,6 +448,7 @@ fn build_chunk_meta(
 
     let structure = track_index.and_then(|idx| structure::measure_structure(score, idx).ok());
     let gesture = track_index.and_then(|idx| gesture::measure_gesture(score, idx).ok());
+    let complexity = track_index.and_then(|idx| structure::measure_complexity(score, idx).ok());
 
     let now = "2026-05-20T00:00:00Z".to_owned();
     ChunkMeta {
@@ -469,6 +470,7 @@ fn build_chunk_meta(
         reviewer: inputs.reviewer,
         structure,
         gesture,
+        complexity,
         style_cohort: Some(inputs.style_cohort),
         ensemble,
         created_at: now.clone(),

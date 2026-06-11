@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::complement::AxisScores;
 use crate::gesture::GestureStats;
-use crate::structure::StructureMetrics;
+use crate::structure::{ComplexityProfile, StructureMetrics};
 
 /// Current corpus schema version.
 ///
@@ -28,7 +28,10 @@ use crate::structure::StructureMetrics;
 /// - v5 — sub-bar period detection (S14 refinement): [`StructureMetrics`]
 ///   gains optional `detected_subbar_period_ticks` under the same pattern;
 ///   pre-v5 structure blocks load it as `None` and re-serialize losslessly.
-pub const SCHEMA_VERSION: u32 = 5;
+/// - v6 — the per-axis complexity profile (S14): `ChunkMeta` gains optional
+///   measured [`ComplexityProfile`] under the same pattern; pre-v6 records
+///   load it as `None` and re-serialize losslessly.
+pub const SCHEMA_VERSION: u32 = 6;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
 
@@ -276,6 +279,10 @@ pub struct ChunkMeta {
     /// byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gesture: Option<GestureStats>,
+    /// Measured per-axis complexity profile (schema v6). Absent — not stored
+    /// as `null` — when unmeasured, so pre-v6 files round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<ComplexityProfile>,
     /// Style cohort (schema v4). Absent in pre-v4 records — unlabeled; the
     /// key is skipped when unset, so older files round-trip byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
