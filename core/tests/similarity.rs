@@ -659,7 +659,7 @@ fn scored_envelope_carries_policy_provenance() {
     let ranked = find_similar_chunks(&query, &candidates, &policy).expect("measured query");
     let scored = &ranked[0];
     assert_eq!(scored.provenance.policy_id, "similarity");
-    assert_eq!(scored.provenance.policy_version, 2);
+    assert_eq!(scored.provenance.policy_version, 3);
     assert_eq!(scored.provenance.seed, None, "purely analytic score");
 
     let labels: Vec<&str> = scored.axes.iter().map(|a| a.label).collect();
