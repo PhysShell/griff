@@ -6,7 +6,20 @@
 //! grid, what the bursts land on, and how much the landing lengthens.
 //! [`measure_gesture`] derives those distributions from a score track as
 //! compact [`GestureStats`] — serialisable numbers that join the persisted
-//! chunk axes (corpus schema v3) and later become S6 constraint inputs.
+//! chunk axes (corpus schema v3) and the chunk-similarity edge (S7).
+//!
+//! The control side makes the stats S6 constraint inputs: [`GestureControl`]
+//! is the *ask* counterpart of the measured stats (the
+//! `StructureControl`-vs-`StructureMetrics` duality, ADR-0015), derivable
+//! from a corpus chunk via [`GestureControl::from_stats`].
+//! [`generate_gestured`] is a constraint compiler over the S6 generator
+//! (the `ComplementArranger` pattern, ADR-0012/0015), not a new generation
+//! core: it runs [`crate::generate::generate`] — whose strategies write
+//! wall-to-wall — then deterministically carves gesture rests (after every
+//! `burst_notes` kept notes, following notes are dropped until at least
+//! `rest_quarters` of line silence opens; survivors keep their absolute
+//! onsets) and returns the produced score with its re-measured
+//! [`GestureStats`] as provenance.
 //!
 //! Conventions (shared with the closure scorer, the novelty guard, and
 //! `griff curate`): the analysed line is the highest-pitch-per-onset melody
@@ -26,13 +39,15 @@
 //! (equal-to-mean reads 0.5), and the landing degree is measured against the
 //! line's *modal* pitch class (ties to the smallest class) — a key-free root
 //! proxy until `PartProfile` grows real harmonic context. Pure and
-//! deterministic (SPEC §6); no RNG, no graph/DP dependency.
+//! deterministic (SPEC §6); no graph/DP dependency, and the only RNG is the
+//! seeded S6 PRNG inside the delegated generation pass.
 
 use std::mem;
 
 use serde::{Deserialize, Serialize};
 
-use crate::score::{AtomEvent, Score, Track};
+use crate::generate::{generate, GenerationError, GenerationSeed, RuleGenerationRequest};
+use crate::score::{AtomEvent, EventGroup, Score, Track};
 
 /// Burst/rest gesture distributions of one track's melodic line.
 ///
@@ -260,4 +275,147 @@ fn rest_quarters_mean(rest_ticks: u64, rest_count: usize, quarter: u32) -> f64 {
 #[allow(clippy::cast_precision_loss)] // counts are tiny vs f64 mantissa
 fn denominator(count: usize) -> f64 {
     (count.max(1)) as f64
+}
+
+// ── control side: gesture stats as S6 constraint inputs ──────────────────────
+
+/// Target burst/rest gesture for generation — the *ask* counterpart of the
+/// measured [`GestureStats`] (the `StructureControl` duality, ADR-0015).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GestureControl {
+    /// Notes per burst before a gesture rest is carved (at least 1).
+    pub burst_notes: usize,
+    /// Minimum length of each carved gesture rest, in quarters (at least
+    /// `1.0` — a gesture rest is at least one quarter by definition;
+    /// sub-quarter holes are phrasing).
+    pub rest_quarters: f64,
+}
+
+impl GestureControl {
+    /// Derives a control from measured corpus stats: the mean burst length
+    /// rounded to the nearest whole note count (floor 1), the mean rest
+    /// length clamped to the one-quarter gesture floor. A restless chunk
+    /// (mean rest `0.0`) derives the minimal gesture, not a degenerate one —
+    /// callers wanting wall-to-wall writing skip the compiler entirely.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rounded, clamped ≥ 1
+    pub fn from_stats(stats: &GestureStats) -> Self {
+        let burst = if stats.mean_burst_notes.is_finite() {
+            stats.mean_burst_notes.round().max(1.0)
+        } else {
+            1.0
+        };
+        let rest = if stats.mean_rest_quarters.is_finite() {
+            stats.mean_rest_quarters.max(1.0)
+        } else {
+            1.0
+        };
+        Self {
+            burst_notes: burst as usize,
+            rest_quarters: rest,
+        }
+    }
+}
+
+/// A gestured generation: the carved score plus provenance — the control that
+/// asked for it and the stats measuring what was actually produced.
+#[derive(Debug, Clone)]
+pub struct GesturedCandidate {
+    /// The generated, rest-carved score (one track, one voice).
+    pub score: Score,
+    /// Seed used for the underlying S6 pass.
+    pub seed: GenerationSeed,
+    /// The control this candidate was generated against.
+    pub control: GestureControl,
+    /// Measured gesture of the produced span — what it *is*, not what was
+    /// asked.
+    pub stats: GestureStats,
+}
+
+/// Errors the gesture compiler can emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GestureGenError {
+    /// The control is out of range: a zero burst, or a non-finite /
+    /// sub-quarter rest length.
+    InvalidControl,
+    /// The underlying S6 generator rejected the request.
+    Generation(GenerationError),
+    /// Measuring the produced span failed.
+    Measurement(GestureError),
+}
+
+/// Generates a span under a [`GestureControl`]: plain S6 over `request`,
+/// then a deterministic carve.
+///
+/// After every `burst_notes` kept notes, following notes are dropped until
+/// at least `rest_quarters` of line silence opens up.
+/// Survivors keep their absolute onsets (a carve opens silence, it never
+/// moves a note), so the master timeline is untouched and bursts freely span
+/// barlines. The carve assumes the S6 output shape (back-to-back single-note
+/// groups in onset order), which [`crate::generate::generate`] guarantees.
+/// Fully deterministic: the same `(request, control)` always produces the
+/// same candidate.
+pub fn generate_gestured(
+    request: &RuleGenerationRequest,
+    control: GestureControl,
+) -> Result<GesturedCandidate, GestureGenError> {
+    if control.burst_notes == 0 || !control.rest_quarters.is_finite() || control.rest_quarters < 1.0
+    {
+        return Err(GestureGenError::InvalidControl);
+    }
+
+    let candidate = generate(request).map_err(GestureGenError::Generation)?;
+    let mut score = candidate.score;
+
+    let quarter = f64::from(request.constraints.ticks_per_quarter.0.max(1));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // finite, ≥ quarter, capped at u32::MAX
+    let rest_ticks = (control.rest_quarters * quarter)
+        .round()
+        .min(f64::from(u32::MAX)) as u32;
+    carve_rests(&mut score, control.burst_notes, rest_ticks);
+
+    let stats = measure_gesture(&score, 0).map_err(GestureGenError::Measurement)?;
+    Ok(GesturedCandidate {
+        score,
+        seed: request.seed,
+        control,
+        stats,
+    })
+}
+
+/// Drops note groups from the first track's first voice to open gesture
+/// rests: keeps `burst_notes` groups, then drops following groups until the
+/// dropped span reaches `rest_ticks`, and repeats. Dropping the trailing
+/// notes may open a shorter trailing rest (the carve does not pad).
+fn carve_rests(score: &mut Score, burst_notes: usize, rest_ticks: u32) {
+    let Some(track) = score.tracks.first_mut() else {
+        return;
+    };
+    let Some(voice) = track.voices.first_mut() else {
+        return;
+    };
+
+    let mut kept: Vec<EventGroup> = Vec::with_capacity(voice.event_groups.len());
+    let mut in_burst = 0_usize;
+    let mut carve_remaining = 0_u32;
+    for group in voice.event_groups.drain(..) {
+        if carve_remaining > 0 {
+            let dropped = group
+                .atoms
+                .iter()
+                .map(|a| a.duration().0)
+                .max()
+                .unwrap_or(0);
+            carve_remaining = carve_remaining.saturating_sub(dropped);
+            continue;
+        }
+        kept.push(group);
+        in_burst = in_burst.saturating_add(1);
+        if in_burst >= burst_notes {
+            carve_remaining = rest_ticks;
+            in_burst = 0;
+        }
+    }
+    voice.event_groups = kept;
 }

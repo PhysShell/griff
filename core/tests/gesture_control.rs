@@ -35,7 +35,7 @@ use griff_core::{
         PitchMaterial, RuleGenerationRequest,
     },
     gesture::{generate_gestured, measure_gesture, GestureControl, GestureGenError, GestureStats},
-    score::{AtomEvent, AtomNote, Voice},
+    score::{AtomEvent, AtomNote, Score, Voice},
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ fn walk_request() -> RuleGenerationRequest {
 }
 
 /// The single generated voice (track 0, voice 0).
-fn voice(score: &griff_core::score::Score) -> &Voice {
+fn voice(score: &Score) -> &Voice {
     &score.tracks[0].voices[0]
 }
 
