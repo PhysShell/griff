@@ -696,7 +696,7 @@ fn arrange_counter_melody(
         seed,
         pitch_material: PitchMaterial {
             root: Pitch::new(band_lo).unwrap_or(register.lowest),
-            intervals: scale_intervals_from(profile),
+            intervals: scale_intervals_from(profile, band_lo),
         },
         constraints: GenerationConstraints {
             bar_count: score.master_bars.len(),
@@ -989,7 +989,7 @@ fn arrange_call_response(
     }
 
     let min_gap = u32::from(score.ticks_per_quarter);
-    let scale = scale_intervals_from(profile);
+    let scale = scale_intervals_from(profile, band_lo);
     let event_groups: Vec<EventGroup> = gaps
         .iter()
         .filter(|(start, end)| end.saturating_sub(*start) >= min_gap)
@@ -1051,8 +1051,9 @@ fn grid_locked_groups(
     band_hi: u8,
     seed: GenerationSeed,
 ) -> Vec<EventGroup> {
-    // Scale: A's harmonic context, as intervals above the band's low note.
-    let intervals = scale_intervals_from(profile);
+    // Scale: A's harmonic context, as intervals above the band's low note,
+    // anchored to A's pitch classes (the band picks the octave, not the key).
+    let intervals = scale_intervals_from(profile, band_lo);
 
     voice_notes(a_track)
         .iter()
@@ -1145,34 +1146,40 @@ fn voice_atom_notes(track: &Track) -> Vec<AtomNote> {
     notes
 }
 
-/// The scale B substitutes pitches from, as semitone offsets above A's lowest
-/// pitch (mod 12), sorted and non-empty: A's distinct pitch classes *plus*
-/// the inferred key's scale (the harmonic context — enrich, don't replace),
-/// so B can always echo A's actual notes and a sparse part still opens a
-/// whole scale of material.
-fn scale_intervals_from(profile: &PartProfile) -> Vec<u8> {
-    let min_a = profile.pitches.first().copied().unwrap_or(0);
+/// The scale B substitutes pitches from, as semitone offsets above `band_lo`
+/// (mod 12), sorted and non-empty: A's distinct pitch classes *plus* the
+/// inferred key's scale (the harmonic context — enrich, don't replace), so B
+/// can always echo A's actual notes and a sparse part still opens a whole
+/// scale of material.
+///
+/// Offsets are measured from the *band floor's* pitch class — consumers apply
+/// them at `band_lo`, so the materialised pitch classes equal A's regardless
+/// of the register offset: the key is the anchor, the band only picks the
+/// octave. Measuring from A's lowest pitch instead transposed the whole
+/// material with a non-octave shift (a C-major part offset a fifth grew an
+/// F#; Codex P2, PR #38).
+fn scale_intervals_from(profile: &PartProfile, band_lo: u8) -> Vec<u8> {
+    let anchor_pc = band_lo.checked_rem(12).unwrap_or(0);
+    let interval_above_anchor = |pc: u8| -> u8 {
+        pc.saturating_add(12)
+            .saturating_sub(anchor_pc)
+            .checked_rem(12)
+            .unwrap_or(0)
+    };
+
     let mut intervals: Vec<u8> = profile
         .pitches
         .iter()
-        .map(|&p| p.saturating_sub(min_a).checked_rem(12).unwrap_or(0))
+        .map(|&p| interval_above_anchor(p.checked_rem(12).unwrap_or(0)))
         .collect();
     if let Some(harmony) = profile.harmony {
-        let min_pc = min_a.checked_rem(12).unwrap_or(0);
         for offset in harmony.mode.scale_offsets() {
             let pc = harmony
                 .tonic_pitch_class
                 .saturating_add(offset)
                 .checked_rem(12)
                 .unwrap_or(0);
-            // The scale pitch class as an offset above A's lowest pitch class,
-            // wrapped into [0, 12).
-            let interval = pc
-                .saturating_add(12)
-                .saturating_sub(min_pc)
-                .checked_rem(12)
-                .unwrap_or(0);
-            intervals.push(interval);
+            intervals.push(interval_above_anchor(pc));
         }
     }
     intervals.sort_unstable();
