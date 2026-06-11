@@ -50,8 +50,13 @@ front-ends and audio build on them:
 - [ ] `eframe`/`egui` native window — the canonical desktop target (piano-roll
       canvas, pan/zoom), reusing the same `PianoRollView`.
 - [ ] MIDI playback via `midir`, with a playhead overlay.
-- [ ] Curation actions (approve/reject/split/merge/rename/tag) feeding the S5
-      corpus schema.
+- [ ] Curation actions feeding the S5 corpus schema — **first slice landed
+      2026-06-11**: approve/reject intents in the interaction core
+      (`Viewport::decision`, ADR-0016 — repeat to undo), 'a'/'x' keys and a
+      pending-decision line in the TUI inspector, and
+      `griff-preview --record=<chunk.json>` persisting the decision into the
+      record's `reviewer` field on quit (`curation::decide_record`).
+      Remaining: split/merge/rename/tag.
 - [ ] Boundary overlays (S4) and candidate history.
 
 ## Goal

@@ -926,3 +926,21 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Accepted: the corpus must be re-curated to v6 before the edge sees any
   pairs at all, and uniform weighting now spreads thinner (1/15 per axis)
   until S9 learns real weights.
+
+- 2026-06-11 — In the context of the S8 backlog item "curation actions
+  feeding the S5 corpus schema" (`preview/src/viewport.rs` / `curation.rs`),
+  facing where a curation decision lives in the ADR-0016 layering, we
+  decided for **a UI-level `CurationDecision` in the interaction core,
+  bridged at the shell**: `Intent::Approve` / `Intent::Reject` set
+  `Viewport::decision` (repeating the intent is an undo, the other
+  overwrites), the inspector shows the pending decision, and the pure
+  `curation::decide_record` seam maps it into the record's `reviewer`
+  field (`Approve` → `Accepted`, `Reject` → `Rejected`) with file I/O
+  owned by the binary shell behind `--record=<chunk.json>` — and against
+  reusing `corpus::ReviewerDecision` inside the viewport (the interaction
+  core must stay free of `griff-core` domain types so it can move to
+  `griff-ui-core` unchanged), against writing on every keypress (quit is
+  the commit point; an undo before quit costs nothing), and against a
+  `NeedsReview` binding (it is the *absence* of a decision, which clearing
+  already expresses). Accepted: the decision is lost if the terminal
+  dies before quit, and split/merge/rename/tag remain open backlog.
