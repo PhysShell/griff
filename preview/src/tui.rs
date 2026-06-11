@@ -557,6 +557,39 @@ mod tests {
         );
     }
 
+    // TDD red phase: scrolling the inspector reveals the clipped metrics
+    // tail on a short terminal (the PR #38 liveness decision deliberately
+    // let the tail clip; the scroll is the real fix).
+    #[test]
+    fn inspector_scroll_reveals_the_clipped_tail() {
+        let mut app = demo_app();
+        let before = app.snapshot(80, 12).expect("snapshot");
+        assert!(
+            !before.iter().any(|l| l.contains("ply")),
+            "the complexity tail clips on a 12-row terminal"
+        );
+        for _ in 0..12 {
+            app.vp.apply(Intent::InspectorScrollDown, &app.ctx.clone());
+        }
+        let after = app.snapshot(80, 12).expect("snapshot");
+        assert!(
+            after.iter().any(|l| l.contains("ply")),
+            "scrolling brings the tail into view"
+        );
+    }
+
+    #[test]
+    fn page_keys_map_to_inspector_scroll() {
+        assert_eq!(
+            App::key_intent(KeyCode::PageDown),
+            Some(Intent::InspectorScrollDown)
+        );
+        assert_eq!(
+            App::key_intent(KeyCode::PageUp),
+            Some(Intent::InspectorScrollUp)
+        );
+    }
+
     fn demo_app() -> App {
         let view = PianoRollView {
             ppq: 480,

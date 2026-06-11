@@ -262,6 +262,35 @@ mod tests {
         }
     }
 
+    // TDD red phase: the scrollable inspector (the S8 follow-up recorded
+    // with the PR #38 liveness decision). References a field and intents
+    // that do not exist yet, so the crate fails to compile until green.
+
+    #[test]
+    fn inspector_scroll_intents_step_and_saturate() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        assert_eq!(vp.inspector_scroll, 0, "starts unscrolled");
+        vp.apply(Intent::InspectorScrollDown, &c);
+        vp.apply(Intent::InspectorScrollDown, &c);
+        assert_eq!(vp.inspector_scroll, 2);
+        vp.apply(Intent::InspectorScrollUp, &c);
+        assert_eq!(vp.inspector_scroll, 1);
+        vp.apply(Intent::InspectorScrollUp, &c);
+        vp.apply(Intent::InspectorScrollUp, &c);
+        assert_eq!(vp.inspector_scroll, 0, "saturates at the top");
+    }
+
+    #[test]
+    fn hiding_the_inspector_resets_its_scroll() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::InspectorScrollDown, &c);
+        vp.apply(Intent::ToggleInspector, &c);
+        assert_eq!(vp.inspector_scroll, 0, "a hidden dock forgets its scroll");
+        assert!(!vp.show_inspector);
+    }
+
     #[test]
     fn new_anchors_at_span_start() {
         let c = ctx();
