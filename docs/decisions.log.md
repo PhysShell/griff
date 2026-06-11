@@ -841,3 +841,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   would still group (the bar-level repeatability continues to carry
   graded repetition), and the result is no longer accompanied by a
   strength value (a verbatim tile's strength is definitionally 1).
+
+- 2026-06-11 — In the context of Codex P2 on PR #38, round three (the
+  sub-bar period pass, `core/src/structure.rs`), facing `A B C A` in one
+  4/4 bar reading as a 3-beat period because the lag-3 all-pairs test had
+  exactly one pair to check (a tile "observed" once), we decided for
+  **capping sub-bar lags at half the cell count** — the same evidence rule
+  the bar-level pass has always applied via `max_lag = n / 2`: a period is
+  a recurrence claim, so the tile must fit the span at least twice — and
+  against requiring the cell count to divide by the lag with modulo-class
+  comparison (the comparison half is equivalent to the all-pairs test, and
+  divisibility would reject genuine tiles truncated by the bar count — the
+  tile/vary compiler explicitly produces truncated final copies). Accepted:
+  a true sub-bar idea stated exactly once in a short span goes unreported
+  (consistent with the bar-level rule), and single-bar scores can only
+  ever report periods up to half a bar.
