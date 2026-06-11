@@ -599,6 +599,24 @@ mod tests {
         );
     }
 
+    // TDD red phase: Codex P2 (PR #41) — the scroll clamp must count
+    // post-wrap rows. A long track name wraps in the 30-column dock, so the
+    // pre-wrap clamp leaves the final wrapped rows unreachable.
+    #[test]
+    fn wrapped_inspector_lines_stay_reachable() {
+        let mut app = demo_app();
+        app.view.lanes[0].name =
+            "An Extremely Long Imported MIDI Track Name That Wraps".to_string();
+        for _ in 0..30 {
+            app.vp.apply(Intent::InspectorScrollDown, &app.ctx.clone());
+        }
+        let after = app.snapshot(80, 12).expect("snapshot");
+        assert!(
+            after.iter().any(|l| l.contains("ply")),
+            "the tail stays reachable when lines wrap"
+        );
+    }
+
     #[test]
     fn page_keys_map_to_inspector_scroll() {
         assert_eq!(
