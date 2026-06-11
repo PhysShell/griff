@@ -126,6 +126,19 @@ fn note_count_in_range(voice: &Voice, range: TickRange) -> usize {
         .count()
 }
 
+/// Note atoms in a track's primary (first) voice — the voice every analysis
+/// module measures (`analyze_part`, structure, gesture, …). Curate selects
+/// measurable tracks with this predicate so selection and measurement agree.
+fn primary_voice_note_count(track: &Track) -> usize {
+    track.voices.first().map_or(0, |v| {
+        v.event_groups
+            .iter()
+            .flat_map(|g| &g.atoms)
+            .filter(|a| matches!(a, AtomEvent::Note(_)))
+            .count()
+    })
+}
+
 /// Total note atoms across all voices of a track.
 fn track_note_count(track: &Track) -> usize {
     track
@@ -301,7 +314,10 @@ fn curate_single(
     score: &Score,
     inputs: &CurateInputs,
 ) -> Result<(), CliError> {
-    let measured_track = score.tracks.iter().position(|t| track_note_count(t) > 0);
+    let measured_track = score
+        .tracks
+        .iter()
+        .position(|t| primary_voice_note_count(t) > 0);
     let meta = build_chunk_meta(
         score,
         path,
@@ -331,12 +347,13 @@ fn curate_ensemble(
         .tracks
         .iter()
         .enumerate()
-        .filter(|(_, t)| track_note_count(t) > 0)
+        .filter(|(_, t)| primary_voice_note_count(t) > 0)
         .map(|(i, _)| i)
         .collect();
     if tracks.len() < 2 {
         return Err(CliError::Ensemble(
-            "ensemble curation needs at least two note-bearing tracks",
+            "ensemble curation needs at least two tracks with notes in their primary voice"
+                .to_owned(),
         ));
     }
     let stem = output.map_or_else(|| path.with_extension(""), Path::to_path_buf);
@@ -371,7 +388,7 @@ fn curate_ensemble(
     let group = EnsembleGroup {
         id: inputs.id.clone(),
         members,
-        relations: measure_group_relations(score, &tracks),
+        relations: measure_group_relations(score, &tracks)?,
     };
     let json = serde_json::to_string_pretty(&group).map_err(CliError::Json)?;
     write_output(
@@ -382,19 +399,25 @@ fn curate_ensemble(
 
 /// Measured pairwise relation axes over the group's parts, ordered by
 /// `(a, b)` part indices (axes read *b relative to a*).
-fn measure_group_relations(score: &Score, tracks: &[usize]) -> Vec<PairRelation> {
+///
+/// A failed measurement is an error, not a gap: silently omitting a relation
+/// would persist an incomplete complement hyperedge (Codex P2, PR #36).
+fn measure_group_relations(score: &Score, tracks: &[usize]) -> Result<Vec<PairRelation>, CliError> {
     let mut relations = Vec::new();
     for (i, &track_a) in tracks.iter().enumerate() {
         for (j, &track_b) in tracks.iter().enumerate().skip(i.saturating_add(1)) {
-            if let Ok(axes) = complement::measure_pair_axes(score, track_a, track_b) {
-                relations.push(PairRelation {
-                    parts: (u32::try_from(i).unwrap_or(0), u32::try_from(j).unwrap_or(0)),
-                    axes,
-                });
-            }
+            let axes = complement::measure_pair_axes(score, track_a, track_b).map_err(|e| {
+                CliError::Ensemble(format!(
+                    "pair measurement failed for parts {i}/{j} (tracks {track_a}/{track_b}): {e:?}"
+                ))
+            })?;
+            relations.push(PairRelation {
+                parts: (u32::try_from(i).unwrap_or(0), u32::try_from(j).unwrap_or(0)),
+                axes,
+            });
         }
     }
-    relations
+    Ok(relations)
 }
 
 /// Measures `track_index` (when present) and assembles one chunk record.
@@ -601,7 +624,7 @@ enum CliError {
     Io(IoError),
     Midi(MidiError),
     Json(serde_json::Error),
-    Ensemble(&'static str),
+    Ensemble(String),
 }
 
 impl fmt::Display for CliError {
@@ -738,7 +761,10 @@ mod tests {
         // incomplete group.
         let score = one_bar_score(vec![
             track_of(vec![voice_of(0, vec![quarter(0, 60)])]),
-            track_of(vec![voice_of(0, Vec::new()), voice_of(1, vec![quarter(0, 48)])]),
+            track_of(vec![
+                voice_of(0, Vec::new()),
+                voice_of(1, vec![quarter(0, 48)]),
+            ]),
         ]);
         let err = measure_group_relations(&score, &[0, 1]).expect_err("must propagate");
         assert!(
