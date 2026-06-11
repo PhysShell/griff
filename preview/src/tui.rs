@@ -33,6 +33,7 @@ use ratatui::{DefaultTerminal, Frame, Terminal};
 use griff_core::classify::BarClass;
 
 use crate::analysis::Analysis;
+use crate::curation::RecordSummary;
 use crate::scene::{resolve, CellRole, GridSize, Scene, SceneCell, GUTTER};
 use crate::view::PianoRollView;
 use crate::viewport::{CurationDecision, Intent, Step, ViewContext, Viewport};
@@ -81,6 +82,7 @@ pub struct App {
     view: PianoRollView,
     analysis: Analysis,
     file: String,
+    record: Option<RecordSummary>,
     vp: Viewport,
     ctx: ViewContext,
 }
@@ -101,9 +103,16 @@ impl App {
             view,
             analysis,
             file,
+            record: None,
             vp,
             ctx,
         }
+    }
+
+    /// Attaches the digest of the `--record` chunk so the inspector shows
+    /// the record's current curation state (title, reviewer, tags).
+    pub fn set_record(&mut self, record: RecordSummary) {
+        self.record = Some(record);
     }
 
     /// Renders one frame into a `TestBackend` of the given size and returns the
@@ -258,6 +267,23 @@ impl App {
         frame.render_widget(paragraph.scroll((scroll, 0)), inner);
     }
 
+    /// Appends the loaded record's curation state (title, prior reviewer
+    /// decision, tags) to the inspector lines, when a `--record` is attached.
+    fn push_record_lines(&self, lines: &mut Vec<Line<'static>>, dim: Style) {
+        let Some(rec) = &self.record else { return };
+        lines.push(Line::from(vec![
+            Span::styled("record ", dim),
+            Span::raw(rec.title.clone()),
+        ]));
+        lines.push(Line::from(format!(
+            "review {}",
+            rec.reviewer.as_deref().unwrap_or("—")
+        )));
+        if !rec.tags.is_empty() {
+            lines.push(Line::from(format!("tags  {}", rec.tags.join(" "))));
+        }
+    }
+
     /// Builds the inspector's content lines: track, section, curation,
     /// transport (live state first — the PR #38 liveness ordering), then the
     /// static structure and complexity blocks.
@@ -300,6 +326,8 @@ impl App {
                 None => "—",
             }
         )));
+
+        self.push_record_lines(&mut lines, dim);
 
         // Transport sits above the metrics blocks: when the content exceeds
         // the dock, clipping eats the tail of the static metrics, never the

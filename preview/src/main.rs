@@ -18,7 +18,7 @@ use std::{env, fs};
 
 use griff_core::midi::import_score;
 use griff_preview::analysis::analyze;
-use griff_preview::curation::decide_record;
+use griff_preview::curation::{decide_record, summarize_record};
 use griff_preview::tui::{self, App};
 use griff_preview::view::build_view;
 use griff_preview::viewport::CurationDecision;
@@ -70,6 +70,19 @@ fn main() -> ExitCode {
     };
 
     let mut app = App::new(build_view(&score), analyze(&score), path);
+
+    // Surface the record's current curation state in the inspector. Best
+    // effort: an unreadable record still fails loudly at quit-time persist,
+    // so here a warning suffices (printed before the TUI owns the screen).
+    if let Some(record_path) = record.as_deref() {
+        match fs::read_to_string(record_path).map(|json| summarize_record(&json)) {
+            Ok(Ok(summary)) => app.set_record(summary),
+            Ok(Err(err)) => {
+                eprintln!("warning: cannot summarize record {record_path}: {err:?}");
+            }
+            Err(err) => eprintln!("warning: cannot read record {record_path}: {err}"),
+        }
+    }
 
     match snapshot {
         Some((w, h)) => match app.snapshot(w, h) {
