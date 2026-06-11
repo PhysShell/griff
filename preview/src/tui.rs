@@ -507,7 +507,7 @@ mod tests {
     use super::*;
     use crate::analysis::Section;
     use crate::view::{Lane, NoteRect};
-    use griff_core::structure::ComplexityProfile;
+    use griff_core::structure::{ComplexityProfile, StructureMetrics};
 
     /// Compare `actual` to the stored golden frame, or write it when
     /// `GRIFF_BLESS=1` (the core characterization convention).
@@ -594,6 +594,29 @@ mod tests {
     // Characterization goldens: pin the exact rendered frame before and after a
     // scripted interaction, so the viewport refactor cannot silently change what
     // the terminal draws. Regenerate deliberately if the UI is meant to change.
+    #[test]
+    fn transport_stays_visible_with_full_metrics() {
+        // Codex P2 (PR #38): with both structure metrics and complexity
+        // measured (the real imported-score path), the inspector content
+        // exceeds a 20-row terminal. The clipping must eat the tail of the
+        // static metrics, not the live transport block.
+        let mut app = demo_app();
+        app.analysis.metrics = Some(StructureMetrics {
+            bar_count: 2,
+            detected_pattern_period_bars: Some(1),
+            detected_pattern_period_ticks: Some(960),
+            detected_subbar_period_ticks: None,
+            repeatability_score: 0.75,
+            variation_score: 0.25,
+            loopability_score: 0.5,
+            structural_complexity: 0.5,
+        });
+        let text = app.snapshot(80, 20).expect("renders").join("\n");
+        assert!(text.contains("transport"), "transport block visible");
+        assert!(text.contains("⏸ paused"), "play state visible");
+        assert!(text.contains("pos 1:1"), "play position visible");
+    }
+
     #[test]
     fn render_byte_stable_initial() {
         let mut app = demo_app();
