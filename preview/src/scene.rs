@@ -458,6 +458,26 @@ mod tests {
         resolve(&view, &analysis, &vp, GridSize { cols: 40, rows: 14 })
     }
 
+    // TDD red phase: phrase-boundary overlays (S8 × S4). References a field
+    // and a role that do not exist yet, so the crate fails to compile until
+    // the green step.
+    #[test]
+    fn boundary_marks_overlay_the_plane() {
+        let (view, mut analysis, vp) = fixture();
+        analysis.boundaries = vec![960];
+        let scene = resolve(&view, &analysis, &vp, GridSize { cols: 40, rows: 14 });
+        // ticks_per_col 60 → tick 960 lands at plot column 16, scene column 21.
+        let col = GUTTER + 16;
+        let has_mark = (0..14).any(|r| {
+            scene.plane_cell(r, col).map(|c| c.role) == Some(CellRole::BoundaryMark)
+        });
+        assert!(has_mark, "a visible boundary column carries the mark");
+        let off_grid = (0..14).any(|r| {
+            scene.plane_cell(r, col + 1).map(|c| c.role) == Some(CellRole::BoundaryMark)
+        });
+        assert!(!off_grid, "marks sit only on the boundary column");
+    }
+
     #[test]
     fn grid_has_exact_cell_counts() {
         let s = resolved();

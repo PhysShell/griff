@@ -241,6 +241,41 @@ mod tests {
         );
     }
 
+    // TDD red phase: the S8 backlog item "boundary overlays (S4)" — the
+    // analysis surfaces the focus track's phrase-boundary start ticks under
+    // the PPQN-scaled default config (the closure.rs referee precedent).
+    // References a field that does not exist yet, so the crate fails to
+    // compile until the green step.
+
+    #[test]
+    fn analysis_surfaces_phrase_boundaries_of_the_focus_track() {
+        use griff_core::boundary::{detect_phrase_boundaries, BoundaryConfig};
+        use griff_core::event::Ticks;
+
+        let riff = vec![(40, 100), (43, 100), (45, 100), (47, 100), (40, 100)];
+        let clean = vec![(60, 50), (62, 50), (64, 50)];
+        let score = score_from(vec![riff.clone(), riff, clean]);
+        let a = analyze(&score);
+
+        let ppq = u32::from(score.ticks_per_quarter);
+        let config = BoundaryConfig {
+            quantize_ticks: Ticks(ppq / 4),
+            min_gap: Ticks(ppq * 2),
+            ..BoundaryConfig::default()
+        };
+        let expected: Vec<u32> = detect_phrase_boundaries(&score, a.focus_track, &config)
+            .iter()
+            .map(|b| b.start_tick.0)
+            .collect();
+        assert_eq!(a.boundaries, expected, "the S4 start ticks, verbatim");
+    }
+
+    #[test]
+    fn empty_score_has_no_boundaries() {
+        let a = analyze(&score_from(vec![]));
+        assert!(a.boundaries.is_empty());
+    }
+
     #[test]
     fn merges_consecutive_equal_classes() {
         // Two loud riff bars (then one clean bar) → two sections.
