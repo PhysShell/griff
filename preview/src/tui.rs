@@ -235,7 +235,7 @@ impl App {
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    fn render_inspector(&self, area: Rect, frame: &mut Frame<'_>) {
+    fn render_inspector(&mut self, area: Rect, frame: &mut Frame<'_>) {
         let block = Block::bordered()
             .title(" Inspector ")
             .border_style(Style::new().fg(Color::Rgb(70, 70, 78)));
@@ -251,6 +251,10 @@ impl App {
             .unwrap_or(u16::MAX)
             .saturating_sub(inner.height);
         let scroll = self.vp.inspector_scroll.min(overflow);
+        // Write the clamp back (the autoscroll precedent: render owns the
+        // bounds), so overscrolling leaves no hidden excess for PgUp to burn
+        // through (Codex P2, PR #41).
+        self.vp.inspector_scroll = scroll;
         frame.render_widget(paragraph.scroll((scroll, 0)), inner);
     }
 
