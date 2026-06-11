@@ -761,3 +761,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   rule, mixed-meter timelines and non-dividing bars abstain entirely, and
   `StructureControl` cannot yet *request* a sub-bar period (the control-side
   increment stays deferred).
+
+- 2026-06-11 — In the context of Codex P2 on PR #38 (the sub-bar period
+  pass, `core/src/structure.rs`), facing sparse riffs where empty-empty
+  beat pairs (`set_jaccard(∅, ∅) = 1.0`) alone cleared `PERIOD_THRESHOLD`
+  at lag 1 and persisted a false one-beat period into v5 corpus metadata,
+  we decided for **excluding empty-empty pairs from the sub-bar lag mean**
+  (silence may sit inside a tile but never establishes one; a lag with no
+  informative pairs is skipped) — and against gating on a minimum
+  non-empty-pair fraction (another calibration knob), and against changing
+  the bar-level pass (a rest bar inside a repeated phrase is meaningful at
+  bar granularity and that behaviour is documented and tested). Accepted:
+  a sub-bar period can now be carried by very few sounded cells on mostly
+  silent material — the verbatim rule still requires them to actually
+  repeat.
