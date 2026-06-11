@@ -284,6 +284,16 @@ impl App {
         }
 
         lines.push(Line::raw(""));
+        lines.push(Line::styled("complexity (S14)", dim));
+        if let Some(c) = &self.analysis.complexity {
+            lines.push(complexity_pair("rhy", c.rhythmic, "pit", c.pitch));
+            lines.push(complexity_pair("tec", c.technical, "har", c.harmonic));
+            lines.push(complexity_pair("ply", c.playability, "str", c.structural));
+        } else {
+            lines.push(Line::raw("—"));
+        }
+
+        lines.push(Line::raw(""));
         lines.push(Line::styled("transport", dim));
         lines.push(Line::from(format!(
             "♩={:.0}   {}",
@@ -331,6 +341,16 @@ fn render_footer(area: Rect, frame: &mut Frame<'_>) {
 }
 
 /// Builds a meter line plus its label/percent line for an inspector metric.
+/// One inspector line carrying two abbreviated complexity axes — `rhy`thmic,
+/// `pit`ch, `tec`hnical, `har`monic, `ply` (playability), `str`uctural — the
+/// vector compressed to three rows so the dock keeps its transport block
+/// visible in short terminals.
+fn complexity_pair(label_a: &str, value_a: f64, label_b: &str, value_b: f64) -> Line<'static> {
+    let pct_a = (value_a.clamp(0.0, 1.0) * 100.0).round();
+    let pct_b = (value_b.clamp(0.0, 1.0) * 100.0).round();
+    Line::from(format!("{label_a} {pct_a:>3.0}%   {label_b} {pct_b:>3.0}%"))
+}
+
 fn push_metric(lines: &mut Vec<Line<'static>>, label: &str, value: f64, style: Style) {
     let pct = (value.clamp(0.0, 1.0) * 100.0).round();
     lines.push(Line::from(format!("{label:<13}{pct:>3.0}%")));
@@ -481,9 +501,38 @@ mod tests {
         clippy::str_to_string
     )]
 
+    use std::path::PathBuf;
+    use std::{env, fs};
+
     use super::*;
     use crate::analysis::Section;
     use crate::view::{Lane, NoteRect};
+    use griff_core::structure::ComplexityProfile;
+
+    /// Compare `actual` to the stored golden frame, or write it when
+    /// `GRIFF_BLESS=1` (the core characterization convention).
+    fn assert_golden(name: &str, actual: &str) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("golden")
+            .join(format!("{name}.txt"));
+        if env::var("GRIFF_BLESS").as_deref() == Ok("1") {
+            fs::write(&path, actual).unwrap();
+            return;
+        }
+        let expected = fs::read_to_string(&path).unwrap_or_else(|_| {
+            panic!(
+                "missing golden frame {}; create it with \
+                 `GRIFF_BLESS=1 cargo test -p griff-preview`",
+                path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "rendered frame drifted from golden `{name}`. If intended, \
+             re-bless with `GRIFF_BLESS=1 cargo test -p griff-preview`."
+        );
+    }
 
     fn demo_app() -> App {
         let view = PianoRollView {
@@ -530,6 +579,14 @@ mod tests {
                 },
             ],
             metrics: None,
+            complexity: Some(ComplexityProfile {
+                rhythmic: 0.25,
+                pitch: 0.5,
+                technical: 0.0,
+                harmonic: 0.125,
+                playability: 1.0,
+                structural: 0.5,
+            }),
         };
         App::new(view, analysis, "demo.mid".to_string())
     }
@@ -541,7 +598,7 @@ mod tests {
     fn render_byte_stable_initial() {
         let mut app = demo_app();
         let got = app.snapshot(80, 20).expect("renders").join("\n");
-        assert_eq!(got, include_str!("golden/initial_80x20.txt"));
+        assert_golden("initial_80x20", &got);
     }
 
     #[test]
@@ -552,7 +609,7 @@ mod tests {
         app.on_key(KeyCode::Char(']')); // next section
         app.on_key(KeyCode::Char('+')); // zoom in
         let got = app.snapshot(80, 20).expect("renders").join("\n");
-        assert_eq!(got, include_str!("golden/acted_80x20.txt"));
+        assert_golden("acted_80x20", &got);
     }
 
     #[test]

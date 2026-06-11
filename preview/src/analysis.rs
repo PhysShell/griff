@@ -5,7 +5,9 @@
 
 use griff_core::classify::{bar_features_across_voices, classify_bar, BarClass};
 use griff_core::score::{AtomEvent, Score, Voice};
-use griff_core::structure::{measure_structure, StructureMetrics};
+use griff_core::structure::{
+    measure_complexity, measure_structure, ComplexityProfile, StructureMetrics,
+};
 
 /// A run of consecutive bars sharing one classification — a *named section*
 /// such as `Riff`, `Breakdown`, or `Solo`.
@@ -44,6 +46,8 @@ pub struct Analysis {
     pub sections: Vec<Section>,
     /// Structure metrics for the focus track; `None` for an empty score.
     pub metrics: Option<StructureMetrics>,
+    /// The focus track's per-axis complexity (S14); `None` for an empty score.
+    pub complexity: Option<ComplexityProfile>,
 }
 
 /// Derives the [`Analysis`] for a score: pick the busiest track, classify each
@@ -53,10 +57,12 @@ pub fn analyze(score: &Score) -> Analysis {
     let focus_track = pick_focus_track(score);
     let sections = sections_for(score, focus_track);
     let metrics = measure_structure(score, focus_track).ok();
+    let complexity = measure_complexity(score, focus_track).ok();
     Analysis {
         focus_track,
         sections,
         metrics,
+        complexity,
     }
 }
 
@@ -117,7 +123,8 @@ mod tests {
         clippy::missing_assert_message,
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
-        clippy::str_to_string
+        clippy::str_to_string,
+        clippy::float_cmp
     )]
 
     use super::*;

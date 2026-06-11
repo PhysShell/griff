@@ -438,6 +438,7 @@ mod tests {
                 },
             ],
             metrics: None,
+            complexity: None,
         };
         let vp = Viewport {
             scroll_tick: 0,
