@@ -892,3 +892,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   the v1 axis definitions are now load-bearing for stored data — future
   refinements bump the schema again rather than silently re-meaning
   stored values.
+
+- 2026-06-11 — In the context of Codex P2 on PR #38 (the complexity
+  profile's technical axis, `core/src/structure.rs`), facing a technique
+  span in one voice marking simultaneous plain notes in *other* voices as
+  technical (the spans were flattened track-wide before the coverage
+  test, inflating `ComplexityProfile.technical` on polyphonic tracks), we
+  decided for **per-voice span scoping**: each voice's notes are tested
+  against that voice's spans only — a `TechniqueSpan` is recorded inside
+  a voice's event group and describes playing technique on that voice's
+  line — and against per-event-group scoping (a span's tick range
+  legitimately outlives its anchor group — a palm-mute span covers the
+  following notes of the same voice — so group scoping would undercount
+  what the span explicitly states). Accepted: two voices genuinely played
+  with one physical gesture (rare in practice; importers attach the span
+  to one voice) count the technique on the anchored voice only.
