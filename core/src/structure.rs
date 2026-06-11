@@ -200,8 +200,10 @@ pub fn measure_structure(
 /// yet tiles at no sub-bar lag, and one varied cell anywhere vetoes the tile
 /// (variation tolerance is the bar-level repeatability's job). Empty cells
 /// match empty cells inside a tile, but a mismatch against a sounded cell
-/// vetoes the lag, so silence still cannot establish a period on its own
-/// (both Codex P2, PR #38).
+/// vetoes the lag, so silence still cannot establish a period on its own.
+/// Lags stop at half the cell count — a tile must be observed at least twice
+/// (`A B C A`'s single lag-3 pair is no tiling of the bar), the same evidence
+/// rule as the bar-level `max_lag = n / 2` (all three: Codex P2, PR #38).
 fn detect_subbar_period(notes: &[NoteRef], score: &Score) -> Option<u32> {
     if notes.is_empty() {
         return None;
@@ -248,12 +250,13 @@ fn detect_subbar_period(notes: &[NoteRef], score: &Score) -> Option<u32> {
         }
     }
 
+    let max_lag_cells = cells.len() / 2;
     for lag in 1..beats {
         let lag_cells = usize::try_from(lag).ok()?;
-        let pairs = cells.len().saturating_sub(lag_cells);
-        if pairs == 0 {
-            continue;
+        if lag_cells > max_lag_cells {
+            break;
         }
+        let pairs = cells.len().saturating_sub(lag_cells);
         let tiles = (0..pairs).all(|i| cells.get(i) == cells.get(i.saturating_add(lag_cells)));
         if tiles {
             return lag.checked_mul(beat_ticks);
