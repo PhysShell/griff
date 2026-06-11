@@ -204,7 +204,11 @@ pub fn measure_structure(
 /// signatures: at one-onset granularity the bar-level rhythm floor and
 /// transposition credit are degenerate (almost any two single-note cells would
 /// "match"), so the sub-bar pass demands verbatim repeats — softening that is
-/// a later increment. Ties resolve to the shortest lag (strict-greater scan).
+/// a later increment. Empty-empty cell pairs are uninformative at this
+/// granularity and sit out of the lag mean (unlike the bar-level pass, where a
+/// rest bar inside a repeated phrase is meaningful): silence may sit inside a
+/// tile but never establishes one (Codex P2, PR #38). Ties resolve to the
+/// shortest lag (strict-greater scan).
 #[allow(clippy::cast_precision_loss)]
 fn detect_subbar_period(notes: &[NoteRef], score: &Score) -> Option<u32> {
     if notes.is_empty() {
@@ -261,12 +265,20 @@ fn detect_subbar_period(notes: &[NoteRef], score: &Score) -> Option<u32> {
             continue;
         }
         let mut sum = 0.0_f64;
+        let mut counted = 0_usize;
         for (i, a) in cells.iter().enumerate().take(pairs) {
             if let Some(b) = cells.get(i.saturating_add(lag_cells)) {
+                if a.is_empty() && b.is_empty() {
+                    continue;
+                }
                 sum += set_jaccard(a, b);
+                counted = counted.saturating_add(1);
             }
         }
-        let mean = sum / pairs as f64;
+        if counted == 0 {
+            continue;
+        }
+        let mean = sum / counted as f64;
         if mean > best {
             best = mean;
             best_lag = lag;
