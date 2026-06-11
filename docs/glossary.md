@@ -708,7 +708,9 @@ predictable, as a hole when not), the share of bursts landing on the line's
 modal pitch class, and burst-final lengthening (closure-v1 normalisation). A
 *gesture rest* is at least one quarter of line silence after a sounded note;
 sub-quarter holes are phrasing. Persisted per chunk as `ChunkMeta.gesture`
-(corpus schema v3); intended as S6 constraint inputs.
+(corpus schema v3); the intensive distributions feed the chunk-similarity
+edge (§9), and the stats derive a *Gesture control* (§8) — the S6 constraint
+input they were measured for.
 
 ## 8. Generation
 
@@ -890,6 +892,18 @@ complexity. Used to rerank candidates and — later — as graph node attributes
 Computed by self-similarity / autocorrelation analysis; does not depend on the
 graph layer or DP/Viterbi (ADR-0015).
 
+### Gesture control
+The *ask* counterpart of the measured gesture statistics (§7) — the structure
+control duality applied to burst/rest writing: `burst notes` (notes per burst)
+and `rest quarters` (minimum gesture-rest length), derivable from a measured
+corpus chunk (`GestureControl::from_stats`). Compiled over the S6 generator
+(`generate_gestured`, `core/src/gesture.rs`): plain S6 writes wall-to-wall,
+then gesture rests are carved deterministically — after every `burst notes`
+kept notes, following notes are dropped until at least `rest quarters` of
+line silence opens; survivors keep their absolute onsets, so the master
+timeline is untouched and bursts span barlines. The candidate carries the
+re-measured gesture statistics as provenance (ask vs is).
+
 ## 9. Graph layer
 
 ### Graph layer
@@ -909,11 +923,16 @@ The relation weight, used in traversal/generation/reranking.
 The first concrete S7 edge (`core/src/similarity.rs`): per-axis agreement
 between two corpus chunks over facts already persisted in `ChunkMeta` —
 detected pattern period (min/max bar ratio; through-composed pairs agree),
-repeatability / loopability / structural complexity (`1 − |Δ|`), and tag-set
-Jaccard — as named ADR-0017 axes under the uniform `similarity` v1 policy.
+repeatability / loopability / structural complexity (`1 − |Δ|`), tag-set
+Jaccard, and the five intensive gesture distributions (mean burst / rest
+length as min/max ratios — two restless chunks agree; rest-grid, modal
+landing, and final-lengthening shares as `1 − |Δ|`) — as named ADR-0017 axes
+under the uniform `similarity` v2 policy. The extensive gesture counts are
+deliberately not axes (a length echo would shadow the style facts).
 `find_similar_chunks` is the brute-force query over the edge (no ANN at
 micro-corpus scale; decisions.log 2026-06-10 AudioMuse entry, idea (a));
-unmeasured schema-v1 records cannot sit on the edge until re-curated.
+*measured* means structure **and** gesture, so schema-v1/v2 records cannot
+sit on the edge until re-curated.
 
 ### Phrase graph
 A graph whose nodes are phrases or phrase chunks.
