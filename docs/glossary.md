@@ -699,6 +699,17 @@ overlap. Gives the §8 "Quality score" `novelty` axis its concrete measure
 (`quote_novelty` / `ngram_novelty`, ADR-0017); the rejection threshold (e.g.
 quotes longer than 1–2 bars) is the caller's cut, not code.
 
+### Gesture statistics (burst/rest)
+The distributions that describe burst-and-rest writing without its content
+(`core/src/gesture.rs`; melodic-closure note §3.5 — the DGD case): burst
+length (maximal melodic-line runs between gesture rests), rest length and
+quarter-grid placement (a rest reads as part of the gesture when metrically
+predictable, as a hole when not), the share of bursts landing on the line's
+modal pitch class, and burst-final lengthening (closure-v1 normalisation). A
+*gesture rest* is at least one quarter of line silence after a sounded note;
+sub-quarter holes are phrasing. Persisted per chunk as `ChunkMeta.gesture`
+(corpus schema v3); intended as S6 constraint inputs.
+
 ## 8. Generation
 
 ### Generator
@@ -893,6 +904,16 @@ user preference.
 
 ### Edge weight
 The relation weight, used in traversal/generation/reranking.
+
+### Chunk similarity (similarity edge)
+The first concrete S7 edge (`core/src/similarity.rs`): per-axis agreement
+between two corpus chunks over facts already persisted in `ChunkMeta` —
+detected pattern period (min/max bar ratio; through-composed pairs agree),
+repeatability / loopability / structural complexity (`1 − |Δ|`), and tag-set
+Jaccard — as named ADR-0017 axes under the uniform `similarity` v1 policy.
+`find_similar_chunks` is the brute-force query over the edge (no ANN at
+micro-corpus scale; decisions.log 2026-06-10 AudioMuse entry, idea (a));
+unmeasured schema-v1 records cannot sit on the edge until re-curated.
 
 ### Phrase graph
 A graph whose nodes are phrases or phrase chunks.

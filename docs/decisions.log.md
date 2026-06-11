@@ -449,3 +449,99 @@ Architectural decisions go to [`adr/`](adr/) instead.
   pattern as v2); until it lands, the cohort convention lives in chunk ids /
   titles (e.g. `uo_` / `hf_` prefixes), which is fragile and explicitly
   short-term.
+- 2026-06-10 — In the context of landing chunk similarity v1
+  (`core/src/similarity.rs`) — the first S7 edge, implementing idea (a) of
+  the AudioMuse prior-art entry above — facing what the edge should measure
+  at micro-corpus scale, we decided for per-axis *agreement* facts under
+  the ADR-0017 envelope, computed only from facts already persisted in
+  `ChunkMeta` (schema-v2 `StructureMetrics` + tags, no note content):
+  `period_similarity` as the min/max ratio of detected bar periods
+  (through-composed pairs agree at 1.0; one-sided periodicity scores 0.0),
+  `1 − |Δ|` on the repeatability / loopability / structural-complexity
+  scalars, and Jaccard over tag sets (untagged pairs agree) — ranked by
+  `rank_indices` under the uniform `similarity` v1 `WeightPolicy`, with an
+  unmeasured query a typed error and unmeasured candidates skipped until
+  re-curated — and against a literal cosine over the raw feature vector
+  (the AudioMuse entry's shorthand: over bounded non-negative axes cosine
+  degenerates toward 1, and its joint normalisation does not decompose
+  into the per-axis `value·weight` rationale ADR-0017 requires), against a
+  `variation_similarity` axis (`variation = 1 − repeatability` by
+  construction; a duplicate axis would silently double-weight one fact),
+  against tempo / register / technique axes now (not yet persisted as
+  comparable numerics; later increments alongside richer corpus features),
+  and against any ANN index (brute force is exact, explainable, and cheap
+  at this scale), to achieve an inspectable first retrieval edge over the
+  axes S14 Phase 3 just persisted, accepting that the edge is blind to
+  note content (two chunks with equal metrics and tags read as identical),
+  that period similarity compares bar counts only (tick-resolution and
+  meter differences are invisible), and that the uniform weights await S9
+  tuning.
+
+- 2026-06-11 — In the context of completing the five remaining S13 relation
+  modes (`core/src/complement.rs`, each its own red→green increment per the
+  stage doc), facing how each mode's contract should be made concrete on the
+  existing skeleton, we decided for: `octave_double` as a verbatim
+  contour copy (onsets, durations, velocities, marks) shifted by a
+  `register_offset` that must be a non-zero whole octave (typed
+  `InvalidSpec` otherwise — a third-doubling is a different relation);
+  `register_contrast` as the rhythm-lock grid in A's band shifted by the
+  offset, rejected as `InvalidSpec` when the shifted band still intersects
+  A's after MIDI clamping (including a clamp folding it back onto A);
+  `support_layer` as one root pedal per non-empty bar — A's first onset,
+  that note's duration and velocity, A's lowest pitch shifted — so the
+  layer is strictly sparser wherever A plays more than one note a bar;
+  `call_response` answering each ≥-one-quarter gap of A's *merged* note
+  coverage (between A's first sound and the span end) with one note
+  sustaining through the gap at the preceding call's velocity, leading
+  silence unanswered, and a gapless A the typed `NoGapsToAnswer`;
+  `counter_melody` as the one true S6 delegation — `ConstrainedRandomWalk`
+  over a request derived from A (pitch classes as scale, shifted band as
+  bounds, A's meter/tempo/PPQN/bar count, bar rhythms as templates) lifted
+  onto A's master bars, with a mid-score meter or bar-span change the
+  typed `NonUniformTimeline` (S6 lays bars back-to-back from one meter);
+  plus generalising `rhythm_similarity` provenance from a hardcoded `1.0`
+  to the onset-set Jaccard between A and B (grid-locked modes still
+  measure exactly 1.0) and removing the now-unreachable
+  `ModeNotImplemented` variant — and against fixed mode defaults hidden in
+  code (e.g. snapping a stray offset to an octave), against answering
+  leading silence (an answer needs a call), against a B-empty fallback for
+  gapless or non-uniform inputs (silent degradation over a typed error),
+  and against routing the grid-locked modes through an S6 round-trip (A's
+  onsets already respect A's timeline; regeneration could only misalign).
+  Accepted: `support_layer` equals A's density when A is one-note-per-bar,
+  `call_response` ignores velocity decay across long gaps, the
+  `counter_melody` rhythm comes from the S6 walk rather than a
+  complement-aware rhythm model (S7's cost terms take over there), and
+  removing `ModeNotImplemented` is a breaking enum change inside the
+  pre-1.0 workspace.
+
+- 2026-06-11 — In the context of landing burst/rest gesture statistics
+  (`core/src/gesture.rs`, melodic-closure note §3.5/§7.4) as persisted
+  chunk axes (corpus schema v3), facing what to measure and how to segment
+  a gesture, we decided for **distributions, not content**: burst
+  count/mean/max over maximal melodic-line runs, with a *gesture rest*
+  defined as at least one quarter of line silence after a sounded note
+  (the trailing gap to the span end included, leading silence excluded —
+  a rest belongs to the gesture before it; sub-quarter holes are
+  phrasing); rest placement as the share of rests starting on the quarter
+  grid of their bar (the §1.3 metrical-predictability cue); landing degree
+  as the share of bursts ending on the line's modal pitch class (ties to
+  the smallest class — a key-free root proxy until `PartProfile` grows
+  harmonic context); burst-final lengthening under the closure-v1
+  normalisation (`landing / (2 × mean)`, clamped, equal-to-mean reads
+  0.5); the highest-pitch-per-onset line convention shared with
+  closure / novelty / curate; the Phase-3 serde pattern for persistence
+  (`SCHEMA_VERSION = 3`, absent key on older records, byte-identical
+  v1/v2 round-trips); and `griff curate` measuring the same first
+  note-bearing track it already measures structure on — and against
+  persisting raw histograms (compact scalars serialize stably and suffice
+  at micro-corpus scale), against a key-aware landing degree now
+  (`ChunkMeta` carries no key; verbatim Krumhansl porting was already
+  rejected in closure v1), against an eighth-based rest threshold
+  (syncopated eighth holes inside a flurry are phrasing, not rests), and
+  against making the stats `Scored` axes now (they are corpus facts and
+  future S6 constraint inputs; a similarity / scoring join is a
+  follow-up). Accepted: the grid check uses the quarter grid only
+  (denominator-aware beat grids deferred), the modal class is a crude
+  root proxy, vacuous shares read as predictable (`1.0`) and absent rests
+  as zero length, and a chord participates only through its top note.

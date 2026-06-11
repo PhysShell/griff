@@ -22,9 +22,12 @@ ADRs: ADR-0015
 > `generate_structured_set` (deterministic candidate set over derived seeds).
 > Pure, deterministic, and independent of the graph layer / DP. Phase 3 lands
 > corpus persistence: `StructureMetrics` is serialisable and joins `ChunkMeta`
-> as an optional field (corpus schema v2, `SCHEMA_VERSION = 2`; v1 records
-> load as `None` and round-trip losslessly), and `griff curate` measures the
-> first note-bearing track and persists the metrics with the record.
+> as an optional field (corpus schema v2; v1 records load as `None` and
+> round-trip losslessly), and `griff curate` measures the first note-bearing
+> track and persists the metrics with the record. The same pattern carried
+> the burst/rest gesture statistics (melodic-closure note §7.4) into the
+> schema as `ChunkMeta.gesture` (corpus schema v3, `SCHEMA_VERSION = 3`,
+> 2026-06-11), also measured and persisted by `griff curate`.
 > Remaining: sub-bar (beat-level) period detection, the full per-axis
 > `ComplexityProfile`, a P2 `structured_request` fuzz target (deferred: no
 > nightly toolchain in the landing environment), S7 node attributes (with the

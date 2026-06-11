@@ -24,8 +24,8 @@ use griff_core::{
         RelationMode,
     },
     event::{
-        NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning,
-        Velocity,
+        NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature,
+        Tuning, Velocity,
     },
     generate::GenerationSeed,
     score::{
@@ -266,21 +266,6 @@ fn arrange_is_deterministic_for_fixed_seed() {
 }
 
 #[test]
-fn arrange_unimplemented_mode_is_reported() {
-    let score = score_with_part_a(1, &[60, 62, 64, 65]);
-    let spec = ComplementSpec {
-        mode: RelationMode::CounterMelody,
-        register_offset: 0,
-    };
-    assert!(matches!(
-        arrange_complement(&score, 0, spec, GenerationSeed(1)),
-        Err(ComplementError::ModeNotImplemented(
-            RelationMode::CounterMelody
-        )),
-    ));
-}
-
-#[test]
 fn arrange_rejects_part_with_no_notes() {
     let mut score = score_with_part_a(1, &[60]);
     score.tracks[0].voices[0].event_groups.clear();
@@ -486,4 +471,485 @@ fn analyze_part_includes_spanning_techniques() {
         profile.techniques.contains("palm_mute"),
         "spanning techniques must be in the profile, not only per-note marks"
     );
+}
+
+// ── octave_double ───────────────────────────────────────────────────────────────
+
+#[test]
+fn octave_double_reproduces_contour_an_octave_down() {
+    let score = score_with_part_a(2, &[52, 55, 59, 62]);
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        note_onsets(&cand.score, 0),
+        "the double keeps A's onsets"
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        note_durations(&cand.score, 0),
+        "the double keeps A's durations"
+    );
+    let expected: Vec<u8> = note_pitches(&cand.score, 0)
+        .iter()
+        .map(|p| p - 12)
+        .collect();
+    assert_eq!(
+        note_pitches(&cand.score, cand.part_b_index),
+        expected,
+        "every pitch shifts by exactly one octave"
+    );
+}
+
+#[test]
+fn octave_double_shifts_up_as_well() {
+    let score = score_with_part_a(1, &[52, 55]);
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: 24,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+    assert_eq!(note_pitches(&cand.score, cand.part_b_index), vec![76, 79]);
+}
+
+#[test]
+fn octave_double_clamps_at_the_midi_floor() {
+    let score = score_with_part_a(1, &[5, 17]);
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+    assert_eq!(
+        note_pitches(&cand.score, cand.part_b_index),
+        vec![0, 5],
+        "out-of-range doubles clamp to the MIDI floor instead of failing"
+    );
+}
+
+#[test]
+fn octave_double_requires_a_whole_octave_offset() {
+    let score = score_with_part_a(1, &[60, 62]);
+    for offset in [0_i8, -7, 5, 13] {
+        let spec = ComplementSpec {
+            mode: RelationMode::OctaveDouble,
+            register_offset: offset,
+        };
+        assert!(
+            matches!(
+                arrange_complement(&score, 0, spec, GenerationSeed(1)),
+                Err(ComplementError::InvalidSpec(RelationMode::OctaveDouble)),
+            ),
+            "offset {offset} is not a non-zero whole octave"
+        );
+    }
+}
+
+#[test]
+fn octave_double_preserves_note_marks() {
+    let mut score = score_with_part_a(1, &[60, 62]);
+    if let AtomEvent::Note(n) = &mut score.tracks[0].voices[0].event_groups[0].atoms[0] {
+        n.marks.insert(NoteMark::Accent);
+    }
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+    let b_track = &cand.score.tracks[cand.part_b_index];
+    let AtomEvent::Note(first) = &b_track.voices[0].event_groups[0].atoms[0] else {
+        panic!("first B atom must be a note");
+    };
+    assert!(
+        first.marks.contains(NoteMark::Accent),
+        "the double articulates like A"
+    );
+}
+
+#[test]
+fn octave_double_axis_scores_report_locked_rhythm_and_density() {
+    let score = score_with_part_a(2, &[52, 55, 59, 62]);
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+    assert_eq!(cand.axis_scores.rhythm_similarity, 1.0);
+    assert_eq!(cand.axis_scores.density_ratio, 1.0);
+    assert_eq!(
+        cand.axis_scores.register_overlap, 0.0,
+        "bands [52, 62] and [40, 50] are disjoint"
+    );
+    assert_eq!(
+        cand.axis_scores.technique_overlap, 1.0,
+        "both parts are technique-free"
+    );
+}
+
+// ── register_contrast ───────────────────────────────────────────────────────────
+
+#[test]
+fn register_contrast_band_is_disjoint_and_grid_locked() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RegisterContrast,
+        register_offset: -24,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(11)).expect("arrange ok");
+
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        note_onsets(&score, 0),
+        "register_contrast keeps A's onset grid"
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        note_durations(&score, 0),
+    );
+    // A's band [60, 65] shifted down two octaves → [36, 41], fully disjoint.
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            (36..=41).contains(&p),
+            "B pitch {p} must lie in the disjoint band [36, 41]"
+        );
+    }
+    assert_eq!(
+        cand.axis_scores.register_overlap, 0.0,
+        "disjoint registers by construction"
+    );
+}
+
+#[test]
+fn register_contrast_draws_pitches_from_a_pitch_classes() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RegisterContrast,
+        register_offset: -24,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(11)).expect("arrange ok");
+    // A's intervals above its lowest pitch are {0, 2, 4, 5}; B's band floor is 36.
+    let allowed = [36, 38, 40, 41];
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            allowed.contains(&p),
+            "B pitch {p} must come from A's pitch classes in the new band"
+        );
+    }
+}
+
+#[test]
+fn register_contrast_rejects_overlapping_shift() {
+    let score = score_with_part_a(1, &[60, 62, 64, 65]);
+    // A's band [60, 65] has span 5: shifts of 0 or ±5 still overlap it.
+    for offset in [0_i8, -5, 5] {
+        let spec = ComplementSpec {
+            mode: RelationMode::RegisterContrast,
+            register_offset: offset,
+        };
+        assert!(
+            matches!(
+                arrange_complement(&score, 0, spec, GenerationSeed(1)),
+                Err(ComplementError::InvalidSpec(RelationMode::RegisterContrast)),
+            ),
+            "offset {offset} leaves the bands overlapping"
+        );
+    }
+}
+
+#[test]
+fn register_contrast_rejects_overlap_reintroduced_by_clamping() {
+    // A's band is [0, 20]; shifting down two octaves clamps back onto pitch 0,
+    // which A occupies — the contrast contract cannot be met.
+    let score = score_with_part_a(1, &[0, 20]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RegisterContrast,
+        register_offset: -24,
+    };
+    assert!(matches!(
+        arrange_complement(&score, 0, spec, GenerationSeed(1)),
+        Err(ComplementError::InvalidSpec(RelationMode::RegisterContrast)),
+    ));
+}
+
+#[test]
+fn register_contrast_is_deterministic_for_fixed_seed() {
+    let score = score_with_part_a(3, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RegisterContrast,
+        register_offset: 24,
+    };
+    let a = arrange_complement(&score, 0, spec, GenerationSeed(42)).expect("arrange ok");
+    let b = arrange_complement(&score, 0, spec, GenerationSeed(42)).expect("arrange ok");
+    assert_eq!(
+        note_pitches(&a.score, a.part_b_index),
+        note_pitches(&b.score, b.part_b_index),
+    );
+}
+
+// ── support_layer ───────────────────────────────────────────────────────────────
+
+#[test]
+fn support_layer_is_sparser_and_pedals_the_shifted_root() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::SupportLayer,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(5)).expect("arrange ok");
+
+    // One note per bar: A's first onset in each bar, A's lowest pitch − 12.
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        vec![0, BAR],
+        "one B note at each bar's first A onset"
+    );
+    assert_eq!(note_pitches(&cand.score, cand.part_b_index), vec![48, 48]);
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        vec![QUARTER, QUARTER],
+        "B keeps the duration of the A note it shadows"
+    );
+
+    assert_eq!(
+        cand.axis_scores.density_ratio, 0.25,
+        "1 note/bar against A's 4 notes/bar"
+    );
+    assert!(
+        cand.axis_scores.density_ratio < 1.0,
+        "support layer must be sparser than A"
+    );
+}
+
+#[test]
+fn support_layer_skips_bars_where_a_is_silent() {
+    let mut score = score_with_part_a(2, &[60, 62]);
+    // Silence bar 1: keep only the groups whose notes start inside bar 0.
+    score.tracks[0].voices[0]
+        .event_groups
+        .retain(|g| match &g.atoms[0] {
+            AtomEvent::Note(n) => n.absolute_start.0 < BAR,
+            AtomEvent::Rest(_) => false,
+        });
+    let spec = ComplementSpec {
+        mode: RelationMode::SupportLayer,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(5)).expect("arrange ok");
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        vec![0],
+        "no pedal in a bar where A is silent"
+    );
+}
+
+#[test]
+fn support_layer_rhythm_similarity_is_the_onset_jaccard() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::SupportLayer,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(5)).expect("arrange ok");
+    // B's 2 onsets are a subset of A's 8: |∩| / |∪| = 2/8.
+    assert_eq!(cand.axis_scores.rhythm_similarity, 0.25);
+}
+
+// ── call_response ───────────────────────────────────────────────────────────────
+
+/// A score whose single track plays exactly `notes` (`(onset, duration, pitch)`).
+fn score_with_notes(bar_count: usize, notes: &[(u32, u32, u8)]) -> Score {
+    let mut score = score_with_part_a(bar_count, &[60]);
+    score.tracks[0].voices[0].event_groups = notes
+        .iter()
+        .map(|&(onset, duration, pitch)| {
+            single_group(AtomEvent::Note(AtomNote {
+                absolute_start: Ticks(onset),
+                duration: Ticks(duration),
+                pitch: Pitch::new(pitch).expect("valid pitch"),
+                velocity: Velocity::new(90).expect("valid velocity"),
+                marks: NoteMarks::empty(),
+                position: None,
+            }))
+        })
+        .collect();
+    score
+}
+
+#[test]
+fn call_response_answers_in_a_gaps() {
+    // A plays the first half of the bar; the second half is one 2-quarter gap.
+    let score = score_with_notes(1, &[(0, QUARTER, 60), (QUARTER, QUARTER, 64)]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(13)).expect("arrange ok");
+
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        vec![2 * QUARTER],
+        "one answer at the gap start"
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        vec![2 * QUARTER],
+        "the answer sustains through the gap"
+    );
+    // A's band [60, 64] shifted down an octave; A's pitch classes are {0, 4}.
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            [48, 52].contains(&p),
+            "B pitch {p} must come from A's pitch classes in the shifted band"
+        );
+    }
+    assert_eq!(
+        cand.axis_scores.rhythm_similarity, 0.0,
+        "call and response onsets are disjoint by construction"
+    );
+}
+
+#[test]
+fn call_response_answers_every_gap_across_bars() {
+    let score = score_with_notes(2, &[(0, QUARTER, 60), (BAR, QUARTER, 62)]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(13)).expect("arrange ok");
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        vec![QUARTER, BAR + QUARTER],
+        "one answer per gap, in both bars"
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        vec![3 * QUARTER, 3 * QUARTER],
+    );
+}
+
+#[test]
+fn call_response_ignores_leading_silence_and_sub_quarter_gaps() {
+    // Leading silence (no call yet), then only sub-quarter holes: nothing to
+    // answer anywhere.
+    let score = score_with_notes(
+        1,
+        &[(QUARTER, QUARTER, 60), (1200, 240, 62), (1560, 360, 64)],
+    );
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    assert!(matches!(
+        arrange_complement(&score, 0, spec, GenerationSeed(13)),
+        Err(ComplementError::NoGapsToAnswer),
+    ));
+}
+
+#[test]
+fn call_response_on_a_wall_to_wall_part_is_an_error() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    assert!(matches!(
+        arrange_complement(&score, 0, spec, GenerationSeed(13)),
+        Err(ComplementError::NoGapsToAnswer),
+    ));
+}
+
+#[test]
+fn call_response_is_deterministic_for_fixed_seed() {
+    let score = score_with_notes(2, &[(0, QUARTER, 60), (BAR, QUARTER, 64)]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CallResponse,
+        register_offset: -12,
+    };
+    let a = arrange_complement(&score, 0, spec, GenerationSeed(21)).expect("arrange ok");
+    let b = arrange_complement(&score, 0, spec, GenerationSeed(21)).expect("arrange ok");
+    assert_eq!(
+        note_pitches(&a.score, a.part_b_index),
+        note_pitches(&b.score, b.part_b_index),
+    );
+}
+
+// ── counter_melody ──────────────────────────────────────────────────────────────
+
+#[test]
+fn counter_melody_is_an_independent_line_in_the_shifted_band() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CounterMelody,
+        register_offset: -24,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(17)).expect("arrange ok");
+
+    assert_eq!(cand.score.tracks.len(), 2, "A plus appended B");
+    assert_eq!(
+        cand.score.master_bars.len(),
+        score.master_bars.len(),
+        "B lives on A's master bars"
+    );
+    let onsets = note_onsets(&cand.score, cand.part_b_index);
+    assert!(!onsets.is_empty(), "the counter-melody plays something");
+    let span_end = score.master_bars.last().unwrap().tick_range.end.0;
+    for onset in &onsets {
+        assert!(
+            *onset < span_end,
+            "B onset {onset} must lie within A's span"
+        );
+    }
+    // A's band [60, 65] shifted down two octaves with A's pitch classes
+    // {0, 2, 4, 5} above the new floor 36.
+    let allowed = [36, 38, 40, 41];
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            allowed.contains(&p),
+            "B pitch {p} must come from A's pitch classes in the shifted band"
+        );
+    }
+}
+
+#[test]
+fn counter_melody_is_deterministic_for_fixed_seed() {
+    let score = score_with_part_a(3, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CounterMelody,
+        register_offset: -24,
+    };
+    let a = arrange_complement(&score, 0, spec, GenerationSeed(33)).expect("arrange ok");
+    let b = arrange_complement(&score, 0, spec, GenerationSeed(33)).expect("arrange ok");
+    assert_eq!(
+        note_onsets(&a.score, a.part_b_index),
+        note_onsets(&b.score, b.part_b_index),
+    );
+    assert_eq!(
+        note_pitches(&a.score, a.part_b_index),
+        note_pitches(&b.score, b.part_b_index),
+    );
+}
+
+#[test]
+fn counter_melody_rejects_a_non_uniform_timeline() {
+    // The S6 delegate lays bars back-to-back from one meter; a mid-score meter
+    // change would misalign with A's master bars.
+    let mut score = score_with_part_a(2, &[60, 62]);
+    score.master_bars[1].time_signature = TimeSignature {
+        numerator: 3,
+        denominator: 4,
+    };
+    score.master_bars[1].tick_range =
+        TickRange::new(Ticks(BAR), Ticks(BAR + 3 * QUARTER)).expect("ordered");
+    let spec = ComplementSpec {
+        mode: RelationMode::CounterMelody,
+        register_offset: -24,
+    };
+    assert!(matches!(
+        arrange_complement(&score, 0, spec, GenerationSeed(1)),
+        Err(ComplementError::NonUniformTimeline),
+    ));
 }
