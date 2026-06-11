@@ -411,6 +411,9 @@ pub fn arrange_complement(
 
     match spec.mode {
         RelationMode::RhythmLock => arrange_rhythm_lock(score, track_index, &profile, spec, seed),
+        RelationMode::RegisterContrast => {
+            arrange_register_contrast(score, track_index, &profile, spec, seed)
+        }
         RelationMode::OctaveDouble => {
             arrange_octave_double(score, track_index, &profile, spec, seed)
         }
@@ -488,21 +491,88 @@ fn arrange_rhythm_lock(
 ) -> Result<ComplementCandidate, ComplementError> {
     // Register band for B: A's band shifted, clamped, and ordered.
     let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
-    let band_lo = shift_pitch(register.lowest.0, spec.register_offset);
-    let band_hi = shift_pitch(register.highest.0, spec.register_offset);
-    let band_lo = band_lo.min(band_hi);
-    let band_hi = band_lo.max(band_hi);
-
-    // Scale: A's distinct pitch classes, as intervals above the band's low note.
-    let intervals = scale_intervals_from(profile);
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
 
     let a_track = score
         .tracks
         .get(track_index)
         .ok_or(ComplementError::TrackIndexOutOfRange)?;
-    let a_notes = voice_notes(a_track);
+    let event_groups = grid_locked_groups(a_track, profile, band_lo, band_hi, seed);
 
-    let event_groups: Vec<EventGroup> = a_notes
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
+    ))
+}
+
+/// `register_contrast`: B on A's exact onset grid, but in a register band
+/// **disjoint** from A's — A's band shifted by `spec.register_offset`.
+///
+/// If the shifted band still intersects A's after MIDI clamping (including a
+/// zero offset, or a large shift folded back by the clamp), the contrast
+/// contract cannot be met and the spec is rejected as
+/// [`ComplementError::InvalidSpec`] rather than silently overlapped.
+fn arrange_register_contrast(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
+
+    // Closed intervals [a_lo, a_hi] and [band_lo, band_hi] intersect iff each
+    // starts before the other ends.
+    if register.lowest.0 <= band_hi && band_lo <= register.highest.0 {
+        return Err(ComplementError::InvalidSpec(RelationMode::RegisterContrast));
+    }
+
+    let a_track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+    let event_groups = grid_locked_groups(a_track, profile, band_lo, band_hi, seed);
+
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
+    ))
+}
+
+/// A's register band shifted by `offset` semitones, MIDI-clamped and ordered.
+fn shifted_band(register: PitchRange, offset: i8) -> (u8, u8) {
+    let lo = shift_pitch(register.lowest.0, offset);
+    let hi = shift_pitch(register.highest.0, offset);
+    (lo.min(hi), lo.max(hi))
+}
+
+/// B's event groups on A's exact onset grid: every B note keeps A's onset,
+/// duration, and velocity, with the pitch substituted seed-deterministically
+/// from A's pitch classes mapped into the `[band_lo, band_hi]` register band.
+fn grid_locked_groups(
+    a_track: &Track,
+    profile: &PartProfile,
+    band_lo: u8,
+    band_hi: u8,
+    seed: GenerationSeed,
+) -> Vec<EventGroup> {
+    // Scale: A's distinct pitch classes, as intervals above the band's low note.
+    let intervals = scale_intervals_from(profile);
+
+    voice_notes(a_track)
         .iter()
         .enumerate()
         .map(|(i, n)| {
@@ -524,18 +594,7 @@ fn arrange_rhythm_lock(
                 technique_spans: Vec::new(),
             }
         })
-        .collect();
-
-    Ok(finish_candidate(
-        score,
-        track_index,
-        profile,
-        spec.mode,
-        seed,
-        event_groups,
-        Pitch::new(band_lo).unwrap_or(register.lowest),
-        Pitch::new(band_hi).unwrap_or(register.highest),
-    ))
+        .collect()
 }
 
 /// Assembles the produced part B into a [`ComplementCandidate`]: appends the
