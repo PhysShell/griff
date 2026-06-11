@@ -616,7 +616,10 @@ fn technical_axis_reads_marked_and_spanned_share() {
         evidence: TechniqueEvidence::explicit(),
     });
     let c = measure_complexity(&score, 0).expect("measure");
-    assert_eq!(c.technical, 0.5, "2 of 4 notes carry a mark or sit in a span");
+    assert_eq!(
+        c.technical, 0.5,
+        "2 of 4 notes carry a mark or sit in a span"
+    );
 }
 
 #[test]
@@ -637,7 +640,10 @@ fn playability_axis_is_max_for_an_unreachable_note() {
     // Pitch 5 sits below Standard E's lowest open string: unreachable.
     let score = build_score(&[vec![5, 40]]);
     let c = measure_complexity(&score, 0).expect("measure");
-    assert_eq!(c.playability, 1.0, "an unpositionable line note maxes the axis");
+    assert_eq!(
+        c.playability, 1.0,
+        "an unpositionable line note maxes the axis"
+    );
 }
 
 #[test]
