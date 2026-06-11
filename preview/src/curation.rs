@@ -36,9 +36,10 @@ pub enum CurationError {
     ParseFailed,
 }
 
-/// Digests a serialized `ChunkMeta` record into the [`RecordSummary`] the
-/// inspector shows: title, prior reviewer decision, and tags, all in the
-/// schema's wire casing (via serde, so the names cannot drift).
+/// Digests a serialized `ChunkMeta` record into a [`RecordSummary`].
+///
+/// The inspector shows the digest: title, prior reviewer decision, and tags,
+/// all in the schema's wire casing (via serde, so the names cannot drift).
 ///
 /// # Errors
 /// [`CurationError::ParseFailed`] when `json` is not a `ChunkMeta` record.
