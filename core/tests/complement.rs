@@ -24,8 +24,8 @@ use griff_core::{
         RelationMode,
     },
     event::{
-        NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning,
-        Velocity,
+        NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature,
+        Tuning, Velocity,
     },
     generate::GenerationSeed,
     score::{
@@ -485,5 +485,122 @@ fn analyze_part_includes_spanning_techniques() {
     assert!(
         profile.techniques.contains("palm_mute"),
         "spanning techniques must be in the profile, not only per-note marks"
+    );
+}
+
+// ── octave_double ───────────────────────────────────────────────────────────────
+
+#[test]
+fn octave_double_reproduces_contour_an_octave_down() {
+    let score = score_with_part_a(2, &[52, 55, 59, 62]);
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        note_onsets(&cand.score, 0),
+        "the double keeps A's onsets"
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        note_durations(&cand.score, 0),
+        "the double keeps A's durations"
+    );
+    let expected: Vec<u8> = note_pitches(&cand.score, 0)
+        .iter()
+        .map(|p| p - 12)
+        .collect();
+    assert_eq!(
+        note_pitches(&cand.score, cand.part_b_index),
+        expected,
+        "every pitch shifts by exactly one octave"
+    );
+}
+
+#[test]
+fn octave_double_shifts_up_as_well() {
+    let score = score_with_part_a(1, &[52, 55]);
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: 24,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+    assert_eq!(note_pitches(&cand.score, cand.part_b_index), vec![76, 79]);
+}
+
+#[test]
+fn octave_double_clamps_at_the_midi_floor() {
+    let score = score_with_part_a(1, &[5, 17]);
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+    assert_eq!(
+        note_pitches(&cand.score, cand.part_b_index),
+        vec![0, 5],
+        "out-of-range doubles clamp to the MIDI floor instead of failing"
+    );
+}
+
+#[test]
+fn octave_double_requires_a_whole_octave_offset() {
+    let score = score_with_part_a(1, &[60, 62]);
+    for offset in [0_i8, -7, 5, 13] {
+        let spec = ComplementSpec {
+            mode: RelationMode::OctaveDouble,
+            register_offset: offset,
+        };
+        assert!(
+            matches!(
+                arrange_complement(&score, 0, spec, GenerationSeed(1)),
+                Err(ComplementError::InvalidSpec(RelationMode::OctaveDouble)),
+            ),
+            "offset {offset} is not a non-zero whole octave"
+        );
+    }
+}
+
+#[test]
+fn octave_double_preserves_note_marks() {
+    let mut score = score_with_part_a(1, &[60, 62]);
+    if let AtomEvent::Note(n) = &mut score.tracks[0].voices[0].event_groups[0].atoms[0] {
+        n.marks.insert(NoteMark::Accent);
+    }
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+    let b_track = &cand.score.tracks[cand.part_b_index];
+    let AtomEvent::Note(first) = &b_track.voices[0].event_groups[0].atoms[0] else {
+        panic!("first B atom must be a note");
+    };
+    assert!(
+        first.marks.contains(NoteMark::Accent),
+        "the double articulates like A"
+    );
+}
+
+#[test]
+fn octave_double_axis_scores_report_locked_rhythm_and_density() {
+    let score = score_with_part_a(2, &[52, 55, 59, 62]);
+    let spec = ComplementSpec {
+        mode: RelationMode::OctaveDouble,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(7)).expect("arrange ok");
+    assert_eq!(cand.axis_scores.rhythm_similarity, 1.0);
+    assert_eq!(cand.axis_scores.density_ratio, 1.0);
+    assert_eq!(
+        cand.axis_scores.register_overlap, 0.0,
+        "bands [52, 62] and [40, 50] are disjoint"
+    );
+    assert_eq!(
+        cand.axis_scores.technique_overlap, 1.0,
+        "both parts are technique-free"
     );
 }
