@@ -435,7 +435,8 @@ pub fn analyze_part(score: &Score, track_index: usize) -> Result<PartProfile, Co
     pitches.dedup();
 
     let techniques = voice_technique_labels(track);
-    let harmony = estimate_harmony(&notes);
+    let weighted: Vec<(u8, u32)> = notes.iter().map(|n| (n.pitch, n.duration.0)).collect();
+    let harmony = estimate_harmony(&weighted);
 
     let note_count = notes.len();
     let bar_count = score.master_bars.len();
@@ -466,22 +467,24 @@ const KK_MINOR: [f64; 12] = [
 ///
 /// Histogram weights are note durations in ticks; a part whose notes all have
 /// zero duration falls back to counting notes so the estimate stays defined.
+/// Takes `(pitch, duration-in-ticks)` pairs so other analyses (the S14
+/// complexity profile) reuse the one estimator.
 // Float-only arithmetic over fixed 12-bin histograms; pitch-class indices are
 // mod-12 by construction.
 #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-fn estimate_harmony(notes: &[NoteRef]) -> Option<HarmonicContext> {
+pub(crate) fn estimate_harmony(notes: &[(u8, u32)]) -> Option<HarmonicContext> {
     if notes.is_empty() {
         return None;
     }
 
-    let total_ticks: u64 = notes.iter().map(|n| u64::from(n.duration.0)).sum();
+    let total_ticks: u64 = notes.iter().map(|&(_, d)| u64::from(d)).sum();
     let mut histogram = [0.0_f64; 12];
-    for n in notes {
-        let pc = usize::from(n.pitch) % 12;
+    for &(pitch, duration) in notes {
+        let pc = usize::from(pitch) % 12;
         let weight = if total_ticks == 0 {
             1.0
         } else {
-            f64::from(n.duration.0)
+            f64::from(duration)
         };
         histogram[pc] += weight;
     }
