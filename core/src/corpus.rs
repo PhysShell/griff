@@ -25,7 +25,10 @@ use crate::structure::StructureMetrics;
 ///   gains optional [`StyleCohort`] and [`EnsembleRef`] under the same
 ///   pattern, and [`CorpusManifest`] gains `groups` (skipped while empty), so
 ///   pre-v4 records and manifests keep loading and re-serialize losslessly.
-pub const SCHEMA_VERSION: u32 = 4;
+/// - v5 — sub-bar period detection (S14 refinement): [`StructureMetrics`]
+///   gains optional `detected_subbar_period_ticks` under the same pattern;
+///   pre-v5 structure blocks load it as `None` and re-serialize losslessly.
+pub const SCHEMA_VERSION: u32 = 5;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
 

@@ -11,9 +11,12 @@
 //! **nor** DP/Viterbi (ADR-0013): the metrics are designed to *become* graph
 //! node attributes and reranking signals later, not to consume them (ADR-0015).
 //!
-//! Granularity: this first pass detects the period at *bar* resolution via
-//! self-similarity autocorrelation over per-bar signatures. Sub-bar (beat-level)
-//! periods and the full per-axis complexity profile are later increments.
+//! Granularity: the main pass detects the period at *bar* resolution via
+//! self-similarity autocorrelation over per-bar signatures. A sub-bar
+//! refinement autocorrelates per-*beat* cell signatures on uniform timelines
+//! and reports the strongest verbatim-tiling lag shorter than one bar
+//! (`detected_subbar_period_ticks`); the full per-axis complexity profile is a
+//! later increment.
 //!
 //! Bar similarity is contour-aware: two bars are compared by their onset grid
 //! (rhythm) and their pitches, and a *transposed* repeat — identical rhythm,
@@ -81,6 +84,12 @@ pub struct StructureMetrics {
     pub detected_pattern_period_bars: Option<usize>,
     /// The same period in ticks (sum of the first `period` bars' spans), or `None`.
     pub detected_pattern_period_ticks: Option<u32>,
+    /// Sub-bar refinement: the strongest *verbatim*-tiling lag shorter than one
+    /// bar, in ticks (a whole number of beats), or `None` when no sub-bar cell
+    /// repeats, the track is silent, or the timeline is not uniform. Optional
+    /// in the corpus schema since v5; pre-v5 records load as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_subbar_period_ticks: Option<u32>,
     /// Strength of the dominant period: mean self-similarity at the best lag, in `[0, 1]`.
     pub repeatability_score: f64,
     /// How much repeats deviate from identical (`1 - repeatability`), in `[0, 1]`.
@@ -178,11 +187,96 @@ pub fn measure_structure(
         bar_count,
         detected_pattern_period_bars: period_bars,
         detected_pattern_period_ticks,
+        detected_subbar_period_ticks: detect_subbar_period(&notes, score),
         repeatability_score: repeatability,
         variation_score: variation,
         loopability_score: loopability(&notes, score),
         structural_complexity: unique_ratio(&signatures),
     })
+}
+
+/// Sub-bar (beat-level) period: the strongest verbatim-tiling lag shorter than
+/// one bar, in ticks, found by autocorrelation over per-beat cell signatures.
+///
+/// Requires notes and a uniform timeline (one shared time signature and bar
+/// span) whose bar divides evenly into `numerator` beat cells; otherwise it
+/// abstains (`None`). Cells are compared by exact `(onset-within-cell, pitch)`
+/// signatures: at one-onset granularity the bar-level rhythm floor and
+/// transposition credit are degenerate (almost any two single-note cells would
+/// "match"), so the sub-bar pass demands verbatim repeats — softening that is
+/// a later increment. Ties resolve to the shortest lag (strict-greater scan).
+#[allow(clippy::cast_precision_loss)]
+fn detect_subbar_period(notes: &[NoteRef], score: &Score) -> Option<u32> {
+    if notes.is_empty() {
+        return None;
+    }
+    let first = score.master_bars.first()?;
+    let bar_span = first
+        .tick_range
+        .end
+        .0
+        .saturating_sub(first.tick_range.start.0);
+    let uniform = score.master_bars.iter().all(|mb| {
+        mb.time_signature == first.time_signature
+            && mb.tick_range.end.0.saturating_sub(mb.tick_range.start.0) == bar_span
+    });
+    if !uniform {
+        return None;
+    }
+    let beats = u32::from(first.time_signature.numerator);
+    if beats < 2 {
+        return None;
+    }
+    let beat_ticks = bar_span.checked_div(beats)?;
+    if beat_ticks == 0 || beat_ticks.checked_mul(beats) != Some(bar_span) {
+        return None;
+    }
+
+    // Per-beat cell signatures across the whole span, in timeline order.
+    let mut cells: Vec<BTreeSet<(u32, u8)>> = Vec::new();
+    for mb in &score.master_bars {
+        for b in 0..beats {
+            let cell_start = mb
+                .tick_range
+                .start
+                .0
+                .saturating_add(b.saturating_mul(beat_ticks));
+            let cell_end = cell_start.saturating_add(beat_ticks);
+            cells.push(
+                notes
+                    .iter()
+                    .filter(|n| n.onset >= cell_start && n.onset < cell_end)
+                    .map(|n| (n.onset.saturating_sub(cell_start), n.pitch))
+                    .collect(),
+            );
+        }
+    }
+
+    let mut best_lag = 0_u32;
+    let mut best = 0.0_f64;
+    for lag in 1..beats {
+        let lag_cells = usize::try_from(lag).ok()?;
+        let pairs = cells.len().saturating_sub(lag_cells);
+        if pairs == 0 {
+            continue;
+        }
+        let mut sum = 0.0_f64;
+        for (i, a) in cells.iter().enumerate().take(pairs) {
+            if let Some(b) = cells.get(i.saturating_add(lag_cells)) {
+                sum += set_jaccard(a, b);
+            }
+        }
+        let mean = sum / pairs as f64;
+        if mean > best {
+            best = mean;
+            best_lag = lag;
+        }
+    }
+    if best >= PERIOD_THRESHOLD && best_lag > 0 {
+        best_lag.checked_mul(beat_ticks)
+    } else {
+        None
+    }
 }
 
 /// Finds the lag (in bars) of strongest self-similarity. Returns the period
