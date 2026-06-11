@@ -698,3 +698,36 @@ Architectural decisions go to [`adr/`](adr/) instead.
   but is not reported yet), out-of-range notes both fail the verdict and
   hide whatever travel surrounds them, and the `v1` weights remain
   untuned placeholders.
+
+- 2026-06-11 — In the context of the last S13 backlog item "`PartProfile`:
+  richer harmonic context (key/scale fit) for pitch material"
+  (`core/src/complement.rs`), facing how B should get pitch material when A
+  is harmonically sparse (a power-chord riff carries two pitch classes, so
+  literal-pitch-class substitution collapses B onto one pitch per band), we
+  decided for **the Krumhansl–Schmuckler key estimate as a carried fact,
+  and "enrich, don't replace" for material**: `analyze_part` correlates the
+  part's duration-weighted pitch-class histogram against the 24 rotated
+  Krumhansl–Kessler tonal-hierarchy profiles (prior art: Krumhansl & Kessler
+  1982; Krumhansl, *Cognitive Foundations of Musical Pitch*, 1990 — the
+  standard key-finding baseline, as implemented in e.g. music21's
+  `KrumhanslSchmuckler`; reimplemented natively, no dependency) and carries
+  the winner as `PartProfile::harmony` (tonic pitch class, major / natural
+  minor, plus `scale_fit` — the duration-weighted fraction of notes on the
+  inferred scale, a fact, not a verdict); `scale_intervals_from` unions the
+  inferred key's scale into B's substitution material so A's literal pitch
+  classes always remain available — and against gating the enrichment on a
+  `scale_fit` threshold (what counts as "fitting well enough" is corpus/S9
+  calibration data, like the fret-jump and dissonance thresholds before
+  it), against replacing A's pitch classes with the inferred scale (B
+  should always be able to echo notes A actually plays, and a chromatic A
+  would otherwise lose real material to a poorly fitting key), against
+  weighted-key variants (Temperley 1999) before any corpus exists to prefer
+  one profile set over another, and against estimating per-bar local keys
+  (S13 derives one request per part; locality can join when S7 consumes
+  the context). Ties resolve deterministically to the earliest key in the
+  major-then-minor, C-upward scan; all-zero-duration parts fall back to
+  count weighting. Accepted: relative-key confusions inherent to the
+  profile method on short diatonic lines, that the natural minor stands in
+  for all minor variants, and that the enriched material changes the
+  seed-deterministic pitch picks of the substitution modes (S13 is still
+  pre-corpus; no golden output depends on them).

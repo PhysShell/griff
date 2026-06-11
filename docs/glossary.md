@@ -878,6 +878,14 @@ The per-part feature summary ComplementArranger derives from part A: onset/rhyth
 grid, accent pattern, register band, contour, normalised density, technique
 multiset, harmonic context. Richer than `PhraseFeatures`.
 
+### Harmonic context
+The estimated key of a part — tonic pitch class plus major/natural-minor mode —
+together with its scale fit: the duration-weighted fraction of notes on that
+key's scale. Estimated with the Krumhansl–Schmuckler key-finding algorithm
+(Krumhansl–Kessler profiles over the part's pitch-class histogram). A fact
+carried by the part profile, not a verdict; fit thresholds are corpus/S9
+calibration.
+
 ### Pair validator
 A post-generation check over the (A, B) pair: per-part playability plus
 harmonic compatibility — no dissonant clashes on coincident onsets, no register
