@@ -57,6 +57,8 @@ pub enum CellRole {
     GridLine,
     /// A section boundary marker, carrying the section's class.
     SectionMark(BarClass),
+    /// An S4 phrase-boundary marker column.
+    BoundaryMark,
     /// A note block in the lane of the given index.
     Note(u16),
     /// The playhead column.
@@ -226,6 +228,22 @@ fn resolve_plane(
                 if c.glyph == ' ' || c.glyph == '│' {
                     c.glyph = '╎';
                     c.role = CellRole::SectionMark(s.class);
+                }
+            });
+        }
+    }
+
+    // S4 phrase-boundary markers, over blank cells or gridlines. Placed
+    // after the section marks so a section keeps precedence when both land
+    // on one column. No scroll-origin guard: a boundary at the viewport's
+    // left edge is visible, and `visible_col` already drops earlier ticks
+    // (Codex P2, PR #39).
+    for &tick in &analysis.boundaries {
+        if let Some(col) = visible_col(vp, plot_w, tick) {
+            paint_column(plane, cols, rows, col, |c| {
+                if c.glyph == ' ' || c.glyph == '│' {
+                    c.glyph = '┊';
+                    c.role = CellRole::BoundaryMark;
                 }
             });
         }
@@ -439,6 +457,7 @@ mod tests {
             ],
             metrics: None,
             complexity: None,
+            boundaries: Vec::new(),
         };
         let vp = Viewport {
             scroll_tick: 0,
@@ -456,6 +475,39 @@ mod tests {
     fn resolved() -> Scene {
         let (view, analysis, vp) = fixture();
         resolve(&view, &analysis, &vp, GridSize { cols: 40, rows: 14 })
+    }
+
+    // TDD red phase: phrase-boundary overlays (S8 × S4). References a field
+    // and a role that do not exist yet, so the crate fails to compile until
+    // the green step.
+    #[test]
+    fn a_boundary_at_the_scroll_origin_still_renders() {
+        // Codex P2 (PR #39): a boundary scrolled exactly to the viewport's
+        // left edge maps to the leftmost plot column and must render there;
+        // only ticks *before* the scroll origin are invisible.
+        let (view, mut analysis, mut vp) = fixture();
+        analysis.boundaries = vec![480];
+        vp.scroll_tick = 480;
+        let scene = resolve(&view, &analysis, &vp, GridSize { cols: 40, rows: 14 });
+        let has_mark = (0..14)
+            .any(|r| scene.plane_cell(r, GUTTER).map(|c| c.role) == Some(CellRole::BoundaryMark));
+        assert!(has_mark, "the left-edge boundary column carries the mark");
+    }
+
+    #[test]
+    fn boundary_marks_overlay_the_plane() {
+        let (view, mut analysis, vp) = fixture();
+        analysis.boundaries = vec![480];
+        let scene = resolve(&view, &analysis, &vp, GridSize { cols: 40, rows: 14 });
+        // ticks_per_col 60 → tick 480 lands at plot column 8, scene column 13
+        // (tick 960 would sit under the section mark, which takes precedence).
+        let col = GUTTER + 8;
+        let has_mark = (0..14)
+            .any(|r| scene.plane_cell(r, col).map(|c| c.role) == Some(CellRole::BoundaryMark));
+        assert!(has_mark, "a visible boundary column carries the mark");
+        let off_grid = (0..14)
+            .any(|r| scene.plane_cell(r, col + 1).map(|c| c.role) == Some(CellRole::BoundaryMark));
+        assert!(!off_grid, "marks sit only on the boundary column");
     }
 
     #[test]

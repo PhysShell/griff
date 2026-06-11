@@ -424,6 +424,10 @@ fn paint_cell(buf: &mut Buffer, x: u16, y: u16, cell: &SceneCell) {
         CellRole::Separator | CellRole::GridLine => {
             c.set_char(cell.glyph).set_style(dim);
         }
+        CellRole::BoundaryMark => {
+            c.set_char(cell.glyph)
+                .set_style(Style::new().fg(Color::Rgb(212, 177, 96)));
+        }
         CellRole::SectionMark(class) => {
             c.set_char(cell.glyph)
                 .set_style(Style::new().fg(class_color(class)));
@@ -598,6 +602,7 @@ mod tests {
                 },
             ],
             metrics: None,
+            boundaries: vec![480],
             complexity: Some(ComplexityProfile {
                 rhythmic: 0.25,
                 pitch: 0.5,

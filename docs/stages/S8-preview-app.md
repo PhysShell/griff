@@ -57,7 +57,11 @@ front-ends and audio build on them:
       `griff-preview --record=<chunk.json>` persisting the decision into the
       record's `reviewer` field on quit (`curation::decide_record`).
       Remaining: split/merge/rename/tag.
-- [ ] Boundary overlays (S4) and candidate history.
+- [ ] Boundary overlays (S4) and candidate history — **overlays landed
+      2026-06-11**: `Analysis.boundaries` carries the S4 start ticks under a
+      PPQN-scaled default config, the scene places `BoundaryMark` columns
+      (sections keep precedence on shared columns), the TUI styles them.
+      Remaining: candidate history.
 
 ## Goal
 

@@ -3,7 +3,9 @@
 //! Named sections (from [`griff_core::classify`]) and structure metrics (from
 //! [`griff_core::structure`]). Pure and headless-testable.
 
+use griff_core::boundary::{detect_phrase_boundaries, BoundaryConfig};
 use griff_core::classify::{bar_features_across_voices, classify_bar, BarClass};
+use griff_core::event::Ticks;
 use griff_core::score::{AtomEvent, Score, Voice};
 use griff_core::structure::{
     measure_complexity, measure_structure, ComplexityProfile, StructureMetrics,
@@ -48,6 +50,8 @@ pub struct Analysis {
     pub metrics: Option<StructureMetrics>,
     /// The focus track's per-axis complexity (S14); `None` for an empty score.
     pub complexity: Option<ComplexityProfile>,
+    /// Start ticks of the focus track's S4 phrase boundaries, in order.
+    pub boundaries: Vec<u32>,
 }
 
 /// Derives the [`Analysis`] for a score: pick the busiest track, classify each
@@ -58,12 +62,33 @@ pub fn analyze(score: &Score) -> Analysis {
     let sections = sections_for(score, focus_track);
     let metrics = measure_structure(score, focus_track).ok();
     let complexity = measure_complexity(score, focus_track).ok();
+    let boundaries = phrase_boundary_ticks(score, focus_track);
     Analysis {
         focus_track,
         sections,
         metrics,
         complexity,
+        boundaries,
     }
+}
+
+/// The focus track's phrase-boundary start ticks under the PPQN-scaled
+/// default config (the S4 defaults assume PPQN 960; the `closure.rs` referee
+/// precedent): snap grid 1/16, minimum boundary gap two quarter notes.
+fn phrase_boundary_ticks(score: &Score, track_index: usize) -> Vec<u32> {
+    let ppqn = u32::from(score.ticks_per_quarter);
+    // Reason: ppqn / 4 and ppqn * 2 on a u32 PPQN cannot overflow or
+    // divide by zero.
+    #[allow(clippy::arithmetic_side_effects)]
+    let config = BoundaryConfig {
+        quantize_ticks: Ticks(ppqn / 4),
+        min_gap: Ticks(ppqn.saturating_mul(2)),
+        ..BoundaryConfig::default()
+    };
+    detect_phrase_boundaries(score, track_index, &config)
+        .iter()
+        .map(|b| b.start_tick.0)
+        .collect()
 }
 
 /// Counts note atoms across all voices of a track.
@@ -239,6 +264,41 @@ mod tests {
             a.complexity.is_none(),
             "an empty score yields no complexity profile"
         );
+    }
+
+    // TDD red phase: the S8 backlog item "boundary overlays (S4)" — the
+    // analysis surfaces the focus track's phrase-boundary start ticks under
+    // the PPQN-scaled default config (the closure.rs referee precedent).
+    // References a field that does not exist yet, so the crate fails to
+    // compile until the green step.
+
+    #[test]
+    fn analysis_surfaces_phrase_boundaries_of_the_focus_track() {
+        use griff_core::boundary::{detect_phrase_boundaries, BoundaryConfig};
+        use griff_core::event::Ticks;
+
+        let riff = vec![(40, 100), (43, 100), (45, 100), (47, 100), (40, 100)];
+        let clean = vec![(60, 50), (62, 50), (64, 50)];
+        let score = score_from(vec![riff.clone(), riff, clean]);
+        let a = analyze(&score);
+
+        let ppq = u32::from(score.ticks_per_quarter);
+        let config = BoundaryConfig {
+            quantize_ticks: Ticks(ppq / 4),
+            min_gap: Ticks(ppq * 2),
+            ..BoundaryConfig::default()
+        };
+        let expected: Vec<u32> = detect_phrase_boundaries(&score, a.focus_track, &config)
+            .iter()
+            .map(|b| b.start_tick.0)
+            .collect();
+        assert_eq!(a.boundaries, expected, "the S4 start ticks, verbatim");
+    }
+
+    #[test]
+    fn empty_score_has_no_boundaries() {
+        let a = analyze(&score_from(vec![]));
+        assert!(a.boundaries.is_empty());
     }
 
     #[test]

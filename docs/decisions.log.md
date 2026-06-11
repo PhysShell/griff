@@ -962,3 +962,28 @@ Architectural decisions go to [`adr/`](adr/) instead.
   who genuinely wants transposed-with-the-band material has no knob for
   it (none of the six modes wants it — register is a placement axis, not
   a harmonic one).
+
+- 2026-06-11 — In the context of the S8 backlog item "boundary overlays
+  (S4)" (`preview/src/analysis.rs` / `scene.rs`), facing which boundary
+  config the preview should run, we decided for **the S4 defaults scaled
+  to the score's PPQN** (snap grid 1/16, minimum gap two quarters — the
+  exact closure.rs referee precedent), surfaced as plain start ticks on
+  `Analysis` and placed by the scene as `BoundaryMark` columns *after*
+  the section marks so a section keeps precedence on a shared column —
+  and against a preview-tunable config (knobs before the curation flow
+  needs them), and against drawing boundaries in the section band (the
+  band is the classification strip; boundaries are plane events like
+  gridlines). Accepted: boundary scores and reasons are dropped at the
+  view seam (ticks only) until an inspector surface wants them.
+
+- 2026-06-11 — In the context of Codex P2 on PR #39 (boundary overlays,
+  `preview/src/scene.rs`), facing a phrase boundary disappearing when
+  scrolled exactly to the viewport's left edge (the loop copied the
+  section-mark guard `tick <= scroll_tick`, dropping a tick that maps to
+  the leftmost plot column), we decided for **no scroll-origin guard on
+  boundaries**: `visible_col` already drops ticks before the scroll
+  origin, and a boundary at the edge is information the curator scrolled
+  to see — and against also changing the section-mark loop (skipping the
+  origin divider there is deliberate: the band already names the section
+  at the left edge). Accepted: a boundary at tick 0 of an unscrolled view
+  now renders a left-edge marker (harmless, and consistent).

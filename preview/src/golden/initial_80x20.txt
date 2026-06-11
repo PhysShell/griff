@@ -1,20 +1,20 @@
 griff·preview  demo.mid  ·  ♩=120  ·  2 bars  ·  pos 1:1                        
 SEC          Riff                 Solo                                          
-F3  │┃                    ╎                    │┌ Inspector ───────────────────┐
-    │┃                    ╎                    ││track  Rhythm                 │
-    │┃                    ╎                    ││Riff                          │
-    │┃                    ╎                    ││bars 1–1 · 1 bar(s)           │
-    │┃                    ╎                    ││curation  —                   │
-C3  │┃                    ╎                    ││                              │
-    │┃                    ███████████          ││transport                     │
-    │┃                    ╎                    ││♩=120   ⏸ paused              │
-    │┃                    ╎                    ││pos 1:1                       │
-    │┃                    ╎                    ││                              │
-    │┃                    ╎                    ││structure (S14)               │
-    │┃                    ╎                    ││—                             │
-    │┃                    ╎                    ││                              │
+F3  │┃         ┊          ╎                    │┌ Inspector ───────────────────┐
+    │┃         ┊          ╎                    ││track  Rhythm                 │
+    │┃         ┊          ╎                    ││Riff                          │
+    │┃         ┊          ╎                    ││bars 1–1 · 1 bar(s)           │
+    │┃         ┊          ╎                    ││curation  —                   │
+C3  │┃         ┊          ╎                    ││                              │
+    │┃         ┊          ███████████          ││transport                     │
+    │┃         ┊          ╎                    ││♩=120   ⏸ paused              │
+    │┃         ┊          ╎                    ││pos 1:1                       │
+    │┃         ┊          ╎                    ││                              │
+    │┃         ┊          ╎                    ││structure (S14)               │
+    │┃         ┊          ╎                    ││—                             │
+    │┃         ┊          ╎                    ││                              │
     │┃██████████          ╎                    ││complexity (S14)              │
-    │┃                    ╎                    ││rhy  25%   pit  50%           │
-    │┃                    ╎                    ││tec   0%   har  13%           │
-    │┃                    ╎                    │└──────────────────────────────┘
+    │┃         ┊          ╎                    ││rhy  25%   pit  50%           │
+    │┃         ┊          ╎                    ││tec   0%   har  13%           │
+    │┃         ┊          ╎                    │└──────────────────────────────┘
 q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x 
