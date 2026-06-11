@@ -1013,3 +1013,14 @@ Architectural decisions go to [`adr/`](adr/) instead.
   `ceil(width/cols)` (word wrap can exceed the estimate, leaving the same
   bug in pathological cases). Accepted: a feature flagged unstable by
   upstream, pinned at 0.29 and isolated to one call site.
+
+- 2026-06-11 — In the context of Codex P2 round 2 on PR #41 (overscroll,
+  `preview/src/tui.rs`), facing the stored `inspector_scroll` keeping a
+  hidden excess after PgDn past the bottom (the render clamped only its
+  local copy, so PgUp felt dead until the excess burned off), we decided
+  for **writing the clamp back at render** — the `autoscroll` precedent:
+  the reducer steps blindly by design and only the draw knows the
+  post-wrap overflow — and against clamping in the reducer (it would need
+  the renderer's wrapped row count and terminal size, leaking layout into
+  the interaction core). Accepted: `render_inspector` takes `&mut self`,
+  and a snapshot can now normalise the stored offset as a side effect.
