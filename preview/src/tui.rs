@@ -618,6 +618,27 @@ mod tests {
         );
     }
 
+    // TDD red phase: the inspector surfaces the loaded record's curation
+    // state (the S8 slice before rename/tag). References `App::set_record`,
+    // which does not exist yet, so the crate fails to compile until the
+    // green step.
+    #[test]
+    fn inspector_shows_the_loaded_record_state() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: Some("accepted".to_string()),
+            tags: vec!["clean_riff".to_string(), "maj7".to_string()],
+        });
+        let frame = app.snapshot(80, 24).expect("snapshot");
+        let text = frame.join("\n");
+        assert!(text.contains("Curated"), "record title shows in the dock");
+        assert!(text.contains("accepted"), "prior reviewer decision shows");
+        assert!(text.contains("clean_riff"), "record tags show");
+    }
+
     // TDD red phase: Codex P2 (PR #41, round 2) — overscrolling must not
     // accumulate hidden excess: one PgUp from the bottom moves the dock,
     // because the render writes the clamped offset back.
