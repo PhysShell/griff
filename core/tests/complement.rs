@@ -604,3 +604,103 @@ fn octave_double_axis_scores_report_locked_rhythm_and_density() {
         "both parts are technique-free"
     );
 }
+
+// ── register_contrast ───────────────────────────────────────────────────────────
+
+#[test]
+fn register_contrast_band_is_disjoint_and_grid_locked() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RegisterContrast,
+        register_offset: -24,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(11)).expect("arrange ok");
+
+    assert_eq!(
+        note_onsets(&cand.score, cand.part_b_index),
+        note_onsets(&score, 0),
+        "register_contrast keeps A's onset grid"
+    );
+    assert_eq!(
+        note_durations(&cand.score, cand.part_b_index),
+        note_durations(&score, 0),
+    );
+    // A's band [60, 65] shifted down two octaves → [36, 41], fully disjoint.
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            (36..=41).contains(&p),
+            "B pitch {p} must lie in the disjoint band [36, 41]"
+        );
+    }
+    assert_eq!(
+        cand.axis_scores.register_overlap, 0.0,
+        "disjoint registers by construction"
+    );
+}
+
+#[test]
+fn register_contrast_draws_pitches_from_a_pitch_classes() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RegisterContrast,
+        register_offset: -24,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(11)).expect("arrange ok");
+    // A's intervals above its lowest pitch are {0, 2, 4, 5}; B's band floor is 36.
+    let allowed = [36, 38, 40, 41];
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            allowed.contains(&p),
+            "B pitch {p} must come from A's pitch classes in the new band"
+        );
+    }
+}
+
+#[test]
+fn register_contrast_rejects_overlapping_shift() {
+    let score = score_with_part_a(1, &[60, 62, 64, 65]);
+    // A's band [60, 65] has span 5: shifts of 0 or ±5 still overlap it.
+    for offset in [0_i8, -5, 5] {
+        let spec = ComplementSpec {
+            mode: RelationMode::RegisterContrast,
+            register_offset: offset,
+        };
+        assert!(
+            matches!(
+                arrange_complement(&score, 0, spec, GenerationSeed(1)),
+                Err(ComplementError::InvalidSpec(RelationMode::RegisterContrast)),
+            ),
+            "offset {offset} leaves the bands overlapping"
+        );
+    }
+}
+
+#[test]
+fn register_contrast_rejects_overlap_reintroduced_by_clamping() {
+    // A's band is [0, 20]; shifting down two octaves clamps back onto pitch 0,
+    // which A occupies — the contrast contract cannot be met.
+    let score = score_with_part_a(1, &[0, 20]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RegisterContrast,
+        register_offset: -24,
+    };
+    assert!(matches!(
+        arrange_complement(&score, 0, spec, GenerationSeed(1)),
+        Err(ComplementError::InvalidSpec(RelationMode::RegisterContrast)),
+    ));
+}
+
+#[test]
+fn register_contrast_is_deterministic_for_fixed_seed() {
+    let score = score_with_part_a(3, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RegisterContrast,
+        register_offset: 24,
+    };
+    let a = arrange_complement(&score, 0, spec, GenerationSeed(42)).expect("arrange ok");
+    let b = arrange_complement(&score, 0, spec, GenerationSeed(42)).expect("arrange ok");
+    assert_eq!(
+        note_pitches(&a.score, a.part_b_index),
+        note_pitches(&b.score, b.part_b_index),
+    );
+}
