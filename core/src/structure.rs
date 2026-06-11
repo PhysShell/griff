@@ -184,8 +184,8 @@ pub fn measure_structure(
     })
 }
 
-/// Sub-bar (beat-level) period: the strongest verbatim-tiling lag shorter than
-/// one bar, in ticks, found by autocorrelation over per-beat cell signatures.
+/// Sub-bar (beat-level) period: the shortest verbatim-tiling lag shorter than
+/// one bar, in ticks.
 ///
 /// Requires notes and a uniform timeline (one shared time signature and bar
 /// span) whose bar divides evenly into `numerator` beat cells; otherwise it
@@ -193,12 +193,15 @@ pub fn measure_structure(
 /// signatures: at one-onset granularity the bar-level rhythm floor and
 /// transposition credit are degenerate (almost any two single-note cells would
 /// "match"), so the sub-bar pass demands verbatim repeats — softening that is
-/// a later increment. Empty-empty cell pairs are uninformative at this
-/// granularity and sit out of the lag mean (unlike the bar-level pass, where a
-/// rest bar inside a repeated phrase is meaningful): silence may sit inside a
-/// tile but never establishes one (Codex P2, PR #38). Ties resolve to the
-/// shortest lag (strict-greater scan).
-#[allow(clippy::cast_precision_loss)]
+/// a later increment.
+///
+/// A lag qualifies only when *every* aligned cell pair matches — a tiling
+/// test, not a similarity mean: `A A B B` matches two of three lag-1 pairs
+/// yet tiles at no sub-bar lag, and one varied cell anywhere vetoes the tile
+/// (variation tolerance is the bar-level repeatability's job). Empty cells
+/// match empty cells inside a tile, but a mismatch against a sounded cell
+/// vetoes the lag, so silence still cannot establish a period on its own
+/// (both Codex P2, PR #38).
 fn detect_subbar_period(notes: &[NoteRef], score: &Score) -> Option<u32> {
     if notes.is_empty() {
         return None;
@@ -245,39 +248,18 @@ fn detect_subbar_period(notes: &[NoteRef], score: &Score) -> Option<u32> {
         }
     }
 
-    let mut best_lag = 0_u32;
-    let mut best = 0.0_f64;
     for lag in 1..beats {
         let lag_cells = usize::try_from(lag).ok()?;
         let pairs = cells.len().saturating_sub(lag_cells);
         if pairs == 0 {
             continue;
         }
-        let mut sum = 0.0_f64;
-        let mut counted = 0_usize;
-        for (i, a) in cells.iter().enumerate().take(pairs) {
-            if let Some(b) = cells.get(i.saturating_add(lag_cells)) {
-                if a.is_empty() && b.is_empty() {
-                    continue;
-                }
-                sum += set_jaccard(a, b);
-                counted = counted.saturating_add(1);
-            }
-        }
-        if counted == 0 {
-            continue;
-        }
-        let mean = sum / counted as f64;
-        if mean > best {
-            best = mean;
-            best_lag = lag;
+        let tiles = (0..pairs).all(|i| cells.get(i) == cells.get(i.saturating_add(lag_cells)));
+        if tiles {
+            return lag.checked_mul(beat_ticks);
         }
     }
-    if best >= PERIOD_THRESHOLD && best_lag > 0 {
-        best_lag.checked_mul(beat_ticks)
-    } else {
-        None
-    }
+    None
 }
 
 /// Per-bar signatures: for each master bar, the sorted deduplicated set of
