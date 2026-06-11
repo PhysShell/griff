@@ -667,3 +667,34 @@ Architectural decisions go to [`adr/`](adr/) instead.
   `float_roundtrip` feature, making value round-trips exact. Accepted: a
   modest float-parse slowdown (irrelevant at corpus scale), and that
   ensemble parts share tags until a per-part tagging pass exists.
+
+- 2026-06-11 — In the context of the S13 backlog item "pair validator: add
+  per-part playability (the S6 filter)" (`core/src/complement.rs` /
+  `core/src/fretboard.rs`), facing what *playable* should mean before any
+  corpus calibration exists, we decided for **reachability as the verdict,
+  fret travel as a fact**: `fretboard::measure_playability` runs the
+  existing ADR-0019 fingering DP over a pitch line and summarises its
+  optimal path as a `PlayabilityReport` (line notes measured, notes with
+  no playable `(string, fret)` under the tuning, and the largest fret
+  travel between consecutively positioned notes — never measured across
+  an unplayable gap, mirroring the DP's path reset); `validate_pair`
+  measures each part's highest-pitch-per-onset line (the closure /
+  novelty / gesture convention) under the part's own track `Tuning` with
+  the `v1` fingering weights and the standard 24-fret range, and
+  `is_clean` now also requires both parts playable — and against folding
+  a fret-jump threshold into the verdict (the DP already *minimises*
+  travel, so a large jump on the optimal path is real difficulty, but
+  where the line sits is tempo- and corpus-dependent — a threshold is
+  calibration data for S9/corpus, not code; the fact is carried so S7's
+  `playability` / `fret_jump_penalty` cost terms and a future S6
+  acceptance filter can consume it), against checking every chord note
+  (the DP is monophonic by design — ADR-0019 §7 defers chord voicing; a
+  chord participates through its top note, consistent with every other
+  line consumer), and against a separate validator entry point (the
+  S13 doc asks for the filter *inside* the pair validator; the
+  measure itself stays a pub fretboard seam for the S6 filter to reuse).
+  Accepted: a part whose difficulty is inter-string stretch rather than
+  fret travel reads as playable (string-change cost shapes the DP path
+  but is not reported yet), out-of-range notes both fail the verdict and
+  hide whatever travel surrounds them, and the `v1` weights remain
+  untuned placeholders.
