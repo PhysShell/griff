@@ -621,6 +621,23 @@ mod tests {
     }
 
     #[test]
+    fn curation_keys_set_and_show_the_decision() {
+        // S8 curation slice: 'a' approves, 'x' rejects, the inspector shows
+        // the pending decision, and repeating a key clears it.
+        let mut app = demo_app();
+        let initial = app.snapshot(80, 20).expect("renders").join("\n");
+        assert!(initial.contains("curation"), "the inspector names the block");
+
+        app.on_key(KeyCode::Char('a'));
+        let approved = app.snapshot(80, 20).expect("renders").join("\n");
+        assert!(approved.contains("approved"), "a marks the chunk approved");
+
+        app.on_key(KeyCode::Char('x'));
+        let rejected = app.snapshot(80, 20).expect("renders").join("\n");
+        assert!(rejected.contains("rejected"), "x overwrites with rejected");
+    }
+
+    #[test]
     fn render_byte_stable_initial() {
         let mut app = demo_app();
         let got = app.snapshot(80, 20).expect("renders").join("\n");

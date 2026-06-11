@@ -371,6 +371,38 @@ mod tests {
         assert_eq!(vp.play_tick, c.tick_start);
     }
 
+    // TDD red phase: curation decisions join the interaction core (S8,
+    // ADR-0016 layer 2) — a UI-level fact, persisted by the frontend shell.
+    // References a field and intents that do not exist yet, so the crate
+    // fails to compile until the green step.
+
+    #[test]
+    fn approve_and_reject_set_the_decision() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        assert_eq!(vp.decision, None, "no decision until the curator acts");
+        vp.apply(Intent::Approve, &c);
+        assert_eq!(vp.decision, Some(CurationDecision::Approve));
+        vp.apply(Intent::Reject, &c);
+        assert_eq!(
+            vp.decision,
+            Some(CurationDecision::Reject),
+            "the other intent overwrites"
+        );
+    }
+
+    #[test]
+    fn repeating_a_decision_clears_it() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::Approve, &c);
+        vp.apply(Intent::Approve, &c);
+        assert_eq!(vp.decision, None, "the same intent again is an undo");
+        vp.apply(Intent::Reject, &c);
+        vp.apply(Intent::Reject, &c);
+        assert_eq!(vp.decision, None);
+    }
+
     #[test]
     fn quit_intent_reports_quit() {
         let c = ctx();
