@@ -180,6 +180,24 @@ base unit of analysis, generation, and corpus.
 A fragment extracted from a source and stored in the corpus. Has boundaries,
 tags, features, source reference, quality flags.
 
+### Style cohort
+Provenance label on a corpus chunk relative to the swancore-first scope:
+`core` (swancore) or `adjacent` (neighbouring genres admitted for coverage
+and graph mass). Consumed as per-consumer slices (decisions 2026-06-11):
+statistical gates and the style centroid read core only; the graph layer
+reads everything with per-cohort transition statistics; novelty references
+and taste ignore cohorts. Schema v4 (`ChunkMeta.style_cohort`); absent =
+unlabeled pre-v4 record.
+
+### Ensemble group
+Several single-part chunks curated from one source span (e.g. the two
+role-fluid guitars of a DGD section), linked by a shared group id and a
+manifest-level group record carrying *measured* pairwise relation axes
+(`measure_pair_axes`) — the corpus-side complement hyperedge (§9). No role
+labels by design: the per-phrase relation axes are the role information.
+Schema v4 (`ChunkMeta.ensemble`, `CorpusManifest.groups`); written by
+`griff curate --ensemble`.
+
 ### Motif
 A short recognizable musical idea: a rhythmic figure, an interval shape, or a
 repeated phrasal cell. The generator must vary motifs, not shuffle notes.

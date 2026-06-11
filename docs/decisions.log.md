@@ -607,3 +607,63 @@ Architectural decisions go to [`adr/`](adr/) instead.
   rhythm rather than being enforced, and that the carve assumes the S6
   output shape (back-to-back single-note groups, which `generate`
   guarantees).
+
+- 2026-06-11 — In the context of curating DGD-style two-guitar material
+  (left/right-channel guitars with **no stable rhythm/lead split** — the
+  roles swap per phrase), facing how the corpus should record that several
+  tracks of one source span are *one ensemble phrase* so the graph layer can
+  later mine real complement relations (the hook ADR-0012 §3 deliberately
+  left open: "may require a schema bump then"), we decided for **ensemble
+  groups over single-part chunks**: every member stays an ordinary
+  single-part chunk (preserving the chunk = one-part convention that the
+  v2/v3 metrics and similarity v1/v2 are built on); an optional per-chunk
+  `ensemble` link (`group_id`, `part_index`) plus a manifest-level group
+  record carrying member ids and the **measured pairwise relation axes**
+  (rhythm similarity / register overlap / density ratio / technique overlap
+  — computed at curation time with the existing `PartProfile` /
+  `AxisScores` machinery; the same measure-at-curate pattern as schema
+  v2/v3); `griff curate` offers ensemble curation when a span has ≥ 2
+  note-bearing tracks; more than two parts are pairwise axes — the glossary
+  §9 complement *hyperedge* made concrete — and against role labels on
+  tracks ("rhythm" / "lead" are not stable roles in the target idiom; the
+  per-phrase relation axes *are* the role information, and role fluidity
+  becomes data — the same pair of guitars measures near-unison in one chunk
+  and call-response in the next), against multi-part chunks (breaks the
+  single-part convention and every consumer built on it), and against
+  deferring the link until S7 consumes it (chunks curated without links
+  would need re-curation — the link must be recorded from the first DGD
+  curation session, so this lands **before mass curation**). Accepted: this
+  entry records the design direction, not code — it lands as a future
+  schema bump through the usual red→green cycle; gesture stats have
+  meanwhile taken schema v3, so this and the style-cohort field (2026-06-11
+  entry above) are v4 candidates, plausibly one combined bump; and the
+  persisted pair axes duplicate what S7 could recompute from members
+  (stored anyway as provenance, for mining speed and curation-time
+  inspection).
+
+- 2026-06-11 — In the context of implementing corpus schema v4 (the cohort
+  and ensemble direction entries above, realised as one combined bump),
+  facing the remaining implementation choices, we decided for: a
+  `StyleCohort` enum (`core` / `adjacent`, `None` = unlabeled pre-v4
+  record) and an `EnsembleRef { group_id, part_index }` on `ChunkMeta`,
+  plus manifest-level `EnsembleGroup` records whose `PairRelation`s persist
+  `AxisScores` measured by the new `complement::measure_pair_axes`
+  (built on `analyze_part` + the shared band/Jaccard helpers;
+  `PartHasNoNotes` on empty parts; `density_ratio` oriented *b relative to
+  a*, lower part index first); `griff curate` gains a cohort prompt after
+  tuning (blank = core, so EOF-driven scripts keep working) and an
+  `--ensemble` mode writing `<stem>.p<N>.chunk.json` per note-bearing
+  track plus `<stem>.group.json`, with shared tags/flags across parts as
+  the v1 simplification (records are editable text) — and against
+  per-part interactive prompts (seven prompts × N parts is curation
+  hostility), against role labels anywhere in the flow, and against
+  weakening the failing test to approximate float equality. That failing
+  test exposed a real defect: **serde_json's default fast float parser can
+  be one ULP off** (the multi-track fixture's 11/12 loopability parsed
+  back unequal to the written value), silently breaking the schema's
+  lossless-roundtrip promise for real measured values — the earlier
+  property tests missed it by deliberately using exactly-representable
+  sixteenth-step values. The workspace now enables serde_json's
+  `float_roundtrip` feature, making value round-trips exact. Accepted: a
+  modest float-parse slowdown (irrelevant at corpus scale), and that
+  ensemble parts share tags until a per-part tagging pass exists.

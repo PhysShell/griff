@@ -8,8 +8,10 @@ use std::{
 use clap::{Parser, Subcommand};
 use griff_core::{
     classify::{self, BarClass},
+    complement,
     corpus::{
-        ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, SourceFormat, SourceRef, SwancoreTag,
+        ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, PairRelation, QualityFlag,
+        ReviewerDecision, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
     },
     event::{NoteMarks, NotePosition, TechniqueSource},
     gesture,
@@ -66,8 +68,15 @@ enum Command {
         #[arg(value_name = "FILE")]
         path: PathBuf,
         /// Output path for the `ChunkMeta` JSON (default: `<file>.chunk.json`).
+        /// In ensemble mode this is the output *stem*: parts land at
+        /// `<stem>.p<N>.chunk.json` and the group at `<stem>.group.json`.
         #[arg(short, long, value_name = "OUTPUT")]
         output: Option<PathBuf>,
+        /// Curate every note-bearing track as one linked ensemble group
+        /// (corpus schema v4): one chunk per part plus a group record with
+        /// measured pairwise relation axes.
+        #[arg(long)]
+        ensemble: bool,
     },
 }
 
@@ -78,7 +87,11 @@ fn run() -> Result<(), CliError> {
         Command::Inspect { path } => cmd_inspect(&path),
         Command::Export { input, output } => cmd_export(&input, &output),
         Command::Classify { path } => cmd_classify(&path),
-        Command::Curate { path, output } => cmd_curate(&path, output.as_deref()),
+        Command::Curate {
+            path,
+            output,
+            ensemble,
+        } => cmd_curate(&path, output.as_deref(), ensemble),
     }
 }
 
@@ -111,6 +124,19 @@ fn note_count_in_range(voice: &Voice, range: TickRange) -> usize {
             onset >= range.start.0 && onset < range.end.0
         })
         .count()
+}
+
+/// Note atoms in a track's primary (first) voice — the voice every analysis
+/// module measures (`analyze_part`, structure, gesture, …). Curate selects
+/// measurable tracks with this predicate so selection and measurement agree.
+fn primary_voice_note_count(track: &Track) -> usize {
+    track.voices.first().map_or(0, |v| {
+        v.event_groups
+            .iter()
+            .flat_map(|g| &g.atoms)
+            .filter(|a| matches!(a, AtomEvent::Note(_)))
+            .count()
+    })
 }
 
 /// Total note atoms across all voices of a track.
@@ -267,14 +293,144 @@ fn cmd_classify(path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
+fn cmd_curate(path: &Path, output: Option<&Path>, ensemble: bool) -> Result<(), CliError> {
     let data = fs::read(path)?;
     let score = midi::import_score(&data)?;
 
     print_score_summary(path, &score);
+    let inputs = gather_curate_inputs(ensemble)?;
 
-    let inputs = gather_curate_inputs()?;
+    if ensemble {
+        curate_ensemble(path, output, &score, &inputs)
+    } else {
+        curate_single(path, output, &score, &inputs)
+    }
+}
 
+/// Single-chunk curation: the first note-bearing track carries the metrics.
+fn curate_single(
+    path: &Path,
+    output: Option<&Path>,
+    score: &Score,
+    inputs: &CurateInputs,
+) -> Result<(), CliError> {
+    let measured_track = score
+        .tracks
+        .iter()
+        .position(|t| primary_voice_note_count(t) > 0);
+    let meta = build_chunk_meta(
+        score,
+        path,
+        measured_track,
+        inputs.id.clone(),
+        inputs.title.clone(),
+        inputs,
+        None,
+    );
+    print_measurements(&meta);
+
+    let out_path = output.map_or_else(|| path.with_extension("chunk.json"), PathBuf::from);
+    let json = serde_json::to_string_pretty(&meta).map_err(CliError::Json)?;
+    write_output(&out_path, &json)
+}
+
+/// Ensemble curation (corpus schema v4): every note-bearing track becomes a
+/// linked single-part chunk, and the group record persists the measured
+/// pairwise relation axes.
+fn curate_ensemble(
+    path: &Path,
+    output: Option<&Path>,
+    score: &Score,
+    inputs: &CurateInputs,
+) -> Result<(), CliError> {
+    let tracks: Vec<usize> = score
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| primary_voice_note_count(t) > 0)
+        .map(|(i, _)| i)
+        .collect();
+    if tracks.len() < 2 {
+        return Err(CliError::Ensemble(
+            "ensemble curation needs at least two tracks with notes in their primary voice"
+                .to_owned(),
+        ));
+    }
+    let stem = output.map_or_else(|| path.with_extension(""), Path::to_path_buf);
+
+    let mut members = Vec::new();
+    for (part, &track) in tracks.iter().enumerate() {
+        let id = format!("{}_p{part}", inputs.id);
+        let title = format!("{} (part {part})", inputs.title);
+        let link = EnsembleRef {
+            group_id: inputs.id.clone(),
+            part_index: u32::try_from(part).unwrap_or(0),
+        };
+        let meta = build_chunk_meta(
+            score,
+            path,
+            Some(track),
+            id.clone(),
+            title,
+            inputs,
+            Some(link),
+        );
+        println!("part {part} (track {track}):");
+        print_measurements(&meta);
+        let json = serde_json::to_string_pretty(&meta).map_err(CliError::Json)?;
+        write_output(
+            &PathBuf::from(format!("{}.p{part}.chunk.json", stem.display())),
+            &json,
+        )?;
+        members.push(ChunkId(id));
+    }
+
+    let group = EnsembleGroup {
+        id: inputs.id.clone(),
+        members,
+        relations: measure_group_relations(score, &tracks)?,
+    };
+    let json = serde_json::to_string_pretty(&group).map_err(CliError::Json)?;
+    write_output(
+        &PathBuf::from(format!("{}.group.json", stem.display())),
+        &json,
+    )
+}
+
+/// Measured pairwise relation axes over the group's parts, ordered by
+/// `(a, b)` part indices (axes read *b relative to a*).
+///
+/// A failed measurement is an error, not a gap: silently omitting a relation
+/// would persist an incomplete complement hyperedge (Codex P2, PR #36).
+fn measure_group_relations(score: &Score, tracks: &[usize]) -> Result<Vec<PairRelation>, CliError> {
+    let mut relations = Vec::new();
+    for (i, &track_a) in tracks.iter().enumerate() {
+        for (j, &track_b) in tracks.iter().enumerate().skip(i.saturating_add(1)) {
+            let axes = complement::measure_pair_axes(score, track_a, track_b).map_err(|e| {
+                CliError::Ensemble(format!(
+                    "pair measurement failed for parts {i}/{j} (tracks {track_a}/{track_b}): {e:?}"
+                ))
+            })?;
+            relations.push(PairRelation {
+                parts: (u32::try_from(i).unwrap_or(0), u32::try_from(j).unwrap_or(0)),
+                axes,
+            });
+        }
+    }
+    Ok(relations)
+}
+
+/// Measures `track_index` (when present) and assembles one chunk record.
+#[allow(clippy::too_many_arguments)] // a private assembly seam shared by both curate modes
+fn build_chunk_meta(
+    score: &Score,
+    path: &Path,
+    track_index: Option<usize>,
+    id: String,
+    title: String,
+    inputs: &CurateInputs,
+    ensemble: Option<EnsembleRef>,
+) -> ChunkMeta {
     let (tempo_bpm, time_signature) =
         score
             .master_bars
@@ -285,17 +441,44 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
                     (b.time_signature.numerator, b.time_signature.denominator),
                 )
             });
-
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
         .map_or_else(|| "unknown.mid".to_owned(), ToOwned::to_owned);
 
-    // S14 Phase 3 / schema v3: measure the structure and gesture stats of the
-    // first note-bearing track and persist them with the record.
-    let measured_track = score.tracks.iter().position(|t| track_note_count(t) > 0);
-    let structure = measured_track.and_then(|idx| structure::measure_structure(&score, idx).ok());
-    if let Some(m) = &structure {
+    let structure = track_index.and_then(|idx| structure::measure_structure(score, idx).ok());
+    let gesture = track_index.and_then(|idx| gesture::measure_gesture(score, idx).ok());
+
+    let now = "2026-05-20T00:00:00Z".to_owned();
+    ChunkMeta {
+        id: ChunkId(id),
+        title,
+        source: SourceRef {
+            filename,
+            format: SourceFormat::Midi,
+            bar_range: None,
+        },
+        tempo_bpm,
+        ticks_per_quarter: score.ticks_per_quarter,
+        time_signature,
+        tuning: inputs.tuning.clone(),
+        tags: inputs.tags.clone(),
+        boundaries: Vec::new(),
+        techniques: Vec::new(),
+        quality_flags: inputs.quality_flags.clone(),
+        reviewer: inputs.reviewer,
+        structure,
+        gesture,
+        style_cohort: Some(inputs.style_cohort),
+        ensemble,
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+/// Prints the one-line measurement summaries of a built record.
+fn print_measurements(meta: &ChunkMeta) {
+    if let Some(m) = &meta.structure {
         let period = m
             .detected_pattern_period_bars
             .map_or_else(|| "through-composed".to_owned(), |p| format!("{p} bar(s)"));
@@ -305,8 +488,7 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
             lp = m.loopability_score,
         );
     }
-    let gesture = measured_track.and_then(|idx| gesture::measure_gesture(&score, idx).ok());
-    if let Some(g) = &gesture {
+    if let Some(g) = &meta.gesture {
         println!(
             "Gesture: bursts={bursts} (mean {mean:.1} notes)  rests={rests} (on-grid {grid:.2})",
             bursts = g.burst_count,
@@ -315,35 +497,12 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
             grid = g.rest_on_grid_share,
         );
     }
+}
 
-    let now = "2026-05-20T00:00:00Z".to_owned();
-    let meta = ChunkMeta {
-        id: ChunkId(inputs.id),
-        title: inputs.title,
-        source: SourceRef {
-            filename,
-            format: SourceFormat::Midi,
-            bar_range: None,
-        },
-        tempo_bpm,
-        ticks_per_quarter: score.ticks_per_quarter,
-        time_signature,
-        tuning: inputs.tuning,
-        tags: inputs.tags,
-        boundaries: Vec::new(),
-        techniques: Vec::new(),
-        quality_flags: inputs.quality_flags,
-        reviewer: inputs.reviewer,
-        structure,
-        gesture,
-        created_at: now.clone(),
-        updated_at: now,
-    };
-
-    let out_path = output.map_or_else(|| path.with_extension("chunk.json"), PathBuf::from);
-    let json = serde_json::to_string_pretty(&meta).map_err(CliError::Json)?;
-    fs::write(&out_path, json)?;
-    println!("wrote {}", out_path.display());
+/// Writes a serialized record and reports the path.
+fn write_output(path: &Path, json: &str) -> Result<(), CliError> {
+    fs::write(path, json)?;
+    println!("wrote {}", path.display());
     Ok(())
 }
 
@@ -351,21 +510,35 @@ struct CurateInputs {
     id: String,
     title: String,
     tuning: String,
+    style_cohort: StyleCohort,
     tags: Vec<SwancoreTag>,
     quality_flags: Vec<QualityFlag>,
     reviewer: Option<ReviewerDecision>,
 }
 
-fn gather_curate_inputs() -> Result<CurateInputs, CliError> {
+fn gather_curate_inputs(ensemble: bool) -> Result<CurateInputs, CliError> {
     let mut input_buf = String::new();
 
-    let id = prompt_line(&mut input_buf, "Chunk ID (e.g. dgd_001)")?;
+    let id_label = if ensemble {
+        "Group ID (e.g. dgd_042)"
+    } else {
+        "Chunk ID (e.g. dgd_001)"
+    };
+    let id = prompt_line(&mut input_buf, id_label)?;
     let title = prompt_line(&mut input_buf, "Title")?;
     let tuning_raw = prompt_line(&mut input_buf, "Tuning [standard_e]")?;
     let tuning = if tuning_raw.trim().is_empty() {
         "standard_e".to_owned()
     } else {
         tuning_raw.trim().to_owned()
+    };
+
+    println!("Style cohort: 0=core  1=adjacent (decisions 2026-06-11)");
+    let cohort_input = prompt_line(&mut input_buf, "Cohort [0=core]")?;
+    let style_cohort = if cohort_input.trim() == "1" {
+        StyleCohort::Adjacent
+    } else {
+        StyleCohort::Core
     };
 
     println!("Tags (space-separated numbers):");
@@ -406,6 +579,7 @@ fn gather_curate_inputs() -> Result<CurateInputs, CliError> {
         id,
         title,
         tuning,
+        style_cohort,
         tags,
         quality_flags,
         reviewer,
@@ -450,6 +624,7 @@ enum CliError {
     Io(IoError),
     Midi(MidiError),
     Json(serde_json::Error),
+    Ensemble(String),
 }
 
 impl fmt::Display for CliError {
@@ -458,6 +633,7 @@ impl fmt::Display for CliError {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Midi(e) => write!(f, "MIDI error: {e}"),
             Self::Json(e) => write!(f, "JSON error: {e}"),
+            Self::Ensemble(msg) => write!(f, "ensemble error: {msg}"),
         }
     }
 }
@@ -471,5 +647,129 @@ impl From<IoError> for CliError {
 impl From<MidiError> for CliError {
     fn from(e: MidiError) -> Self {
         Self::Midi(e)
+    }
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+/// Red → green for the Codex P2 finding on PR #36: ensemble part selection
+/// must follow the first-voice convention every analysis module uses, and a
+/// failed pair measurement must surface as an error instead of silently
+/// writing an incomplete group.
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::missing_assert_message,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::score::{
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Voice,
+    };
+    use griff_core::slice::TickRange;
+
+    use super::{measure_group_relations, primary_voice_note_count, track_note_count, Track};
+
+    fn quarter(start: u32, pitch: u8) -> AtomEvent {
+        AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(start),
+            duration: Ticks(480),
+            pitch: Pitch::new(pitch).expect("valid pitch"),
+            velocity: Velocity::new(90).expect("valid velocity"),
+            marks: NoteMarks::empty(),
+            position: None,
+        })
+    }
+
+    fn voice_of(id: u8, atoms: Vec<AtomEvent>) -> Voice {
+        Voice {
+            id,
+            event_groups: atoms
+                .into_iter()
+                .map(|a| EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![a],
+                    technique_spans: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn track_of(voices: Vec<Voice>) -> Track {
+        Track {
+            name: None,
+            channel: 0,
+            voices,
+            tuning: Tuning::standard_e(),
+        }
+    }
+
+    fn one_bar_score(tracks: Vec<Track>) -> Score {
+        Score {
+            ticks_per_quarter: 480,
+            master_bars: vec![MasterBar {
+                index: 0,
+                tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered"),
+                time_signature: TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                },
+                tempo: Tempo::new(120.0).expect("120 BPM"),
+            }],
+            tracks,
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    #[test]
+    fn primary_voice_note_count_ignores_secondary_voices() {
+        // Notes only in voice 1: every analysis module reads voice 0, so the
+        // curate selection predicate must agree and skip this track.
+        let track = track_of(vec![
+            voice_of(0, Vec::new()),
+            voice_of(1, vec![quarter(0, 60), quarter(480, 62)]),
+        ]);
+        assert_eq!(track_note_count(&track), 2, "all-voice count sees them");
+        assert_eq!(
+            primary_voice_note_count(&track),
+            0,
+            "the measurement convention does not"
+        );
+
+        let measurable = track_of(vec![voice_of(0, vec![quarter(0, 60)])]);
+        assert_eq!(primary_voice_note_count(&measurable), 1);
+    }
+
+    #[test]
+    fn group_relations_measure_all_pairs() {
+        let score = one_bar_score(vec![
+            track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(480, 62)])]),
+            track_of(vec![voice_of(0, vec![quarter(0, 48), quarter(480, 50)])]),
+        ]);
+        let relations = measure_group_relations(&score, &[0, 1]).expect("both parts measurable");
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].parts, (0, 1));
+    }
+
+    #[test]
+    fn group_relations_propagate_measure_errors() {
+        // Track 1 has no notes in its primary voice: the pair measurement
+        // fails, and the failure must surface instead of silently writing an
+        // incomplete group.
+        let score = one_bar_score(vec![
+            track_of(vec![voice_of(0, vec![quarter(0, 60)])]),
+            track_of(vec![
+                voice_of(0, Vec::new()),
+                voice_of(1, vec![quarter(0, 48)]),
+            ]),
+        ]);
+        let err = measure_group_relations(&score, &[0, 1]).expect_err("must propagate");
+        assert!(
+            format!("{err}").contains("part"),
+            "the curator sees which measurement failed: {err}"
+        );
     }
 }

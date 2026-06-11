@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::complement::AxisScores;
 use crate::gesture::GestureStats;
 use crate::structure::StructureMetrics;
 
@@ -20,7 +21,11 @@ use crate::structure::StructureMetrics;
 ///   `ChunkMeta` gains optional measured [`GestureStats`] under the same
 ///   pattern; v1/v2 records (no `gesture` key) keep loading and re-serialize
 ///   losslessly.
-pub const SCHEMA_VERSION: u32 = 3;
+/// - v4 — style cohort + ensemble groups (decisions 2026-06-11): `ChunkMeta`
+///   gains optional [`StyleCohort`] and [`EnsembleRef`] under the same
+///   pattern, and [`CorpusManifest`] gains `groups` (skipped while empty), so
+///   pre-v4 records and manifests keep loading and re-serialize losslessly.
+pub const SCHEMA_VERSION: u32 = 4;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
 
@@ -179,6 +184,59 @@ pub struct BoundaryEntry {
     pub score: f64,
 }
 
+// ── style cohort and ensemble groups (schema v4) ──────────────────────────────
+
+/// Style cohort of a chunk relative to the swancore-first scope
+/// (decisions 2026-06-11: per-consumer corpus slices).
+///
+/// Statistical gates and the style centroid read the `Core` slice only; the
+/// graph layer reads the full corpus with per-cohort transition statistics;
+/// novelty references and taste ignore cohorts. `None` (pre-v4 records) means
+/// *unlabeled* — slice policies decide how to treat it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleCohort {
+    /// Core swancore material.
+    Core,
+    /// Adjacent-genre material admitted for coverage and graph mass.
+    Adjacent,
+}
+
+/// Link from a chunk to its ensemble group: one source span, several parts
+/// (e.g. the two role-fluid guitars of a DGD section), each curated as its
+/// own single-part chunk.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EnsembleRef {
+    /// Group identifier shared by sibling chunks (e.g. `"dgd_042"`).
+    pub group_id: String,
+    /// Zero-based part index within the group.
+    pub part_index: u32,
+}
+
+/// Measured relation between two parts of an ensemble group — the corpus-side
+/// complement hyperedge fact (glossary §9), persisted at curation time.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PairRelation {
+    /// Part indices `(a, b)` with `a < b`; axes read *b relative to a*
+    /// (`density_ratio` orientation of `measure_pair_axes`).
+    pub parts: (u32, u32),
+    /// Measured relation axes (complement vocabulary, ADR-0012/0017).
+    pub axes: AxisScores,
+}
+
+/// An ensemble group: several single-part chunks curated from one source
+/// span, plus their measured pairwise relations. No role labels by design —
+/// the per-phrase relation axes carry the role information.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnsembleGroup {
+    /// Group identifier (shared with the members' [`EnsembleRef`]s).
+    pub id: String,
+    /// Member chunk ids, ordered by part index.
+    pub members: Vec<ChunkId>,
+    /// Measured pairwise relations, ordered by `(a, b)`.
+    pub relations: Vec<PairRelation>,
+}
+
 // ── chunk metadata ────────────────────────────────────────────────────────────
 
 /// Full annotation for one corpus chunk.
@@ -215,6 +273,15 @@ pub struct ChunkMeta {
     /// byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gesture: Option<GestureStats>,
+    /// Style cohort (schema v4). Absent in pre-v4 records — unlabeled; the
+    /// key is skipped when unset, so older files round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_cohort: Option<StyleCohort>,
+    /// Ensemble-group link (schema v4) for chunks curated as one part of a
+    /// multi-guitar phrase. Absent for standalone chunks and pre-v4 records;
+    /// the key is skipped when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ensemble: Option<EnsembleRef>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-modified timestamp.
@@ -229,4 +296,8 @@ pub struct CorpusManifest {
     /// Monotonically increasing schema version (current: [`SCHEMA_VERSION`]).
     pub schema_version: u32,
     pub chunks: Vec<ChunkMeta>,
+    /// Ensemble groups over the chunks (schema v4). The key is skipped while
+    /// empty, so pre-v4 manifests keep loading and re-serialize losslessly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<EnsembleGroup>,
 }
