@@ -21,7 +21,7 @@
 use griff_core::{
     complement::{
         analyze_part, arrange_complement, measure_pair_axes, validate_pair, ComplementError,
-        ComplementSpec, RelationMode,
+        ComplementSpec, KeyMode, RelationMode,
     },
     event::{
         NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature,
@@ -624,19 +624,21 @@ fn register_contrast_band_is_disjoint_and_grid_locked() {
 }
 
 #[test]
-fn register_contrast_draws_pitches_from_a_pitch_classes() {
+fn register_contrast_draws_pitches_from_a_harmonic_context() {
     let score = score_with_part_a(2, &[60, 62, 64, 65]);
     let spec = ComplementSpec {
         mode: RelationMode::RegisterContrast,
         register_offset: -24,
     };
     let cand = arrange_complement(&score, 0, spec, GenerationSeed(11)).expect("arrange ok");
-    // A's intervals above its lowest pitch are {0, 2, 4, 5}; B's band floor is 36.
+    // A (C D E F) infers C major, so the substitution material is the C major
+    // scale as intervals above B's band floor 36; the band [36, 41] clamps the
+    // upper scale degrees back onto 41.
     let allowed = [36, 38, 40, 41];
     for p in note_pitches(&cand.score, cand.part_b_index) {
         assert!(
             allowed.contains(&p),
-            "B pitch {p} must come from A's pitch classes in the new band"
+            "B pitch {p} must come from A's harmonic context in the new band"
         );
     }
 }
@@ -799,11 +801,12 @@ fn call_response_answers_in_a_gaps() {
         vec![2 * QUARTER],
         "the answer sustains through the gap"
     );
-    // A's band [60, 64] shifted down an octave; A's pitch classes are {0, 4}.
+    // A's band [60, 64] shifted down an octave; A (C, E) infers C major, and
+    // the band [48, 52] clamps the upper scale degrees onto 52.
     for p in note_pitches(&cand.score, cand.part_b_index) {
         assert!(
-            [48, 52].contains(&p),
-            "B pitch {p} must come from A's pitch classes in the shifted band"
+            [48, 50, 52].contains(&p),
+            "B pitch {p} must come from A's harmonic context in the shifted band"
         );
     }
     assert_eq!(
@@ -903,13 +906,13 @@ fn counter_melody_is_an_independent_line_in_the_shifted_band() {
             "B onset {onset} must lie within A's span"
         );
     }
-    // A's band [60, 65] shifted down two octaves with A's pitch classes
-    // {0, 2, 4, 5} above the new floor 36.
+    // A's band [60, 65] shifted down two octaves with A's harmonic context —
+    // the inferred C major scale above the new floor 36 — clamped to [36, 41].
     let allowed = [36, 38, 40, 41];
     for p in note_pitches(&cand.score, cand.part_b_index) {
         assert!(
             allowed.contains(&p),
-            "B pitch {p} must come from A's pitch classes in the shifted band"
+            "B pitch {p} must come from A's harmonic context in the shifted band"
         );
     }
 }
@@ -1133,4 +1136,109 @@ fn validate_pair_playability_reads_the_top_line() {
     assert_eq!(v.a_playability.unpositionable, 0);
     assert!(v.a_playability.is_playable());
     assert!(v.is_clean());
+}
+
+// ── PartProfile: harmonic context (S13 backlog, key/scale fit) ────────────────
+//
+// TDD red phase: `analyze_part` grows the harmonic context the stage doc lists
+// as its last backlog item — a Krumhansl–Schmuckler key estimate (the
+// Krumhansl–Kessler profiles correlated against the part's duration-weighted
+// pitch-class histogram) carried as a fact in `PartProfile::harmony`, with
+// `scale_fit` the duration-weighted fraction of notes on the inferred key's
+// scale. Pitch material is enriched, not replaced: B substitutes from A's
+// literal pitch classes *plus* the inferred key's scale. References fields
+// that do not exist yet, so the suite fails to compile until the green step.
+
+#[test]
+fn analyze_part_infers_a_major_key() {
+    // The C major scale, tonic doubled at the octave: unambiguous, diatonic.
+    let score = score_with_part_a(2, &[60, 62, 64, 65, 67, 69, 71, 72]);
+    let profile = analyze_part(&score, 0).expect("analyze ok");
+    let harmony = profile
+        .harmony
+        .expect("a note-bearing part has a key estimate");
+    assert_eq!(harmony.tonic_pitch_class, 0, "C");
+    assert_eq!(harmony.mode, KeyMode::Major);
+    assert!(
+        (harmony.scale_fit - 1.0).abs() < 1e-12,
+        "every note diatonic => scale_fit 1.0, got {}",
+        harmony.scale_fit
+    );
+}
+
+#[test]
+fn analyze_part_infers_a_minor_key() {
+    // E natural minor with the tonic doubled at the octave (E3 + E4): the
+    // pitch-class set equals G major's, so only the tonal weighting of the
+    // profiles can (and must) pick the minor tonic.
+    let score = score_with_part_a(2, &[52, 55, 57, 59, 60, 62, 64]);
+    let profile = analyze_part(&score, 0).expect("analyze ok");
+    let harmony = profile
+        .harmony
+        .expect("a note-bearing part has a key estimate");
+    assert_eq!(harmony.tonic_pitch_class, 4, "E");
+    assert_eq!(harmony.mode, KeyMode::Minor);
+    assert!(
+        (harmony.scale_fit - 1.0).abs() < 1e-12,
+        "every note on the natural-minor scale => scale_fit 1.0, got {}",
+        harmony.scale_fit
+    );
+}
+
+#[test]
+fn analyze_part_scale_fit_drops_on_chromatic_notes() {
+    // The C major scale plus a chromatic C#: 8 of 9 equal-duration notes are
+    // diatonic, so the duration-weighted scale fit is exactly 8/9.
+    let score = score_with_part_a(1, &[60, 61, 62, 64, 65, 67, 69, 71, 72]);
+    let profile = analyze_part(&score, 0).expect("analyze ok");
+    let harmony = profile
+        .harmony
+        .expect("a note-bearing part has a key estimate");
+    assert_eq!(harmony.tonic_pitch_class, 0, "C");
+    assert_eq!(harmony.mode, KeyMode::Major);
+    assert!(
+        (harmony.scale_fit - 8.0 / 9.0).abs() < 1e-12,
+        "one chromatic note out of nine => scale_fit 8/9, got {}",
+        harmony.scale_fit
+    );
+}
+
+#[test]
+fn analyze_part_empty_part_has_no_harmony() {
+    let score = score_with_part_a(1, &[]);
+    let profile = analyze_part(&score, 0).expect("analyze ok");
+    assert!(
+        profile.harmony.is_none(),
+        "no notes => no key estimate, not a fabricated one"
+    );
+}
+
+#[test]
+fn pitch_material_is_enriched_by_the_inferred_key() {
+    // A sounds only E (pitch class 4, two octaves): literal pitch-class
+    // material would collapse B onto a single pitch per band. The inferred
+    // key (E major) opens the whole scale as substitution material.
+    let score = score_with_part_a(2, &[52, 64, 52, 64]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RhythmLock,
+        register_offset: -12,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(11)).expect("arrange ok");
+
+    // E major pitch classes: E F# G# A B C# D#.
+    let e_major = [4_u8, 6, 8, 9, 11, 1, 3];
+    let pitches = note_pitches(&cand.score, cand.part_b_index);
+    for &p in &pitches {
+        assert!(
+            e_major.contains(&(p % 12)),
+            "B pitch {p} must stay inside A's inferred key"
+        );
+    }
+    let mut distinct: Vec<u8> = pitches.iter().map(|p| p % 12).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert!(
+        distinct.len() > 1,
+        "the key estimate opens material beyond A's literal pitch classes"
+    );
 }
