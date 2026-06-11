@@ -450,3 +450,41 @@ Architectural decisions go to [`adr/`](adr/) instead.
   that period similarity compares bar counts only (tick-resolution and
   meter differences are invisible), and that the uniform weights await S9
   tuning.
+
+- 2026-06-11 — In the context of completing the five remaining S13 relation
+  modes (`core/src/complement.rs`, each its own red→green increment per the
+  stage doc), facing how each mode's contract should be made concrete on the
+  existing skeleton, we decided for: `octave_double` as a verbatim
+  contour copy (onsets, durations, velocities, marks) shifted by a
+  `register_offset` that must be a non-zero whole octave (typed
+  `InvalidSpec` otherwise — a third-doubling is a different relation);
+  `register_contrast` as the rhythm-lock grid in A's band shifted by the
+  offset, rejected as `InvalidSpec` when the shifted band still intersects
+  A's after MIDI clamping (including a clamp folding it back onto A);
+  `support_layer` as one root pedal per non-empty bar — A's first onset,
+  that note's duration and velocity, A's lowest pitch shifted — so the
+  layer is strictly sparser wherever A plays more than one note a bar;
+  `call_response` answering each ≥-one-quarter gap of A's *merged* note
+  coverage (between A's first sound and the span end) with one note
+  sustaining through the gap at the preceding call's velocity, leading
+  silence unanswered, and a gapless A the typed `NoGapsToAnswer`;
+  `counter_melody` as the one true S6 delegation — `ConstrainedRandomWalk`
+  over a request derived from A (pitch classes as scale, shifted band as
+  bounds, A's meter/tempo/PPQN/bar count, bar rhythms as templates) lifted
+  onto A's master bars, with a mid-score meter or bar-span change the
+  typed `NonUniformTimeline` (S6 lays bars back-to-back from one meter);
+  plus generalising `rhythm_similarity` provenance from a hardcoded `1.0`
+  to the onset-set Jaccard between A and B (grid-locked modes still
+  measure exactly 1.0) and removing the now-unreachable
+  `ModeNotImplemented` variant — and against fixed mode defaults hidden in
+  code (e.g. snapping a stray offset to an octave), against answering
+  leading silence (an answer needs a call), against a B-empty fallback for
+  gapless or non-uniform inputs (silent degradation over a typed error),
+  and against routing the grid-locked modes through an S6 round-trip (A's
+  onsets already respect A's timeline; regeneration could only misalign).
+  Accepted: `support_layer` equals A's density when A is one-note-per-bar,
+  `call_response` ignores velocity decay across long gaps, the
+  `counter_melody` rhythm comes from the S6 walk rather than a
+  complement-aware rhythm model (S7's cost terms take over there), and
+  removing `ModeNotImplemented` is a breaking enum change inside the
+  pre-1.0 workspace.

@@ -101,7 +101,8 @@ pub struct PartProfile {
 /// Relation-as-provenance: per-axis scores describing how B relates to A.
 #[derive(Debug, Clone, Copy)]
 pub struct AxisScores {
-    /// `1.0` when B's rhythm is identical to A's (`rhythm_lock`), else lower.
+    /// Jaccard overlap of A's and B's onset sets, in `[0, 1]`: `1.0` for the
+    /// grid-locked modes, `0.0` for the onset-complement (`call_response`).
     pub rhythm_similarity: f64,
     /// Fraction of register-band overlap between A and B, in `[0, 1]`.
     pub register_overlap: f64,
