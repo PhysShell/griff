@@ -11,6 +11,7 @@ use griff_core::corpus::{
     BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, QualityFlag, ReviewerDecision, SourceFormat,
     SourceRef, SwancoreTag, SCHEMA_VERSION,
 };
+use griff_core::gesture::GestureStats;
 use griff_core::structure::StructureMetrics;
 use proptest::{collection::vec as prop_vec, option::of as prop_opt, prelude::*};
 
@@ -26,6 +27,21 @@ const fn sample_metrics() -> StructureMetrics {
         variation_score: 0.0625,
         loopability_score: 0.875,
         structural_complexity: 0.25,
+    }
+}
+
+/// Exactly-representable f64 values keep JSON round-trips byte-identical.
+const fn sample_gesture() -> GestureStats {
+    GestureStats {
+        note_count: 16,
+        burst_count: 2,
+        mean_burst_notes: 8.0,
+        max_burst_notes: 8,
+        rest_count: 2,
+        mean_rest_quarters: 1.5,
+        rest_on_grid_share: 1.0,
+        modal_landing_share: 0.5,
+        mean_final_lengthening: 0.5,
     }
 }
 
@@ -52,17 +68,66 @@ fn minimal_chunk() -> ChunkMeta {
         quality_flags: vec![QualityFlag::Clean],
         reviewer: Some(ReviewerDecision::Accepted),
         structure: None,
+        gesture: None,
         created_at: "2026-05-20T00:00:00Z".to_owned(),
         updated_at: "2026-05-20T00:00:00Z".to_owned(),
     }
 }
 
-// ── schema v2: structure metrics (S14 Phase 3) ────────────────────────────────
+// ── schema v3: gesture statistics (melodic-closure note §7.4) ─────────────────
 
 #[test]
-fn schema_version_is_2() {
-    assert_eq!(SCHEMA_VERSION, 2, "S14 Phase 3 bumps the corpus schema");
+fn schema_version_is_3() {
+    assert_eq!(
+        SCHEMA_VERSION, 3,
+        "the burst/rest gesture-stats addition bumps the corpus schema"
+    );
 }
+
+#[test]
+fn chunk_meta_with_gesture_roundtrips() {
+    let mut meta = minimal_chunk();
+    meta.gesture = Some(sample_gesture());
+
+    let json = serde_json::to_string(&meta).expect("serialize");
+    assert!(
+        json.contains("\"gesture\""),
+        "v3 records carry the gesture key"
+    );
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.gesture, Some(sample_gesture()));
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(json, json2, "JSON round-trip must be byte-identical");
+}
+
+#[test]
+fn chunk_meta_without_gesture_serializes_without_the_key() {
+    // A record with no measured gesture stats stays byte-identical to a
+    // v1/v2 record: the key is skipped, not written as null.
+    let json = serde_json::to_string(&minimal_chunk()).expect("serialize");
+    assert!(
+        !json.contains("\"gesture\""),
+        "absent gesture stats must not introduce a key: {json}"
+    );
+}
+
+#[test]
+fn v2_json_with_structure_but_no_gesture_loads_as_none() {
+    // A v2 record (structure measured, gesture predating the bump) parses,
+    // reads gesture as None, and re-serializes without inventing the key.
+    let mut meta = minimal_chunk();
+    meta.structure = Some(sample_metrics());
+    meta.gesture = None;
+    let v2_json = serde_json::to_string(&meta).expect("serialize");
+
+    let back: ChunkMeta = serde_json::from_str(&v2_json).expect("v2 record must parse");
+    assert!(back.gesture.is_none());
+    assert_eq!(back.structure, Some(sample_metrics()));
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(v2_json, json2);
+}
+
+// ── schema v2: structure metrics (S14 Phase 3) ────────────────────────────────
 
 #[test]
 fn chunk_meta_with_structure_roundtrips() {
@@ -288,6 +353,33 @@ fn arb_structure() -> impl Strategy<Value = Option<StructureMetrics>> {
     prop_opt(metrics)
 }
 
+/// Sixteenth-step f64 values are exactly representable, so JSON round-trips
+/// stay byte-identical (the same trick as [`arb_structure`]).
+fn arb_gesture() -> impl Strategy<Value = Option<GestureStats>> {
+    let stats = (
+        1_usize..=32,
+        1_usize..=8,
+        0_usize..=4,
+        (0_u32..=64, 0_u32..=64, 0_u32..=16, 0_u32..=16, 0_u32..=16),
+    )
+        .prop_map(
+            |(note_count, burst_count, rest_count, (mean16, rest16, grid16, land16, len16))| {
+                GestureStats {
+                    note_count,
+                    burst_count,
+                    mean_burst_notes: f64::from(mean16) / 16.0,
+                    max_burst_notes: note_count,
+                    rest_count,
+                    mean_rest_quarters: f64::from(rest16) / 16.0,
+                    rest_on_grid_share: f64::from(grid16) / 16.0,
+                    modal_landing_share: f64::from(land16) / 16.0,
+                    mean_final_lengthening: f64::from(len16) / 16.0,
+                }
+            },
+        );
+    prop_opt(stats)
+}
+
 proptest! {
     #[test]
     fn prop_chunk_meta_json_roundtrip(
@@ -304,6 +396,7 @@ proptest! {
         flags in prop_vec(arb_quality_flag(), 0..3),
         reviewer in arb_reviewer(),
         structure in arb_structure(),
+        gesture in arb_gesture(),
     ) {
         let meta = ChunkMeta {
             id: ChunkId(id),
@@ -323,6 +416,7 @@ proptest! {
             quality_flags: flags,
             reviewer,
             structure,
+            gesture,
             created_at: "2026-05-20T00:00:00Z".to_owned(),
             updated_at: "2026-05-20T00:00:00Z".to_owned(),
         };
