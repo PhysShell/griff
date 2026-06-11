@@ -422,3 +422,30 @@ Architectural decisions go to [`adr/`](adr/) instead.
   demands it). Accepted: rhythm matching is onset-based (note durations are
   ignored), sub-grid IOI remainders truncate, and a chord participates only
   through its top note.
+
+- 2026-06-11 — In the context of growing the S5 corpus toward the S7
+  threshold (~100 phrases), facing whether adjacent-genre material
+  (Underoath, Hopesfall, …) enriches a swancore-first corpus or dilutes it,
+  we decided for **admitting adjacent-genre chunks under an explicit cohort
+  label, consumed through per-consumer slices**: corpus-derived *statistical
+  gates* (the S6 acceptance bands — density within corpus mean ± 1σ,
+  syncopation ≥ lower quartile) and the future style centroid (style as a
+  *region* over idiom axes, audit 2026-06 §2.3) read the **core swancore
+  slice only**; the graph layer (S7) reads the full corpus for nodes,
+  similarity edges, and recombination material, but counts transition
+  statistics **per cohort** and blends them by an explicit weight (a future
+  user-facing knob — cross-genre grammar is a control, never an accident);
+  novelty-guard references and S9 taste ignore cohorts entirely (more
+  references only strengthen the guard); target mix ≈ 70–80 % core /
+  20–30 % adjacent, validated empirically on the corpus map (each adjacent
+  chunk is either in-region coverage or a deliberate outlier — judged by
+  distance to the core centroid, not by genre prejudice) — and against
+  unlabeled mixing (silently shifts the mean ± σ the S6 acceptance reads and
+  blurs the style centroid) and against excluding adjacent genres outright
+  (swancore overlaps them on many idiom axes, so their in-region chunks are
+  coverage, and S7 connectivity needs the mass). Accepted: `ChunkMeta` v2
+  carries no cohort field yet — a `style_cohort` (or band/provenance) field
+  is the next schema increment (v3, the same optional-field migration
+  pattern as v2); until it lands, the cohort convention lives in chunk ids /
+  titles (e.g. `uo_` / `hf_` prefixes), which is fragile and explicitly
+  short-term.
