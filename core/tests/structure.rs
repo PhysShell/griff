@@ -510,3 +510,40 @@ fn no_subbar_period_on_a_mixed_meter_timeline() {
         "a non-uniform timeline has no shared beat grid to autocorrelate"
     );
 }
+
+#[test]
+fn silence_does_not_establish_a_subbar_period() {
+    // Codex P2 (PR #38): one sounded beat per bar with non-repeating pitches.
+    // Empty-empty beat pairs are uninformative and must sit out of the mean —
+    // without that, lag 1 clears the threshold on rests alone (4/7 of the
+    // pairs are empty-empty) and a false one-beat period persists into the
+    // corpus.
+    let score = build_score(&[vec![60], vec![67]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "silence alone must not establish a sub-bar period"
+    );
+}
+
+#[test]
+fn rest_aligned_sparse_repeats_still_read_as_a_subbar_period() {
+    // Characterization guard for the fix above: an X . X . bar still reads as
+    // a half-bar tile — the sounded cells carry the period on their own.
+    let mut score = build_score(&[vec![], vec![]]);
+    for bar in 0..2_u32 {
+        for beat in [0_u32, 2] {
+            score.tracks[0].voices[0].event_groups.push(EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![quarter_note(bar * BAR + beat * QUARTER, 40)],
+                technique_spans: Vec::new(),
+            });
+        }
+    }
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks,
+        Some(2 * QUARTER),
+        "the sounded cells alone carry the half-bar tile"
+    );
+}
