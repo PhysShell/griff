@@ -856,3 +856,19 @@ Architectural decisions go to [`adr/`](adr/) instead.
   a true sub-bar idea stated exactly once in a short span goes unreported
   (consistent with the bar-level rule), and single-bar scores can only
   ever report periods up to half a bar.
+
+- 2026-06-11 — In the context of Codex P2 on PR #38 (the preview
+  inspector, `preview/src/tui.rs`), facing the dock content exceeding a
+  20-row terminal once structure metrics *and* the complexity block are
+  both measured (the goldens only covered the metrics-less demo, and the
+  live transport block fell off the bottom), we decided for **ordering by
+  liveness**: transport (play state, position) renders directly under the
+  section info, ahead of the static metrics blocks, so bottom clipping
+  always eats the metrics tail — and against compacting the structure
+  meters to win the rows back (the meters are the structure block's
+  readability; squeezing both blocks to fit every height is a layout
+  arms race a scrollable dock should end instead), and against a
+  height-conditional layout (two arrangements to characterize for one
+  dock). Accepted: on short terminals the structure/complexity tail is
+  what clips, and a scrollable or collapsible inspector remains the real
+  fix (an S8 follow-up).
