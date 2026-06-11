@@ -944,3 +944,21 @@ Architectural decisions go to [`adr/`](adr/) instead.
   `NeedsReview` binding (it is the *absence* of a decision, which clearing
   already expresses). Accepted: the decision is lost if the terminal
   dies before quit, and split/merge/rename/tag remain open backlog.
+
+- 2026-06-11 — In the context of Codex P2 on PR #38 (the S13 substitution
+  material, `core/src/complement.rs`), facing the material transposing
+  with the register band under non-octave offsets (offsets measured from
+  A's lowest pitch but applied at B's band floor: a C-major part shifted
+  a fifth grew G-major material with an F#), we decided for **anchoring
+  to pitch classes**: `scale_intervals_from` takes the band floor and
+  measures every offset — A's literal pitch classes and the inferred
+  key's scale alike — from the band floor's pitch class, so the
+  materialised pitch classes equal A's at any offset; the band picks the
+  octave, never the key — and against fixing only the harmony intervals
+  (A's literal pitch classes had the same flaw, masked by the test
+  fixtures' octave-only offsets; one anchor rule for the whole material
+  is the coherent contract), and against re-deriving the material per
+  consumer (the single seam stays the single seam). Accepted: a caller
+  who genuinely wants transposed-with-the-band material has no knob for
+  it (none of the six modes wants it — register is a placement axis, not
+  a harmonic one).
