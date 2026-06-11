@@ -1001,3 +1001,15 @@ Architectural decisions go to [`adr/`](adr/) instead.
   scrolled past its last line looks empty and broken). Accepted: the
   stored offset can exceed the real overflow until the next draw; the
   clamp makes that harmless and invisible.
+
+- 2026-06-11 — In the context of Codex P2 on PR #41 (the inspector scroll
+  clamp, `preview/src/tui.rs`), facing the clamp counting pre-wrap `Line`
+  entries while ratatui scrolls *after* wrapping (a long imported track
+  name left the final wrapped rows unreachable), we decided for **the
+  exact post-wrap row count via `Paragraph::line_count`**, enabling
+  ratatui 0.29's `unstable-rendered-line-info` feature — and against
+  dropping `Wrap` (truncation; the wrap predates this PR and long names
+  should stay readable), and against estimating rows as
+  `ceil(width/cols)` (word wrap can exceed the estimate, leaving the same
+  bug in pathological cases). Accepted: a feature flagged unstable by
+  upstream, pinned at 0.29 and isolated to one call site.
