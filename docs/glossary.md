@@ -155,6 +155,17 @@ the track `Tuning` (ADR-0019). VI-independent geometry (distinct from the parked
 MIDI *technique* inference); output is marked `InferredFromMidi` with confidence.
 GP positions stay `Explicit` and are not inferred.
 
+### Part playability
+Playability facts of one part's melodic line (highest pitch per onset),
+measured on the position-inference DP's optimal path under the track's
+`Tuning` (`fretboard::measure_playability`): line notes measured, notes with
+no playable `(string, fret)`, and the largest fret travel between
+consecutively positioned notes. The verdict is *reachability* — a part with
+an unreachable line note is not playable; fret travel is a fact, not a
+verdict (jump thresholds are calibration data). The S13 pair validator's
+per-part filter, and the seed of the S7 `playability` / `fret_jump_penalty`
+cost terms. Chord voicing playability is deferred (ADR-0019 §7).
+
 ### Note
 A sounding note (`AtomNote`): `pitch`, `duration`, `velocity`, an optional
 `FretboardPosition`, and a set of `NoteMark`s, each technique carrying

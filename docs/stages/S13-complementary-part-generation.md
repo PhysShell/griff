@@ -29,8 +29,11 @@ ADRs: ADR-0012, ADR-0011
 - [x] `support_layer` — sparser low-register layer; `density(B) < density(A)`.
 - [x] `octave_double` — reproduce A's contour an octave away.
 - [x] `counter_melody` — independent line against A.
-- [ ] Pair validator: add per-part playability (the S6 filter), beyond the
-      current harmonic-compatibility / register-mud checks.
+- [x] Pair validator: per-part playability beyond the harmonic-compatibility /
+      register-mud checks — `validate_pair` measures each part's melodic line
+      on the optimal fingering path under the track's own tuning
+      (`fretboard::measure_playability`, ADR-0019); an unreachable line note
+      rejects the pair, fret travel is carried as a fact (2026-06-11).
 - [ ] `PartProfile`: richer harmonic context (key/scale fit) for pitch material.
 
 > Roadmap note: appended as the next free stage number (append-only, per the

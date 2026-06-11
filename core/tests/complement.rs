@@ -1054,3 +1054,83 @@ fn measured_axes_are_deterministic_and_comparable() {
     let b = measure_pair_axes(&score, 0, 1).expect("measure");
     assert_eq!(a, b, "AxisScores must be comparable for persistence");
 }
+
+// ── validate_pair: per-part playability (S13 backlog) ─────────────────────────
+//
+// TDD red phase: the pair validator grows the per-part playability filter
+// the stage doc lists beyond the harmonic / register-mud checks. Each part's
+// melodic line (the shared highest-pitch-per-onset convention) is measured
+// on the optimal fingering path under the track's own tuning
+// (`fretboard::measure_playability`, ADR-0019); a part with an unreachable
+// note is not playable, and the pair is not clean. References fields that
+// do not exist yet, so the suite fails until the green step.
+
+/// Appends a track named "B" playing `pitches` as contiguous quarters.
+fn push_part_b(score: &mut Score, pitches: &[u8]) {
+    let b_groups: Vec<EventGroup> = pitches
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| single_group(quarter_note(u32::try_from(i).unwrap() * QUARTER, p)))
+        .collect();
+    score.tracks.push(Track {
+        name: Some("B".to_string()),
+        channel: 1,
+        voices: vec![Voice {
+            id: 0,
+            event_groups: b_groups,
+        }],
+        tuning: Tuning::standard_e(),
+    });
+}
+
+#[test]
+fn validate_pair_measures_part_playability() {
+    // The consonant octave-apart pair: every note reachable on Standard E.
+    let mut score = score_with_part_a(1, &[60, 64, 67, 72]);
+    push_part_b(&mut score, &[48, 52, 55, 60]);
+
+    let v = validate_pair(&score, 0, 1).expect("validate ok");
+    assert_eq!(v.a_playability.note_count, 4);
+    assert_eq!(v.a_playability.unpositionable, 0);
+    assert!(v.a_playability.is_playable());
+    assert!(v.b_playability.is_playable());
+    assert!(v.is_clean(), "playable consonant pair stays clean");
+}
+
+#[test]
+fn validate_pair_flags_unplayable_part() {
+    // B's lone note (C2 = 36) sits below Standard E's low string: harmonically
+    // consonant with A (two octaves below 60) and far from register mud, so
+    // only the playability filter can reject this pair.
+    let mut score = score_with_part_a(1, &[60, 62, 64, 65]);
+    push_part_b(&mut score, &[36]);
+
+    let v = validate_pair(&score, 0, 1).expect("validate ok");
+    assert_eq!(
+        v.coincident_dissonances, 0,
+        "two octaves apart is consonant"
+    );
+    assert!(!v.register_mud);
+    assert!(v.a_playability.is_playable());
+    assert_eq!(v.b_playability.unpositionable, 1);
+    assert!(!v.b_playability.is_playable());
+    assert!(!v.is_clean(), "an unplayable part is not a clean pair");
+}
+
+#[test]
+fn validate_pair_playability_reads_the_top_line() {
+    // A's first onset is a two-note chord (36 + 60): the line convention
+    // folds it to its top note, so the unreachable 36 is chord voicing —
+    // deferred per ADR-0019 §7 — not a line-playability loss.
+    let mut score = score_with_part_a(1, &[60, 62]);
+    score.tracks[0].voices[0]
+        .event_groups
+        .push(single_group(quarter_note(0, 36)));
+    push_part_b(&mut score, &[84, 86]);
+
+    let v = validate_pair(&score, 0, 1).expect("validate ok");
+    assert_eq!(v.a_playability.note_count, 2, "one entry per onset");
+    assert_eq!(v.a_playability.unpositionable, 0);
+    assert!(v.a_playability.is_playable());
+    assert!(v.is_clean());
+}
