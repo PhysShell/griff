@@ -1,12 +1,14 @@
-//! Chunk similarity v2 — the first S7 edge, over persisted corpus axes.
+//! Chunk similarity v3 — the first S7 edge, over persisted corpus axes.
 //!
 //! Computes the *similarity* edge of the graph layer (S7, glossary §9) between
 //! corpus chunks, using only facts already persisted in `ChunkMeta`: the
 //! [`StructureMetrics`] that S14 Phase 3 wrote into the schema (v2), the
-//! swancore tag set, and the burst/rest
-//! [`GestureStats`](crate::gesture::GestureStats) of schema v3. No note
-//! content is read — the manifest carries none — so retrieval works straight
-//! off the corpus file.
+//! swancore tag set, the burst/rest
+//! [`GestureStats`](crate::gesture::GestureStats) of schema v3, and the
+//! per-axis [`ComplexityProfile`](crate::structure::ComplexityProfile) of
+//! schema v6. No note content is read —
+//! the manifest carries none — so retrieval works straight off the corpus
+//! file.
 //!
 //! Shape per the 2026-06-10 `AudioMuse` prior-art decision (idea (a)): a
 //! brute-force pass over *named* symbolic feature axes with a per-axis
@@ -35,16 +37,25 @@
 //!   *extensive* gesture facts (note / burst / rest counts, max burst) are
 //!   deliberately not axes: they scale with chunk length, and a length echo
 //!   would shadow the style facts the intensive distributions carry.
+//! - `rhythmic_complexity_similarity` / `pitch_complexity_similarity` /
+//!   `technical_complexity_similarity` / `harmonic_complexity_similarity` /
+//!   `playability_complexity_similarity` — `1 − |Δ|` on the corresponding
+//!   [`ComplexityProfile`](crate::structure::ComplexityProfile) axes (v3,
+//!   schema v6).
+//!   `ComplexityProfile::structural` is deliberately not an axis: it is the
+//!   same fact as `StructureMetrics::structural_complexity`, already on the
+//!   edge as `complexity_similarity`, and a duplicate axis would silently
+//!   double-weight it — the `variation_score` rule.
 //!
 //! [`find_similar_chunks`] ranks candidates against a query under a versioned
 //! [`WeightPolicy`] via the shared [`Scored`] envelope, so every neighbour
 //! carries its per-axis rationale and the ranking is reproducible relative to
 //! the policy version (ADR-0017 §7). Unmeasured records cannot sit on this
-//! edge — *measured* means structure **and** gesture (an absent fact is not a
-//! zero-similarity fact, and a pair scored on fewer axes is not comparable
-//! under one policy): an unmeasured *query* is an error, unmeasured
-//! *candidates* (schema v1 or v2) are skipped until re-curated. Pure and
-//! deterministic (SPEC §6).
+//! edge — *measured* means structure **and** gesture **and** complexity (an
+//! absent fact is not a zero-similarity fact, and a pair scored on fewer
+//! axes is not comparable under one policy): an unmeasured *query* is an
+//! error, unmeasured *candidates* (schema ≤ v5) are skipped until
+//! re-curated. Pure and deterministic (SPEC §6).
 
 use std::collections::HashSet;
 
@@ -65,10 +76,16 @@ const AXIS_REST_LENGTH: &str = "rest_length_similarity";
 const AXIS_REST_GRID: &str = "rest_grid_similarity";
 const AXIS_MODAL_LANDING: &str = "modal_landing_similarity";
 const AXIS_FINAL_LENGTHENING: &str = "final_lengthening_similarity";
+const AXIS_RHYTHMIC_COMPLEXITY: &str = "rhythmic_complexity_similarity";
+const AXIS_PITCH_COMPLEXITY: &str = "pitch_complexity_similarity";
+const AXIS_TECHNICAL_COMPLEXITY: &str = "technical_complexity_similarity";
+const AXIS_HARMONIC_COMPLEXITY: &str = "harmonic_complexity_similarity";
+const AXIS_PLAYABILITY_COMPLEXITY: &str = "playability_complexity_similarity";
 
 /// The similarity axes, in their canonical order (ADR-0017): the five
-/// structure/tag axes of v1, then the five gesture axes of v2 (append-only).
-pub const SIMILARITY_AXIS_LABELS: [&str; 10] = [
+/// structure/tag axes of v1, the five gesture axes of v2, then the five
+/// complexity axes of v3 (append-only).
+pub const SIMILARITY_AXIS_LABELS: [&str; 15] = [
     AXIS_PERIOD,
     AXIS_REPEATABILITY,
     AXIS_LOOPABILITY,
@@ -79,14 +96,18 @@ pub const SIMILARITY_AXIS_LABELS: [&str; 10] = [
     AXIS_REST_GRID,
     AXIS_MODAL_LANDING,
     AXIS_FINAL_LENGTHENING,
+    AXIS_RHYTHMIC_COMPLEXITY,
+    AXIS_PITCH_COMPLEXITY,
+    AXIS_TECHNICAL_COMPLEXITY,
+    AXIS_HARMONIC_COMPLEXITY,
+    AXIS_PLAYABILITY_COMPLEXITY,
 ];
 
 /// Errors chunk-similarity retrieval can emit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimilarityError {
-    /// The query chunk carries no measured structure or no measured gesture
-    /// (a schema-v1 or v2 record); re-curate it before asking for its
-    /// neighbours.
+    /// The query chunk carries no measured structure, gesture, or complexity
+    /// (a pre-v6 record); re-curate it before asking for its neighbours.
     QueryUnmeasured,
 }
 
@@ -94,15 +115,18 @@ pub enum SimilarityError {
 /// `[0, 1]` (ADR-0017) — higher is more alike; symmetric in its arguments.
 ///
 /// Returns `None` when either side is unmeasured — missing persisted
-/// [`StructureMetrics`] *or* [`GestureStats`](crate::gesture::GestureStats):
-/// an absent fact is not a zero-similarity fact, and a pair scored on fewer
-/// axes would not be comparable under one policy.
+/// [`StructureMetrics`], [`GestureStats`](crate::gesture::GestureStats), *or*
+/// [`ComplexityProfile`](crate::structure::ComplexityProfile): an absent
+/// fact is not a zero-similarity fact, and a
+/// pair scored on fewer axes would not be comparable under one policy.
 #[must_use]
 pub fn similarity_axes(a: &ChunkMeta, b: &ChunkMeta) -> Option<Axes> {
     let ma = a.structure.as_ref()?;
     let mb = b.structure.as_ref()?;
     let ga = a.gesture.as_ref()?;
     let gb = b.gesture.as_ref()?;
+    let ca = a.complexity.as_ref()?;
+    let cb = b.complexity.as_ref()?;
 
     Some(Axes::new(vec![
         Axis {
@@ -145,17 +169,38 @@ pub fn similarity_axes(a: &ChunkMeta, b: &ChunkMeta) -> Option<Axes> {
             label: AXIS_FINAL_LENGTHENING,
             value: scalar_similarity(ga.mean_final_lengthening, gb.mean_final_lengthening),
         },
+        Axis {
+            label: AXIS_RHYTHMIC_COMPLEXITY,
+            value: scalar_similarity(ca.rhythmic, cb.rhythmic),
+        },
+        Axis {
+            label: AXIS_PITCH_COMPLEXITY,
+            value: scalar_similarity(ca.pitch, cb.pitch),
+        },
+        Axis {
+            label: AXIS_TECHNICAL_COMPLEXITY,
+            value: scalar_similarity(ca.technical, cb.technical),
+        },
+        Axis {
+            label: AXIS_HARMONIC_COMPLEXITY,
+            value: scalar_similarity(ca.harmonic, cb.harmonic),
+        },
+        Axis {
+            label: AXIS_PLAYABILITY_COMPLEXITY,
+            value: scalar_similarity(ca.playability, cb.playability),
+        },
     ]))
 }
 
-/// The current similarity weight policy (`similarity` v2): uniform over the
-/// ten axes — v1's five structure/tag axes plus the five gesture axes.
+/// The current similarity weight policy (`similarity` v3): uniform over the
+/// fifteen axes — v1's five structure/tag axes, the five gesture axes of v2,
+/// and the five complexity axes.
 ///
 /// Untuned by design — weights are data the feedback layer (S9) learns
-/// (ADR-0017 §3); the superseded v1 weights live in git history, not API.
+/// (ADR-0017 §3); the superseded v1/v2 weights live in git history, not API.
 #[must_use]
-pub fn similarity_weights_v2() -> WeightPolicy {
-    WeightPolicy::uniform("similarity", 2, &SIMILARITY_AXIS_LABELS)
+pub fn similarity_weights_v3() -> WeightPolicy {
+    WeightPolicy::uniform("similarity", 3, &SIMILARITY_AXIS_LABELS)
 }
 
 /// Ranks `candidates` by similarity to `query` under `policy`, most similar
@@ -171,7 +216,7 @@ pub fn find_similar_chunks(
     candidates: &[ChunkMeta],
     policy: &WeightPolicy,
 ) -> Result<Vec<Scored<ChunkId>>, SimilarityError> {
-    if query.structure.is_none() || query.gesture.is_none() {
+    if query.structure.is_none() || query.gesture.is_none() || query.complexity.is_none() {
         return Err(SimilarityError::QueryUnmeasured);
     }
 

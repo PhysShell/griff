@@ -1,6 +1,7 @@
 # S13: Complementary part generation (ComplementArranger)
 
-Status: in progress — all six relation modes landed (2026-06-11)
+Status: done — backlog cleared with the harmonic-context increment
+(2026-06-11); threshold calibration stays with the corpus / S9
 Depends on: S6 (rule generator), ADR-0011 (canonical port of feature/generate)
 ADRs: ADR-0012, ADR-0011
 
@@ -34,7 +35,14 @@ ADRs: ADR-0012, ADR-0011
       on the optimal fingering path under the track's own tuning
       (`fretboard::measure_playability`, ADR-0019); an unreachable line note
       rejects the pair, fret travel is carried as a fact (2026-06-11).
-- [ ] `PartProfile`: richer harmonic context (key/scale fit) for pitch material.
+- [x] `PartProfile`: richer harmonic context (key/scale fit) for pitch
+      material — `analyze_part` estimates the part's key with the
+      Krumhansl–Schmuckler algorithm (Krumhansl–Kessler profiles over the
+      duration-weighted pitch-class histogram) and carries it as
+      `PartProfile::harmony` (tonic, major/natural minor, `scale_fit` as a
+      fact); B's substitution material becomes A's literal pitch classes
+      *plus* the inferred key's scale, so a sparse part no longer collapses
+      B onto one pitch per band (2026-06-11).
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label audit). Logically it sits between the single-part generator (S6)

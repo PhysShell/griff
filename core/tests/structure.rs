@@ -21,12 +21,16 @@
 )]
 
 use griff_core::{
-    event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
+    event::{
+        NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature,
+        Tuning, Velocity,
+    },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
+        TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
-    structure::{measure_structure, StructureError},
+    structure::{measure_complexity, measure_structure, StructureError},
 };
 
 const PPQN: u16 = 480;
@@ -418,4 +422,331 @@ fn rejects_score_without_master_bars() {
         measure_structure(&score, 0),
         Err(StructureError::EmptyScore)
     ));
+}
+
+// ── sub-bar (beat-level) period detection (S14 deferred refinement) ───────────
+//
+// TDD red phase: `StructureMetrics` grows `detected_subbar_period_ticks` — the
+// strongest verbatim-tiling lag shorter than one bar, found by autocorrelation
+// over per-beat cell signatures on a uniform timeline. Cells are compared by
+// exact `(onset, pitch)` signatures: at one-onset granularity the bar-level
+// rhythm floor and transposition credit are degenerate (almost any two
+// single-note cells would "match"), so the sub-bar pass demands verbatim
+// repeats. References a field that does not exist yet, so the suite fails to
+// compile until the green step.
+
+#[test]
+fn detects_a_half_bar_subbar_period() {
+    // The two-pitch alternation tiles every half bar (two beats).
+    let score = build_score(&[vec![40, 47, 40, 47], vec![40, 47, 40, 47]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks,
+        Some(2 * QUARTER),
+        "the alternation tiles every half bar"
+    );
+    assert_eq!(
+        m.detected_pattern_period_bars,
+        Some(1),
+        "the bar-level period is unchanged by the refinement"
+    );
+}
+
+#[test]
+fn a_uniform_pulse_reads_as_a_one_beat_subbar_period() {
+    let score = build_score(&[vec![40, 40, 40, 40], vec![40, 40, 40, 40]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks,
+        Some(QUARTER),
+        "every beat is identical; ties resolve to the shortest lag"
+    );
+}
+
+#[test]
+fn no_subbar_period_for_whole_bar_material() {
+    // A scale run: no beat cell repeats verbatim at a sub-bar lag.
+    let score = build_score(&[vec![60, 62, 64, 65], vec![60, 62, 64, 65]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "the repeating idea is the whole bar, not a sub-bar cell"
+    );
+    assert_eq!(m.detected_pattern_period_bars, Some(1));
+}
+
+#[test]
+fn no_subbar_period_for_a_silent_track() {
+    let score = build_score(&[vec![], vec![]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "silence has no repeating sub-bar idea"
+    );
+}
+
+#[test]
+fn no_subbar_period_on_a_mixed_meter_timeline() {
+    // A 4/4 bar followed by a 3/4 bar: beat cells do not align across bars,
+    // so the sub-bar pass abstains instead of measuring a misaligned grid.
+    let mut score = build_score(&[vec![40, 47, 40, 47]]);
+    let start = BAR;
+    let end = BAR + 3 * QUARTER;
+    score.master_bars.push(MasterBar {
+        index: 1,
+        tick_range: TickRange::new(Ticks(start), Ticks(end)).expect("ordered"),
+        time_signature: TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        },
+        tempo: Tempo::new(120.0).expect("120 BPM"),
+    });
+    for (i, &p) in [40_u8, 47, 40].iter().enumerate() {
+        score.tracks[0].voices[0].event_groups.push(EventGroup {
+            kind: EventGroupKind::Single,
+            atoms: vec![quarter_note(start + u32::try_from(i).unwrap() * QUARTER, p)],
+            technique_spans: Vec::new(),
+        });
+    }
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "a non-uniform timeline has no shared beat grid to autocorrelate"
+    );
+}
+
+#[test]
+fn silence_does_not_establish_a_subbar_period() {
+    // Codex P2 (PR #38): one sounded beat per bar with non-repeating pitches.
+    // Empty-empty beat pairs are uninformative and must sit out of the mean —
+    // without that, lag 1 clears the threshold on rests alone (4/7 of the
+    // pairs are empty-empty) and a false one-beat period persists into the
+    // corpus.
+    let score = build_score(&[vec![60], vec![67]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "silence alone must not establish a sub-bar period"
+    );
+}
+
+#[test]
+fn rest_aligned_sparse_repeats_still_read_as_a_subbar_period() {
+    // Characterization guard for the fix above: an X . X . bar still reads as
+    // a half-bar tile — the sounded cells carry the period on their own.
+    let mut score = build_score(&[vec![], vec![]]);
+    for bar in 0..2_u32 {
+        for beat in [0_u32, 2] {
+            score.tracks[0].voices[0].event_groups.push(EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![quarter_note(bar * BAR + beat * QUARTER, 40)],
+                technique_spans: Vec::new(),
+            });
+        }
+    }
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks,
+        Some(2 * QUARTER),
+        "the sounded cells alone carry the half-bar tile"
+    );
+}
+
+// ── ComplexityProfile (S14 deferred refinement: the per-axis vector) ──────────
+//
+// TDD red phase: `measure_complexity` derives a `ComplexityProfile` — the
+// rhythmic / pitch / technical / harmonic / playability / structural vector
+// the stage doc separates from length and period (ADR-0015, glossary §7).
+// Every axis is a fact in [0, 1], untuned v1 measures; measurement only, no
+// corpus persistence yet ("measure before target"). References an API that
+// does not exist yet, so the suite fails to compile until the green step.
+
+#[test]
+fn complexity_axes_are_low_for_a_uniform_pulse() {
+    // Four identical bars of the same open-string quarter pulse.
+    let score = build_score(&[vec![40; 4], vec![40; 4], vec![40; 4], vec![40; 4]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(c.rhythmic, 0.0, "one distinct inter-onset interval");
+    assert_eq!(c.pitch, 0.0, "one distinct melodic interval (unison)");
+    assert_eq!(c.technical, 0.0, "no marks, no spans");
+    assert_eq!(c.harmonic, 0.0, "a single pitch class fits its key exactly");
+    assert_eq!(c.playability, 0.0, "an open-string pedal needs no travel");
+    assert_eq!(c.structural, 0.25, "one distinct bar signature out of four");
+}
+
+#[test]
+fn rhythmic_axis_reads_inter_onset_variety() {
+    // Onsets 0, 480, 720, 960: inter-onset intervals {480, 240, 240} — two
+    // distinct values out of three intervals.
+    let mut score = build_score(&[vec![]]);
+    for onset in [0_u32, 480, 720, 960] {
+        score.tracks[0].voices[0].event_groups.push(EventGroup {
+            kind: EventGroupKind::Single,
+            atoms: vec![quarter_note(onset, 40)],
+            technique_spans: Vec::new(),
+        });
+    }
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(c.rhythmic, 0.5, "(2 distinct − 1) / (3 intervals − 1)");
+    assert_eq!(c.pitch, 0.0, "a single pitch has no interval variety");
+}
+
+#[test]
+fn pitch_axis_reads_melodic_interval_variety() {
+    // Line 40 42 45 47: absolute intervals {2, 3, 2} — two distinct out of
+    // three; the rhythm is a uniform quarter grid.
+    let score = build_score(&[vec![40, 42, 45, 47]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(c.pitch, 0.5, "(2 distinct − 1) / (3 intervals − 1)");
+    assert_eq!(c.rhythmic, 0.0);
+}
+
+#[test]
+fn technical_axis_reads_marked_and_spanned_share() {
+    // Four notes: one accented (mark), one covered by a palm-mute span on its
+    // group — half the notes carry technique.
+    let mut score = build_score(&[vec![40, 40, 40, 40]]);
+    let groups = &mut score.tracks[0].voices[0].event_groups;
+    if let AtomEvent::Note(n) = &mut groups[0].atoms[0] {
+        n.marks = NoteMarks::empty().with(NoteMark::Accent);
+    }
+    groups[2].technique_spans.push(TechniqueSpan {
+        technique: SpanTechnique::PalmMute,
+        tick_range: TickRange::new(Ticks(2 * QUARTER), Ticks(3 * QUARTER)).expect("ordered"),
+        evidence: TechniqueEvidence::explicit(),
+    });
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(
+        c.technical, 0.5,
+        "2 of 4 notes carry a mark or sit in a span"
+    );
+}
+
+#[test]
+fn harmonic_axis_reads_chromaticism() {
+    // The C major scale plus a chromatic C#: scale fit 8/9, so the harmonic
+    // complexity is 1/9 (the off-scale share of the estimated key).
+    let score = build_score(&[vec![60, 61, 62, 64, 65, 67, 69, 71, 72]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert!(
+        (c.harmonic - 1.0 / 9.0).abs() < 1e-9,
+        "one chromatic note out of nine, got {}",
+        c.harmonic
+    );
+}
+
+#[test]
+fn playability_axis_is_max_for_an_unreachable_note() {
+    // Pitch 5 sits below Standard E's lowest open string: unreachable.
+    let score = build_score(&[vec![5, 40]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(
+        c.playability, 1.0,
+        "an unpositionable line note maxes the axis"
+    );
+}
+
+#[test]
+fn structural_axis_matches_structure_metrics() {
+    let score = build_score(&[vec![60, 62, 64, 65], vec![40, 47, 40, 47]]);
+    let c = measure_complexity(&score, 0).expect("measure");
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        c.structural, m.structural_complexity,
+        "one structural fact, measured once"
+    );
+}
+
+#[test]
+fn complexity_is_deterministic_and_in_unit_range() {
+    let score = build_score(&[vec![40, 52, 45, 47], vec![60, 62, 40, 65]]);
+    let a = measure_complexity(&score, 0).expect("measure");
+    let b = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(a, b, "pure and deterministic (SPEC §6)");
+    for (label, v) in [
+        ("rhythmic", a.rhythmic),
+        ("pitch", a.pitch),
+        ("technical", a.technical),
+        ("harmonic", a.harmonic),
+        ("playability", a.playability),
+        ("structural", a.structural),
+    ] {
+        assert!((0.0..=1.0).contains(&v), "{label} out of range: {v}");
+    }
+}
+
+#[test]
+fn complexity_rejects_out_of_range_track() {
+    let score = build_score(&[vec![40]]);
+    assert!(matches!(
+        measure_complexity(&score, 9),
+        Err(StructureError::TrackIndexOutOfRange)
+    ));
+}
+
+#[test]
+fn adjacent_repeats_without_tiling_are_not_a_subbar_period() {
+    // Codex P2 (PR #38), round two: A A B B — lag 1 matches two of three
+    // adjacent pairs and clears a similarity-mean threshold, but a one-beat
+    // tile requires *every* aligned cell pair to match. A mean over pairs is
+    // a similarity test, not a tiling test.
+    let score = build_score(&[vec![40, 40, 47, 47]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "A A B B tiles at no sub-bar lag"
+    );
+}
+
+#[test]
+fn a_varied_copy_breaks_the_verbatim_subbar_tile() {
+    // The verbatim contract, pinned: one varied cell anywhere vetoes the
+    // tile (5 of 6 matching pairs is not verbatim tiling) — tolerance to
+    // variation is the bar-level repeatability's job.
+    let score = build_score(&[vec![40, 47, 40, 47], vec![40, 47, 40, 46]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "a varied final cell breaks the half-bar tile"
+    );
+}
+
+#[test]
+fn a_subbar_tile_must_be_observed_twice() {
+    // Codex P2 (PR #38), round three: A B C A in one 4/4 bar — the single
+    // lag-3 pair (cell 0 == cell 3) is consistent with a 3-beat tile, but a
+    // tile seen once is no period. Sub-bar lags stop at half the cell count,
+    // the same evidence rule as the bar-level `max_lag = n / 2`.
+    let score = build_score(&[vec![60, 62, 64, 60]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "one recurrence of the first cell is not a tiling of the bar"
+    );
+}
+
+#[test]
+fn technique_spans_cover_only_their_own_voice() {
+    // Codex P2 (PR #38): a technique span lives in a voice; a simultaneous
+    // plain note in another voice is not covered by it. Four plain quarters
+    // in voice 0, one palm-muted note in voice 1 — one technical note of
+    // five, not two.
+    let mut score = build_score(&[vec![40, 40, 40, 40]]);
+    score.tracks[0].voices.push(Voice {
+        id: 1,
+        event_groups: vec![EventGroup {
+            kind: EventGroupKind::Single,
+            atoms: vec![quarter_note(0, 47)],
+            technique_spans: vec![TechniqueSpan {
+                technique: SpanTechnique::PalmMute,
+                tick_range: TickRange::new(Ticks(0), Ticks(QUARTER)).expect("ordered"),
+                evidence: TechniqueEvidence::explicit(),
+            }],
+        }],
+    });
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(
+        c.technical, 0.2,
+        "the span covers its own voice's note, not voice 0's downbeat"
+    );
 }

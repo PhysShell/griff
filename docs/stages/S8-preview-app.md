@@ -9,10 +9,12 @@ ADRs: —
 >   pitch × tick plane, per-track lanes, bar gridlines. Pure, no I/O.
 > - **analysis** (`analyze`: `Score` → `Analysis`) — named sections from
 >   `griff_core::classify` (Riff/Breakdown/Solo/Clean/Unknown) plus structure
->   metrics from `griff_core::structure`. Pure, headless-testable.
+>   metrics and the per-axis S14 `ComplexityProfile` from
+>   `griff_core::structure`. Pure, headless-testable.
 > - **ASCII rasteriser** (`render_frame`) — view → fixed-size text grid.
 > - **interactive TUI** (`tui::App`, `ratatui`) — colored piano-roll with
->   scroll/zoom, a named-section band, a metrics inspector, a playhead, and
+>   scroll/zoom, a named-section band, a metrics inspector (structure plus the
+>   compact complexity-vector block since 2026-06-11), a playhead, and
 >   keyboard navigation. The same render path drives the live crossterm loop and
 >   a headless `App::snapshot` (via `TestBackend`), so the UI is CI-verifiable.
 >
@@ -48,8 +50,13 @@ front-ends and audio build on them:
 - [ ] `eframe`/`egui` native window — the canonical desktop target (piano-roll
       canvas, pan/zoom), reusing the same `PianoRollView`.
 - [ ] MIDI playback via `midir`, with a playhead overlay.
-- [ ] Curation actions (approve/reject/split/merge/rename/tag) feeding the S5
-      corpus schema.
+- [ ] Curation actions feeding the S5 corpus schema — **first slice landed
+      2026-06-11**: approve/reject intents in the interaction core
+      (`Viewport::decision`, ADR-0016 — repeat to undo), 'a'/'x' keys and a
+      pending-decision line in the TUI inspector, and
+      `griff-preview --record=<chunk.json>` persisting the decision into the
+      record's `reviewer` field on quit (`curation::decide_record`).
+      Remaining: split/merge/rename/tag.
 - [ ] Boundary overlays (S4) and candidate history.
 
 ## Goal

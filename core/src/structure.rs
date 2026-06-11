@@ -11,9 +11,13 @@
 //! **nor** DP/Viterbi (ADR-0013): the metrics are designed to *become* graph
 //! node attributes and reranking signals later, not to consume them (ADR-0015).
 //!
-//! Granularity: this first pass detects the period at *bar* resolution via
-//! self-similarity autocorrelation over per-bar signatures. Sub-bar (beat-level)
-//! periods and the full per-axis complexity profile are later increments.
+//! Granularity: the main pass detects the period at *bar* resolution via
+//! self-similarity autocorrelation over per-bar signatures. A sub-bar
+//! refinement autocorrelates per-*beat* cell signatures on uniform timelines
+//! and reports the strongest verbatim-tiling lag shorter than one bar
+//! (`detected_subbar_period_ticks`). [`measure_complexity`] derives the
+//! per-axis [`ComplexityProfile`] — measurement only; persistence and
+//! control-side targets are later increments.
 //!
 //! Bar similarity is contour-aware: two bars are compared by their onset grid
 //! (rhythm) and their pitches, and a *transposed* repeat — identical rhythm,
@@ -44,13 +48,16 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::complement::estimate_harmony;
 use crate::event::{Pitch, Ticks, Tuning};
+use crate::fretboard::{measure_playability, FingeringWeights, STANDARD_MAX_FRET};
 use crate::generate::{
     bar_duration_ticks, generate, GenerationConstraints, GenerationError, GenerationSeed,
     GenerationStrategy, PitchMaterial, RuleGenerationRequest,
 };
 use crate::score::{
-    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, TechniqueSpan,
+    Track, Voice,
 };
 use crate::scoring::{rank_indices, Axes, Axis, Scored, WeightPolicy};
 use crate::slice::TickRange;
@@ -81,6 +88,12 @@ pub struct StructureMetrics {
     pub detected_pattern_period_bars: Option<usize>,
     /// The same period in ticks (sum of the first `period` bars' spans), or `None`.
     pub detected_pattern_period_ticks: Option<u32>,
+    /// Sub-bar refinement: the strongest *verbatim*-tiling lag shorter than one
+    /// bar, in ticks (a whole number of beats), or `None` when no sub-bar cell
+    /// repeats, the track is silent, or the timeline is not uniform. Optional
+    /// in the corpus schema since v5; pre-v5 records load as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_subbar_period_ticks: Option<u32>,
     /// Strength of the dominant period: mean self-similarity at the best lag, in `[0, 1]`.
     pub repeatability_score: f64,
     /// How much repeats deviate from identical (`1 - repeatability`), in `[0, 1]`.
@@ -145,22 +158,7 @@ pub fn measure_structure(
 
     let notes = track_notes(track);
     let bar_count = score.master_bars.len();
-
-    // Per-bar signature: the set of (onset-within-bar, pitch) pairs.
-    let signatures: Vec<Vec<(u32, u8)>> = score
-        .master_bars
-        .iter()
-        .map(|mb| {
-            let mut sig: Vec<(u32, u8)> = notes
-                .iter()
-                .filter(|n| n.onset >= mb.tick_range.start.0 && n.onset < mb.tick_range.end.0)
-                .map(|n| (n.onset.saturating_sub(mb.tick_range.start.0), n.pitch))
-                .collect();
-            sig.sort_unstable();
-            sig.dedup();
-            sig
-        })
-        .collect();
+    let signatures = bar_signatures(&notes, score);
 
     let (period_bars, repeatability) = detect_period(&signatures);
     let variation = (1.0 - repeatability).clamp(0.0, 1.0);
@@ -178,11 +176,112 @@ pub fn measure_structure(
         bar_count,
         detected_pattern_period_bars: period_bars,
         detected_pattern_period_ticks,
+        detected_subbar_period_ticks: detect_subbar_period(&notes, score),
         repeatability_score: repeatability,
         variation_score: variation,
         loopability_score: loopability(&notes, score),
         structural_complexity: unique_ratio(&signatures),
     })
+}
+
+/// Sub-bar (beat-level) period: the shortest verbatim-tiling lag shorter than
+/// one bar, in ticks.
+///
+/// Requires notes and a uniform timeline (one shared time signature and bar
+/// span) whose bar divides evenly into `numerator` beat cells; otherwise it
+/// abstains (`None`). Cells are compared by exact `(onset-within-cell, pitch)`
+/// signatures: at one-onset granularity the bar-level rhythm floor and
+/// transposition credit are degenerate (almost any two single-note cells would
+/// "match"), so the sub-bar pass demands verbatim repeats — softening that is
+/// a later increment.
+///
+/// A lag qualifies only when *every* aligned cell pair matches — a tiling
+/// test, not a similarity mean: `A A B B` matches two of three lag-1 pairs
+/// yet tiles at no sub-bar lag, and one varied cell anywhere vetoes the tile
+/// (variation tolerance is the bar-level repeatability's job). Empty cells
+/// match empty cells inside a tile, but a mismatch against a sounded cell
+/// vetoes the lag, so silence still cannot establish a period on its own.
+/// Lags stop at half the cell count — a tile must be observed at least twice
+/// (`A B C A`'s single lag-3 pair is no tiling of the bar), the same evidence
+/// rule as the bar-level `max_lag = n / 2` (all three: Codex P2, PR #38).
+fn detect_subbar_period(notes: &[NoteRef], score: &Score) -> Option<u32> {
+    if notes.is_empty() {
+        return None;
+    }
+    let first = score.master_bars.first()?;
+    let bar_span = first
+        .tick_range
+        .end
+        .0
+        .saturating_sub(first.tick_range.start.0);
+    let uniform = score.master_bars.iter().all(|mb| {
+        mb.time_signature == first.time_signature
+            && mb.tick_range.end.0.saturating_sub(mb.tick_range.start.0) == bar_span
+    });
+    if !uniform {
+        return None;
+    }
+    let beats = u32::from(first.time_signature.numerator);
+    if beats < 2 {
+        return None;
+    }
+    let beat_ticks = bar_span.checked_div(beats)?;
+    if beat_ticks == 0 || beat_ticks.checked_mul(beats) != Some(bar_span) {
+        return None;
+    }
+
+    // Per-beat cell signatures across the whole span, in timeline order.
+    let mut cells: Vec<BTreeSet<(u32, u8)>> = Vec::new();
+    for mb in &score.master_bars {
+        for b in 0..beats {
+            let cell_start = mb
+                .tick_range
+                .start
+                .0
+                .saturating_add(b.saturating_mul(beat_ticks));
+            let cell_end = cell_start.saturating_add(beat_ticks);
+            cells.push(
+                notes
+                    .iter()
+                    .filter(|n| n.onset >= cell_start && n.onset < cell_end)
+                    .map(|n| (n.onset.saturating_sub(cell_start), n.pitch))
+                    .collect(),
+            );
+        }
+    }
+
+    let max_lag_cells = cells.len() / 2;
+    for lag in 1..beats {
+        let lag_cells = usize::try_from(lag).ok()?;
+        if lag_cells > max_lag_cells {
+            break;
+        }
+        let pairs = cells.len().saturating_sub(lag_cells);
+        let tiles = (0..pairs).all(|i| cells.get(i) == cells.get(i.saturating_add(lag_cells)));
+        if tiles {
+            return lag.checked_mul(beat_ticks);
+        }
+    }
+    None
+}
+
+/// Per-bar signatures: for each master bar, the sorted deduplicated set of
+/// `(onset-within-bar, pitch)` pairs.
+fn bar_signatures(notes: &[NoteRef], score: &Score) -> Vec<Vec<(u32, u8)>> {
+    score
+        .master_bars
+        .iter()
+        .map(|mb| {
+            let mut sig: Vec<(u32, u8)> = notes
+                .iter()
+                .filter(|n| n.onset >= mb.tick_range.start.0 && n.onset < mb.tick_range.end.0)
+                .map(|n| (n.onset.saturating_sub(mb.tick_range.start.0), n.pitch))
+                .collect();
+            sig.sort_unstable();
+            sig.dedup();
+            sig
+        })
+        .collect()
 }
 
 /// Finds the lag (in bars) of strongest self-similarity. Returns the period
@@ -343,6 +442,171 @@ fn loopability(notes: &[NoteRef], score: &Score) -> f64 {
     };
 
     (pitch_seam + timing_seam) / 2.0
+}
+
+// ── ComplexityProfile: the per-axis complexity vector (ADR-0015, glossary §7) ─
+
+/// The per-axis complexity of a track over a span (S14, ADR-0015).
+///
+/// A *vector*, not a scalar (glossary §7): each axis is an untuned v1 measure
+/// in `[0, 1]` — a fact for reranking and (later) graph node attributes, not a
+/// verdict. Orthogonal to target span and pattern period by construction.
+/// Serialisable since corpus schema v6, where it persists into `ChunkMeta`
+/// alongside the structure metrics; control-side complexity targets remain a
+/// later increment ("measure before target", ADR-0015).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ComplexityProfile {
+    /// Inter-onset-interval variety over distinct onsets:
+    /// `(distinct − 1) / (count − 1)`; `0.0` below two intervals.
+    pub rhythmic: f64,
+    /// Melodic-interval variety over the highest-pitch-per-onset line, with
+    /// the same normalisation.
+    pub pitch: f64,
+    /// Share of notes carrying a per-note mark or sitting inside a technique
+    /// span (ADR-0018: both surfaces count).
+    pub technical: f64,
+    /// Off-scale share of the estimated key: `1 − scale_fit` of the S13
+    /// harmonic context (Krumhansl–Schmuckler); `0.0` for a silent track.
+    pub harmonic: f64,
+    /// Fret-travel difficulty of the line on its optimal fingering path
+    /// (ADR-0019): `max_fret_jump / 12`, capped at an octave of travel;
+    /// `1.0` when any line note is unreachable under the track's tuning.
+    pub playability: f64,
+    /// Distinct-bar-signature ratio — the same fact as
+    /// [`StructureMetrics::structural_complexity`], measured once.
+    pub structural: f64,
+}
+
+/// Measures the per-axis complexity of the track at `track_index`.
+///
+/// Pure and deterministic (SPEC §6); independent of the graph layer and
+/// DP/Viterbi like every other structure measurement.
+pub fn measure_complexity(
+    score: &Score,
+    track_index: usize,
+) -> Result<ComplexityProfile, StructureError> {
+    if score.master_bars.is_empty() {
+        return Err(StructureError::EmptyScore);
+    }
+    let track = score
+        .tracks
+        .get(track_index)
+        .ok_or(StructureError::TrackIndexOutOfRange)?;
+
+    let notes = track_notes(track);
+    let line = line_pitches(&notes);
+
+    Ok(ComplexityProfile {
+        rhythmic: ioi_variety(&notes),
+        pitch: interval_variety(&line),
+        technical: technique_share(track),
+        harmonic: chromaticism(&notes),
+        playability: travel_difficulty(&line, &track.tuning),
+        structural: unique_ratio(&bar_signatures(&notes, score)),
+    })
+}
+
+/// Normalised variety of a value sequence: `(distinct − 1) / (count − 1)`,
+/// `0.0` below two values — one value repeated has no variety, all-distinct
+/// values score `1.0`.
+#[allow(clippy::cast_precision_loss)]
+fn variety<T: Ord>(values: &[T]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let distinct: BTreeSet<&T> = values.iter().collect();
+    distinct.len().saturating_sub(1) as f64 / values.len().saturating_sub(1) as f64
+}
+
+/// Inter-onset-interval variety over the track's distinct onsets.
+fn ioi_variety(notes: &[NoteRef]) -> f64 {
+    let mut onsets: Vec<u32> = notes.iter().map(|n| n.onset).collect();
+    onsets.sort_unstable();
+    onsets.dedup();
+    let iois: Vec<u32> = onsets
+        .windows(2)
+        .filter_map(|w| w.get(1)?.checked_sub(*w.first()?))
+        .collect();
+    variety(&iois)
+}
+
+/// The melodic line: the highest pitch at each distinct onset (the shared
+/// line convention; chord notes participate through their top note).
+fn line_pitches(notes: &[NoteRef]) -> Vec<u8> {
+    // `notes` is sorted by onset (track_notes).
+    let mut line: Vec<(u32, u8)> = Vec::new();
+    for n in notes {
+        match line.last_mut() {
+            Some((onset, pitch)) if *onset == n.onset => *pitch = (*pitch).max(n.pitch),
+            _ => line.push((n.onset, n.pitch)),
+        }
+    }
+    line.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Absolute melodic-interval variety along the line.
+fn interval_variety(line: &[u8]) -> f64 {
+    let intervals: Vec<u8> = line
+        .windows(2)
+        .filter_map(|w| Some(w.first()?.abs_diff(*w.get(1)?)))
+        .collect();
+    variety(&intervals)
+}
+
+/// Share of the track's notes that carry a per-note mark or whose onset sits
+/// inside a technique span *of the same voice* — a span lives in the voice it
+/// was recorded in, so a simultaneous plain note in another voice is not
+/// covered by it (Codex P2, PR #38).
+#[allow(clippy::cast_precision_loss)]
+fn technique_share(track: &Track) -> f64 {
+    let mut total = 0_usize;
+    let mut technical = 0_usize;
+    for voice in &track.voices {
+        let spans: Vec<&TechniqueSpan> = voice
+            .event_groups
+            .iter()
+            .flat_map(|g| &g.technique_spans)
+            .collect();
+        for atom in voice.event_groups.iter().flat_map(|g| &g.atoms) {
+            if let AtomEvent::Note(n) = atom {
+                total = total.saturating_add(1);
+                let onset = n.absolute_start.0;
+                let covered = !n.marks.is_empty()
+                    || spans
+                        .iter()
+                        .any(|s| onset >= s.tick_range.start.0 && onset < s.tick_range.end.0);
+                if covered {
+                    technical = technical.saturating_add(1);
+                }
+            }
+        }
+    }
+    if total == 0 {
+        0.0
+    } else {
+        technical as f64 / total as f64
+    }
+}
+
+/// Chromaticism: the duration-weighted off-scale share of the estimated key.
+fn chromaticism(notes: &[NoteRef]) -> f64 {
+    let weighted: Vec<(u8, u32)> = notes.iter().map(|n| (n.pitch, n.duration)).collect();
+    estimate_harmony(&weighted).map_or(0.0, |h| (1.0 - h.scale_fit).clamp(0.0, 1.0))
+}
+
+/// Fret-travel difficulty of the line under `tuning` on the optimal fingering
+/// path; an unreachable line note maxes the axis.
+fn travel_difficulty(line: &[u8], tuning: &Tuning) -> f64 {
+    if line.is_empty() {
+        return 0.0;
+    }
+    let pitches: Vec<Pitch> = line.iter().map(|&p| Pitch(p)).collect();
+    let report = measure_playability(&pitches, tuning, &FingeringWeights::v1(), STANDARD_MAX_FRET);
+    if report.is_playable() {
+        f64::from(report.max_fret_jump.min(12)) / 12.0
+    } else {
+        1.0
+    }
 }
 
 // ── S14 Phase 1: structure controls — the tile/vary compiler over S6 ──────────

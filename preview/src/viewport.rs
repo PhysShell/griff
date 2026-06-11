@@ -36,6 +36,19 @@ pub struct ViewContext {
     pub section_starts: Vec<u32>,
 }
 
+/// A curation decision pending on the viewed chunk (S8).
+///
+/// A UI-level fact — deliberately not `corpus::ReviewerDecision`, so the
+/// interaction core keeps zero `griff-core` domain types (the ADR-0016 crate
+/// boundary); the frontend shell maps it when persisting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurationDecision {
+    /// The curator approves the viewed chunk.
+    Approve,
+    /// The curator rejects the viewed chunk.
+    Reject,
+}
+
 /// Interactive, renderer-agnostic viewport state. Mutated only by the reducer
 /// ([`Viewport::apply`]) and the pure playback helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +67,8 @@ pub struct Viewport {
     pub play_tick: u32,
     /// Whether the inspector dock is shown.
     pub show_inspector: bool,
+    /// The pending curation decision, or `None` until the curator acts.
+    pub decision: Option<CurationDecision>,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -84,6 +99,10 @@ pub enum Intent {
     ToggleInspector,
     /// Jump back to the start of the score.
     Home,
+    /// Mark the viewed chunk approved; repeating it clears the decision.
+    Approve,
+    /// Mark the viewed chunk rejected; repeating it clears the decision.
+    Reject,
 }
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
@@ -112,6 +131,7 @@ impl Viewport {
             playing: false,
             play_tick: ctx.tick_start,
             show_inspector: true,
+            decision: None,
         }
     }
 
@@ -160,8 +180,20 @@ impl Viewport {
                 self.scroll_tick = ctx.tick_start;
                 self.play_tick = ctx.tick_start;
             }
+            Intent::Approve => self.toggle_decision(CurationDecision::Approve),
+            Intent::Reject => self.toggle_decision(CurationDecision::Reject),
         }
         Step::Continue
+    }
+
+    /// Sets `decision`, clearing it when the same decision is already pending
+    /// (the same intent again is an undo); a different one overwrites.
+    fn toggle_decision(&mut self, decision: CurationDecision) {
+        self.decision = if self.decision == Some(decision) {
+            None
+        } else {
+            Some(decision)
+        };
     }
 
     /// Selects section `idx` (clamped to the last) and jumps the scroll and
@@ -369,6 +401,38 @@ mod tests {
         vp.apply(Intent::Home, &c);
         assert_eq!(vp.scroll_tick, c.tick_start);
         assert_eq!(vp.play_tick, c.tick_start);
+    }
+
+    // TDD red phase: curation decisions join the interaction core (S8,
+    // ADR-0016 layer 2) — a UI-level fact, persisted by the frontend shell.
+    // References a field and intents that do not exist yet, so the crate
+    // fails to compile until the green step.
+
+    #[test]
+    fn approve_and_reject_set_the_decision() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        assert_eq!(vp.decision, None, "no decision until the curator acts");
+        vp.apply(Intent::Approve, &c);
+        assert_eq!(vp.decision, Some(CurationDecision::Approve));
+        vp.apply(Intent::Reject, &c);
+        assert_eq!(
+            vp.decision,
+            Some(CurationDecision::Reject),
+            "the other intent overwrites"
+        );
+    }
+
+    #[test]
+    fn repeating_a_decision_clears_it() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::Approve, &c);
+        vp.apply(Intent::Approve, &c);
+        assert_eq!(vp.decision, None, "the same intent again is an undo");
+        vp.apply(Intent::Reject, &c);
+        vp.apply(Intent::Reject, &c);
+        assert_eq!(vp.decision, None);
     }
 
     #[test]

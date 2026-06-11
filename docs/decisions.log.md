@@ -698,3 +698,267 @@ Architectural decisions go to [`adr/`](adr/) instead.
   but is not reported yet), out-of-range notes both fail the verdict and
   hide whatever travel surrounds them, and the `v1` weights remain
   untuned placeholders.
+
+- 2026-06-11 — In the context of the last S13 backlog item "`PartProfile`:
+  richer harmonic context (key/scale fit) for pitch material"
+  (`core/src/complement.rs`), facing how B should get pitch material when A
+  is harmonically sparse (a power-chord riff carries two pitch classes, so
+  literal-pitch-class substitution collapses B onto one pitch per band), we
+  decided for **the Krumhansl–Schmuckler key estimate as a carried fact,
+  and "enrich, don't replace" for material**: `analyze_part` correlates the
+  part's duration-weighted pitch-class histogram against the 24 rotated
+  Krumhansl–Kessler tonal-hierarchy profiles (prior art: Krumhansl & Kessler
+  1982; Krumhansl, *Cognitive Foundations of Musical Pitch*, 1990 — the
+  standard key-finding baseline, as implemented in e.g. music21's
+  `KrumhanslSchmuckler`; reimplemented natively, no dependency) and carries
+  the winner as `PartProfile::harmony` (tonic pitch class, major / natural
+  minor, plus `scale_fit` — the duration-weighted fraction of notes on the
+  inferred scale, a fact, not a verdict); `scale_intervals_from` unions the
+  inferred key's scale into B's substitution material so A's literal pitch
+  classes always remain available — and against gating the enrichment on a
+  `scale_fit` threshold (what counts as "fitting well enough" is corpus/S9
+  calibration data, like the fret-jump and dissonance thresholds before
+  it), against replacing A's pitch classes with the inferred scale (B
+  should always be able to echo notes A actually plays, and a chromatic A
+  would otherwise lose real material to a poorly fitting key), against
+  weighted-key variants (Temperley 1999) before any corpus exists to prefer
+  one profile set over another, and against estimating per-bar local keys
+  (S13 derives one request per part; locality can join when S7 consumes
+  the context). Ties resolve deterministically to the earliest key in the
+  major-then-minor, C-upward scan; all-zero-duration parts fall back to
+  count weighting. Accepted: relative-key confusions inherent to the
+  profile method on short diatonic lines, that the natural minor stands in
+  for all minor variants, and that the enriched material changes the
+  seed-deterministic pitch picks of the substitution modes (S13 is still
+  pre-corpus; no golden output depends on them).
+
+- 2026-06-11 — In the context of the S14 deferred refinement "sub-bar
+  (beat-level) period detection" (`core/src/structure.rs`), facing how to
+  compare beat-sized cells when the bar-level similarity was tuned for
+  bar-sized signatures, we decided for **exact-signature autocorrelation at
+  beat resolution, verbatim repeats only** (prior art: lag-domain
+  autocorrelation of musical surfaces — Brown 1993, *Determination of meter
+  of musical scores by autocorrelation*, JASA; self-similarity matrices,
+  Foote 1999 — the idea reused natively, no dependency): per-beat
+  `(onset-within-cell, pitch)` signatures across a uniform timeline (one
+  shared time signature and bar span, the bar dividing evenly into
+  `numerator` beats), Jaccard-compared at sub-bar lags `1..numerator` beats,
+  gated by the existing `PERIOD_THRESHOLD` with ties to the shortest lag,
+  reported as `StructureMetrics::detected_subbar_period_ticks` and persisted
+  under corpus schema v5 (optional, default `None`, key skipped when absent
+  — the v2/v3/v4 compatibility pattern) — and against reusing
+  `bar_similarity` at cell granularity (with at most one onset per cell the
+  rhythm floor makes *any* constant-rhythm material clear the threshold at
+  a 1-beat lag, and the transposition credit makes almost any two
+  single-note cells "transpositions": both components are degenerate at
+  this scale and would report a vacuous 1-beat period for nearly
+  everything), against a separate sub-bar threshold (a second calibration
+  knob with no corpus to calibrate it), and against folding the result into
+  `detected_pattern_period_bars`/`_ticks` (their bar-level semantics are
+  documented and consumed by `structure_axes`; the refinement is a new
+  fact, not a redefinition). Accepted: rhythm-only sub-bar tiles (same
+  rhythm, changing pitches) read as *no* sub-bar period under the verbatim
+  rule, mixed-meter timelines and non-dividing bars abstain entirely, and
+  `StructureControl` cannot yet *request* a sub-bar period (the control-side
+  increment stays deferred).
+
+- 2026-06-11 — In the context of Codex P2 on PR #38 (the sub-bar period
+  pass, `core/src/structure.rs`), facing sparse riffs where empty-empty
+  beat pairs (`set_jaccard(∅, ∅) = 1.0`) alone cleared `PERIOD_THRESHOLD`
+  at lag 1 and persisted a false one-beat period into v5 corpus metadata,
+  we decided for **excluding empty-empty pairs from the sub-bar lag mean**
+  (silence may sit inside a tile but never establishes one; a lag with no
+  informative pairs is skipped) — and against gating on a minimum
+  non-empty-pair fraction (another calibration knob), and against changing
+  the bar-level pass (a rest bar inside a repeated phrase is meaningful at
+  bar granularity and that behaviour is documented and tested). Accepted:
+  a sub-bar period can now be carried by very few sounded cells on mostly
+  silent material — the verbatim rule still requires them to actually
+  repeat.
+
+- 2026-06-11 — In the context of the S14 deferred refinement "the full
+  per-axis `ComplexityProfile`" (`core/src/structure.rs`), facing what each
+  axis should measure before any corpus exists to calibrate against, we
+  decided for **untuned v1 facts in `[0, 1]`, built on existing seams**:
+  rhythmic and pitch complexity as normalised variety
+  (`(distinct − 1) / (count − 1)` — 0 for one repeated value, 1 for
+  all-distinct) over inter-onset intervals and over absolute melodic
+  intervals along the highest-pitch-per-onset line (the shared line
+  convention), technical as the share of notes carrying a per-note mark or
+  sitting inside a technique span (both ADR-0018 surfaces), harmonic as
+  `1 − scale_fit` of the S13 Krumhansl–Schmuckler key estimate (the
+  estimator becomes a `pub(crate)` seam over `(pitch, duration)` pairs so
+  complement and structure share one implementation), playability as
+  `max_fret_jump / 12` on the ADR-0019 optimal fingering path capped at an
+  octave with unreachable notes maxing the axis, and structural as the
+  distinct-bar-signature ratio (`bar_signatures` extracted as a shared
+  helper; the same fact as `StructureMetrics::structural_complexity`) — and
+  against persisting the profile into `ChunkMeta` in the same increment
+  (measure before target, ADR-0015: the schema bump joins once the vector
+  has consumers), against weighting or aggregating the axes (weights are S9
+  data, ADR-0017), and against a syncopation-based rhythmic axis (off-grid
+  share needs a grid-resolution choice — a calibration knob; variety needs
+  none). Accepted: the axes are coarse (a two-value rhythm scores the same
+  variety wherever it sits), playability reads fret travel only (the same
+  ADR-0019 limitation the pair validator accepted), and harmonic complexity
+  inherits the relative-key confusions of the profile method.
+
+- 2026-06-11 — In the context of giving the S14 `ComplexityProfile` its
+  first consumer (`preview/src/analysis.rs` / `tui.rs`), facing whether the
+  vector's next step is corpus persistence (schema v6) or a display
+  surface, we decided for **the preview inspector first**: `analyze`
+  measures the focus track's profile next to the structure metrics, and
+  the TUI dock renders it as a compact three-row block of abbreviated axis
+  pairs (`rhy`/`pit`, `tec`/`har`, `ply`/`str`) — and against bumping the
+  corpus schema in the same increment (the earlier decision stands:
+  persistence joins once consumers exist and prove the shape), and against
+  one labelled meter row per axis (twelve rows would push the transport
+  block out of a 20-row terminal, and the golden frames pin exactly that
+  regression). The preview golden tests now honour `GRIFF_BLESS=1` like
+  the core characterization snapshots, replacing `include_str!`, so
+  intended UI changes re-bless uniformly. Accepted: abbreviated axis
+  labels trade self-evidence for fit (the doc comment spells them out),
+  and the demo frame shows a hand-filled profile rather than a measured
+  one (the demo `Analysis` is a literal, not an `analyze` result).
+
+- 2026-06-11 — In the context of Codex P2 on PR #38, round two (the
+  sub-bar period pass, `core/src/structure.rs`), facing `A A B B` reading
+  as a one-beat period (two of three lag-1 pairs match, mean 2/3 clears
+  `PERIOD_THRESHOLD`) although the documented contract says *verbatim
+  tiling*, we decided for **replacing the lag mean with a tiling test**:
+  a lag qualifies only when every aligned cell pair matches exactly, the
+  shortest qualifying lag wins, and `PERIOD_THRESHOLD` drops out of the
+  sub-bar pass entirely (it stays the bar-level mechanism, where graded
+  similarity is the point) — this supersedes the same-day "empty-empty
+  pairs sit out of the mean" rule, which the all-pairs test subsumes:
+  empty cells match empty cells inside a tile, but any mismatch against a
+  sounded cell vetoes the lag, so silence still cannot establish a
+  period — and against keeping the mean with a higher threshold (any
+  threshold below 1.0 admits some non-tiling mix; exactly 1.0 *is* the
+  all-pairs test, stated less directly), and against a verbatim-majority
+  rule (calibration with no corpus to calibrate on). Accepted: the pass
+  is all-or-nothing — a single varied cell hides a sub-bar tile the ear
+  would still group (the bar-level repeatability continues to carry
+  graded repetition), and the result is no longer accompanied by a
+  strength value (a verbatim tile's strength is definitionally 1).
+
+- 2026-06-11 — In the context of Codex P2 on PR #38, round three (the
+  sub-bar period pass, `core/src/structure.rs`), facing `A B C A` in one
+  4/4 bar reading as a 3-beat period because the lag-3 all-pairs test had
+  exactly one pair to check (a tile "observed" once), we decided for
+  **capping sub-bar lags at half the cell count** — the same evidence rule
+  the bar-level pass has always applied via `max_lag = n / 2`: a period is
+  a recurrence claim, so the tile must fit the span at least twice — and
+  against requiring the cell count to divide by the lag with modulo-class
+  comparison (the comparison half is equivalent to the all-pairs test, and
+  divisibility would reject genuine tiles truncated by the bar count — the
+  tile/vary compiler explicitly produces truncated final copies). Accepted:
+  a true sub-bar idea stated exactly once in a short span goes unreported
+  (consistent with the bar-level rule), and single-bar scores can only
+  ever report periods up to half a bar.
+
+- 2026-06-11 — In the context of Codex P2 on PR #38 (the preview
+  inspector, `preview/src/tui.rs`), facing the dock content exceeding a
+  20-row terminal once structure metrics *and* the complexity block are
+  both measured (the goldens only covered the metrics-less demo, and the
+  live transport block fell off the bottom), we decided for **ordering by
+  liveness**: transport (play state, position) renders directly under the
+  section info, ahead of the static metrics blocks, so bottom clipping
+  always eats the metrics tail — and against compacting the structure
+  meters to win the rows back (the meters are the structure block's
+  readability; squeezing both blocks to fit every height is a layout
+  arms race a scrollable dock should end instead), and against a
+  height-conditional layout (two arrangements to characterize for one
+  dock). Accepted: on short terminals the structure/complexity tail is
+  what clips, and a scrollable or collapsible inspector remains the real
+  fix (an S8 follow-up).
+
+- 2026-06-11 — In the context of persisting the S14 `ComplexityProfile`
+  (`core/src/corpus.rs`, schema v6), facing when the vector's shape is
+  settled enough to freeze into records, we decided for **persisting now
+  that a consumer exists**: the preview inspector renders the six axes and
+  exercised the shape, so `ChunkMeta` gains the optional `complexity`
+  field under the established compatibility pattern (default `None`, key
+  skipped when absent; pre-v6 records round-trip byte-identically) and
+  `griff curate` measures and stores it with structure and gesture — and
+  against folding the profile into `StructureMetrics` (it is a per-track
+  complexity fact, not a time-organisation fact; the structural axis
+  already shares its value with `structural_complexity` by construction),
+  and against a similarity-axes join in the same increment (the
+  similarity edge deliberately treats "measured" as an all-or-nothing
+  vocabulary per policy version; growing it to v3 with six more axes is
+  its own red→green step). Accepted: re-curation is needed before v6
+  fields appear on existing records (the established healing path), and
+  the v1 axis definitions are now load-bearing for stored data — future
+  refinements bump the schema again rather than silently re-meaning
+  stored values.
+
+- 2026-06-11 — In the context of Codex P2 on PR #38 (the complexity
+  profile's technical axis, `core/src/structure.rs`), facing a technique
+  span in one voice marking simultaneous plain notes in *other* voices as
+  technical (the spans were flattened track-wide before the coverage
+  test, inflating `ComplexityProfile.technical` on polyphonic tracks), we
+  decided for **per-voice span scoping**: each voice's notes are tested
+  against that voice's spans only — a `TechniqueSpan` is recorded inside
+  a voice's event group and describes playing technique on that voice's
+  line — and against per-event-group scoping (a span's tick range
+  legitimately outlives its anchor group — a palm-mute span covers the
+  following notes of the same voice — so group scoping would undercount
+  what the span explicitly states). Accepted: two voices genuinely played
+  with one physical gesture (rare in practice; importers attach the span
+  to one voice) count the technique on the anchored voice only.
+
+- 2026-06-11 — In the context of similarity v3 (`core/src/similarity.rs`),
+  facing how the newly persisted `ComplexityProfile` (schema v6) joins the
+  S7 similarity edge, we decided for **five new `1 − |Δ|` agreement axes —
+  rhythmic / pitch / technical / harmonic / playability — under a uniform
+  `similarity` v3 policy (15 axes), with "measured" extended to require
+  the profile** (pre-v6 records sit out as candidates and are rejected as
+  queries until re-curated — the v2 gesture convention) — and against a
+  sixth `structural` axis (`ComplexityProfile.structural` is the same fact
+  as `StructureMetrics.structural_complexity`, already on the edge as
+  `complexity_similarity`; a duplicate axis would silently double-weight
+  it, the `variation_score` rule), against min/max ratio measures for the
+  new axes (the profile axes are unit-range shares like the gesture
+  shares, not unbounded means — `1 − |Δ|` is the established measure for
+  that shape), and against keeping `similarity_weights_v2` alongside v3
+  (superseded weights live in git history, not API — the v1 convention).
+  Accepted: the corpus must be re-curated to v6 before the edge sees any
+  pairs at all, and uniform weighting now spreads thinner (1/15 per axis)
+  until S9 learns real weights.
+
+- 2026-06-11 — In the context of the S8 backlog item "curation actions
+  feeding the S5 corpus schema" (`preview/src/viewport.rs` / `curation.rs`),
+  facing where a curation decision lives in the ADR-0016 layering, we
+  decided for **a UI-level `CurationDecision` in the interaction core,
+  bridged at the shell**: `Intent::Approve` / `Intent::Reject` set
+  `Viewport::decision` (repeating the intent is an undo, the other
+  overwrites), the inspector shows the pending decision, and the pure
+  `curation::decide_record` seam maps it into the record's `reviewer`
+  field (`Approve` → `Accepted`, `Reject` → `Rejected`) with file I/O
+  owned by the binary shell behind `--record=<chunk.json>` — and against
+  reusing `corpus::ReviewerDecision` inside the viewport (the interaction
+  core must stay free of `griff-core` domain types so it can move to
+  `griff-ui-core` unchanged), against writing on every keypress (quit is
+  the commit point; an undo before quit costs nothing), and against a
+  `NeedsReview` binding (it is the *absence* of a decision, which clearing
+  already expresses). Accepted: the decision is lost if the terminal
+  dies before quit, and split/merge/rename/tag remain open backlog.
+
+- 2026-06-11 — In the context of Codex P2 on PR #38 (the S13 substitution
+  material, `core/src/complement.rs`), facing the material transposing
+  with the register band under non-octave offsets (offsets measured from
+  A's lowest pitch but applied at B's band floor: a C-major part shifted
+  a fifth grew G-major material with an F#), we decided for **anchoring
+  to pitch classes**: `scale_intervals_from` takes the band floor and
+  measures every offset — A's literal pitch classes and the inferred
+  key's scale alike — from the band floor's pitch class, so the
+  materialised pitch classes equal A's at any offset; the band picks the
+  octave, never the key — and against fixing only the harmony intervals
+  (A's literal pitch classes had the same flaw, masked by the test
+  fixtures' octave-only offsets; one anchor rule for the whole material
+  is the coherent contract), and against re-deriving the material per
+  consumer (the single seam stays the single seam). Accepted: a caller
+  who genuinely wants transposed-with-the-band material has no knob for
+  it (none of the six modes wants it — register is a placement axis, not
+  a harmonic one).

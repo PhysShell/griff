@@ -35,7 +35,7 @@ use griff_core::classify::BarClass;
 use crate::analysis::Analysis;
 use crate::scene::{resolve, CellRole, GridSize, Scene, SceneCell, GUTTER};
 use crate::view::PianoRollView;
-use crate::viewport::{Intent, Step, ViewContext, Viewport};
+use crate::viewport::{CurationDecision, Intent, Step, ViewContext, Viewport};
 
 /// Width of the inspector dock.
 const INSPECTOR_W: u16 = 32;
@@ -157,6 +157,8 @@ impl App {
             KeyCode::Char(']') | KeyCode::Tab => Intent::NextSection,
             KeyCode::Char('i') => Intent::ToggleInspector,
             KeyCode::Char('0') | KeyCode::Home => Intent::Home,
+            KeyCode::Char('a') => Intent::Approve,
+            KeyCode::Char('x') => Intent::Reject,
             _ => return None,
         })
     }
@@ -268,6 +270,31 @@ impl App {
             )));
         }
 
+        lines.push(Line::from(format!(
+            "curation  {}",
+            match self.vp.decision {
+                Some(CurationDecision::Approve) => "approved",
+                Some(CurationDecision::Reject) => "rejected",
+                None => "—",
+            }
+        )));
+
+        // Transport sits above the metrics blocks: when the content exceeds
+        // the dock, clipping eats the tail of the static metrics, never the
+        // live play state (Codex P2, PR #38).
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("transport", dim));
+        lines.push(Line::from(format!(
+            "♩={:.0}   {}",
+            self.view.tempo_bpm,
+            if self.vp.playing {
+                "▶ playing"
+            } else {
+                "⏸ paused"
+            }
+        )));
+        lines.push(Line::from(format!("pos {}", self.position_label())));
+
         lines.push(Line::raw(""));
         lines.push(Line::styled("structure (S14)", dim));
         if let Some(m) = &self.analysis.metrics {
@@ -284,17 +311,14 @@ impl App {
         }
 
         lines.push(Line::raw(""));
-        lines.push(Line::styled("transport", dim));
-        lines.push(Line::from(format!(
-            "♩={:.0}   {}",
-            self.view.tempo_bpm,
-            if self.vp.playing {
-                "▶ playing"
-            } else {
-                "⏸ paused"
-            }
-        )));
-        lines.push(Line::from(format!("pos {}", self.position_label())));
+        lines.push(Line::styled("complexity (S14)", dim));
+        if let Some(c) = &self.analysis.complexity {
+            lines.push(complexity_pair("rhy", c.rhythmic, "pit", c.pitch));
+            lines.push(complexity_pair("tec", c.technical, "har", c.harmonic));
+            lines.push(complexity_pair("ply", c.playability, "str", c.structural));
+        } else {
+            lines.push(Line::raw("—"));
+        }
 
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
     }
@@ -320,7 +344,7 @@ impl App {
 /// Renders the static footer hint line.
 fn render_footer(area: Rect, frame: &mut Frame<'_>) {
     let hint =
-        "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · i inspector";
+        "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x curate";
     frame.render_widget(
         Paragraph::new(Line::styled(
             hint,
@@ -331,6 +355,16 @@ fn render_footer(area: Rect, frame: &mut Frame<'_>) {
 }
 
 /// Builds a meter line plus its label/percent line for an inspector metric.
+/// One inspector line carrying two abbreviated complexity axes — `rhy`thmic,
+/// `pit`ch, `tec`hnical, `har`monic, `ply` (playability), `str`uctural — the
+/// vector compressed to three rows so the dock keeps its transport block
+/// visible in short terminals.
+fn complexity_pair(label_a: &str, value_a: f64, label_b: &str, value_b: f64) -> Line<'static> {
+    let pct_a = (value_a.clamp(0.0, 1.0) * 100.0).round();
+    let pct_b = (value_b.clamp(0.0, 1.0) * 100.0).round();
+    Line::from(format!("{label_a} {pct_a:>3.0}%   {label_b} {pct_b:>3.0}%"))
+}
+
 fn push_metric(lines: &mut Vec<Line<'static>>, label: &str, value: f64, style: Style) {
     let pct = (value.clamp(0.0, 1.0) * 100.0).round();
     lines.push(Line::from(format!("{label:<13}{pct:>3.0}%")));
@@ -438,13 +472,18 @@ fn buffer_lines(buf: &Buffer) -> Vec<String> {
 ///
 /// # Errors
 /// Propagates terminal setup, draw, and input errors from `ratatui`.
-pub fn run(mut app: App) -> io::Result<()> {
+/// Runs the interactive TUI to completion and returns the curation decision
+/// pending when the user quit (if any), for the shell to persist.
+///
+/// # Errors
+/// Propagates terminal I/O errors from `ratatui`.
+pub fn run(mut app: App) -> io::Result<Option<CurationDecision>> {
     let mut terminal = ratatui::try_init()?;
     let size = terminal.size()?;
     app.fit(size.width);
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
-    result
+    result.map(|()| app.vp.decision)
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
@@ -481,9 +520,38 @@ mod tests {
         clippy::str_to_string
     )]
 
+    use std::path::PathBuf;
+    use std::{env, fs};
+
     use super::*;
     use crate::analysis::Section;
     use crate::view::{Lane, NoteRect};
+    use griff_core::structure::{ComplexityProfile, StructureMetrics};
+
+    /// Compare `actual` to the stored golden frame, or write it when
+    /// `GRIFF_BLESS=1` (the core characterization convention).
+    fn assert_golden(name: &str, actual: &str) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("golden")
+            .join(format!("{name}.txt"));
+        if env::var("GRIFF_BLESS").as_deref() == Ok("1") {
+            fs::write(&path, actual).unwrap();
+            return;
+        }
+        let expected = fs::read_to_string(&path).unwrap_or_else(|_| {
+            panic!(
+                "missing golden frame {}; create it with \
+                 `GRIFF_BLESS=1 cargo test -p griff-preview`",
+                path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "rendered frame drifted from golden `{name}`. If intended, \
+             re-bless with `GRIFF_BLESS=1 cargo test -p griff-preview`."
+        );
+    }
 
     fn demo_app() -> App {
         let view = PianoRollView {
@@ -530,6 +598,14 @@ mod tests {
                 },
             ],
             metrics: None,
+            complexity: Some(ComplexityProfile {
+                rhythmic: 0.25,
+                pitch: 0.5,
+                technical: 0.0,
+                harmonic: 0.125,
+                playability: 1.0,
+                structural: 0.5,
+            }),
         };
         App::new(view, analysis, "demo.mid".to_string())
     }
@@ -538,10 +614,53 @@ mod tests {
     // scripted interaction, so the viewport refactor cannot silently change what
     // the terminal draws. Regenerate deliberately if the UI is meant to change.
     #[test]
+    fn transport_stays_visible_with_full_metrics() {
+        // Codex P2 (PR #38): with both structure metrics and complexity
+        // measured (the real imported-score path), the inspector content
+        // exceeds a 20-row terminal. The clipping must eat the tail of the
+        // static metrics, not the live transport block.
+        let mut app = demo_app();
+        app.analysis.metrics = Some(StructureMetrics {
+            bar_count: 2,
+            detected_pattern_period_bars: Some(1),
+            detected_pattern_period_ticks: Some(960),
+            detected_subbar_period_ticks: None,
+            repeatability_score: 0.75,
+            variation_score: 0.25,
+            loopability_score: 0.5,
+            structural_complexity: 0.5,
+        });
+        let text = app.snapshot(80, 20).expect("renders").join("\n");
+        assert!(text.contains("transport"), "transport block visible");
+        assert!(text.contains("⏸ paused"), "play state visible");
+        assert!(text.contains("pos 1:1"), "play position visible");
+    }
+
+    #[test]
+    fn curation_keys_set_and_show_the_decision() {
+        // S8 curation slice: 'a' approves, 'x' rejects, the inspector shows
+        // the pending decision, and repeating a key clears it.
+        let mut app = demo_app();
+        let initial = app.snapshot(80, 20).expect("renders").join("\n");
+        assert!(
+            initial.contains("curation"),
+            "the inspector names the block"
+        );
+
+        app.on_key(KeyCode::Char('a'));
+        let approved = app.snapshot(80, 20).expect("renders").join("\n");
+        assert!(approved.contains("approved"), "a marks the chunk approved");
+
+        app.on_key(KeyCode::Char('x'));
+        let rejected = app.snapshot(80, 20).expect("renders").join("\n");
+        assert!(rejected.contains("rejected"), "x overwrites with rejected");
+    }
+
+    #[test]
     fn render_byte_stable_initial() {
         let mut app = demo_app();
         let got = app.snapshot(80, 20).expect("renders").join("\n");
-        assert_eq!(got, include_str!("golden/initial_80x20.txt"));
+        assert_golden("initial_80x20", &got);
     }
 
     #[test]
@@ -552,7 +671,7 @@ mod tests {
         app.on_key(KeyCode::Char(']')); // next section
         app.on_key(KeyCode::Char('+')); // zoom in
         let got = app.snapshot(80, 20).expect("renders").join("\n");
-        assert_eq!(got, include_str!("golden/acted_80x20.txt"));
+        assert_golden("acted_80x20", &got);
     }
 
     #[test]

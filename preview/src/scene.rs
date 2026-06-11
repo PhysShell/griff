@@ -438,6 +438,7 @@ mod tests {
                 },
             ],
             metrics: None,
+            complexity: None,
         };
         let vp = Viewport {
             scroll_tick: 0,
@@ -447,6 +448,7 @@ mod tests {
             playing: false,
             play_tick: 0,
             show_inspector: true,
+            decision: None,
         };
         (view, analysis, vp)
     }

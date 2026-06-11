@@ -1,6 +1,8 @@
 # S14: Structure controls and metrics
 
-Status: in progress — Phase 3 (corpus persistence) landed (2026-06-10)
+Status: in progress — Phase 3 (corpus persistence) landed (2026-06-10);
+sub-bar period detection and the `ComplexityProfile` measurement landed
+(2026-06-11)
 Depends on: S6 (rule generator), S4 (phrase boundaries, for `phrase_length`)
 ADRs: ADR-0015
 
@@ -28,10 +30,21 @@ ADRs: ADR-0015
 > the burst/rest gesture statistics (melodic-closure note §7.4) into the
 > schema as `ChunkMeta.gesture` (corpus schema v3, `SCHEMA_VERSION = 3`,
 > 2026-06-11), also measured and persisted by `griff curate`.
-> Remaining: sub-bar (beat-level) period detection, the full per-axis
-> `ComplexityProfile`, a P2 `structured_request` fuzz target (deferred: no
-> nightly toolchain in the landing environment), S7 node attributes (with the
-> graph layer), then Phase 4 below.
+> Sub-bar (beat-level) period detection landed 2026-06-11:
+> `detected_subbar_period_ticks` reports the strongest *verbatim*-tiling lag
+> shorter than one bar (exact per-beat cell autocorrelation on uniform
+> timelines; corpus schema v5).
+> The per-axis `ComplexityProfile` landed 2026-06-11 (and persists since
+> corpus schema v6, measured by `griff curate` alongside structure and
+> gesture; the preview inspector shows it as the first consumer):
+> `measure_complexity` derives the rhythmic / pitch / technical / harmonic /
+> playability / structural vector — normalised interval variety, the marked /
+> spanned note share, `1 − scale_fit` of the S13 key estimate, fret travel on
+> the ADR-0019 optimal path, and the distinct-bar-signature ratio.
+> Control-side complexity targets are a later increment.
+> Remaining: a P2 `structured_request` fuzz target (deferred: no nightly
+> toolchain in the landing environment), S7 node attributes (with the graph
+> layer), then Phase 4 below.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label history in [`../audit/`](../audit/)). Logically it sits beside the
@@ -58,8 +71,16 @@ exact-pitch baseline is acceptable for the first cut.
       `loopability_score` and diluted period/repeatability. Re-blessed the
       import / inspect / classify / roundtrip / characterize goldens
       (decisions.log 2026-06-03).
-- [ ] Sub-bar (beat-level) period detection and the full per-axis
-      `ComplexityProfile`.
+- [x] **Sub-bar (beat-level) period detection.** *Landed 2026-06-11.*
+      `detected_subbar_period_ticks` autocorrelates per-beat cell signatures on
+      uniform timelines and reports the strongest verbatim-tiling lag shorter
+      than one bar; persists with the record (corpus schema v5). Verbatim-only
+      by design at this granularity (decisions.log 2026-06-11).
+- [x] **The per-axis `ComplexityProfile`.** *Measurement and persistence
+      landed 2026-06-11.* `measure_complexity` returns the six-axis vector as
+      untuned v1 facts in `[0, 1]` (decisions.log 2026-06-11); it persists as
+      `ChunkMeta.complexity` (corpus schema v6) and shows in the preview
+      inspector. Control-side targets stay deferred.
 
 ## Goal
 

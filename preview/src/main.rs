@@ -3,8 +3,9 @@
 //! Usage:
 //!
 //! ```text
-//! griff-preview <file.mid>                 # interactive TUI
-//! griff-preview <file.mid> --snapshot=WxH  # print one headless frame and exit
+//! griff-preview <file.mid>                    # interactive TUI
+//! griff-preview <file.mid> --snapshot=WxH     # print one headless frame and exit
+//! griff-preview <file.mid> --record=<chunk>   # persist a/x curation into the record
 //! ```
 //!
 //! It imports the file through the core MIDI importer, builds a
@@ -17,21 +18,30 @@ use std::{env, fs};
 
 use griff_core::midi::import_score;
 use griff_preview::analysis::analyze;
+use griff_preview::curation::decide_record;
 use griff_preview::tui::{self, App};
 use griff_preview::view::build_view;
+use griff_preview::viewport::CurationDecision;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let Some(path) = args.next() else {
-        eprintln!("usage: griff-preview <file.mid> [--snapshot=WIDTHxHEIGHT]");
+        eprintln!(
+            "usage: griff-preview <file.mid> [--snapshot=WIDTHxHEIGHT] [--record=CHUNK_JSON]"
+        );
         return ExitCode::FAILURE;
     };
 
     let mut snapshot: Option<(u16, u16)> = None;
+    let mut record: Option<String> = None;
     for arg in args {
         if arg == "-h" || arg == "--help" {
-            println!("usage: griff-preview <file.mid> [--snapshot=WIDTHxHEIGHT]");
+            println!(
+                "usage: griff-preview <file.mid> [--snapshot=WIDTHxHEIGHT] [--record=CHUNK_JSON]"
+            );
             return ExitCode::SUCCESS;
+        } else if let Some(rec) = arg.strip_prefix("--record=") {
+            record = Some(rec.to_owned());
         } else if let Some(spec) = arg.strip_prefix("--snapshot=") {
             let Some(size) = parse_size(spec) else {
                 eprintln!("invalid --snapshot '{spec}', expected e.g. --snapshot=120x40");
@@ -75,12 +85,41 @@ fn main() -> ExitCode {
             }
         },
         None => match tui::run(app) {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(decision) => persist_decision(record.as_deref(), decision),
             Err(err) => {
                 eprintln!("tui error: {err}");
                 ExitCode::FAILURE
             }
         },
+    }
+}
+
+/// Writes the pending curation decision into the `--record` chunk file, if
+/// both are present; everything except the `reviewer` field is untouched.
+fn persist_decision(record: Option<&str>, decision: Option<CurationDecision>) -> ExitCode {
+    let (Some(path), Some(decision)) = (record, decision) else {
+        return ExitCode::SUCCESS;
+    };
+    let json = match fs::read_to_string(path) {
+        Ok(json) => json,
+        Err(err) => {
+            eprintln!("cannot read record {path}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let updated = match decide_record(&json, decision) {
+        Ok(updated) => updated,
+        Err(err) => {
+            eprintln!("cannot update record {path}: {err:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match fs::write(path, updated) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("cannot write record {path}: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 

@@ -5,7 +5,9 @@
 
 use griff_core::classify::{bar_features_across_voices, classify_bar, BarClass};
 use griff_core::score::{AtomEvent, Score, Voice};
-use griff_core::structure::{measure_structure, StructureMetrics};
+use griff_core::structure::{
+    measure_complexity, measure_structure, ComplexityProfile, StructureMetrics,
+};
 
 /// A run of consecutive bars sharing one classification — a *named section*
 /// such as `Riff`, `Breakdown`, or `Solo`.
@@ -44,6 +46,8 @@ pub struct Analysis {
     pub sections: Vec<Section>,
     /// Structure metrics for the focus track; `None` for an empty score.
     pub metrics: Option<StructureMetrics>,
+    /// The focus track's per-axis complexity (S14); `None` for an empty score.
+    pub complexity: Option<ComplexityProfile>,
 }
 
 /// Derives the [`Analysis`] for a score: pick the busiest track, classify each
@@ -53,10 +57,12 @@ pub fn analyze(score: &Score) -> Analysis {
     let focus_track = pick_focus_track(score);
     let sections = sections_for(score, focus_track);
     let metrics = measure_structure(score, focus_track).ok();
+    let complexity = measure_complexity(score, focus_track).ok();
     Analysis {
         focus_track,
         sections,
         metrics,
+        complexity,
     }
 }
 
@@ -117,7 +123,8 @@ mod tests {
         clippy::missing_assert_message,
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
-        clippy::str_to_string
+        clippy::str_to_string,
+        clippy::float_cmp
     )]
 
     use super::*;
@@ -189,6 +196,49 @@ mod tests {
             source_meta: None,
             loss: LossReport::new(),
         }
+    }
+
+    // TDD red phase: `Analysis` grows the focus track's `ComplexityProfile`
+    // (S14, the vector's first consumer). References a field that does not
+    // exist yet, so the crate fails to compile until the green step.
+
+    #[test]
+    fn analysis_measures_complexity_of_the_focus_track() {
+        let score = score_from(vec![vec![
+            (40, 100),
+            (43, 100),
+            (45, 100),
+            (47, 100),
+            (40, 100),
+        ]]);
+        let a = analyze(&score);
+        let c = a
+            .complexity
+            .expect("a non-empty score has a complexity profile");
+        let m = a.metrics.expect("a non-empty score has metrics");
+        assert_eq!(
+            c.structural, m.structural_complexity,
+            "one structural fact, measured once"
+        );
+        for v in [
+            c.rhythmic,
+            c.pitch,
+            c.technical,
+            c.harmonic,
+            c.playability,
+            c.structural,
+        ] {
+            assert!((0.0..=1.0).contains(&v), "axis out of range: {v}");
+        }
+    }
+
+    #[test]
+    fn empty_score_has_no_complexity() {
+        let a = analyze(&score_from(vec![]));
+        assert!(
+            a.complexity.is_none(),
+            "an empty score yields no complexity profile"
+        );
     }
 
     #[test]
