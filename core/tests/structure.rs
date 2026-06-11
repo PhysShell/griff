@@ -724,3 +724,29 @@ fn a_subbar_tile_must_be_observed_twice() {
         "one recurrence of the first cell is not a tiling of the bar"
     );
 }
+
+#[test]
+fn technique_spans_cover_only_their_own_voice() {
+    // Codex P2 (PR #38): a technique span lives in a voice; a simultaneous
+    // plain note in another voice is not covered by it. Four plain quarters
+    // in voice 0, one palm-muted note in voice 1 — one technical note of
+    // five, not two.
+    let mut score = build_score(&[vec![40, 40, 40, 40]]);
+    score.tracks[0].voices.push(Voice {
+        id: 1,
+        event_groups: vec![EventGroup {
+            kind: EventGroupKind::Single,
+            atoms: vec![quarter_note(0, 47)],
+            technique_spans: vec![TechniqueSpan {
+                technique: SpanTechnique::PalmMute,
+                tick_range: TickRange::new(Ticks(0), Ticks(QUARTER)).expect("ordered"),
+                evidence: TechniqueEvidence::explicit(),
+            }],
+        }],
+    });
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(
+        c.technical, 0.2,
+        "the span covers its own voice's note, not voice 0's downbeat"
+    );
+}
