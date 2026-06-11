@@ -1242,3 +1242,26 @@ fn pitch_material_is_enriched_by_the_inferred_key() {
         "the key estimate opens material beyond A's literal pitch classes"
     );
 }
+
+#[test]
+fn the_inferred_key_holds_under_a_non_octave_shift() {
+    // Codex P2 (PR #38): the substitution material is anchored to A's
+    // inferred key's pitch classes; the register band only picks the octave.
+    // A C-major part shifted up a fifth must not grow an F# — the offsets
+    // must be measured from the band floor's pitch class, not transposed
+    // wholesale with the band.
+    let score = score_with_part_a(2, &[60, 62, 64, 65, 67, 69, 71, 72]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RhythmLock,
+        register_offset: 7,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(11)).expect("arrange ok");
+    let c_major = [0_u8, 2, 4, 5, 7, 9, 11];
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            c_major.contains(&(p % 12)),
+            "B pitch {p} (pc {}) must stay in A's inferred key",
+            p % 12
+        );
+    }
+}
