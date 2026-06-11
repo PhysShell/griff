@@ -802,3 +802,21 @@ Architectural decisions go to [`adr/`](adr/) instead.
   variety wherever it sits), playability reads fret travel only (the same
   ADR-0019 limitation the pair validator accepted), and harmonic complexity
   inherits the relative-key confusions of the profile method.
+
+- 2026-06-11 — In the context of giving the S14 `ComplexityProfile` its
+  first consumer (`preview/src/analysis.rs` / `tui.rs`), facing whether the
+  vector's next step is corpus persistence (schema v6) or a display
+  surface, we decided for **the preview inspector first**: `analyze`
+  measures the focus track's profile next to the structure metrics, and
+  the TUI dock renders it as a compact three-row block of abbreviated axis
+  pairs (`rhy`/`pit`, `tec`/`har`, `ply`/`str`) — and against bumping the
+  corpus schema in the same increment (the earlier decision stands:
+  persistence joins once consumers exist and prove the shape), and against
+  one labelled meter row per axis (twelve rows would push the transport
+  block out of a 20-row terminal, and the golden frames pin exactly that
+  regression). The preview golden tests now honour `GRIFF_BLESS=1` like
+  the core characterization snapshots, replacing `include_str!`, so
+  intended UI changes re-bless uniformly. Accepted: abbreviated axis
+  labels trade self-evidence for fit (the doc comment spells them out),
+  and the demo frame shows a hand-filled profile rather than a measured
+  one (the demo `Analysis` is a literal, not an `analyze` result).

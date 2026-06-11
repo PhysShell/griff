@@ -9,10 +9,12 @@ ADRs: —
 >   pitch × tick plane, per-track lanes, bar gridlines. Pure, no I/O.
 > - **analysis** (`analyze`: `Score` → `Analysis`) — named sections from
 >   `griff_core::classify` (Riff/Breakdown/Solo/Clean/Unknown) plus structure
->   metrics from `griff_core::structure`. Pure, headless-testable.
+>   metrics and the per-axis S14 `ComplexityProfile` from
+>   `griff_core::structure`. Pure, headless-testable.
 > - **ASCII rasteriser** (`render_frame`) — view → fixed-size text grid.
 > - **interactive TUI** (`tui::App`, `ratatui`) — colored piano-roll with
->   scroll/zoom, a named-section band, a metrics inspector, a playhead, and
+>   scroll/zoom, a named-section band, a metrics inspector (structure plus the
+>   compact complexity-vector block since 2026-06-11), a playhead, and
 >   keyboard navigation. The same render path drives the live crossterm loop and
 >   a headless `App::snapshot` (via `TestBackend`), so the UI is CI-verifiable.
 >
