@@ -626,3 +626,124 @@ impl From<MidiError> for CliError {
         Self::Midi(e)
     }
 }
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+/// Red → green for the Codex P2 finding on PR #36: ensemble part selection
+/// must follow the first-voice convention every analysis module uses, and a
+/// failed pair measurement must surface as an error instead of silently
+/// writing an incomplete group.
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::missing_assert_message,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::score::{
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Voice,
+    };
+    use griff_core::slice::TickRange;
+
+    use super::{measure_group_relations, primary_voice_note_count, track_note_count, Track};
+
+    fn quarter(start: u32, pitch: u8) -> AtomEvent {
+        AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(start),
+            duration: Ticks(480),
+            pitch: Pitch::new(pitch).expect("valid pitch"),
+            velocity: Velocity::new(90).expect("valid velocity"),
+            marks: NoteMarks::empty(),
+            position: None,
+        })
+    }
+
+    fn voice_of(id: u8, atoms: Vec<AtomEvent>) -> Voice {
+        Voice {
+            id,
+            event_groups: atoms
+                .into_iter()
+                .map(|a| EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![a],
+                    technique_spans: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn track_of(voices: Vec<Voice>) -> Track {
+        Track {
+            name: None,
+            channel: 0,
+            voices,
+            tuning: Tuning::standard_e(),
+        }
+    }
+
+    fn one_bar_score(tracks: Vec<Track>) -> Score {
+        Score {
+            ticks_per_quarter: 480,
+            master_bars: vec![MasterBar {
+                index: 0,
+                tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered"),
+                time_signature: TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                },
+                tempo: Tempo::new(120.0).expect("120 BPM"),
+            }],
+            tracks,
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    #[test]
+    fn primary_voice_note_count_ignores_secondary_voices() {
+        // Notes only in voice 1: every analysis module reads voice 0, so the
+        // curate selection predicate must agree and skip this track.
+        let track = track_of(vec![
+            voice_of(0, Vec::new()),
+            voice_of(1, vec![quarter(0, 60), quarter(480, 62)]),
+        ]);
+        assert_eq!(track_note_count(&track), 2, "all-voice count sees them");
+        assert_eq!(
+            primary_voice_note_count(&track),
+            0,
+            "the measurement convention does not"
+        );
+
+        let measurable = track_of(vec![voice_of(0, vec![quarter(0, 60)])]);
+        assert_eq!(primary_voice_note_count(&measurable), 1);
+    }
+
+    #[test]
+    fn group_relations_measure_all_pairs() {
+        let score = one_bar_score(vec![
+            track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(480, 62)])]),
+            track_of(vec![voice_of(0, vec![quarter(0, 48), quarter(480, 50)])]),
+        ]);
+        let relations = measure_group_relations(&score, &[0, 1]).expect("both parts measurable");
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].parts, (0, 1));
+    }
+
+    #[test]
+    fn group_relations_propagate_measure_errors() {
+        // Track 1 has no notes in its primary voice: the pair measurement
+        // fails, and the failure must surface instead of silently writing an
+        // incomplete group.
+        let score = one_bar_score(vec![
+            track_of(vec![voice_of(0, vec![quarter(0, 60)])]),
+            track_of(vec![voice_of(0, Vec::new()), voice_of(1, vec![quarter(0, 48)])]),
+        ]);
+        let err = measure_group_relations(&score, &[0, 1]).expect_err("must propagate");
+        assert!(
+            format!("{err}").contains("part"),
+            "the curator sees which measurement failed: {err}"
+        );
+    }
+}
