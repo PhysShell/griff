@@ -6,7 +6,9 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::missing_assert_message,
-    clippy::absolute_paths
+    clippy::absolute_paths,
+    clippy::indexing_slicing,
+    clippy::too_many_lines
 )]
 
 use std::{
@@ -253,6 +255,7 @@ fn curate_ensemble_links_parts_and_measures_relations() {
     let read = |suffix: &str| {
         let path = PathBuf::from(format!("{}{suffix}", stem.display()));
         let json = std::fs::read_to_string(&path).expect("ensemble output file");
+        // Cleanup is best-effort; the named binding satisfies let-underscore lints.
         let _cleanup = std::fs::remove_file(&path);
         json
     };

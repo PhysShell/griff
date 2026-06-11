@@ -26,6 +26,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::event::{NoteMark, NoteMarks, Pitch, SpanTechnique, Ticks, Tuning, Velocity};
 use crate::feature::PitchRange;
 use crate::generate::{
@@ -99,7 +101,10 @@ pub struct PartProfile {
 }
 
 /// Relation-as-provenance: per-axis scores describing how B relates to A.
-#[derive(Debug, Clone, Copy)]
+///
+/// Comparable and serialisable since corpus schema v4, where measured pair
+/// relations persist inside ensemble groups (decisions 2026-06-11).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AxisScores {
     /// Jaccard overlap of A's and B's onset sets, in `[0, 1]`: `1.0` for the
     /// grid-locked modes, `0.0` for the onset-complement (`call_response`).
@@ -387,6 +392,52 @@ pub fn analyze_part(score: &Score, track_index: usize) -> Result<PartProfile, Co
         density,
         pitches,
         techniques,
+    })
+}
+
+/// Measures the complement relation between two *existing* tracks.
+///
+/// The corpus-side counterpart of the per-mode `AxisScores` provenance, used
+/// to persist ensemble pair relations (corpus schema v4, decisions
+/// 2026-06-11).
+///
+/// Orientation: the Jaccard axes (rhythm, technique) and the band overlap are
+/// symmetric; `density_ratio` reads `track_b` relative to `track_a` — pass the
+/// lower part index first. Deterministic for fixed inputs.
+pub fn measure_pair_axes(
+    score: &Score,
+    track_a: usize,
+    track_b: usize,
+) -> Result<AxisScores, ComplementError> {
+    let a = analyze_part(score, track_a)?;
+    let b = analyze_part(score, track_b)?;
+    if a.note_count == 0 || b.note_count == 0 {
+        return Err(ComplementError::PartHasNoNotes);
+    }
+
+    let density_ratio = if a.density == 0.0 {
+        0.0
+    } else {
+        b.density / a.density
+    };
+    let register_overlap = match (a.register, b.register) {
+        (Some(ra), Some(rb)) => band_overlap(ra.lowest.0, ra.highest.0, rb.lowest.0, rb.highest.0),
+        _ => 0.0,
+    };
+    let technique_overlap = jaccard(&a.techniques, &b.techniques);
+
+    let onsets = |index: usize| -> BTreeSet<u32> {
+        score.tracks.get(index).map_or_else(BTreeSet::new, |t| {
+            voice_notes(t).iter().map(|n| n.onset).collect()
+        })
+    };
+    let rhythm_similarity = jaccard(&onsets(track_a), &onsets(track_b));
+
+    Ok(AxisScores {
+        rhythm_similarity,
+        register_overlap,
+        density_ratio,
+        technique_overlap,
     })
 }
 

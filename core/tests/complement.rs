@@ -1017,7 +1017,10 @@ fn density_ratio_reads_the_second_part_relative_to_the_first() {
     let forward = measure_pair_axes(&score, 0, 1).expect("measure");
     let swapped = measure_pair_axes(&score, 1, 0).expect("measure");
     assert_eq!(forward.density_ratio, 0.5);
-    assert_eq!(swapped.density_ratio, 2.0, "orientation is (b relative to a)");
+    assert_eq!(
+        swapped.density_ratio, 2.0,
+        "orientation is (b relative to a)"
+    );
     assert_eq!(
         forward.rhythm_similarity, swapped.rhythm_similarity,
         "Jaccard axes are symmetric"

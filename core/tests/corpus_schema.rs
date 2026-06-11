@@ -195,14 +195,6 @@ fn a_pre_v4_manifest_without_groups_loads_and_stays_lossless() {
 // ── schema v3: gesture statistics (melodic-closure note §7.4) ─────────────────
 
 #[test]
-fn gesture_field_landed_in_v3() {
-    assert!(
-        SCHEMA_VERSION >= 3,
-        "the burst/rest gesture-stats addition arrived with schema v3"
-    );
-}
-
-#[test]
 fn chunk_meta_with_gesture_roundtrips() {
     let mut meta = minimal_chunk();
     meta.gesture = Some(sample_gesture());
