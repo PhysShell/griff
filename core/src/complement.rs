@@ -229,6 +229,9 @@ pub enum ComplementError {
     /// The spec is incompatible with the mode's contract (e.g. `octave_double`
     /// with a `register_offset` that is not a non-zero whole octave).
     InvalidSpec(RelationMode),
+    /// `call_response` found no gap in part A long enough to answer (at least
+    /// one quarter note of silence after A's first sound).
+    NoGapsToAnswer,
     /// The underlying S6 generator rejected the derived request.
     Generation(GenerationError),
 }
@@ -417,10 +420,13 @@ pub fn arrange_complement(
         RelationMode::SupportLayer => {
             arrange_support_layer(score, track_index, &profile, spec, seed)
         }
+        RelationMode::CallResponse => {
+            arrange_call_response(score, track_index, &profile, spec, seed)
+        }
         RelationMode::OctaveDouble => {
             arrange_octave_double(score, track_index, &profile, spec, seed)
         }
-        other => Err(ComplementError::ModeNotImplemented(other)),
+        other @ RelationMode::CounterMelody => Err(ComplementError::ModeNotImplemented(other)),
     }
 }
 
@@ -610,6 +616,104 @@ fn arrange_support_layer(
         event_groups,
         Pitch::new(pedal).unwrap_or(register.lowest),
         Pitch::new(pedal).unwrap_or(register.lowest),
+    ))
+}
+
+/// `call_response`: B answers A in its gaps — the onset complement.
+///
+/// A gap is a maximal silent span of A's merged note coverage, between A's
+/// first sound and the end of the last master bar (leading silence has no call
+/// to answer). Every gap at least one quarter long gets exactly one answer: a
+/// B note at the gap start sustaining through the gap, at the velocity of the
+/// preceding A note, pitched seed-deterministically from A's pitch classes in
+/// the band shifted by `spec.register_offset`. B's onsets are disjoint from
+/// A's by construction. No qualifying gap is
+/// [`ComplementError::NoGapsToAnswer`].
+fn arrange_call_response(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
+    let a_track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+    let a_notes = voice_notes(a_track);
+
+    // Merge A's coverage intervals (notes are sorted by onset).
+    let mut coverage: Vec<(u32, u32)> = Vec::new();
+    for n in &a_notes {
+        let end = n.onset.saturating_add(n.duration.0);
+        match coverage.last_mut() {
+            Some((_, last_end)) if n.onset <= *last_end => *last_end = (*last_end).max(end),
+            _ => coverage.push((n.onset, end)),
+        }
+    }
+
+    // Gaps: between merged spans, plus the trailing gap to the span end.
+    let span_end = score.master_bars.last().map_or(0, |mb| mb.tick_range.end.0);
+    let mut gaps: Vec<(u32, u32)> = coverage
+        .windows(2)
+        .filter_map(|w| match (w.first(), w.get(1)) {
+            (Some(&(_, end)), Some(&(next_start, _))) if next_start > end => {
+                Some((end, next_start))
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(&(_, last_end)) = coverage.last() {
+        if span_end > last_end {
+            gaps.push((last_end, span_end));
+        }
+    }
+
+    let min_gap = u32::from(score.ticks_per_quarter);
+    let scale = scale_intervals_from(profile);
+    let event_groups: Vec<EventGroup> = gaps
+        .iter()
+        .filter(|(start, end)| end.saturating_sub(*start) >= min_gap)
+        .enumerate()
+        .map(|(i, &(start, end))| {
+            let degree = pitch_index(seed.0, i, scale.len());
+            let pitch_val = degree_to_pitch(band_lo, band_hi, &scale, degree);
+            // The call this gap answers: the last A note sounding before it.
+            let call_velocity = a_notes
+                .iter()
+                .rev()
+                .find(|n| n.onset < start)
+                .map_or(90, |n| n.velocity);
+            EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(AtomNote {
+                    absolute_start: Ticks(start),
+                    duration: Ticks(end.saturating_sub(start)),
+                    pitch: Pitch::new(pitch_val).unwrap_or(Pitch(band_lo)),
+                    velocity: Velocity::new(call_velocity).unwrap_or(Velocity(0)),
+                    marks: NoteMarks::empty(),
+                    position: None,
+                })],
+                technique_spans: Vec::new(),
+            }
+        })
+        .collect();
+
+    if event_groups.is_empty() {
+        return Err(ComplementError::NoGapsToAnswer);
+    }
+
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
     ))
 }
 
