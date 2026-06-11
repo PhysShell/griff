@@ -268,6 +268,22 @@ impl App {
             )));
         }
 
+        // Transport sits above the metrics blocks: when the content exceeds
+        // the dock, clipping eats the tail of the static metrics, never the
+        // live play state (Codex P2, PR #38).
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("transport", dim));
+        lines.push(Line::from(format!(
+            "♩={:.0}   {}",
+            self.view.tempo_bpm,
+            if self.vp.playing {
+                "▶ playing"
+            } else {
+                "⏸ paused"
+            }
+        )));
+        lines.push(Line::from(format!("pos {}", self.position_label())));
+
         lines.push(Line::raw(""));
         lines.push(Line::styled("structure (S14)", dim));
         if let Some(m) = &self.analysis.metrics {
@@ -292,19 +308,6 @@ impl App {
         } else {
             lines.push(Line::raw("—"));
         }
-
-        lines.push(Line::raw(""));
-        lines.push(Line::styled("transport", dim));
-        lines.push(Line::from(format!(
-            "♩={:.0}   {}",
-            self.view.tempo_bpm,
-            if self.vp.playing {
-                "▶ playing"
-            } else {
-                "⏸ paused"
-            }
-        )));
-        lines.push(Line::from(format!("pos {}", self.position_label())));
 
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
     }
