@@ -683,3 +683,30 @@ fn complexity_rejects_out_of_range_track() {
         Err(StructureError::TrackIndexOutOfRange)
     ));
 }
+
+#[test]
+fn adjacent_repeats_without_tiling_are_not_a_subbar_period() {
+    // Codex P2 (PR #38), round two: A A B B — lag 1 matches two of three
+    // adjacent pairs and clears a similarity-mean threshold, but a one-beat
+    // tile requires *every* aligned cell pair to match. A mean over pairs is
+    // a similarity test, not a tiling test.
+    let score = build_score(&[vec![40, 40, 47, 47]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "A A B B tiles at no sub-bar lag"
+    );
+}
+
+#[test]
+fn a_varied_copy_breaks_the_verbatim_subbar_tile() {
+    // The verbatim contract, pinned: one varied cell anywhere vetoes the
+    // tile (5 of 6 matching pairs is not verbatim tiling) — tolerance to
+    // variation is the bar-level repeatability's job.
+    let score = build_score(&[vec![40, 47, 40, 47], vec![40, 47, 40, 46]]);
+    let m = measure_structure(&score, 0).expect("measure");
+    assert_eq!(
+        m.detected_subbar_period_ticks, None,
+        "a varied final cell breaks the half-bar tile"
+    );
+}
