@@ -56,6 +56,9 @@ front-ends and audio build on them:
       pending-decision line in the TUI inspector, and
       `griff-preview --record=<chunk.json>` persisting the decision into the
       record's `reviewer` field on quit (`curation::decide_record`).
+      **Second slice landed 2026-06-11**: the inspector surfaces the loaded
+      record's current state — title, prior reviewer decision, tags — via
+      `curation::summarize_record` (schema wire names, UI-level strings).
       Remaining: split/merge/rename/tag.
 - [ ] Boundary overlays (S4) and candidate history — **overlays landed
       2026-06-11**: `Analysis.boundaries` carries the S4 start ticks under a
