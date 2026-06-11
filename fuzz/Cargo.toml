@@ -84,3 +84,10 @@ path  = "fuzz_targets/structure_metrics.rs"
 test  = false
 doc   = false
 bench = false
+
+[[bin]]
+name  = "gesture_request"
+path  = "fuzz_targets/gesture_request.rs"
+test  = false
+doc   = false
+bench = false
