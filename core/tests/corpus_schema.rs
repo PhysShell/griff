@@ -591,14 +591,16 @@ fn arb_complexity() -> impl Strategy<Value = Option<ComplexityProfile>> {
         0_u32..=16,
         0_u32..=16,
     )
-        .prop_map(|(rhy16, pit16, tec16, har16, ply16, str16)| ComplexityProfile {
-            rhythmic: f64::from(rhy16) / 16.0,
-            pitch: f64::from(pit16) / 16.0,
-            technical: f64::from(tec16) / 16.0,
-            harmonic: f64::from(har16) / 16.0,
-            playability: f64::from(ply16) / 16.0,
-            structural: f64::from(str16) / 16.0,
-        });
+        .prop_map(
+            |(rhy16, pit16, tec16, har16, ply16, str16)| ComplexityProfile {
+                rhythmic: f64::from(rhy16) / 16.0,
+                pitch: f64::from(pit16) / 16.0,
+                technical: f64::from(tec16) / 16.0,
+                harmonic: f64::from(har16) / 16.0,
+                playability: f64::from(ply16) / 16.0,
+                structural: f64::from(str16) / 16.0,
+            },
+        );
     prop_opt(profile)
 }
 
