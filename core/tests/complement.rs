@@ -266,21 +266,6 @@ fn arrange_is_deterministic_for_fixed_seed() {
 }
 
 #[test]
-fn arrange_unimplemented_mode_is_reported() {
-    let score = score_with_part_a(1, &[60, 62, 64, 65]);
-    let spec = ComplementSpec {
-        mode: RelationMode::CounterMelody,
-        register_offset: 0,
-    };
-    assert!(matches!(
-        arrange_complement(&score, 0, spec, GenerationSeed(1)),
-        Err(ComplementError::ModeNotImplemented(
-            RelationMode::CounterMelody
-        )),
-    ));
-}
-
-#[test]
 fn arrange_rejects_part_with_no_notes() {
     let mut score = score_with_part_a(1, &[60]);
     score.tracks[0].voices[0].event_groups.clear();
@@ -890,4 +875,81 @@ fn call_response_is_deterministic_for_fixed_seed() {
         note_pitches(&a.score, a.part_b_index),
         note_pitches(&b.score, b.part_b_index),
     );
+}
+
+// ── counter_melody ──────────────────────────────────────────────────────────────
+
+#[test]
+fn counter_melody_is_an_independent_line_in_the_shifted_band() {
+    let score = score_with_part_a(2, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CounterMelody,
+        register_offset: -24,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(17)).expect("arrange ok");
+
+    assert_eq!(cand.score.tracks.len(), 2, "A plus appended B");
+    assert_eq!(
+        cand.score.master_bars.len(),
+        score.master_bars.len(),
+        "B lives on A's master bars"
+    );
+    let onsets = note_onsets(&cand.score, cand.part_b_index);
+    assert!(!onsets.is_empty(), "the counter-melody plays something");
+    let span_end = score.master_bars.last().unwrap().tick_range.end.0;
+    for onset in &onsets {
+        assert!(
+            *onset < span_end,
+            "B onset {onset} must lie within A's span"
+        );
+    }
+    // A's band [60, 65] shifted down two octaves with A's pitch classes
+    // {0, 2, 4, 5} above the new floor 36.
+    let allowed = [36, 38, 40, 41];
+    for p in note_pitches(&cand.score, cand.part_b_index) {
+        assert!(
+            allowed.contains(&p),
+            "B pitch {p} must come from A's pitch classes in the shifted band"
+        );
+    }
+}
+
+#[test]
+fn counter_melody_is_deterministic_for_fixed_seed() {
+    let score = score_with_part_a(3, &[60, 62, 64, 65]);
+    let spec = ComplementSpec {
+        mode: RelationMode::CounterMelody,
+        register_offset: -24,
+    };
+    let a = arrange_complement(&score, 0, spec, GenerationSeed(33)).expect("arrange ok");
+    let b = arrange_complement(&score, 0, spec, GenerationSeed(33)).expect("arrange ok");
+    assert_eq!(
+        note_onsets(&a.score, a.part_b_index),
+        note_onsets(&b.score, b.part_b_index),
+    );
+    assert_eq!(
+        note_pitches(&a.score, a.part_b_index),
+        note_pitches(&b.score, b.part_b_index),
+    );
+}
+
+#[test]
+fn counter_melody_rejects_a_non_uniform_timeline() {
+    // The S6 delegate lays bars back-to-back from one meter; a mid-score meter
+    // change would misalign with A's master bars.
+    let mut score = score_with_part_a(2, &[60, 62]);
+    score.master_bars[1].time_signature = TimeSignature {
+        numerator: 3,
+        denominator: 4,
+    };
+    score.master_bars[1].tick_range =
+        TickRange::new(Ticks(BAR), Ticks(BAR + 3 * QUARTER)).expect("ordered");
+    let spec = ComplementSpec {
+        mode: RelationMode::CounterMelody,
+        register_offset: -24,
+    };
+    assert!(matches!(
+        arrange_complement(&score, 0, spec, GenerationSeed(1)),
+        Err(ComplementError::NonUniformTimeline),
+    ));
 }
