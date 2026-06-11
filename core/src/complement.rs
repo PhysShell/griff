@@ -30,6 +30,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{NoteMark, NoteMarks, Pitch, SpanTechnique, Ticks, Tuning, Velocity};
 use crate::feature::PitchRange;
+use crate::fretboard::{
+    measure_playability, FingeringWeights, PlayabilityReport, STANDARD_MAX_FRET,
+};
 use crate::generate::{
     generate, GenerationConstraints, GenerationError, GenerationSeed, GenerationStrategy,
     PitchMaterial, RuleGenerationRequest,
@@ -225,13 +228,24 @@ pub struct PairValidation {
     pub coincident_dissonances: usize,
     /// Whether A and B occupy overlapping registers too heavily ("register mud").
     pub register_mud: bool,
+    /// Playability of A's melodic line on the optimal fingering path under
+    /// A's own tuning (the per-part filter, ADR-0019).
+    pub a_playability: PlayabilityReport,
+    /// Playability of B's melodic line, likewise under B's own tuning.
+    pub b_playability: PlayabilityReport,
 }
 
 impl PairValidation {
-    /// A pair is clean when there are no coincident dissonances and no register mud.
+    /// A pair is clean when there are no coincident dissonances, no register
+    /// mud, and both parts are playable (every line note reachable on the
+    /// fretboard). Fret travel stays a carried fact, not part of the verdict
+    /// — jump thresholds are calibration data, not code.
     #[must_use]
     pub const fn is_clean(&self) -> bool {
-        self.coincident_dissonances == 0 && !self.register_mud
+        self.coincident_dissonances == 0
+            && !self.register_mud
+            && self.a_playability.is_playable()
+            && self.b_playability.is_playable()
     }
 }
 
@@ -1118,8 +1132,16 @@ fn jaccard<T: Ord>(a: &BTreeSet<T>, b: &BTreeSet<T>) -> f64 {
 /// Dissonant interval classes (mod 12): minor second, tritone, major seventh.
 const DISSONANT_CLASSES: [u8; 3] = [1, 6, 11];
 
-/// Validates the (A, B) pair: counts dissonances on coincident onsets and flags
-/// register mud (the two parts overlapping the same register too heavily).
+/// Validates the (A, B) pair: coincident-onset dissonances, register mud,
+/// and per-part playability.
+///
+/// Dissonances are counted on coincident onsets; register mud flags the two
+/// parts overlapping the same register too heavily. Playability measures
+/// each part's melodic line (the shared highest-pitch-per-onset convention)
+/// on the optimal fingering path under the part's own tuning, with the `v1`
+/// weights and the standard fret range (ADR-0019). Chord voicing
+/// playability stays deferred (ADR-0019 §7): a chord participates through
+/// its top note only.
 pub fn validate_pair(
     score: &Score,
     a_index: usize,
@@ -1157,7 +1179,25 @@ pub fn validate_pair(
     Ok(PairValidation {
         coincident_dissonances,
         register_mud,
+        a_playability: part_playability(&a_notes, &a.tuning),
+        b_playability: part_playability(&b_notes, &b.tuning),
     })
+}
+
+/// Playability of one part's melodic line: folds the onset-sorted notes to
+/// the highest pitch per onset (the closure / novelty / gesture line
+/// convention) and measures the optimal fingering path under `tuning`.
+fn part_playability(notes: &[NoteRef], tuning: &Tuning) -> PlayabilityReport {
+    let mut line: Vec<(u32, u8)> = Vec::new();
+    for n in notes {
+        match line.last_mut() {
+            Some((onset, pitch)) if *onset == n.onset => *pitch = (*pitch).max(n.pitch),
+            _ => line.push((n.onset, n.pitch)),
+        }
+    }
+    // NoteRef pitches originate from valid AtomNotes, so they are in range.
+    let pitches: Vec<Pitch> = line.into_iter().map(|(_, p)| Pitch(p)).collect();
+    measure_playability(&pitches, tuning, &FingeringWeights::v1(), STANDARD_MAX_FRET)
 }
 
 /// Lowest/highest pitch across notes, or `None` when empty.

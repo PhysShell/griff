@@ -19,7 +19,7 @@
 
 use griff_core::{
     event::{FretboardPosition, Pitch, Tuning},
-    fretboard::{infer_positions, FingeringWeights},
+    fretboard::{infer_positions, measure_playability, FingeringWeights},
 };
 
 const MAX_FRET: u8 = 24;
@@ -108,7 +108,7 @@ fn infer_reports_out_of_range_as_none_and_resets() {
 fn playability_clean_line_is_playable() {
     // E2, F#2, G2: each fits the low-E string only (frets 0, 2, 3), so the
     // optimal path is forced and the largest fret travel is 0 → 2.
-    let report = griff_core::fretboard::measure_playability(
+    let report = measure_playability(
         &[Pitch(40), Pitch(42), Pitch(43)],
         &Tuning::standard_e(),
         &FingeringWeights::v1(),
@@ -124,7 +124,7 @@ fn playability_clean_line_is_playable() {
 fn playability_counts_out_of_range_notes() {
     // 30 sits below the low E (40), 100 above the 24th fret of the high E
     // (88): neither has a playable string, and the part is not playable.
-    let report = griff_core::fretboard::measure_playability(
+    let report = measure_playability(
         &[Pitch(40), Pitch(30), Pitch(100), Pitch(64)],
         &Tuning::standard_e(),
         &FingeringWeights::v1(),
@@ -139,7 +139,7 @@ fn playability_counts_out_of_range_notes() {
 fn playability_jump_resets_across_unplayable_gaps() {
     // An unplayable note resets the DP context (infer_positions), so fret
     // travel is not measured across the gap: 40 and 52 are never adjacent.
-    let report = griff_core::fretboard::measure_playability(
+    let report = measure_playability(
         &[Pitch(40), Pitch(30), Pitch(52)],
         &Tuning::standard_e(),
         &FingeringWeights::v1(),
@@ -154,7 +154,7 @@ fn playability_jump_resets_across_unplayable_gaps() {
 
 #[test]
 fn playability_of_an_empty_line_is_vacuous() {
-    let report = griff_core::fretboard::measure_playability(
+    let report = measure_playability(
         &[],
         &Tuning::standard_e(),
         &FingeringWeights::v1(),

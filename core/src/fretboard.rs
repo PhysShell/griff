@@ -9,6 +9,11 @@
 //! It is a *small local* DP over one voice's per-note candidates — distinct from
 //! the S7 graph traversal (ADR-0013/0015) — linear in notes × strings, so no
 //! beam search is needed. Out-of-range pitches yield `None` and reset the path.
+//!
+//! [`measure_playability`] summarises the DP's optimal path as a
+//! [`PlayabilityReport`] — the per-part playability filter the S13 pair
+//! validator and the S6 stage doc call for, and the seed of the S7
+//! `playability` / `fret_jump_penalty` cost terms.
 
 use std::collections::HashMap;
 
@@ -177,6 +182,63 @@ pub fn infer_positions(
     }
 
     result
+}
+
+/// Playability facts of one melodic line, measured on the optimal fingering
+/// path (the S13 per-part filter; the S7 cost terms' seed).
+///
+/// The verdict is *reachability* — [`PlayabilityReport::is_playable`] holds
+/// when every line note has a playable `(string, fret)` under the tuning.
+/// Fret travel is reported as a fact, not a verdict: jump thresholds are
+/// calibration data (corpus / S9), not code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayabilityReport {
+    /// Line notes measured.
+    pub note_count: usize,
+    /// Line notes with no playable `(string, fret)` under the tuning.
+    pub unpositionable: usize,
+    /// Largest fret travel between consecutively positioned line notes
+    /// (`0` when fewer than two notes are positioned in a row). An
+    /// unpositionable note resets the path, so travel is never measured
+    /// across the gap — mirroring [`infer_positions`].
+    pub max_fret_jump: u8,
+}
+
+impl PlayabilityReport {
+    /// `true` when every measured line note is reachable on the fretboard;
+    /// an empty line is vacuously playable.
+    #[must_use]
+    pub const fn is_playable(&self) -> bool {
+        self.unpositionable == 0
+    }
+}
+
+/// Measures the playability of a melodic line under `tuning`: runs the
+/// fingering DP ([`infer_positions`]) and summarises its optimal path as a
+/// [`PlayabilityReport`]. Pure and deterministic (SPEC §6).
+#[must_use]
+pub fn measure_playability(
+    pitches: &[Pitch],
+    tuning: &Tuning,
+    weights: &FingeringWeights,
+    max_fret: u8,
+) -> PlayabilityReport {
+    let positions = infer_positions(pitches, tuning, weights, max_fret);
+    let unpositionable = positions.iter().filter(|p| p.is_none()).count();
+    let max_fret_jump = positions
+        .windows(2)
+        .filter_map(|w| match (w.first().copied(), w.get(1).copied()) {
+            (Some(Some(a)), Some(Some(b))) => Some(a.fret.abs_diff(b.fret)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+
+    PlayabilityReport {
+        note_count: pitches.len(),
+        unpositionable,
+        max_fret_jump,
+    }
 }
 
 /// Writes inferred `(string, fret)` positions onto a voice's notes (ADR-0019 P1b).
