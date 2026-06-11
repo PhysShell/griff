@@ -36,11 +36,6 @@ pub enum CurationError {
     ParseFailed,
 }
 
-/// Applies `decision` to a serialized `ChunkMeta` record and returns the
-/// updated JSON; everything except `reviewer` is untouched.
-///
-/// # Errors
-/// [`CurationError::ParseFailed`] when `json` is not a `ChunkMeta` record.
 /// Digests a serialized `ChunkMeta` record into the [`RecordSummary`] the
 /// inspector shows: title, prior reviewer decision, and tags, all in the
 /// schema's wire casing (via serde, so the names cannot drift).
@@ -71,6 +66,11 @@ fn wire_name(value: serde_json::Result<serde_json::Value>) -> Option<String> {
     }
 }
 
+/// Applies `decision` to a serialized `ChunkMeta` record and returns the
+/// updated JSON; everything except `reviewer` is untouched.
+///
+/// # Errors
+/// [`CurationError::ParseFailed`] when `json` is not a `ChunkMeta` record.
 pub fn decide_record(json: &str, decision: CurationDecision) -> Result<String, CurationError> {
     let mut meta: ChunkMeta = serde_json::from_str(json).map_err(|_| CurationError::ParseFailed)?;
     meta.reviewer = Some(match decision {
