@@ -7,17 +7,31 @@
 //! generation core (ADR-0012); modes that synthesise fresh pitch sequences will
 //! delegate to the S6 generator ([`crate::generate::generate`]).
 //!
-//! This module is the first vertical slice: the `rhythm_lock` mode plus a
-//! minimal pair validator. `rhythm_lock` places B on A's exact onset grid, so it
-//! reuses A's onsets directly rather than the S6 generator. The other relation
-//! modes are named but not yet implemented; they return
-//! [`ComplementError::ModeNotImplemented`].
+//! All six relation modes are implemented, each on its defining axis:
+//!
+//! - `rhythm_lock` — B on A's exact onset grid, pitches substituted from A's
+//!   harmony in a shifted band (reuses A's onsets directly, no S6 round-trip).
+//! - `register_contrast` — the same grid lock, but the shifted band must stay
+//!   **disjoint** from A's after MIDI clamping ([`ComplementError::InvalidSpec`]
+//!   otherwise).
+//! - `support_layer` — one root-pedal note per non-empty bar at A's first
+//!   onset; strictly sparser than A wherever A plays more than one note a bar.
+//! - `call_response` — B answers in A's gaps (the onset complement); a part
+//!   with no answerable gap is [`ComplementError::NoGapsToAnswer`].
+//! - `octave_double` — A's contour copied a non-zero whole number of octaves
+//!   away, marks preserved.
+//! - `counter_melody` — an independent line delegated to the S6
+//!   `ConstrainedRandomWalk` over a request derived from A; needs a uniform
+//!   master-bar timeline ([`ComplementError::NonUniformTimeline`]).
 
 use std::collections::BTreeSet;
 
 use crate::event::{NoteMark, NoteMarks, Pitch, SpanTechnique, Ticks, Tuning, Velocity};
 use crate::feature::PitchRange;
-use crate::generate::{GenerationError, GenerationSeed};
+use crate::generate::{
+    generate, GenerationConstraints, GenerationError, GenerationSeed, GenerationStrategy,
+    PitchMaterial, RuleGenerationRequest,
+};
 use crate::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Score, Track, Voice};
 use crate::scoring::{rank_indices, Axes, Axis, Scored, WeightPolicy};
 
@@ -87,7 +101,8 @@ pub struct PartProfile {
 /// Relation-as-provenance: per-axis scores describing how B relates to A.
 #[derive(Debug, Clone, Copy)]
 pub struct AxisScores {
-    /// `1.0` when B's rhythm is identical to A's (`rhythm_lock`), else lower.
+    /// Jaccard overlap of A's and B's onset sets, in `[0, 1]`: `1.0` for the
+    /// grid-locked modes, `0.0` for the onset-complement (`call_response`).
     pub rhythm_similarity: f64,
     /// Fraction of register-band overlap between A and B, in `[0, 1]`.
     pub register_overlap: f64,
@@ -224,8 +239,16 @@ pub enum ComplementError {
     TrackIndexOutOfRange,
     /// The requested part has no note atoms to analyse.
     PartHasNoNotes,
-    /// The relation mode is named but not yet implemented in this slice.
-    ModeNotImplemented(RelationMode),
+    /// The spec is incompatible with the mode's contract (e.g. `octave_double`
+    /// with a `register_offset` that is not a non-zero whole octave).
+    InvalidSpec(RelationMode),
+    /// `call_response` found no gap in part A long enough to answer (at least
+    /// one quarter note of silence after A's first sound).
+    NoGapsToAnswer,
+    /// `counter_melody` needs every master bar to share one meter and span:
+    /// the S6 delegate lays bars back-to-back from a single time signature,
+    /// which cannot align with a mid-score meter change.
+    NonUniformTimeline,
     /// The underlying S6 generator rejected the derived request.
     Generation(GenerationError),
 }
@@ -408,8 +431,167 @@ pub fn arrange_complement(
 
     match spec.mode {
         RelationMode::RhythmLock => arrange_rhythm_lock(score, track_index, &profile, spec, seed),
-        other => Err(ComplementError::ModeNotImplemented(other)),
+        RelationMode::RegisterContrast => {
+            arrange_register_contrast(score, track_index, &profile, spec, seed)
+        }
+        RelationMode::SupportLayer => {
+            arrange_support_layer(score, track_index, &profile, spec, seed)
+        }
+        RelationMode::CallResponse => {
+            arrange_call_response(score, track_index, &profile, spec, seed)
+        }
+        RelationMode::OctaveDouble => {
+            arrange_octave_double(score, track_index, &profile, spec, seed)
+        }
+        RelationMode::CounterMelody => {
+            arrange_counter_melody(score, track_index, &profile, spec, seed)
+        }
     }
+}
+
+/// `counter_melody`: an independent line against A, delegated to the S6
+/// generator's `ConstrainedRandomWalk` — the one mode that synthesises a fresh
+/// sequence instead of deriving B from A's grid.
+///
+/// The request is compiled from A: A's pitch classes as the scale, A's band
+/// shifted by `spec.register_offset` as the pitch bounds, A's bar count /
+/// meter / tempo / PPQN as constraints, A's bar rhythms as templates. The
+/// generated line is lifted onto A's master bars, which therefore must share
+/// one meter and span ([`ComplementError::NonUniformTimeline`] otherwise — S6
+/// lays bars back-to-back from a single time signature).
+fn arrange_counter_melody(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
+
+    let first = score
+        .master_bars
+        .first()
+        .ok_or(ComplementError::EmptyScore)?;
+    let first_span = first
+        .tick_range
+        .end
+        .0
+        .saturating_sub(first.tick_range.start.0);
+    let uniform = score.master_bars.iter().all(|mb| {
+        mb.time_signature == first.time_signature
+            && mb.tick_range.end.0.saturating_sub(mb.tick_range.start.0) == first_span
+    });
+    if !uniform {
+        return Err(ComplementError::NonUniformTimeline);
+    }
+
+    let request = RuleGenerationRequest {
+        seed,
+        pitch_material: PitchMaterial {
+            root: Pitch::new(band_lo).unwrap_or(register.lowest),
+            intervals: scale_intervals_from(profile),
+        },
+        constraints: GenerationConstraints {
+            bar_count: score.master_bars.len(),
+            time_signature: first.time_signature,
+            tempo: first.tempo,
+            ticks_per_quarter: Ticks(u32::from(score.ticks_per_quarter)),
+            pitch_lo: Pitch::new(band_lo).unwrap_or(register.lowest),
+            pitch_hi: Pitch::new(band_hi).unwrap_or(register.highest),
+        },
+        source_rhythms: profile.bar_rhythms.clone(),
+        strategy: GenerationStrategy::ConstrainedRandomWalk,
+    };
+    let candidate = generate(&request).map_err(ComplementError::Generation)?;
+
+    // Lift the generated line onto A's timeline (S6 lays bars from tick 0).
+    let offset = first.tick_range.start.0;
+    let event_groups: Vec<EventGroup> = candidate
+        .score
+        .tracks
+        .first()
+        .into_iter()
+        .flat_map(|t| &t.voices)
+        .flat_map(|v| &v.event_groups)
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => {
+                let mut out = *n;
+                out.absolute_start = Ticks(n.absolute_start.0.saturating_add(offset));
+                Some(EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![AtomEvent::Note(out)],
+                    technique_spans: Vec::new(),
+                })
+            }
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
+    ))
+}
+
+/// `octave_double`: reproduce A's contour a whole octave (or several) away —
+/// every B note copies A's onset, duration, velocity, and marks, with the
+/// pitch shifted by `spec.register_offset` and clamped to the MIDI range.
+///
+/// The offset must be a non-zero whole-octave shift; anything else is an
+/// [`ComplementError::InvalidSpec`] — a third-doubling is a different relation,
+/// not a sloppy octave. Purely analytic: the seed is recorded as provenance
+/// but draws nothing.
+fn arrange_octave_double(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    if spec.register_offset == 0 || spec.register_offset.checked_rem(12) != Some(0) {
+        return Err(ComplementError::InvalidSpec(RelationMode::OctaveDouble));
+    }
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let a_track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+
+    let event_groups: Vec<EventGroup> = voice_atom_notes(a_track)
+        .iter()
+        .map(|n| {
+            let mut out = *n;
+            out.pitch = Pitch(shift_pitch(n.pitch.0, spec.register_offset));
+            // A shifted pitch invalidates any carried fretboard position.
+            out.position = None;
+            EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(out)],
+                technique_spans: Vec::new(),
+            }
+        })
+        .collect();
+
+    let b_lo = shift_pitch(register.lowest.0, spec.register_offset);
+    let b_hi = shift_pitch(register.highest.0, spec.register_offset);
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch(b_lo.min(b_hi)),
+        Pitch(b_lo.max(b_hi)),
+    ))
 }
 
 /// `rhythm_lock`: place B on A's *actual* per-bar onset grid — every B note
@@ -429,21 +611,244 @@ fn arrange_rhythm_lock(
 ) -> Result<ComplementCandidate, ComplementError> {
     // Register band for B: A's band shifted, clamped, and ordered.
     let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
-    let band_lo = shift_pitch(register.lowest.0, spec.register_offset);
-    let band_hi = shift_pitch(register.highest.0, spec.register_offset);
-    let band_lo = band_lo.min(band_hi);
-    let band_hi = band_lo.max(band_hi);
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
 
-    // Scale: A's distinct pitch classes, as intervals above the band's low note.
-    let intervals = scale_intervals_from(profile);
+    let a_track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+    let event_groups = grid_locked_groups(a_track, profile, band_lo, band_hi, seed);
 
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
+    ))
+}
+
+/// `register_contrast`: B on A's exact onset grid, but in a register band
+/// **disjoint** from A's — A's band shifted by `spec.register_offset`.
+///
+/// If the shifted band still intersects A's after MIDI clamping (including a
+/// zero offset, or a large shift folded back by the clamp), the contrast
+/// contract cannot be met and the spec is rejected as
+/// [`ComplementError::InvalidSpec`] rather than silently overlapped.
+fn arrange_register_contrast(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
+
+    // Closed intervals [a_lo, a_hi] and [band_lo, band_hi] intersect iff each
+    // starts before the other ends.
+    if register.lowest.0 <= band_hi && band_lo <= register.highest.0 {
+        return Err(ComplementError::InvalidSpec(RelationMode::RegisterContrast));
+    }
+
+    let a_track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+    let event_groups = grid_locked_groups(a_track, profile, band_lo, band_hi, seed);
+
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
+    ))
+}
+
+/// `support_layer`: a sparser pedal layer beneath A — one note per non-empty
+/// master bar, placed at A's first onset in that bar with that note's duration
+/// and velocity, pitched at A's lowest pitch shifted by
+/// `spec.register_offset` (a root pedal; typically an octave down).
+///
+/// Bars where A is silent get no pedal, so `density(B) < density(A)` whenever
+/// A plays more than one note in any bar. Purely analytic: the seed is
+/// provenance only.
+fn arrange_support_layer(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let pedal = shift_pitch(register.lowest.0, spec.register_offset);
     let a_track = score
         .tracks
         .get(track_index)
         .ok_or(ComplementError::TrackIndexOutOfRange)?;
     let a_notes = voice_notes(a_track);
 
-    let event_groups: Vec<EventGroup> = a_notes
+    let event_groups: Vec<EventGroup> = score
+        .master_bars
+        .iter()
+        .filter_map(|mb| {
+            let first = a_notes
+                .iter()
+                .find(|n| n.onset >= mb.tick_range.start.0 && n.onset < mb.tick_range.end.0)?;
+            // `first.velocity` originates from a valid AtomNote, so it is in range.
+            Some(EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(AtomNote {
+                    absolute_start: Ticks(first.onset),
+                    duration: first.duration,
+                    pitch: Pitch::new(pedal).unwrap_or(register.lowest),
+                    velocity: Velocity::new(first.velocity).unwrap_or(Velocity(0)),
+                    marks: NoteMarks::empty(),
+                    position: None,
+                })],
+                technique_spans: Vec::new(),
+            })
+        })
+        .collect();
+
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(pedal).unwrap_or(register.lowest),
+        Pitch::new(pedal).unwrap_or(register.lowest),
+    ))
+}
+
+/// `call_response`: B answers A in its gaps — the onset complement.
+///
+/// A gap is a maximal silent span of A's merged note coverage, between A's
+/// first sound and the end of the last master bar (leading silence has no call
+/// to answer). Every gap at least one quarter long gets exactly one answer: a
+/// B note at the gap start sustaining through the gap, at the velocity of the
+/// preceding A note, pitched seed-deterministically from A's pitch classes in
+/// the band shifted by `spec.register_offset`. B's onsets are disjoint from
+/// A's by construction. No qualifying gap is
+/// [`ComplementError::NoGapsToAnswer`].
+fn arrange_call_response(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
+    let a_track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ComplementError::TrackIndexOutOfRange)?;
+    let a_notes = voice_notes(a_track);
+
+    // Merge A's coverage intervals (notes are sorted by onset).
+    let mut coverage: Vec<(u32, u32)> = Vec::new();
+    for n in &a_notes {
+        let end = n.onset.saturating_add(n.duration.0);
+        match coverage.last_mut() {
+            Some((_, last_end)) if n.onset <= *last_end => *last_end = (*last_end).max(end),
+            _ => coverage.push((n.onset, end)),
+        }
+    }
+
+    // Gaps: between merged spans, plus the trailing gap to the span end.
+    let span_end = score.master_bars.last().map_or(0, |mb| mb.tick_range.end.0);
+    let mut gaps: Vec<(u32, u32)> = coverage
+        .windows(2)
+        .filter_map(|w| match (w.first(), w.get(1)) {
+            (Some(&(_, end)), Some(&(next_start, _))) if next_start > end => {
+                Some((end, next_start))
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(&(_, last_end)) = coverage.last() {
+        if span_end > last_end {
+            gaps.push((last_end, span_end));
+        }
+    }
+
+    let min_gap = u32::from(score.ticks_per_quarter);
+    let scale = scale_intervals_from(profile);
+    let event_groups: Vec<EventGroup> = gaps
+        .iter()
+        .filter(|(start, end)| end.saturating_sub(*start) >= min_gap)
+        .enumerate()
+        .map(|(i, &(start, end))| {
+            let degree = pitch_index(seed.0, i, scale.len());
+            let pitch_val = degree_to_pitch(band_lo, band_hi, &scale, degree);
+            // The call this gap answers: the last A note sounding before it.
+            let call_velocity = a_notes
+                .iter()
+                .rev()
+                .find(|n| n.onset < start)
+                .map_or(90, |n| n.velocity);
+            EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(AtomNote {
+                    absolute_start: Ticks(start),
+                    duration: Ticks(end.saturating_sub(start)),
+                    pitch: Pitch::new(pitch_val).unwrap_or(Pitch(band_lo)),
+                    velocity: Velocity::new(call_velocity).unwrap_or(Velocity(0)),
+                    marks: NoteMarks::empty(),
+                    position: None,
+                })],
+                technique_spans: Vec::new(),
+            }
+        })
+        .collect();
+
+    if event_groups.is_empty() {
+        return Err(ComplementError::NoGapsToAnswer);
+    }
+
+    Ok(finish_candidate(
+        score,
+        track_index,
+        profile,
+        spec.mode,
+        seed,
+        event_groups,
+        Pitch::new(band_lo).unwrap_or(register.lowest),
+        Pitch::new(band_hi).unwrap_or(register.highest),
+    ))
+}
+
+/// A's register band shifted by `offset` semitones, MIDI-clamped and ordered.
+fn shifted_band(register: PitchRange, offset: i8) -> (u8, u8) {
+    let lo = shift_pitch(register.lowest.0, offset);
+    let hi = shift_pitch(register.highest.0, offset);
+    (lo.min(hi), lo.max(hi))
+}
+
+/// B's event groups on A's exact onset grid: every B note keeps A's onset,
+/// duration, and velocity, with the pitch substituted seed-deterministically
+/// from A's pitch classes mapped into the `[band_lo, band_hi]` register band.
+fn grid_locked_groups(
+    a_track: &Track,
+    profile: &PartProfile,
+    band_lo: u8,
+    band_hi: u8,
+    seed: GenerationSeed,
+) -> Vec<EventGroup> {
+    // Scale: A's distinct pitch classes, as intervals above the band's low note.
+    let intervals = scale_intervals_from(profile);
+
+    voice_notes(a_track)
         .iter()
         .enumerate()
         .map(|(i, n)| {
@@ -465,14 +870,25 @@ fn arrange_rhythm_lock(
                 technique_spans: Vec::new(),
             }
         })
-        .collect();
+        .collect()
+}
 
-    let b_voice = Voice {
-        id: 0,
-        event_groups,
-    };
-
-    let a_channel = a_track.channel;
+/// Assembles the produced part B into a [`ComplementCandidate`]: appends the
+/// event groups as a new track on A's master bars (channel after A's, standard
+/// tuning — positions are not derived yet) and computes the axis provenance
+/// against the `[b_lo, b_hi]` register band the mode targeted.
+#[allow(clippy::too_many_arguments)] // a private assembly seam shared by every mode
+fn finish_candidate(
+    score: &Score,
+    track_index: usize,
+    profile: &PartProfile,
+    mode: RelationMode,
+    seed: GenerationSeed,
+    event_groups: Vec<EventGroup>,
+    b_lo: Pitch,
+    b_hi: Pitch,
+) -> ComplementCandidate {
+    let a_channel = score.tracks.get(track_index).map_or(0, |t| t.channel);
     let b_channel = if a_channel >= 15 {
         0
     } else {
@@ -480,10 +896,12 @@ fn arrange_rhythm_lock(
     };
 
     let b_track = Track {
-        name: Some(format!("Complement ({})", spec.mode.label())),
+        name: Some(format!("Complement ({})", mode.label())),
         channel: b_channel,
-        voices: vec![b_voice],
-        // Part B inherits the standard tuning; positions are not derived yet.
+        voices: vec![Voice {
+            id: 0,
+            event_groups,
+        }],
         tuning: Tuning::standard_e(),
     };
 
@@ -491,23 +909,34 @@ fn arrange_rhythm_lock(
     combined.tracks.push(b_track);
     let part_b_index = combined.tracks.len().saturating_sub(1);
 
-    let band_lo_pitch = Pitch::new(band_lo).unwrap_or(register.lowest);
-    let band_hi_pitch = Pitch::new(band_hi).unwrap_or(register.highest);
-    let axis_scores = score_axes(
-        profile,
-        &combined,
-        part_b_index,
-        band_lo_pitch,
-        band_hi_pitch,
-    );
+    let axis_scores = score_axes(profile, &combined, track_index, part_b_index, b_lo, b_hi);
 
-    Ok(ComplementCandidate {
+    ComplementCandidate {
         score: combined,
         part_b_index,
-        mode: spec.mode,
+        mode,
         seed,
         axis_scores,
-    })
+    }
+}
+
+/// Collects every note atom of a track's primary voice as full [`AtomNote`]s
+/// (marks included), sorted by onset — for modes that copy A's notes verbatim.
+fn voice_atom_notes(track: &Track) -> Vec<AtomNote> {
+    let Some(voice) = track.voices.first() else {
+        return Vec::new();
+    };
+    let mut notes: Vec<AtomNote> = voice
+        .event_groups
+        .iter()
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some(*n),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+    notes.sort_by_key(|n| n.absolute_start.0);
+    notes
 }
 
 /// A's distinct pitch classes (semitone offsets from A's lowest pitch), sorted
@@ -553,9 +982,11 @@ fn pitch_index(seed: u64, index: usize, modulo: usize) -> usize {
 }
 
 /// Computes per-axis provenance scores for the produced pair.
+#[allow(clippy::too_many_arguments)] // a private provenance seam shared by every mode
 fn score_axes(
     profile: &PartProfile,
     combined: &Score,
+    a_index: usize,
     part_b_index: usize,
     b_lo: Pitch,
     b_hi: Pitch,
@@ -583,9 +1014,19 @@ fn score_axes(
         .unwrap_or_default();
     let technique_overlap = jaccard(&profile.techniques, &b_techniques);
 
+    // Onset-set Jaccard: exactly 1.0 for the grid-locked modes (B reuses A's
+    // onsets), the shared fraction for sparse / gap-filling modes.
+    let a_onsets: BTreeSet<u32> = combined
+        .tracks
+        .get(a_index)
+        .map_or_else(BTreeSet::new, |t| {
+            voice_notes(t).iter().map(|n| n.onset).collect()
+        });
+    let b_onsets: BTreeSet<u32> = b_notes.iter().map(|n| n.onset).collect();
+    let rhythm_similarity = jaccard(&a_onsets, &b_onsets);
+
     AxisScores {
-        // rhythm_lock reproduces A's onset grid exactly.
-        rhythm_similarity: 1.0,
+        rhythm_similarity,
         register_overlap,
         density_ratio,
         technique_overlap,
@@ -611,9 +1052,9 @@ fn band_overlap(a_lo: u8, a_hi: u8, b_lo: u8, b_hi: u8) -> f64 {
     f64::from(overlap) / f64::from(narrower)
 }
 
-/// Jaccard overlap of two technique sets; `1.0` when both are empty.
+/// Jaccard overlap of two sets; `1.0` when both are empty.
 #[allow(clippy::cast_precision_loss)]
-fn jaccard(a: &BTreeSet<&'static str>, b: &BTreeSet<&'static str>) -> f64 {
+fn jaccard<T: Ord>(a: &BTreeSet<T>, b: &BTreeSet<T>) -> f64 {
     let inter = a.intersection(b).count();
     let union = a.union(b).count();
     if union == 0 {

@@ -1,32 +1,37 @@
 # S13: Complementary part generation (ComplementArranger)
 
-Status: in progress — `rhythm_lock` slice landed (2026-06-01)
+Status: in progress — all six relation modes landed (2026-06-11)
 Depends on: S6 (rule generator), ADR-0011 (canonical port of feature/generate)
 ADRs: ADR-0012, ADR-0011
 
-> Progress: the `complement` module ships the first vertical slice — part-A
-> analysis (`PartProfile`), the `rhythm_lock` mode (a constraint compiler over
-> the S6 `RhythmCopyPitchSubstitute` generator), per-axis provenance
-> (`AxisScores`), a minimal `validate_pair` (coincident-onset dissonance +
-> register mud), and the P2 `complement_request` fuzz target.
+> Progress: the `complement` module ships part-A analysis (`PartProfile`),
+> per-axis provenance (`AxisScores`, with `rhythm_similarity` measured as the
+> onset-set Jaccard between A and B), a minimal `validate_pair`
+> (coincident-onset dissonance + register mud), the P2 `complement_request`
+> fuzz target, and **all six relation modes**, each its own red→green
+> increment on the shared skeleton: `rhythm_lock` (B on A's exact onset grid,
+> pitches substituted in a shifted band), `register_contrast` (the same grid
+> lock in a band that must stay disjoint from A's after MIDI clamping, typed
+> `InvalidSpec` otherwise), `support_layer` (one root-pedal note per non-empty
+> bar at A's first onset — strictly sparser than A), `call_response` (one
+> answer per ≥-quarter gap of A's merged note coverage, typed `NoGapsToAnswer`
+> when A is wall-to-wall), `octave_double` (A's contour copied a non-zero
+> whole number of octaves away, marks preserved, typed `InvalidSpec` for
+> non-octave shifts), and `counter_melody` (an independent S6
+> `ConstrainedRandomWalk` line over a request derived from A; typed
+> `NonUniformTimeline` on mid-score meter changes). `ModeNotImplemented` is
+> gone — every `RelationMode` arranges.
 
 ## Remaining work (follow-up increments)
 
-The through-path (analyse A → derive request → append B on shared master bars →
-provenance) and the pair validator are in place, so the remaining modes are
-low-risk additions on the same skeleton:
-
-- [ ] `register_contrast` — B in a register band disjoint from A.
-- [ ] `call_response` — B answers A in its gaps (onset complement).
-- [ ] `support_layer` — sparser low-register layer; `density(B) < density(A)`.
-- [ ] `octave_double` — reproduce A's contour an octave away.
-- [ ] `counter_melody` — independent line against A.
+- [x] `register_contrast` — B in a register band disjoint from A.
+- [x] `call_response` — B answers A in its gaps (onset complement).
+- [x] `support_layer` — sparser low-register layer; `density(B) < density(A)`.
+- [x] `octave_double` — reproduce A's contour an octave away.
+- [x] `counter_melody` — independent line against A.
 - [ ] Pair validator: add per-part playability (the S6 filter), beyond the
       current harmonic-compatibility / register-mud checks.
 - [ ] `PartProfile`: richer harmonic context (key/scale fit) for pitch material.
-
-Each is its own red→green increment; `arrange_complement` already dispatches to
-them via `RelationMode`, returning `ModeNotImplemented` until wired.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label audit). Logically it sits between the single-part generator (S6)

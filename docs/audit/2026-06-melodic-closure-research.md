@@ -174,7 +174,11 @@ stance (S4: "calibrate on S5 corpus").
    `measure_novelty` over transition sequences; references are passed as
    scores, since the manifest carries no note content).
 4. **S14 Phase 3 addition**: burst / rest gesture statistics among the
-   persisted chunk axes.
+   persisted chunk axes. ✅ landed 2026-06-11 (`core/src/gesture.rs` —
+   `measure_gesture` over the melodic line: burst length distribution,
+   rest length + quarter-grid placement, modal-landing share, burst-final
+   lengthening; persisted as `ChunkMeta.gesture`, corpus schema v3, and
+   filled by `griff curate`).
 5. **Parked**: IDyOM-lite expectancy behind S9 data (revisit before S12).
 
 ## 8. Sources

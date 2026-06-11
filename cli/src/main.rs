@@ -12,6 +12,7 @@ use griff_core::{
         ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, SourceFormat, SourceRef, SwancoreTag,
     },
     event::{NoteMarks, NotePosition, TechniqueSource},
+    gesture,
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::TickRange,
@@ -290,13 +291,10 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
         .and_then(|n| n.to_str())
         .map_or_else(|| "unknown.mid".to_owned(), ToOwned::to_owned);
 
-    // S14 Phase 3: measure the structure of the first note-bearing track and
-    // persist it with the record (schema v2).
-    let structure = score
-        .tracks
-        .iter()
-        .position(|t| track_note_count(t) > 0)
-        .and_then(|idx| structure::measure_structure(&score, idx).ok());
+    // S14 Phase 3 / schema v3: measure the structure and gesture stats of the
+    // first note-bearing track and persist them with the record.
+    let measured_track = score.tracks.iter().position(|t| track_note_count(t) > 0);
+    let structure = measured_track.and_then(|idx| structure::measure_structure(&score, idx).ok());
     if let Some(m) = &structure {
         let period = m
             .detected_pattern_period_bars
@@ -305,6 +303,16 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
             "Structure: period={period}  repeatability={rep:.2}  loopability={lp:.2}",
             rep = m.repeatability_score,
             lp = m.loopability_score,
+        );
+    }
+    let gesture = measured_track.and_then(|idx| gesture::measure_gesture(&score, idx).ok());
+    if let Some(g) = &gesture {
+        println!(
+            "Gesture: bursts={bursts} (mean {mean:.1} notes)  rests={rests} (on-grid {grid:.2})",
+            bursts = g.burst_count,
+            mean = g.mean_burst_notes,
+            rests = g.rest_count,
+            grid = g.rest_on_grid_share,
         );
     }
 
@@ -327,6 +335,7 @@ fn cmd_curate(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
         quality_flags: inputs.quality_flags,
         reviewer: inputs.reviewer,
         structure,
+        gesture,
         created_at: now.clone(),
         updated_at: now,
     };
