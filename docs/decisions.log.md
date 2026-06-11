@@ -907,3 +907,22 @@ Architectural decisions go to [`adr/`](adr/) instead.
   what the span explicitly states). Accepted: two voices genuinely played
   with one physical gesture (rare in practice; importers attach the span
   to one voice) count the technique on the anchored voice only.
+
+- 2026-06-11 — In the context of similarity v3 (`core/src/similarity.rs`),
+  facing how the newly persisted `ComplexityProfile` (schema v6) joins the
+  S7 similarity edge, we decided for **five new `1 − |Δ|` agreement axes —
+  rhythmic / pitch / technical / harmonic / playability — under a uniform
+  `similarity` v3 policy (15 axes), with "measured" extended to require
+  the profile** (pre-v6 records sit out as candidates and are rejected as
+  queries until re-curated — the v2 gesture convention) — and against a
+  sixth `structural` axis (`ComplexityProfile.structural` is the same fact
+  as `StructureMetrics.structural_complexity`, already on the edge as
+  `complexity_similarity`; a duplicate axis would silently double-weight
+  it, the `variation_score` rule), against min/max ratio measures for the
+  new axes (the profile axes are unit-range shares like the gesture
+  shares, not unbounded means — `1 − |Δ|` is the established measure for
+  that shape), and against keeping `similarity_weights_v2` alongside v3
+  (superseded weights live in git history, not API — the v1 convention).
+  Accepted: the corpus must be re-curated to v6 before the edge sees any
+  pairs at all, and uniform weighting now spreads thinner (1/15 per axis)
+  until S9 learns real weights.

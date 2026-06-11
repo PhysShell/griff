@@ -8,12 +8,15 @@ multi-technique with evidence; supersedes ADR-0014)
 
 > Progress: the similarity edge has its first concrete measure —
 > `core/src/similarity.rs` computes per-axis agreement (detected pattern
-> period, repeatability, loopability, structural complexity, tag sets, and
-> since v2 the five intensive gesture distributions of corpus schema v3)
-> between `ChunkMeta` records, and `find_similar_chunks` ranks a query's
-> neighbours as explainable `Scored<ChunkId>` envelopes under the uniform
-> `similarity` v2 policy (ADR-0017); *measured* means structure **and**
-> gesture, so v1/v2 records sit out until re-curated. Brute-force by design
+> period, repeatability, loopability, structural complexity, tag sets,
+> since v2 the five intensive gesture distributions of corpus schema v3,
+> and since v3 the five complexity axes of corpus schema v6 — rhythmic /
+> pitch / technical / harmonic / playability; the structural axis stays
+> off the edge as a duplicate fact) between `ChunkMeta` records, and
+> `find_similar_chunks` ranks a query's neighbours as explainable
+> `Scored<ChunkId>` envelopes under the uniform `similarity` v3 policy
+> (ADR-0017); *measured* means structure **and** gesture **and**
+> complexity, so pre-v6 records sit out until re-curated. Brute-force by design
 > at micro-corpus scale (no ANN; decisions.log 2026-06-10 AudioMuse entry,
 > idea (a)). Nodes, transition / co-occurrence edges, complement hyperedges,
 > and the DP/Viterbi traversal remain gated on S6 acceptance and corpus
