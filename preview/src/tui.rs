@@ -35,7 +35,7 @@ use griff_core::classify::BarClass;
 use crate::analysis::Analysis;
 use crate::scene::{resolve, CellRole, GridSize, Scene, SceneCell, GUTTER};
 use crate::view::PianoRollView;
-use crate::viewport::{Intent, Step, ViewContext, Viewport};
+use crate::viewport::{CurationDecision, Intent, Step, ViewContext, Viewport};
 
 /// Width of the inspector dock.
 const INSPECTOR_W: u16 = 32;
@@ -157,6 +157,8 @@ impl App {
             KeyCode::Char(']') | KeyCode::Tab => Intent::NextSection,
             KeyCode::Char('i') => Intent::ToggleInspector,
             KeyCode::Char('0') | KeyCode::Home => Intent::Home,
+            KeyCode::Char('a') => Intent::Approve,
+            KeyCode::Char('x') => Intent::Reject,
             _ => return None,
         })
     }
@@ -268,6 +270,15 @@ impl App {
             )));
         }
 
+        lines.push(Line::from(format!(
+            "curation  {}",
+            match self.vp.decision {
+                Some(CurationDecision::Approve) => "approved",
+                Some(CurationDecision::Reject) => "rejected",
+                None => "—",
+            }
+        )));
+
         // Transport sits above the metrics blocks: when the content exceeds
         // the dock, clipping eats the tail of the static metrics, never the
         // live play state (Codex P2, PR #38).
@@ -333,7 +344,7 @@ impl App {
 /// Renders the static footer hint line.
 fn render_footer(area: Rect, frame: &mut Frame<'_>) {
     let hint =
-        "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · i inspector";
+        "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x curate";
     frame.render_widget(
         Paragraph::new(Line::styled(
             hint,
@@ -461,13 +472,18 @@ fn buffer_lines(buf: &Buffer) -> Vec<String> {
 ///
 /// # Errors
 /// Propagates terminal setup, draw, and input errors from `ratatui`.
-pub fn run(mut app: App) -> io::Result<()> {
+/// Runs the interactive TUI to completion and returns the curation decision
+/// pending when the user quit (if any), for the shell to persist.
+///
+/// # Errors
+/// Propagates terminal I/O errors from `ratatui`.
+pub fn run(mut app: App) -> io::Result<Option<CurationDecision>> {
     let mut terminal = ratatui::try_init()?;
     let size = terminal.size()?;
     app.fit(size.width);
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
-    result
+    result.map(|()| app.vp.decision)
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
@@ -626,7 +642,10 @@ mod tests {
         // the pending decision, and repeating a key clears it.
         let mut app = demo_app();
         let initial = app.snapshot(80, 20).expect("renders").join("\n");
-        assert!(initial.contains("curation"), "the inspector names the block");
+        assert!(
+            initial.contains("curation"),
+            "the inspector names the block"
+        );
 
         app.on_key(KeyCode::Char('a'));
         let approved = app.snapshot(80, 20).expect("renders").join("\n");

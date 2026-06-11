@@ -19,6 +19,7 @@
 //! print a headless snapshot frame. MIDI playback is a later increment.
 
 pub mod analysis;
+pub mod curation;
 pub mod render;
 pub mod scene;
 pub mod tui;

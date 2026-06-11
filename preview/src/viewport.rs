@@ -36,6 +36,19 @@ pub struct ViewContext {
     pub section_starts: Vec<u32>,
 }
 
+/// A curation decision pending on the viewed chunk (S8).
+///
+/// A UI-level fact — deliberately not `corpus::ReviewerDecision`, so the
+/// interaction core keeps zero `griff-core` domain types (the ADR-0016 crate
+/// boundary); the frontend shell maps it when persisting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurationDecision {
+    /// The curator approves the viewed chunk.
+    Approve,
+    /// The curator rejects the viewed chunk.
+    Reject,
+}
+
 /// Interactive, renderer-agnostic viewport state. Mutated only by the reducer
 /// ([`Viewport::apply`]) and the pure playback helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +67,8 @@ pub struct Viewport {
     pub play_tick: u32,
     /// Whether the inspector dock is shown.
     pub show_inspector: bool,
+    /// The pending curation decision, or `None` until the curator acts.
+    pub decision: Option<CurationDecision>,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -84,6 +99,10 @@ pub enum Intent {
     ToggleInspector,
     /// Jump back to the start of the score.
     Home,
+    /// Mark the viewed chunk approved; repeating it clears the decision.
+    Approve,
+    /// Mark the viewed chunk rejected; repeating it clears the decision.
+    Reject,
 }
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
@@ -112,6 +131,7 @@ impl Viewport {
             playing: false,
             play_tick: ctx.tick_start,
             show_inspector: true,
+            decision: None,
         }
     }
 
@@ -160,8 +180,20 @@ impl Viewport {
                 self.scroll_tick = ctx.tick_start;
                 self.play_tick = ctx.tick_start;
             }
+            Intent::Approve => self.toggle_decision(CurationDecision::Approve),
+            Intent::Reject => self.toggle_decision(CurationDecision::Reject),
         }
         Step::Continue
+    }
+
+    /// Sets `decision`, clearing it when the same decision is already pending
+    /// (the same intent again is an undo); a different one overwrites.
+    fn toggle_decision(&mut self, decision: CurationDecision) {
+        self.decision = if self.decision == Some(decision) {
+            None
+        } else {
+            Some(decision)
+        };
     }
 
     /// Selects section `idx` (clamped to the last) and jumps the scroll and

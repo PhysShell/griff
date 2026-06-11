@@ -448,6 +448,7 @@ mod tests {
             playing: false,
             play_tick: 0,
             show_inspector: true,
+            decision: None,
         };
         (view, analysis, vp)
     }
