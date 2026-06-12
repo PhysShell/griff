@@ -826,6 +826,96 @@ mod tests {
         );
     }
 
+    // TDD red phase: rename reaches the TUI (S8 curation slice 4). 'r'
+    // enters the mode seeded with the live title; typed keys edit the
+    // frontend-local buffer; Enter commits (trim, non-empty), Esc cancels;
+    // the committed title is surfaced for quit-time persistence.
+    // References items that do not exist yet, so the crate fails to
+    // compile until the green step.
+
+    #[test]
+    fn r_maps_to_rename_start() {
+        assert_eq!(
+            App::key_intent(KeyCode::Char('r')),
+            Some(Intent::RenameStart)
+        );
+    }
+
+    #[test]
+    fn rename_flow_commits_a_new_title() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        assert_eq!(app.title_if_changed(), None, "nothing pending initially");
+
+        app.on_key(KeyCode::Char('r'));
+        assert!(app.vp.renaming, "r enters the rename mode");
+        // The buffer arrives seeded with the live title; extend it.
+        app.on_key(KeyCode::Char(' '));
+        app.on_key(KeyCode::Char('2'));
+        app.on_key(KeyCode::Char('x'));
+        app.on_key(KeyCode::Backspace);
+        let frame = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(
+            frame.contains("name▸ Curated 2"),
+            "the dock shows the live buffer while renaming"
+        );
+
+        app.on_key(KeyCode::Enter);
+        assert!(!app.vp.renaming, "enter leaves the mode");
+        assert_eq!(
+            app.title_if_changed(),
+            Some("Curated 2".to_string()),
+            "the committed title is surfaced for persistence"
+        );
+    }
+
+    #[test]
+    fn rename_esc_cancels_without_committing() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        app.on_key(KeyCode::Char('r'));
+        app.on_key(KeyCode::Char('!'));
+        let cont = app.on_key(KeyCode::Esc);
+        assert!(cont, "esc cancels the rename, not the app");
+        assert!(!app.vp.renaming);
+        assert_eq!(app.title_if_changed(), None, "nothing committed");
+
+        // 'q' quits again once the mode is left.
+        assert!(!app.on_key(KeyCode::Char('q')));
+    }
+
+    #[test]
+    fn typing_q_inside_the_rename_mode_does_not_quit() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        app.on_key(KeyCode::Char('r'));
+        assert!(app.on_key(KeyCode::Char('q')), "q is text while renaming");
+        app.on_key(KeyCode::Enter);
+        assert_eq!(
+            app.title_if_changed(),
+            Some("Curatedq".to_string()),
+            "the q landed in the buffer"
+        );
+    }
+
     #[test]
     fn page_keys_map_to_inspector_scroll() {
         assert_eq!(
