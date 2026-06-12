@@ -1367,6 +1367,95 @@ mod tests {
         assert!(text.contains("pos 1:1"), "play position visible");
     }
 
+    // TDD red phase: on a single-bar score the bar-ratio metrics are
+    // vacuous, not measured — `repeatability` has no second bar to compare
+    // (core returns its 0.0 abstention), so `variation = 1 − 0` and the
+    // distinct-signature ratios (`complexity`, the `str` axis) are `1/1` by
+    // construction. The inspector must abstain with an em dash instead of
+    // asserting 0%/100%. `loopability` (a seam measurement on the span) and
+    // the per-note axes stay numeric.
+    #[test]
+    fn single_bar_score_dashes_out_bar_ratio_metrics() {
+        let mut app = demo_app();
+        app.view.bar_count = 1;
+        app.analysis.metrics = Some(StructureMetrics {
+            bar_count: 1,
+            detected_pattern_period_bars: None,
+            detected_pattern_period_ticks: None,
+            detected_subbar_period_ticks: None,
+            repeatability_score: 0.0,
+            variation_score: 1.0,
+            loopability_score: 0.625,
+            structural_complexity: 1.0,
+        });
+        let frame = app.snapshot(80, 32).expect("renders");
+        let line = |label: &str| {
+            frame
+                .iter()
+                .find(|l| l.contains(label) && !l.contains("(S14)"))
+                .cloned()
+                .unwrap_or_else(|| panic!("inspector line `{label}` missing"))
+        };
+
+        assert!(
+            line("loopability").contains('%'),
+            "loopability is a real seam measurement even on one bar"
+        );
+        for label in ["repeatability", "variation", "complexity"] {
+            let l = line(label);
+            assert!(l.contains('—'), "`{label}` abstains with a dash: {l}");
+            assert!(!l.contains('%'), "`{label}` shows no percentage: {l}");
+        }
+        let pair = line("ply");
+        let after_str = pair.split("str").nth(1).expect("str axis on the line");
+        assert!(
+            after_str.contains('—') && !after_str.contains('%'),
+            "the str axis abstains with a dash: {pair}"
+        );
+        assert!(
+            pair.split("str").next().is_some_and(|s| s.contains('%')),
+            "ply stays numeric on one bar: {pair}"
+        );
+    }
+
+    // The two-bar control: the same metrics render as percentages when a
+    // second bar exists to compare against.
+    #[test]
+    fn two_bar_score_keeps_bar_ratio_percentages() {
+        let mut app = demo_app();
+        app.analysis.metrics = Some(StructureMetrics {
+            bar_count: 2,
+            detected_pattern_period_bars: Some(1),
+            detected_pattern_period_ticks: Some(960),
+            detected_subbar_period_ticks: None,
+            repeatability_score: 0.75,
+            variation_score: 0.25,
+            loopability_score: 0.5,
+            structural_complexity: 0.5,
+        });
+        let frame = app.snapshot(80, 32).expect("renders");
+        let line = |label: &str| {
+            frame
+                .iter()
+                .find(|l| l.contains(label) && !l.contains("(S14)"))
+                .cloned()
+                .unwrap_or_else(|| panic!("inspector line `{label}` missing"))
+        };
+        for label in ["repeatability", "variation", "complexity"] {
+            assert!(
+                line(label).contains('%'),
+                "`{label}` is measured with two bars"
+            );
+        }
+        let pair = line("ply");
+        assert!(
+            pair.split("str")
+                .nth(1)
+                .is_some_and(|s| s.contains('%') && !s.contains('—')),
+            "the str axis is measured with two bars: {pair}"
+        );
+    }
+
     #[test]
     fn curation_keys_set_and_show_the_decision() {
         // S8 curation slice: 'a' approves, 'x' rejects, the inspector shows
