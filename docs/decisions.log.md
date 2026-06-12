@@ -1037,3 +1037,13 @@ Architectural decisions go to [`adr/`](adr/) instead.
   `ChunkMeta` into the renderer (ADR-0016: no domain types in the UI).
   Accepted: one more startup file read, warn-and-continue when the
   record is unreadable (quit-time persist still fails loudly).
+
+- 2026-06-12 — In the context of Codex P2 on PR #42 (the record digest's
+  dock position, `preview/src/tui.rs`), facing the digest landing above
+  the transport block and pushing live play state out of a short dock
+  (regressing the PR #38 liveness ordering), we decided for **moving the
+  digest below transport, with the other static blocks** — it is loaded
+  once at startup and never changes during a session — and against
+  shrinking or inlining the digest (three lines is already minimal, and
+  hiding tags would defeat the slice's purpose). Accepted: on very short
+  terminals the digest itself clips first; PgUp/PgDn (PR #41) reaches it.
