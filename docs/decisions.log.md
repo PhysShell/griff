@@ -1154,9 +1154,10 @@ Architectural decisions go to [`adr/`](adr/) instead.
   `SourceFormat::Midi` (`cli/src/main.rs`), while GP is the declared
   primary import format (decisions 2026-06-05 / ADR-0018), we decided
   for **wiring `gp::import_score` into `griff curate` before GP-based
-  mass curation begins** — dispatch on extension (`.gp3` / `.gp4` /
-  `.gp5` / `.gpx` / `.gp` → GP path; `.mid` / `.midi` → MIDI path),
-  with `SourceFormat::GuitarPro` recorded in `SourceRef` — and against
+  mass curation begins** — dispatch on extension to the specific
+  per-version `SourceFormat` variant already in the enum (`.gp3` →
+  `Gp3`, `.gp4` → `Gp4`, `.gp5` → `Gp5`, `.gpx` → `Gpx`; `.mid` /
+  `.midi` → `Midi`), recording that variant in `SourceRef` — and against
   deferring until after a GP-based corpus is started (curating GP files
   via MIDI conversion loses string / fret / technique data that GP
   provides directly and misrecords `SourceFormat::Midi` on every
