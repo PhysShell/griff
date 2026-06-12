@@ -1093,6 +1093,27 @@ mod tests {
         assert_eq!(app.outcome().split_tick, None, "the same spot disarms");
     }
 
+    // TDD red phase: the split gate matches persistence (Codex P2, PR #45)
+    // — App::new must seed the core's bar length from the view's bar grid,
+    // so 's' inside the first bar never arms a doomed split.
+    #[test]
+    fn split_key_refuses_the_first_bar() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        app.vp.play_tick = 500; // inside the first bar (bars at 0/960/1920)
+        app.on_key(KeyCode::Char('s'));
+        assert_eq!(
+            app.vp.split_tick, None,
+            "persistence would reject this split, so the UI must not arm it"
+        );
+    }
+
     #[test]
     fn merge_flow_requires_an_attached_partner() {
         use crate::curation::RecordSummary;

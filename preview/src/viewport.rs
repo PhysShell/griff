@@ -498,6 +498,7 @@ mod tests {
         ViewContext {
             has_record: true,
             can_merge: true,
+            bar_ticks: 480,
             ..ctx()
         }
     }
@@ -558,6 +559,34 @@ mod tests {
         assert!(vp.merging);
         vp.apply(Intent::MergeToggle, &c);
         assert!(!vp.merging, "the same intent again is an undo");
+    }
+
+    // TDD red phase: the split gate must match the persistence rule (Codex
+    // P2, PR #45) — a tick inside the first bar floors to the range start
+    // and is always SplitOutOfRange at persist time, so arming it lies to
+    // the curator. References ViewContext.bar_ticks, which does not exist
+    // yet, so the crate fails to compile until the green step.
+
+    #[test]
+    fn split_mark_refuses_the_first_bar() {
+        let c = record_ctx(); // bar_ticks = 480
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 100;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(
+            vp.split_tick, None,
+            "a tick inside the first bar floors to the range start — never persistable"
+        );
+        vp.play_tick = 479;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, None, "still inside the first bar");
+        vp.play_tick = 480;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(
+            vp.split_tick,
+            Some(480),
+            "the second bar boundary is the first valid split point"
+        );
     }
 
     #[test]
