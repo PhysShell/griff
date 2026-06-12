@@ -5,7 +5,7 @@
 //! ```text
 //! griff-preview <file.mid>                    # interactive TUI
 //! griff-preview <file.mid> --snapshot=WxH     # print one headless frame and exit
-//! griff-preview <file.mid> --record=<chunk>   # persist a/x + t/T curation into the record
+//! griff-preview <file.mid> --record=<chunk>   # persist a/x, t/T, r curation into the record
 //! ```
 //!
 //! It imports the file through the core MIDI importer, builds a
@@ -18,7 +18,7 @@ use std::{env, fs};
 
 use griff_core::midi::import_score;
 use griff_preview::analysis::analyze;
-use griff_preview::curation::{decide_record, set_tags, summarize_record};
+use griff_preview::curation::{decide_record, rename_record, set_tags, summarize_record};
 use griff_preview::tui::{self, App};
 use griff_preview::view::build_view;
 use griff_preview::viewport::CurationDecision;
@@ -98,7 +98,9 @@ fn main() -> ExitCode {
             }
         },
         None => match tui::run(app) {
-            Ok((decision, tags)) => persist_outcome(record.as_deref(), decision, tags),
+            Ok((decision, tags, title)) => {
+                persist_outcome(record.as_deref(), decision, tags, title)
+            }
             Err(err) => {
                 eprintln!("tui error: {err}");
                 ExitCode::FAILURE
@@ -113,11 +115,12 @@ fn persist_outcome(
     record: Option<&str>,
     decision: Option<CurationDecision>,
     tags: Option<Vec<String>>,
+    title: Option<String>,
 ) -> ExitCode {
     let Some(path) = record else {
         return ExitCode::SUCCESS;
     };
-    if decision.is_none() && tags.is_none() {
+    if decision.is_none() && tags.is_none() && title.is_none() {
         return ExitCode::SUCCESS;
     }
     let json = match fs::read_to_string(path) {
@@ -142,6 +145,15 @@ fn persist_outcome(
             Ok(updated) => updated,
             Err(err) => {
                 eprintln!("cannot retag record {path}: {err:?}");
+                return ExitCode::FAILURE;
+            }
+        };
+    }
+    if let Some(title) = title {
+        updated = match rename_record(&updated, &title) {
+            Ok(updated) => updated,
+            Err(err) => {
+                eprintln!("cannot rename record {path}: {err:?}");
                 return ExitCode::FAILURE;
             }
         };
