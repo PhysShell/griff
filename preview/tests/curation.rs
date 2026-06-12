@@ -343,6 +343,33 @@ fn split_record_resets_review_and_measured_metrics() {
     }
 }
 
+// TDD red phase (Codex P2, PR #45, round 5): an ensemble link is one chunk
+// member per source span; two halves carrying the same group_id+part_index
+// would duplicate the membership against a group whose other parts still
+// span the whole extent. The split must clear the link — re-grouping the
+// halves is a curation act, not an inheritance. Fails until the green step.
+
+#[test]
+fn split_record_clears_the_ensemble_link() {
+    use griff_core::corpus::EnsembleRef;
+    use griff_preview::curation::split_record;
+
+    let mut meta = record_with_range(0, 4);
+    meta.ensemble = Some(EnsembleRef {
+        group_id: "dgd_042".to_owned(),
+        part_index: 1,
+    });
+    let json = serde_json::to_string(&meta).expect("serialize");
+    let (a, b) = split_record(&json, 2, 2).expect("split ok");
+    for half in [a, b] {
+        let half: ChunkMeta = serde_json::from_str(&half).expect("parses");
+        assert_eq!(
+            half.ensemble, None,
+            "duplicate group membership cannot survive a split"
+        );
+    }
+}
+
 #[test]
 fn split_record_rejects_an_out_of_range_point() {
     use griff_preview::curation::split_record;
