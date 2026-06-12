@@ -64,7 +64,11 @@ front-ends and audio build on them:
       toggles the cursor's tag, the record block shows the live set, and
       quit persists the changed set via `curation::set_tags` alongside the
       decision. Tag state crosses the interaction core as plain integers
-      (cursor + bitmask). Remaining: split/merge/rename.
+      (cursor + bitmask). **Fourth slice landed 2026-06-12 (rename)**: 'r'
+      opens a buffer seeded with the live title (text stays
+      frontend-local; the core keeps only the renaming flag), Enter
+      commits, Esc cancels, quit persists via `curation::rename_record`
+      (trimmed, never blank). Remaining: split/merge.
 - [ ] Boundary overlays (S4) and candidate history — **overlays landed
       2026-06-11**: `Analysis.boundaries` carries the S4 start ticks under a
       PPQN-scaled default config, the scene places `BoundaryMark` columns

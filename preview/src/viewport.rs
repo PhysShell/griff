@@ -41,6 +41,9 @@ pub struct ViewContext {
     /// Bitmask of palette indices set on the loaded record, seeding
     /// [`Viewport::tags`].
     pub initial_tags: u32,
+    /// Whether a chunk record is attached (`--record`): gates record-editing
+    /// intents such as [`Intent::RenameStart`].
+    pub has_record: bool,
 }
 
 /// A curation decision pending on the viewed chunk (S8).
@@ -84,6 +87,9 @@ pub struct Viewport {
     /// Membership bitmask over the palette: bit `i` set = tag `i` on the
     /// chunk. Seeded from [`ViewContext::initial_tags`].
     pub tags: u32,
+    /// Whether the rename mode is active. The text buffer itself is
+    /// frontend-local; the core keeps only the mode.
+    pub renaming: bool,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -126,6 +132,10 @@ pub enum Intent {
     TagNext,
     /// Toggle the cursor's tag on the chunk; repeating it untoggles.
     TagToggle,
+    /// Enter the rename mode (no-op without an attached record).
+    RenameStart,
+    /// Leave the rename mode (the frontend commits or cancels its buffer).
+    RenameEnd,
 }
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
@@ -158,6 +168,7 @@ impl Viewport {
             inspector_scroll: 0,
             tag_cursor: 0,
             tags: ctx.initial_tags,
+            renaming: false,
         }
     }
 
@@ -228,6 +239,12 @@ impl Viewport {
                     self.tags ^= 1_u32 << self.tag_cursor;
                 }
             }
+            Intent::RenameStart => {
+                if ctx.has_record {
+                    self.renaming = true;
+                }
+            }
+            Intent::RenameEnd => self.renaming = false,
         }
         Step::Continue
     }
@@ -307,6 +324,7 @@ mod tests {
             section_starts: vec![0, 960],
             tag_count: 0,
             initial_tags: 0,
+            has_record: false,
         }
     }
 
@@ -361,6 +379,34 @@ mod tests {
         vp.apply(Intent::TagToggle, &c);
         assert_eq!(vp.tag_cursor, 0);
         assert_eq!(vp.tags, 0);
+    }
+
+    // TDD red phase: the rename mode (S8 curation slice 4). The interaction
+    // core keeps only the mode flag — the text buffer is frontend-local
+    // (egui brings its own text widget; ADR-0016 keeps the core
+    // renderer-agnostic and Copy). References a field and intents that do
+    // not exist yet, so the crate fails to compile until the green step.
+
+    #[test]
+    fn rename_mode_toggles_via_intents_when_a_record_is_attached() {
+        let c = ViewContext {
+            has_record: true,
+            ..ctx()
+        };
+        let mut vp = Viewport::new(&c, 52);
+        assert!(!vp.renaming, "starts outside the rename mode");
+        vp.apply(Intent::RenameStart, &c);
+        assert!(vp.renaming);
+        vp.apply(Intent::RenameEnd, &c);
+        assert!(!vp.renaming);
+    }
+
+    #[test]
+    fn rename_start_is_a_noop_without_a_record() {
+        let c = ctx(); // has_record = false
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::RenameStart, &c);
+        assert!(!vp.renaming, "nothing to rename without --record");
     }
 
     // TDD red phase: the scrollable inspector (the S8 follow-up recorded

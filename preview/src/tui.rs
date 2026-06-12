@@ -85,6 +85,10 @@ pub struct App {
     record: Option<RecordSummary>,
     /// The tag palette in wire casing; the viewport cycles its indices.
     palette: Vec<String>,
+    /// The rename buffer while [`Viewport::renaming`]; frontend-local.
+    rename_buf: String,
+    /// A committed rename awaiting quit-time persistence.
+    pending_title: Option<String>,
     vp: Viewport,
     ctx: ViewContext,
 }
@@ -101,6 +105,7 @@ impl App {
             section_starts: analysis.sections.iter().map(|s| s.tick_start).collect(),
             tag_count: 0,
             initial_tags: 0,
+            has_record: false,
         };
         let vp = Viewport::new(&ctx, view.high_pitch);
         Self {
@@ -109,6 +114,8 @@ impl App {
             file,
             record: None,
             palette: Vec::new(),
+            rename_buf: String::new(),
+            pending_title: None,
             vp,
             ctx,
         }
@@ -128,6 +135,7 @@ impl App {
             .fold(0_u32, |m, (i, _)| m | (1_u32 << i));
         self.ctx.tag_count = u8::try_from(self.palette.len()).unwrap_or(u8::MAX);
         self.ctx.initial_tags = mask;
+        self.ctx.has_record = true;
         self.vp.tags = mask;
         self.record = Some(record);
     }
@@ -140,6 +148,22 @@ impl App {
             return None;
         }
         Some(self.live_tags())
+    }
+
+    /// The committed rename when it differs from the record's title, or
+    /// `None` when nothing changed (nothing to persist).
+    #[must_use]
+    pub fn title_if_changed(&self) -> Option<String> {
+        let rec = self.record.as_ref()?;
+        let pending = self.pending_title.as_ref()?;
+        (*pending != rec.title).then(|| pending.clone())
+    }
+
+    /// The title the dock shows: a committed rename wins over the record's.
+    fn live_title(&self) -> Option<&str> {
+        self.pending_title
+            .as_deref()
+            .or_else(|| self.record.as_ref().map(|r| r.title.as_str()))
     }
 
     /// The viewport's tag bitmask mapped back to palette names, in order.
@@ -182,10 +206,42 @@ impl App {
     /// Translates the key into a semantic [`Intent`] and lets the shared
     /// viewport reducer interpret it — no interaction logic lives here.
     fn on_key(&mut self, code: KeyCode) -> bool {
+        if self.vp.renaming {
+            return self.on_rename_key(code);
+        }
         let Some(intent) = Self::key_intent(code) else {
             return true;
         };
-        self.vp.apply(intent, &self.ctx) == Step::Continue
+        let step = self.vp.apply(intent, &self.ctx);
+        if intent == Intent::RenameStart && self.vp.renaming {
+            // Entering the mode: seed the buffer with the live title.
+            self.rename_buf = self.live_title().unwrap_or_default().to_owned();
+        }
+        step == Step::Continue
+    }
+
+    /// Handles a key inside the rename mode: typed characters edit the
+    /// frontend-local buffer ('q' is text here, not quit), Enter commits
+    /// the trimmed, non-empty buffer, Esc cancels.
+    fn on_rename_key(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Enter => {
+                let title = self.rename_buf.trim();
+                if !title.is_empty() {
+                    self.pending_title = Some(title.to_owned());
+                }
+                self.vp.apply(Intent::RenameEnd, &self.ctx);
+            }
+            KeyCode::Esc => {
+                self.vp.apply(Intent::RenameEnd, &self.ctx);
+            }
+            KeyCode::Backspace => {
+                self.rename_buf.pop();
+            }
+            KeyCode::Char(c) => self.rename_buf.push(c),
+            _ => {}
+        }
+        true
     }
 
     /// Maps a raw key to a semantic [`Intent`], or `None` if unbound.
@@ -209,6 +265,7 @@ impl App {
             KeyCode::Char('x') => Intent::Reject,
             KeyCode::Char('t') => Intent::TagNext,
             KeyCode::Char('T') => Intent::TagToggle,
+            KeyCode::Char('r') => Intent::RenameStart,
             _ => return None,
         })
     }
@@ -311,10 +368,17 @@ impl App {
     fn push_record_lines(&self, lines: &mut Vec<Line<'static>>, dim: Style) {
         let Some(rec) = &self.record else { return };
         lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::styled("record ", dim),
-            Span::raw(rec.title.clone()),
-        ]));
+        if self.vp.renaming {
+            lines.push(Line::from(vec![
+                Span::styled("name\u{25b8} ", dim),
+                Span::raw(format!("{}\u{258f}", self.rename_buf)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("record ", dim),
+                Span::raw(self.live_title().unwrap_or(&rec.title).to_owned()),
+            ]));
+        }
         lines.push(Line::from(format!(
             "review {}",
             rec.reviewer.as_deref().unwrap_or("—")
@@ -446,7 +510,7 @@ impl App {
 fn render_footer(area: Rect, frame: &mut Frame<'_>) {
     let hint =
         "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x curate \
-· t/T tag";
+· t/T tag · r rename";
     frame.render_widget(
         Paragraph::new(Line::styled(
             hint,
@@ -579,8 +643,13 @@ fn buffer_lines(buf: &Buffer) -> Vec<String> {
 /// # Errors
 /// Propagates terminal setup, draw, and input errors from `ratatui`.
 /// What the curator left behind on quit, for the shell to persist: the
-/// pending decision (if any) and the tag set (when it changed).
-pub type CurationOutcome = (Option<CurationDecision>, Option<Vec<String>>);
+/// pending decision (if any), the tag set (when it changed), and the
+/// committed rename (when it changed).
+pub type CurationOutcome = (
+    Option<CurationDecision>,
+    Option<Vec<String>>,
+    Option<String>,
+);
 
 /// Runs the interactive TUI to completion and returns the curation decision
 /// pending when the user quit (if any) plus the tag set when it changed,
@@ -594,7 +663,13 @@ pub fn run(mut app: App) -> io::Result<CurationOutcome> {
     app.fit(size.width);
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
-    result.map(|()| (app.vp.decision, app.tags_if_changed()))
+    result.map(|()| {
+        (
+            app.vp.decision,
+            app.tags_if_changed(),
+            app.title_if_changed(),
+        )
+    })
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
@@ -822,6 +897,96 @@ mod tests {
             app.tags_if_changed(),
             Some(vec!["maj7".to_string()]),
             "the changed set is surfaced for persistence"
+        );
+    }
+
+    // TDD red phase: rename reaches the TUI (S8 curation slice 4). 'r'
+    // enters the mode seeded with the live title; typed keys edit the
+    // frontend-local buffer; Enter commits (trim, non-empty), Esc cancels;
+    // the committed title is surfaced for quit-time persistence.
+    // References items that do not exist yet, so the crate fails to
+    // compile until the green step.
+
+    #[test]
+    fn r_maps_to_rename_start() {
+        assert_eq!(
+            App::key_intent(KeyCode::Char('r')),
+            Some(Intent::RenameStart)
+        );
+    }
+
+    #[test]
+    fn rename_flow_commits_a_new_title() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        assert_eq!(app.title_if_changed(), None, "nothing pending initially");
+
+        app.on_key(KeyCode::Char('r'));
+        assert!(app.vp.renaming, "r enters the rename mode");
+        // The buffer arrives seeded with the live title; extend it.
+        app.on_key(KeyCode::Char(' '));
+        app.on_key(KeyCode::Char('2'));
+        app.on_key(KeyCode::Char('x'));
+        app.on_key(KeyCode::Backspace);
+        let frame = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(
+            frame.contains("name▸ Curated 2"),
+            "the dock shows the live buffer while renaming"
+        );
+
+        app.on_key(KeyCode::Enter);
+        assert!(!app.vp.renaming, "enter leaves the mode");
+        assert_eq!(
+            app.title_if_changed(),
+            Some("Curated 2".to_string()),
+            "the committed title is surfaced for persistence"
+        );
+    }
+
+    #[test]
+    fn rename_esc_cancels_without_committing() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        app.on_key(KeyCode::Char('r'));
+        app.on_key(KeyCode::Char('!'));
+        let cont = app.on_key(KeyCode::Esc);
+        assert!(cont, "esc cancels the rename, not the app");
+        assert!(!app.vp.renaming);
+        assert_eq!(app.title_if_changed(), None, "nothing committed");
+
+        // 'q' quits again once the mode is left.
+        assert!(!app.on_key(KeyCode::Char('q')));
+    }
+
+    #[test]
+    fn typing_q_inside_the_rename_mode_does_not_quit() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        app.on_key(KeyCode::Char('r'));
+        assert!(app.on_key(KeyCode::Char('q')), "q is text while renaming");
+        app.on_key(KeyCode::Enter);
+        assert_eq!(
+            app.title_if_changed(),
+            Some("Curatedq".to_string()),
+            "the q landed in the buffer"
         );
     }
 
