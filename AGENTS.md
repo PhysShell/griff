@@ -12,7 +12,8 @@ after Will Swan / Dance Gavin Dance / Hail The Sun.
 - `cli/`     — binary `griff` (`import` / `inspect` / `export` / `classify` /
   `curate`)
 - `preview/` — headless-testable ratatui preview: view-model, analysis
-  (sections + structure metrics), interaction core (ADR-0016)
+  (sections + structure metrics), interaction core (ADR-0016); usage in
+  [`docs/preview-guide.md`](docs/preview-guide.md)
 - `plugin/`  — CLAP plugin via nih-plug (S10+, not yet)
 - `fuzz/`    — isolated nightly cargo-fuzz crate (ADR-0010; not a workspace
   member); policy in [`docs/fuzzing.md`](docs/fuzzing.md)
@@ -39,6 +40,8 @@ history see
 ## Routing
 
 - A roadmap stage? → `docs/stages/SN-*.md` (canonical S0…S14)
+- Using the preview TUI (keys, inspector, curation)? →
+  [`docs/preview-guide.md`](docs/preview-guide.md)
 - A fuzzing question? → [`docs/fuzzing.md`](docs/fuzzing.md) (policy) /
   ADR-0010
 - An architectural decision? → new ADR in `docs/adr/` (Nygard, ADR-0009)
