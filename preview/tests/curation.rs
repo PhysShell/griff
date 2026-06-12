@@ -524,3 +524,42 @@ fn merge_records_on_garbage_input_fails() {
         CurationError::ParseFailed
     );
 }
+
+// ── split at a tick (S8 curation slice 5 — the shell's playhead mapping) ────
+// TDD red phase: the TUI pins a split to a playhead *tick*; the shell maps
+// it to the absolute source bar containing that tick (the split lands on
+// the bar boundary at or before the playhead). References
+// `split_record_at_tick`, which does not exist yet, so the suite fails to
+// compile until the green step.
+
+#[test]
+fn split_record_at_tick_floors_to_the_containing_bar() {
+    use griff_preview::curation::split_record_at_tick;
+
+    let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
+    let (a, b) = split_record_at_tick(&json, 2 * BAR + 100).expect("split ok");
+    let first: ChunkMeta = serde_json::from_str(&a).expect("parses");
+    let second: ChunkMeta = serde_json::from_str(&b).expect("parses");
+    assert_eq!(first.source.bar_range, Some((0, 1)));
+    assert_eq!(second.source.bar_range, Some((2, 4)));
+
+    // The tick is chunk-relative; the bar range may start past zero.
+    let offset = serde_json::to_string(&record_with_range(2, 6)).expect("serialize");
+    let (off_a, off_b) = split_record_at_tick(&offset, BAR + 10).expect("split ok");
+    let off_first: ChunkMeta = serde_json::from_str(&off_a).expect("parses");
+    let off_second: ChunkMeta = serde_json::from_str(&off_b).expect("parses");
+    assert_eq!(off_first.source.bar_range, Some((2, 2)));
+    assert_eq!(off_second.source.bar_range, Some((3, 6)));
+}
+
+#[test]
+fn split_record_at_a_tick_inside_the_first_bar_is_out_of_range() {
+    use griff_preview::curation::split_record_at_tick;
+
+    let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
+    assert_eq!(
+        split_record_at_tick(&json, BAR - 1).unwrap_err(),
+        CurationError::SplitOutOfRange,
+        "flooring into the first bar would leave an empty first half"
+    );
+}

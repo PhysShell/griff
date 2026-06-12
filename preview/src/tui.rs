@@ -1003,6 +1003,87 @@ mod tests {
         );
     }
 
+    // TDD red phase: split/merge reaches the TUI (S8 curation slice 5).
+    // 's' marks the playhead as the pending split point, 'm' arms the merge
+    // with the partner record attached via the new `set_merge_partner`, the
+    // record block shows the pending rewrite, and quit-time persistence
+    // receives everything through the new `CurationOutcome` struct built by
+    // `App::outcome`. References items that do not exist yet, so the crate
+    // fails to compile until the green step.
+
+    #[test]
+    fn split_and_merge_keys_map_to_intents() {
+        assert_eq!(
+            App::key_intent(KeyCode::Char('s')),
+            Some(Intent::SplitAtPlayhead)
+        );
+        assert_eq!(
+            App::key_intent(KeyCode::Char('m')),
+            Some(Intent::MergeToggle)
+        );
+    }
+
+    #[test]
+    fn split_flow_marks_the_playhead_and_surfaces_the_outcome() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        app.vp.play_tick = 960;
+        app.on_key(KeyCode::Char('s'));
+        assert_eq!(app.vp.split_tick, Some(960), "s marks the playhead");
+        let text = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(text.contains("split"), "the dock shows the pending split");
+        assert_eq!(app.outcome().split_tick, Some(960));
+
+        app.vp.play_tick = 960;
+        app.on_key(KeyCode::Char('s'));
+        assert_eq!(app.outcome().split_tick, None, "the same spot disarms");
+    }
+
+    #[test]
+    fn merge_flow_requires_an_attached_partner() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: Vec::new(),
+        });
+        app.on_key(KeyCode::Char('m'));
+        assert!(!app.vp.merging, "no partner, no merge");
+
+        app.set_merge_partner("Other".to_string());
+        app.on_key(KeyCode::Char('m'));
+        assert!(app.vp.merging, "m arms the merge once a partner is attached");
+        let text = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(text.contains("merge"), "the dock shows the pending merge");
+        assert!(text.contains("Other"), "the dock names the partner");
+        assert!(app.outcome().merge);
+
+        app.on_key(KeyCode::Char('m'));
+        assert!(!app.outcome().merge, "the same intent again disarms");
+    }
+
+    #[test]
+    fn outcome_carries_the_decision_alongside_the_marks() {
+        use crate::viewport::CurationDecision;
+
+        let mut app = demo_app();
+        app.on_key(KeyCode::Char('a'));
+        let outcome = app.outcome();
+        assert_eq!(outcome.decision, Some(CurationDecision::Approve));
+        assert_eq!(outcome.tags, None);
+        assert_eq!(outcome.title, None);
+        assert_eq!(outcome.split_tick, None);
+        assert!(!outcome.merge);
+    }
+
     fn demo_app() -> App {
         let view = PianoRollView {
             ppq: 480,
