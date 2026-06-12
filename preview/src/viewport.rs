@@ -363,6 +363,34 @@ mod tests {
         assert_eq!(vp.tags, 0);
     }
 
+    // TDD red phase: the rename mode (S8 curation slice 4). The interaction
+    // core keeps only the mode flag — the text buffer is frontend-local
+    // (egui brings its own text widget; ADR-0016 keeps the core
+    // renderer-agnostic and Copy). References a field and intents that do
+    // not exist yet, so the crate fails to compile until the green step.
+
+    #[test]
+    fn rename_mode_toggles_via_intents_when_a_record_is_attached() {
+        let c = ViewContext {
+            has_record: true,
+            ..ctx()
+        };
+        let mut vp = Viewport::new(&c, 52);
+        assert!(!vp.renaming, "starts outside the rename mode");
+        vp.apply(Intent::RenameStart, &c);
+        assert!(vp.renaming);
+        vp.apply(Intent::RenameEnd, &c);
+        assert!(!vp.renaming);
+    }
+
+    #[test]
+    fn rename_start_is_a_noop_without_a_record() {
+        let c = ctx(); // has_record = false
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::RenameStart, &c);
+        assert!(!vp.renaming, "nothing to rename without --record");
+    }
+
     // TDD red phase: the scrollable inspector (the S8 follow-up recorded
     // with the PR #38 liveness decision). References a field and intents
     // that do not exist yet, so the crate fails to compile until green.
