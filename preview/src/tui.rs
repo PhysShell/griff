@@ -271,6 +271,7 @@ impl App {
     /// decision, tags) to the inspector lines, when a `--record` is attached.
     fn push_record_lines(&self, lines: &mut Vec<Line<'static>>, dim: Style) {
         let Some(rec) = &self.record else { return };
+        lines.push(Line::raw(""));
         lines.push(Line::from(vec![
             Span::styled("record ", dim),
             Span::raw(rec.title.clone()),
@@ -327,8 +328,6 @@ impl App {
             }
         )));
 
-        self.push_record_lines(&mut lines, dim);
-
         // Transport sits above the metrics blocks: when the content exceeds
         // the dock, clipping eats the tail of the static metrics, never the
         // live play state (Codex P2, PR #38).
@@ -344,6 +343,11 @@ impl App {
             }
         )));
         lines.push(Line::from(format!("pos {}", self.position_label())));
+
+        // The record digest is static (loaded once at startup), so it sits
+        // below the live transport state, with the other static blocks
+        // (Codex P2, PR #42 — the same liveness ordering as PR #38).
+        self.push_record_lines(&mut lines, dim);
 
         lines.push(Line::raw(""));
         lines.push(Line::styled("structure (S14)", dim));
