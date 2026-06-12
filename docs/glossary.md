@@ -16,6 +16,13 @@ regenerate guitar riffs, targeted at swancore / DGD-like clean / prog /
 post-hardcore parts. Internally it works on a structured musical model, not on
 raw MIDI bytes.
 
+**Naming etymology**: "griff" = "guitar riff" (English). Also a multilingual
+pun: Russian "гриф" (grif) means the guitar fretboard/neck; "гриф" also denotes
+a griffon (the mythical bird). The project mascot contrast: *swan* (soft,
+expressive, flowing) vs *griffon* (aggressive, intense, soaring). Marketing
+slogan: *"soft as swan & aggressive as griffon"*. Future brand variant:
+*"Griff-On"* (the griffon bird, full name reveal).
+
 ### guitar riff engine
 An engine that treats guitar riffs as musical objects — phrases, motifs,
 rhythm cells, techniques, fretboard positions, transitions, variations — rather
