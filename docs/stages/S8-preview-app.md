@@ -59,7 +59,12 @@ front-ends and audio build on them:
       **Second slice landed 2026-06-11**: the inspector surfaces the loaded
       record's current state — title, prior reviewer decision, tags — via
       `curation::summarize_record` (schema wire names, UI-level strings).
-      Remaining: split/merge/rename/tag.
+      **Third slice landed 2026-06-12 (tag)**: 't' cycles the palette
+      (`curation::tag_palette`, mirrors `SwancoreTag::all_variants`), 'T'
+      toggles the cursor's tag, the record block shows the live set, and
+      quit persists the changed set via `curation::set_tags` alongside the
+      decision. Tag state crosses the interaction core as plain integers
+      (cursor + bitmask). Remaining: split/merge/rename.
 - [ ] Boundary overlays (S4) and candidate history — **overlays landed
       2026-06-11**: `Analysis.boundaries` carries the S4 start ticks under a
       PPQN-scaled default config, the scene places `BoundaryMark` columns
