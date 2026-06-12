@@ -27,7 +27,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame, Terminal};
 
 use griff_core::classify::BarClass;
@@ -244,6 +244,12 @@ impl App {
         if self.vp.renaming {
             return self.on_rename_key(code);
         }
+        if self.vp.show_help {
+            // The overlay is modal: any key dismisses it (the rename-mode
+            // precedent), so a stray keystroke never leaks to the roll.
+            self.vp.apply(Intent::ToggleHelp, &self.ctx);
+            return true;
+        }
         let Some(intent) = Self::key_intent(code) else {
             return true;
         };
@@ -303,6 +309,7 @@ impl App {
             KeyCode::Char('r') => Intent::RenameStart,
             KeyCode::Char('s') => Intent::SplitAtPlayhead,
             KeyCode::Char('m') => Intent::MergeToggle,
+            KeyCode::Char('?') => Intent::ToggleHelp,
             _ => return None,
         })
     }
@@ -356,6 +363,12 @@ impl App {
         let buf = frame.buffer_mut();
         paint_band(&scene, roll.x, sections.y, buf);
         paint_plane(&scene, roll, buf);
+
+        // The help overlay paints last so it sits above the roll, inspector,
+        // and footer (it is modal; any key dismisses it).
+        if self.vp.show_help {
+            render_help(frame);
+        }
     }
 
     fn render_header(&self, area: Rect, frame: &mut Frame<'_>) {
@@ -566,11 +579,12 @@ impl App {
     }
 }
 
-/// Renders the static footer hint line.
+/// Renders the static footer hint line. `? help` leads so the cheatsheet
+/// stays discoverable even where the line truncates on a narrow terminal.
 fn render_footer(area: Rect, frame: &mut Frame<'_>) {
     let hint =
-        "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x curate \
-· t/T tag · r rename · s split · m merge";
+        "? help · q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section \
+· a/x curate · t/T tag · r rename · s split · m merge";
     frame.render_widget(
         Paragraph::new(Line::styled(
             hint,
@@ -578,6 +592,62 @@ fn render_footer(area: Rect, frame: &mut Frame<'_>) {
         )),
         area,
     );
+}
+
+/// Draws the `?` help overlay: a centered, bordered cheatsheet of every
+/// keybinding, painted over the roll. Modal — any key dismisses it.
+fn render_help(frame: &mut Frame<'_>) {
+    let lines = help_lines();
+    let area = frame.area();
+    let width = 56.min(area.width);
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .min(area.height);
+    let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
+    let y = area
+        .y
+        .saturating_add(area.height.saturating_sub(height) / 2);
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let block = Block::bordered()
+        .title(" Help · press any key to close ")
+        .border_style(Style::new().fg(Color::Rgb(59, 157, 255)));
+    // Clear wipes the roll underneath so the cheatsheet reads cleanly.
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// The keybinding cheatsheet rendered inside the help overlay.
+fn help_lines() -> Vec<Line<'static>> {
+    const KEYS: [(&str, &str); 12] = [
+        ("q / Esc", "quit (saves pending curation)"),
+        ("Space", "play / pause"),
+        ("← → / h l", "scroll    ↑ ↓ / k j   pitch"),
+        ("+ / -", "zoom      [ ] Tab     section"),
+        ("0 / Home", "jump to start"),
+        ("i", "inspector   PgUp/PgDn  scroll it"),
+        ("", ""),
+        ("a / x", "approve / reject  (needs --record)"),
+        ("t / T", "tag cursor / toggle tag"),
+        ("r", "rename       s   split"),
+        ("m", "merge (needs --merge)"),
+        ("?", "toggle this help"),
+    ];
+    let key = Style::new().fg(Color::Rgb(255, 207, 77));
+    let dim = Style::new().fg(Color::Rgb(160, 160, 168));
+    KEYS.into_iter()
+        .map(|(k, desc)| {
+            Line::from(vec![
+                Span::styled(format!("{k:<11}"), key),
+                Span::styled(desc, dim),
+            ])
+        })
+        .collect()
 }
 
 /// Builds a meter line plus its label/percent line for an inspector metric.
@@ -1059,6 +1129,41 @@ mod tests {
             App::key_intent(KeyCode::PageUp),
             Some(Intent::InspectorScrollUp)
         );
+    }
+
+    // TDD red phase: the `?` help overlay reaches the TUI (the
+    // discoverability slice). '?' toggles a centered cheatsheet, any key
+    // dismisses it (the rename-modal precedent), and the overlay names the
+    // curation keys. References an intent and a field that do not exist yet,
+    // so the crate fails to compile until the green step.
+
+    #[test]
+    fn question_mark_maps_to_toggle_help() {
+        assert_eq!(
+            App::key_intent(KeyCode::Char('?')),
+            Some(Intent::ToggleHelp)
+        );
+    }
+
+    #[test]
+    fn help_overlay_lists_the_curation_keys() {
+        let mut app = demo_app();
+        app.on_key(KeyCode::Char('?'));
+        assert!(app.vp.show_help, "? opens the help overlay");
+        let text = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(text.contains("Help"), "the overlay carries a title");
+        assert!(text.contains("split"), "the overlay lists split");
+        assert!(text.contains("merge"), "the overlay lists merge");
+    }
+
+    #[test]
+    fn any_key_dismisses_the_help_overlay() {
+        let mut app = demo_app();
+        app.on_key(KeyCode::Char('?'));
+        assert!(app.vp.show_help);
+        let cont = app.on_key(KeyCode::Char('j'));
+        assert!(cont, "dismissing the help keeps the app running");
+        assert!(!app.vp.show_help, "any key closes the overlay");
     }
 
     // TDD red phase: split/merge reaches the TUI (S8 curation slice 5).
