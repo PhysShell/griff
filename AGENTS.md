@@ -70,6 +70,9 @@ Every new module or non-trivial change follows the red-green cycle strictly:
 Hard rules:
 - Never commit new `pub fn` / `pub struct` implementation in the same commit as
   the tests that cover it, for any new functionality.
+- The rule above is **per-commit**, not per-PR: a flattened PR diff always
+  shows red tests and green implementation together by construction. Reviewers
+  (human or automated) must judge the commit sequence, not the changeset.
 - A subagent or agent step that is told to "implement module X" must split the
   work into two sequential tasks: (a) write and commit failing tests, (b) write
   and commit implementation.
