@@ -667,6 +667,27 @@ mod tests {
         assert!(text.contains("clean_riff"), "record tags show");
     }
 
+    // TDD red phase: Codex P2 (PR #42) — the record digest is static and
+    // must not push the live transport state out of a short dock: the
+    // liveness ordering (PR #38) clips static tails, never live state.
+    #[test]
+    fn record_summary_keeps_transport_visible() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: Some("accepted".to_string()),
+            tags: vec!["clean_riff".to_string()],
+        });
+        let frame = app.snapshot(80, 12).expect("snapshot");
+        let text = frame.join("\n");
+        assert!(
+            text.contains("transport"),
+            "live transport stays visible above the static record digest"
+        );
+    }
+
     // TDD red phase: Codex P2 (PR #41, round 2) — overscrolling must not
     // accumulate hidden excess: one PgUp from the bottom moves the dock,
     // because the render writes the clamped offset back.
