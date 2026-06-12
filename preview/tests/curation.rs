@@ -255,7 +255,7 @@ fn split_record_partitions_the_bar_range() {
     use griff_preview::curation::split_record;
 
     let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
-    let (a, b) = split_record(&json, 2).expect("split ok");
+    let (a, b) = split_record(&json, 2, 2).expect("split ok");
     let first: ChunkMeta = serde_json::from_str(&a).expect("first half parses");
     let second: ChunkMeta = serde_json::from_str(&b).expect("second half parses");
 
@@ -298,7 +298,7 @@ fn split_record_partitions_boundaries_at_the_split_tick() {
         },
     ];
     let json = serde_json::to_string(&meta).expect("serialize");
-    let (a, b) = split_record(&json, 2).expect("split ok");
+    let (a, b) = split_record(&json, 2, 2).expect("split ok");
     let first: ChunkMeta = serde_json::from_str(&a).expect("parses");
     let second: ChunkMeta = serde_json::from_str(&b).expect("parses");
 
@@ -335,7 +335,7 @@ fn split_record_resets_review_and_measured_metrics() {
         structural: 0.5,
     });
     let json = serde_json::to_string(&meta).expect("serialize");
-    let (a, b) = split_record(&json, 2).expect("split ok");
+    let (a, b) = split_record(&json, 2, 2).expect("split ok");
     for half in [a, b] {
         let half: ChunkMeta = serde_json::from_str(&half).expect("parses");
         assert_eq!(half.reviewer, None, "a half is a new record to review");
@@ -350,16 +350,16 @@ fn split_record_rejects_an_out_of_range_point() {
     let json = serde_json::to_string(&record_with_range(2, 6)).expect("serialize");
     for at_bar in [0, 1, 2, 7] {
         assert_eq!(
-            split_record(&json, at_bar).unwrap_err(),
+            split_record(&json, at_bar, 2).unwrap_err(),
             CurationError::SplitOutOfRange,
             "the second half must start strictly inside the range"
         );
     }
     assert!(
-        split_record(&json, 3).is_ok(),
+        split_record(&json, 3, 2).is_ok(),
         "the first interior bar works"
     );
-    assert!(split_record(&json, 6).is_ok(), "the last bar works");
+    assert!(split_record(&json, 6, 2).is_ok(), "the last bar works");
 }
 
 #[test]
@@ -370,7 +370,7 @@ fn split_record_requires_a_bar_range() {
     meta.source.bar_range = None;
     let json = serde_json::to_string(&meta).expect("serialize");
     assert_eq!(
-        split_record(&json, 1).unwrap_err(),
+        split_record(&json, 1, 2).unwrap_err(),
         CurationError::MissingBarRange
     );
 }
@@ -380,7 +380,7 @@ fn split_record_on_garbage_input_fails() {
     use griff_preview::curation::split_record;
 
     assert_eq!(
-        split_record("not json", 1).unwrap_err(),
+        split_record("not json", 1, 2).unwrap_err(),
         CurationError::ParseFailed
     );
 }
@@ -537,7 +537,7 @@ fn split_record_at_tick_floors_to_the_containing_bar() {
     use griff_preview::curation::split_record_at_tick;
 
     let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
-    let (a, b) = split_record_at_tick(&json, 2 * BAR + 100).expect("split ok");
+    let (a, b) = split_record_at_tick(&json, 2 * BAR + 100, 2).expect("split ok");
     let first: ChunkMeta = serde_json::from_str(&a).expect("parses");
     let second: ChunkMeta = serde_json::from_str(&b).expect("parses");
     assert_eq!(first.source.bar_range, Some((0, 1)));
@@ -545,7 +545,7 @@ fn split_record_at_tick_floors_to_the_containing_bar() {
 
     // The tick is chunk-relative; the bar range may start past zero.
     let offset = serde_json::to_string(&record_with_range(2, 6)).expect("serialize");
-    let (off_a, off_b) = split_record_at_tick(&offset, BAR + 10).expect("split ok");
+    let (off_a, off_b) = split_record_at_tick(&offset, BAR + 10, 2).expect("split ok");
     let off_first: ChunkMeta = serde_json::from_str(&off_a).expect("parses");
     let off_second: ChunkMeta = serde_json::from_str(&off_b).expect("parses");
     assert_eq!(off_first.source.bar_range, Some((2, 2)));
@@ -558,8 +558,46 @@ fn split_record_at_a_tick_inside_the_first_bar_is_out_of_range() {
 
     let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
     assert_eq!(
-        split_record_at_tick(&json, BAR - 1).unwrap_err(),
+        split_record_at_tick(&json, BAR - 1, 2).unwrap_err(),
         CurationError::SplitOutOfRange,
         "flooring into the first bar would leave an empty first half"
     );
+}
+
+// ── slot-aware second-half identity (Codex P2, PR #45, round 3) ─────────────
+// TDD red phase: when the shell's collision-free sibling search lands on a
+// slot other than `.2`, the second half's ChunkId must follow the slot —
+// a file in `chunk.3.json` carrying id `<orig>.2` could duplicate an
+// existing `.2` record's id and leaves corpus operations keyed by ChunkId
+// unable to tell them apart. The new trailing `second_slot` parameter does
+// not exist yet, so the suite fails to compile until the green step.
+
+#[test]
+fn split_record_derives_the_second_id_from_the_slot() {
+    use griff_preview::curation::split_record;
+
+    let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
+    let (a, b) = split_record(&json, 2, 5).expect("split ok");
+    let first: ChunkMeta = serde_json::from_str(&a).expect("parses");
+    let second: ChunkMeta = serde_json::from_str(&b).expect("parses");
+    assert_eq!(first.id.0, "cur_001.1", "the first half always takes .1");
+    assert_eq!(
+        second.id.0, "cur_001.5",
+        "the second half's id mirrors the slot its file lands in"
+    );
+    assert_eq!(second.title, "Curated (2/2)", "the title stays a half label");
+}
+
+#[test]
+fn split_record_refuses_a_slot_that_collides_with_the_first_half() {
+    use griff_preview::curation::split_record;
+
+    let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
+    for slot in [0, 1] {
+        assert_eq!(
+            split_record(&json, 2, slot).unwrap_err(),
+            CurationError::SplitOutOfRange,
+            "slots below .2 would collide with the first half's id"
+        );
+    }
 }
