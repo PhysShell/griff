@@ -160,6 +160,26 @@ pub fn split_record(json: &str, at_bar: u32) -> Result<(String, String), Curatio
     }
 }
 
+/// Splits the record at the bar containing the chunk-relative `tick`.
+///
+/// The shell's mapping from a TUI playhead to [`split_record`]'s absolute
+/// source bar: the split lands on the bar boundary at or before the tick.
+///
+/// # Errors
+/// Everything [`split_record`] emits; a tick inside the first bar floors to
+/// the range start and is therefore [`CurationError::SplitOutOfRange`].
+pub fn split_record_at_tick(json: &str, tick: u32) -> Result<(String, String), CurationError> {
+    let meta: ChunkMeta = serde_json::from_str(json).map_err(|_| CurationError::ParseFailed)?;
+    let (start, _) = meta
+        .source
+        .bar_range
+        .ok_or(CurationError::MissingBarRange)?;
+    let offset = tick
+        .checked_div(ticks_per_bar(&meta))
+        .ok_or(CurationError::SplitOutOfRange)?;
+    split_record(json, start.saturating_add(offset))
+}
+
 /// Merges two same-source records whose bar ranges are consecutive (`first`
 /// ends on the bar before `second` starts).
 ///

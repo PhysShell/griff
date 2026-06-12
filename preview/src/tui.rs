@@ -89,6 +89,9 @@ pub struct App {
     rename_buf: String,
     /// A committed rename awaiting quit-time persistence.
     pending_title: Option<String>,
+    /// The merge partner's title (`--merge`), shown while the merge is
+    /// armed; the partner record itself stays shell-side.
+    merge_partner: Option<String>,
     vp: Viewport,
     ctx: ViewContext,
 }
@@ -117,6 +120,7 @@ impl App {
             palette: Vec::new(),
             rename_buf: String::new(),
             pending_title: None,
+            merge_partner: None,
             vp,
             ctx,
         }
@@ -139,6 +143,26 @@ impl App {
         self.ctx.has_record = true;
         self.vp.tags = mask;
         self.record = Some(record);
+    }
+
+    /// Attaches the `--merge` partner's title and unlocks the merge intent
+    /// (`ViewContext::can_merge`); the partner record itself stays with the
+    /// shell, which performs the join at persist time.
+    pub fn set_merge_partner(&mut self, title: String) {
+        self.ctx.can_merge = true;
+        self.merge_partner = Some(title);
+    }
+
+    /// What the curator left behind for the shell to persist.
+    #[must_use]
+    pub fn outcome(&self) -> CurationOutcome {
+        CurationOutcome {
+            decision: self.vp.decision,
+            tags: self.tags_if_changed(),
+            title: self.title_if_changed(),
+            split_tick: self.vp.split_tick,
+            merge: self.vp.merging,
+        }
     }
 
     /// The live tag set in palette order when it differs from the record's,
@@ -267,6 +291,8 @@ impl App {
             KeyCode::Char('t') => Intent::TagNext,
             KeyCode::Char('T') => Intent::TagToggle,
             KeyCode::Char('r') => Intent::RenameStart,
+            KeyCode::Char('s') => Intent::SplitAtPlayhead,
+            KeyCode::Char('m') => Intent::MergeToggle,
             _ => return None,
         })
     }
@@ -395,6 +421,14 @@ impl App {
                 if set { "x" } else { " " }
             )));
         }
+        if let Some(tick) = self.vp.split_tick {
+            lines.push(Line::from(format!("split▸ at bar {}", self.bar_at(tick))));
+        }
+        if self.vp.merging {
+            if let Some(partner) = &self.merge_partner {
+                lines.push(Line::from(format!("merge▸ + {partner}")));
+            }
+        }
     }
 
     /// Builds the inspector's content lines: track, section, curation,
@@ -490,20 +524,35 @@ impl App {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────
+    /// The 1-based number of the bar containing `tick`.
+    fn bar_at(&self, tick: u32) -> usize {
+        let mut bar_idx = 0usize;
+        for (i, &t) in self.view.bar_lines.iter().enumerate() {
+            if t <= tick {
+                bar_idx = i;
+            } else {
+                break;
+            }
+        }
+        bar_idx.saturating_add(1)
+    }
+
     fn position_label(&self) -> String {
         let ppq = u32::from(self.view.ppq).max(1);
-        let mut bar_idx = 0usize;
         let mut bar_start = self.view.tick_start;
-        for (i, &t) in self.view.bar_lines.iter().enumerate() {
+        for &t in &self.view.bar_lines {
             if t <= self.vp.play_tick {
-                bar_idx = i;
                 bar_start = t;
             } else {
                 break;
             }
         }
         let beat = self.vp.play_tick.saturating_sub(bar_start) / ppq;
-        format!("{}:{}", bar_idx.saturating_add(1), beat.saturating_add(1))
+        format!(
+            "{}:{}",
+            self.bar_at(self.vp.play_tick),
+            beat.saturating_add(1)
+        )
     }
 }
 
@@ -511,7 +560,7 @@ impl App {
 fn render_footer(area: Rect, frame: &mut Frame<'_>) {
     let hint =
         "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x curate \
-· t/T tag · r rename";
+· t/T tag · r rename · s split · m merge";
     frame.render_widget(
         Paragraph::new(Line::styled(
             hint,
@@ -639,22 +688,27 @@ fn buffer_lines(buf: &Buffer) -> Vec<String> {
         .collect()
 }
 
-/// Runs the interactive crossterm event loop until the user quits.
+/// What the curator left behind on quit, for the shell to persist.
 ///
-/// # Errors
-/// Propagates terminal setup, draw, and input errors from `ratatui`.
-/// What the curator left behind on quit, for the shell to persist: the
-/// pending decision (if any), the tag set (when it changed), and the
-/// committed rename (when it changed).
-pub type CurationOutcome = (
-    Option<CurationDecision>,
-    Option<Vec<String>>,
-    Option<String>,
-);
+/// The pending decision (if any), the tag set and the committed rename
+/// (when they changed), and the pending split/merge rewrite (mutually
+/// exclusive by the reducer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurationOutcome {
+    /// The pending approve/reject decision.
+    pub decision: Option<CurationDecision>,
+    /// The live tag set in wire casing, when it changed.
+    pub tags: Option<Vec<String>>,
+    /// The committed rename, when it changed.
+    pub title: Option<String>,
+    /// The pending split point as a chunk-relative tick.
+    pub split_tick: Option<u32>,
+    /// Whether the merge with the `--merge` partner is armed.
+    pub merge: bool,
+}
 
-/// Runs the interactive TUI to completion and returns the curation decision
-/// pending when the user quit (if any) plus the tag set when it changed,
-/// for the shell to persist.
+/// Runs the interactive TUI to completion and returns the curation outcome
+/// pending when the user quit, for the shell to persist.
 ///
 /// # Errors
 /// Propagates terminal I/O errors from `ratatui`.
@@ -664,13 +718,7 @@ pub fn run(mut app: App) -> io::Result<CurationOutcome> {
     app.fit(size.width);
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
-    result.map(|()| {
-        (
-            app.vp.decision,
-            app.tags_if_changed(),
-            app.title_if_changed(),
-        )
-    })
+    result.map(|()| app.outcome())
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
@@ -1060,7 +1108,10 @@ mod tests {
 
         app.set_merge_partner("Other".to_string());
         app.on_key(KeyCode::Char('m'));
-        assert!(app.vp.merging, "m arms the merge once a partner is attached");
+        assert!(
+            app.vp.merging,
+            "m arms the merge once a partner is attached"
+        );
         let text = app.snapshot(80, 24).expect("snapshot").join("\n");
         assert!(text.contains("merge"), "the dock shows the pending merge");
         assert!(text.contains("Other"), "the dock names the partner");
