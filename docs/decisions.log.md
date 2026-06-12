@@ -1076,3 +1076,29 @@ Architectural decisions go to [`adr/`](adr/) instead.
   and against frontend-local mode (the egui frontend would re-implement
   the gating). Accepted: commit/cancel semantics live per-frontend; the
   core cannot tell them apart.
+
+- 2026-06-12 — In the context of the S8 curation split/merge slice
+  (`preview/src/curation.rs` / `viewport.rs` / `main.rs`), facing what a
+  record-level split/merge means when a chunk record stores metadata
+  only (its extent is `source.bar_range`), we decided for **bar-range
+  surgery with a fresh-review reset** — `split_record` partitions the
+  range at a bar (derived `.1`/`.2` ids and `(1/2)`/`(2/2)` titles,
+  boundaries partitioned at the split tick and rebased, a straddler
+  clamped into the first half) and `merge_records` joins two same-source
+  consecutive records (the first record's identity wins; tags,
+  techniques, and quality flags union in order; a cohort/ensemble label
+  survives only on agreement); both reset the reviewer decision and the
+  whole-extent measurements (structure/gesture/complexity) because they
+  describe extents that no longer exist — and against re-measuring
+  inside the seam (it would drag the S14 analysis stack into a pure JSON
+  rewriter; the corpus tooling re-measures on its own pass), and against
+  keeping the reviewer decision (an approval of the whole says nothing
+  about a half). In the interaction core the two marks are mutually
+  exclusive by the reducer (one record cannot take both rewrites in one
+  pass), the split point crosses ADR-0016 as a plain playhead tick
+  (`split_record_at_tick` floors it to the containing source bar at the
+  seam), and the shell persists a split as record-file + `.2` sibling
+  and a merge by removing the absorbed partner file (a leftover would
+  double-cover the span). Accepted: a merge is destructive at the file
+  level (the partner's id/title vanish); recovering it is a VCS concern,
+  not the seam's.
