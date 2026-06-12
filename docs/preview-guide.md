@@ -88,6 +88,13 @@ Note the two decision lines: `curation` is what you are about to write this
 session; `review` is what the loaded record already held. On a short
 terminal the metric tail clips — reach it with `PageDown`.
 
+On a **single-bar score** the bar-ratio metrics show `—` instead of a
+percentage: `repeatability` has no second bar to compare against, so
+`variation` (`1 − 0`) and the distinct-bar-signature ratios (`complexity`
+and the `str` axis, `1/1`) are artifacts of `bar_count = 1`, not
+measurements. `loopability` (a seam measurement on any span) and the
+per-note axes stay numeric.
+
 ## Complexity is measured automatically
 
 You do **not** type complexity in. It is computed from the notes at import

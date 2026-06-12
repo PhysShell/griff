@@ -518,13 +518,44 @@ impl App {
         // (Codex P2, PR #42 — the same liveness ordering as PR #38).
         self.push_record_lines(&mut lines, dim);
 
+        self.push_metric_blocks(&mut lines, dim, accent);
+
+        lines
+    }
+
+    /// Pushes the static `structure (S14)` and `complexity (S14)` blocks.
+    ///
+    /// On a single-bar score the bar-ratio metrics are vacuous, not
+    /// measured: repeatability is core's no-second-bar abstention (0.0),
+    /// so variation (`1 − 0`) and the distinct-signature ratios
+    /// (structural complexity, the `str` axis — `1/1`) follow by
+    /// construction. Abstain with a dash; loopability is a real seam
+    /// measurement on any span and stays numeric.
+    fn push_metric_blocks(&self, lines: &mut Vec<Line<'static>>, dim: Style, accent: Style) {
+        let bars_vacuous = self.view.bar_count < 2;
+
         lines.push(Line::raw(""));
         lines.push(Line::styled("structure (S14)", dim));
         if let Some(m) = &self.analysis.metrics {
-            push_metric(&mut lines, "loopability", m.loopability_score, accent);
-            push_metric(&mut lines, "repeatability", m.repeatability_score, accent);
-            push_metric(&mut lines, "variation", m.variation_score, accent);
-            push_metric(&mut lines, "complexity", m.structural_complexity, accent);
+            push_metric(lines, "loopability", Some(m.loopability_score), accent);
+            push_metric(
+                lines,
+                "repeatability",
+                (!bars_vacuous).then_some(m.repeatability_score),
+                accent,
+            );
+            push_metric(
+                lines,
+                "variation",
+                (!bars_vacuous).then_some(m.variation_score),
+                accent,
+            );
+            push_metric(
+                lines,
+                "complexity",
+                (!bars_vacuous).then_some(m.structural_complexity),
+                accent,
+            );
             let period = m
                 .detected_pattern_period_bars
                 .map_or_else(|| "—".to_owned(), |p| format!("{p} bars"));
@@ -536,14 +567,27 @@ impl App {
         lines.push(Line::raw(""));
         lines.push(Line::styled("complexity (S14)", dim));
         if let Some(c) = &self.analysis.complexity {
-            lines.push(complexity_pair("rhy", c.rhythmic, "pit", c.pitch));
-            lines.push(complexity_pair("tec", c.technical, "har", c.harmonic));
-            lines.push(complexity_pair("ply", c.playability, "str", c.structural));
+            lines.push(complexity_pair(
+                "rhy",
+                Some(c.rhythmic),
+                "pit",
+                Some(c.pitch),
+            ));
+            lines.push(complexity_pair(
+                "tec",
+                Some(c.technical),
+                "har",
+                Some(c.harmonic),
+            ));
+            lines.push(complexity_pair(
+                "ply",
+                Some(c.playability),
+                "str",
+                (!bars_vacuous).then_some(c.structural),
+            ));
         } else {
             lines.push(Line::raw("—"));
         }
-
-        lines
     }
 
     // ── helpers ─────────────────────────────────────────────────────────
@@ -655,16 +699,35 @@ fn help_lines() -> Vec<Line<'static>> {
 /// `pit`ch, `tec`hnical, `har`monic, `ply` (playability), `str`uctural — the
 /// vector compressed to three rows so the dock keeps its transport block
 /// visible in short terminals.
-fn complexity_pair(label_a: &str, value_a: f64, label_b: &str, value_b: f64) -> Line<'static> {
-    let pct_a = (value_a.clamp(0.0, 1.0) * 100.0).round();
-    let pct_b = (value_b.clamp(0.0, 1.0) * 100.0).round();
-    Line::from(format!("{label_a} {pct_a:>3.0}%   {label_b} {pct_b:>3.0}%"))
+/// A `[0, 1]` value as a 4-cell percentage, or an em dash when the metric
+/// abstains (vacuous on this input — see `inspector_lines`).
+fn pct_or_dash(value: Option<f64>) -> String {
+    value.map_or_else(
+        || format!("{:>4}", "—"),
+        |v| format!("{:>3.0}%", (v.clamp(0.0, 1.0) * 100.0).round()),
+    )
 }
 
-fn push_metric(lines: &mut Vec<Line<'static>>, label: &str, value: f64, style: Style) {
-    let pct = (value.clamp(0.0, 1.0) * 100.0).round();
-    lines.push(Line::from(format!("{label:<13}{pct:>3.0}%")));
-    lines.push(Line::styled(meter(value, METER_W), style));
+fn complexity_pair(
+    label_a: &str,
+    value_a: Option<f64>,
+    label_b: &str,
+    value_b: Option<f64>,
+) -> Line<'static> {
+    Line::from(format!(
+        "{label_a} {}   {label_b} {}",
+        pct_or_dash(value_a),
+        pct_or_dash(value_b)
+    ))
+}
+
+/// Pushes one metric row; a measured value also gets its block meter, an
+/// abstention gets the dash alone (a meter would assert a magnitude).
+fn push_metric(lines: &mut Vec<Line<'static>>, label: &str, value: Option<f64>, style: Style) {
+    lines.push(Line::from(format!("{label:<13}{}", pct_or_dash(value))));
+    if let Some(v) = value {
+        lines.push(Line::styled(meter(v, METER_W), style));
+    }
 }
 
 /// Renders a 0..1 value as a unicode block meter of `width` cells.
@@ -1365,6 +1428,95 @@ mod tests {
         assert!(text.contains("transport"), "transport block visible");
         assert!(text.contains("⏸ paused"), "play state visible");
         assert!(text.contains("pos 1:1"), "play position visible");
+    }
+
+    // TDD red phase: on a single-bar score the bar-ratio metrics are
+    // vacuous, not measured — `repeatability` has no second bar to compare
+    // (core returns its 0.0 abstention), so `variation = 1 − 0` and the
+    // distinct-signature ratios (`complexity`, the `str` axis) are `1/1` by
+    // construction. The inspector must abstain with an em dash instead of
+    // asserting 0%/100%. `loopability` (a seam measurement on the span) and
+    // the per-note axes stay numeric.
+    #[test]
+    fn single_bar_score_dashes_out_bar_ratio_metrics() {
+        let mut app = demo_app();
+        app.view.bar_count = 1;
+        app.analysis.metrics = Some(StructureMetrics {
+            bar_count: 1,
+            detected_pattern_period_bars: None,
+            detected_pattern_period_ticks: None,
+            detected_subbar_period_ticks: None,
+            repeatability_score: 0.0,
+            variation_score: 1.0,
+            loopability_score: 0.625,
+            structural_complexity: 1.0,
+        });
+        let frame = app.snapshot(80, 32).expect("renders");
+        let line = |label: &str| {
+            frame
+                .iter()
+                .find(|l| l.contains(label) && !l.contains("(S14)"))
+                .cloned()
+                .unwrap_or_else(|| panic!("inspector line `{label}` missing"))
+        };
+
+        assert!(
+            line("loopability").contains('%'),
+            "loopability is a real seam measurement even on one bar"
+        );
+        for label in ["repeatability", "variation", "complexity"] {
+            let l = line(label);
+            assert!(l.contains('—'), "`{label}` abstains with a dash: {l}");
+            assert!(!l.contains('%'), "`{label}` shows no percentage: {l}");
+        }
+        let pair = line("ply");
+        let after_str = pair.split("str").nth(1).expect("str axis on the line");
+        assert!(
+            after_str.contains('—') && !after_str.contains('%'),
+            "the str axis abstains with a dash: {pair}"
+        );
+        assert!(
+            pair.split("str").next().is_some_and(|s| s.contains('%')),
+            "ply stays numeric on one bar: {pair}"
+        );
+    }
+
+    // The two-bar control: the same metrics render as percentages when a
+    // second bar exists to compare against.
+    #[test]
+    fn two_bar_score_keeps_bar_ratio_percentages() {
+        let mut app = demo_app();
+        app.analysis.metrics = Some(StructureMetrics {
+            bar_count: 2,
+            detected_pattern_period_bars: Some(1),
+            detected_pattern_period_ticks: Some(960),
+            detected_subbar_period_ticks: None,
+            repeatability_score: 0.75,
+            variation_score: 0.25,
+            loopability_score: 0.5,
+            structural_complexity: 0.5,
+        });
+        let frame = app.snapshot(80, 32).expect("renders");
+        let line = |label: &str| {
+            frame
+                .iter()
+                .find(|l| l.contains(label) && !l.contains("(S14)"))
+                .cloned()
+                .unwrap_or_else(|| panic!("inspector line `{label}` missing"))
+        };
+        for label in ["repeatability", "variation", "complexity"] {
+            assert!(
+                line(label).contains('%'),
+                "`{label}` is measured with two bars"
+            );
+        }
+        let pair = line("ply");
+        assert!(
+            pair.split("str")
+                .nth(1)
+                .is_some_and(|s| s.contains('%') && !s.contains('—')),
+            "the str axis is measured with two bars: {pair}"
+        );
     }
 
     #[test]
