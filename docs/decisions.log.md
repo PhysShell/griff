@@ -1066,7 +1066,7 @@ Architectural decisions go to [`adr/`](adr/) instead.
 - 2026-06-12 — In the context of the S8 curation rename slice
   (`preview/src/viewport.rs` / `tui.rs`), facing where the rename text
   buffer lives (the interaction core is Copy and renderer-agnostic, but
-  text входит through renderer-specific events), we decided for **the
+  text arrives through renderer-specific events), we decided for **the
   mode flag in the core, the buffer in the frontend** —
   `Viewport.renaming` toggled by `RenameStart`/`RenameEnd` (gated on
   `ViewContext.has_record`), while the TUI owns the byte buffer and maps
