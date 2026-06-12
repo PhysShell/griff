@@ -144,9 +144,8 @@ fn tag_palette_covers_every_schema_variant() {
         "one palette entry per schema variant"
     );
     for (name, variant) in palette.iter().zip(SwancoreTag::all_variants()) {
-        let parsed: SwancoreTag =
-            serde_json::from_value(serde_json::Value::String(name.clone()))
-                .expect("every palette name parses back");
+        let parsed: SwancoreTag = serde_json::from_value(serde_json::Value::String(name.clone()))
+            .expect("every palette name parses back");
         assert_eq!(parsed, *variant, "palette order mirrors all_variants");
     }
     assert!(palette.contains(&"clean_riff".to_owned()));
@@ -157,8 +156,8 @@ fn set_tags_rewrites_only_the_tags() {
     use griff_preview::curation::set_tags;
 
     let json = serde_json::to_string(&record()).expect("serialize");
-    let updated = set_tags(&json, &["maj7".to_owned(), "power_chord".to_owned()])
-        .expect("update ok");
+    let updated =
+        set_tags(&json, &["maj7".to_owned(), "power_chord".to_owned()]).expect("update ok");
     let back: ChunkMeta = serde_json::from_str(&updated).expect("updated record parses");
 
     let mut expected = record();
