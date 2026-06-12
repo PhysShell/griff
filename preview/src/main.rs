@@ -230,7 +230,16 @@ fn persist_split(path: &str, json: &str, tick: u32) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
+            // The sibling next to the unsplit original would double-cover
+            // the span — remove it before failing (the merge rollback
+            // precedent; Codex P2, PR #45).
             eprintln!("cannot write record {path}: {err}");
+            match fs::remove_file(&second_path) {
+                Ok(()) => eprintln!("split rolled back: removed {second_path}"),
+                Err(rm_err) => eprintln!(
+                    "cannot remove {second_path}: {rm_err}; resolve the two files manually"
+                ),
+            }
             ExitCode::FAILURE
         }
     }

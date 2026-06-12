@@ -53,6 +53,11 @@ pub struct ViewContext {
     /// inside the first bar can never persist; the split gate uses this to
     /// refuse it up front.
     pub bar_ticks: u32,
+    /// The final barline tick (`0` = unknown, the gate falls back to
+    /// [`ViewContext::tick_end`]). A ringing note can extend the plotted
+    /// span past the last barline, and a split in that tail floors past the
+    /// record's range at persist time; the split gate stops here instead.
+    pub grid_end: u32,
 }
 
 /// A curation decision pending on the viewed chunk (S8).
@@ -277,14 +282,20 @@ impl Viewport {
     }
 
     /// Marks the playhead as the pending split point, or clears the mark when
-    /// it is already there. Only a playhead at or past the second bar
-    /// boundary splits a record into two non-empty extents — persistence
-    /// floors the tick to its containing bar, so anything inside the first
-    /// bar would be rejected at quit time. Arming a split disarms a pending
-    /// merge — one record cannot take both rewrites in one pass.
+    /// it is already there. Only a playhead between the second bar boundary
+    /// and the final barline splits a record into two non-empty extents —
+    /// persistence floors the tick to its containing bar, so anything inside
+    /// the first bar or in a ringing tail past the grid would be rejected at
+    /// quit time. Arming a split disarms a pending merge — one record cannot
+    /// take both rewrites in one pass.
     fn toggle_split(&mut self, ctx: &ViewContext) {
         let first_valid = ctx.tick_start.saturating_add(ctx.bar_ticks.max(1));
-        if ctx.has_record && self.play_tick >= first_valid && self.play_tick < ctx.tick_end {
+        let end = if ctx.grid_end > 0 {
+            ctx.grid_end.min(ctx.tick_end)
+        } else {
+            ctx.tick_end
+        };
+        if ctx.has_record && self.play_tick >= first_valid && self.play_tick < end {
             self.split_tick = if self.split_tick == Some(self.play_tick) {
                 None
             } else {
@@ -383,6 +394,7 @@ mod tests {
             has_record: false,
             can_merge: false,
             bar_ticks: 0,
+            grid_end: 0,
         }
     }
 

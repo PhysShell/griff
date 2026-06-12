@@ -116,6 +116,10 @@ impl App {
                 [first, second, ..] => second.saturating_sub(*first),
                 _ => 0,
             },
+            // A ringing note extends tick_end past the last barline; the
+            // split gate must stop at the barline (the record has no bars
+            // past it).
+            grid_end: view.bar_lines.last().copied().unwrap_or(0),
         };
         let vp = Viewport::new(&ctx, view.high_pitch);
         Self {
