@@ -1097,8 +1097,10 @@ Architectural decisions go to [`adr/`](adr/) instead.
   exclusive by the reducer (one record cannot take both rewrites in one
   pass), the split point crosses ADR-0016 as a plain playhead tick
   (`split_record_at_tick` floors it to the containing source bar at the
-  seam), and the shell persists a split as record-file + `.2` sibling
-  and a merge by removing the absorbed partner file (a leftover would
-  double-cover the span). Accepted: a merge is destructive at the file
-  level (the partner's id/title vanish); recovering it is a VCS concern,
-  not the seam's.
+  seam), and the shell persists a split as record-file + the first
+  vacant `.N` sibling (never over an existing record) and a merge by
+  removing the absorbed partner file (a leftover would double-cover the
+  span; when the removal fails, the record rolls back and the command
+  fails — both hardenings Codex P2, PR #45). Accepted: a merge is
+  destructive at the file level (the partner's id/title vanish);
+  recovering it is a VCS concern, not the seam's.

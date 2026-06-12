@@ -71,8 +71,9 @@ front-ends and audio build on them:
       (trimmed, never blank). **Fifth slice landed 2026-06-12
       (split/merge)** — the curation action set is complete: 's' pins a
       split to the playhead (the shell floors it to the containing source
-      bar; the record file keeps the first half, a `.2` sibling takes the
-      second), 'm' arms a merge with the `--merge=PARTNER_JSON` record
+      bar; the record file keeps the first half, the first vacant `.N`
+      sibling takes the second — never over an existing record), 'm' arms
+      a merge with the `--merge=PARTNER_JSON` record
       (same source, consecutive bar ranges; the absorbed partner file is
       removed). Both reset the reviewer and the whole-extent measurements
       — see the 2026-06-12 split/merge decision.

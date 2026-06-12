@@ -14,6 +14,7 @@
 //! then either launches the `ratatui` front-end or renders a single frame to
 //! stdout via a headless backend (useful in CI / over a pipe).
 
+use std::path::Path;
 use std::process::ExitCode;
 use std::{env, fs};
 
@@ -204,7 +205,8 @@ fn persist_outcome(
 }
 
 /// Splits the record at the marked tick: the first half replaces the record
-/// file, the second half lands in a `.2` sibling.
+/// file, the second half lands in the first vacant `.N` sibling — never
+/// over an existing record (Codex P2, PR #45).
 fn persist_split(path: &str, json: &str, tick: u32) -> ExitCode {
     let (first, second) = match split_record_at_tick(json, tick) {
         Ok(halves) => halves,
@@ -213,7 +215,10 @@ fn persist_split(path: &str, json: &str, tick: u32) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let second_path = sibling_path(path);
+    let Some(second_path) = vacant_sibling_path(path) else {
+        eprintln!("cannot split record {path}: every sibling slot is taken");
+        return ExitCode::FAILURE;
+    };
     if let Err(err) = fs::write(&second_path, second) {
         eprintln!("cannot write {second_path}: {err}");
         return ExitCode::FAILURE;
@@ -258,16 +263,32 @@ fn persist_merge(path: &str, json: &str, partner_path: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("warning: merged into {path}, but cannot remove {partner_path}: {err}");
-            ExitCode::SUCCESS
+            // The merged record plus the leftover partner would double-cover
+            // the span — exactly what the merge path must prevent. Roll the
+            // record back and fail (Codex P2, PR #45).
+            eprintln!("cannot remove absorbed partner {partner_path}: {err}");
+            match fs::write(path, json) {
+                Ok(()) => eprintln!("merge rolled back: {path} restored"),
+                Err(restore_err) => {
+                    eprintln!(
+                        "cannot restore record {path}: {restore_err}; resolve the two files manually"
+                    );
+                }
+            }
+            ExitCode::FAILURE
         }
     }
 }
 
-/// The `.2` sibling next to the record (`chunk.json` → `chunk.2.json`).
-fn sibling_path(path: &str) -> String {
-    path.strip_suffix(".json")
-        .map_or_else(|| format!("{path}.2"), |stem| format!("{stem}.2.json"))
+/// The first vacant `.N` sibling next to the record (`chunk.json` →
+/// `chunk.2.json`, then `chunk.3.json`, …); `None` when every slot up to
+/// `.99` is taken. A split must never overwrite a neighboring record.
+fn vacant_sibling_path(path: &str) -> Option<String> {
+    let make = |n: u32| {
+        path.strip_suffix(".json")
+            .map_or_else(|| format!("{path}.{n}"), |stem| format!("{stem}.{n}.json"))
+    };
+    (2..=99).map(make).find(|p| !Path::new(p).exists())
 }
 
 /// Parses a `WIDTHxHEIGHT` spec into clamped terminal dimensions.
