@@ -83,3 +83,47 @@ fn malformed_json_is_a_typed_error() {
         Err(CurationError::ParseFailed)
     ));
 }
+
+// ── record summary (S8 curation slice: surface the record's current state) ──
+// TDD red phase: the curator must *see* the loaded record's curation state
+// (title, reviewer, tags) before rename/tag can build on it. References
+// `summarize_record` and `RecordSummary`, which do not exist yet, so the
+// suite fails to compile until the green step.
+
+#[test]
+fn summarize_record_surfaces_title_reviewer_and_tags() {
+    use griff_preview::curation::summarize_record;
+
+    let mut meta = record();
+    meta.reviewer = Some(ReviewerDecision::Accepted);
+    meta.tags = vec![SwancoreTag::CleanRiff, SwancoreTag::Maj7];
+    let json = serde_json::to_string(&meta).expect("serialize");
+
+    let summary = summarize_record(&json).expect("summary ok");
+    assert_eq!(summary.title, "Curated");
+    assert_eq!(summary.reviewer.as_deref(), Some("accepted"));
+    assert_eq!(
+        summary.tags,
+        vec!["clean_riff".to_owned(), "maj7".to_owned()],
+        "tags use the schema's snake_case wire names"
+    );
+}
+
+#[test]
+fn summarize_record_handles_an_unreviewed_record() {
+    use griff_preview::curation::summarize_record;
+
+    let json = serde_json::to_string(&record()).expect("serialize");
+    let summary = summarize_record(&json).expect("summary ok");
+    assert_eq!(summary.reviewer, None);
+}
+
+#[test]
+fn garbage_summary_input_fails() {
+    use griff_preview::curation::summarize_record;
+
+    assert_eq!(
+        summarize_record("not json").unwrap_err(),
+        CurationError::ParseFailed
+    );
+}

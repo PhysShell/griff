@@ -33,6 +33,7 @@ use ratatui::{DefaultTerminal, Frame, Terminal};
 use griff_core::classify::BarClass;
 
 use crate::analysis::Analysis;
+use crate::curation::RecordSummary;
 use crate::scene::{resolve, CellRole, GridSize, Scene, SceneCell, GUTTER};
 use crate::view::PianoRollView;
 use crate::viewport::{CurationDecision, Intent, Step, ViewContext, Viewport};
@@ -81,6 +82,7 @@ pub struct App {
     view: PianoRollView,
     analysis: Analysis,
     file: String,
+    record: Option<RecordSummary>,
     vp: Viewport,
     ctx: ViewContext,
 }
@@ -101,9 +103,16 @@ impl App {
             view,
             analysis,
             file,
+            record: None,
             vp,
             ctx,
         }
+    }
+
+    /// Attaches the digest of the `--record` chunk so the inspector shows
+    /// the record's current curation state (title, reviewer, tags).
+    pub fn set_record(&mut self, record: RecordSummary) {
+        self.record = Some(record);
     }
 
     /// Renders one frame into a `TestBackend` of the given size and returns the
@@ -258,6 +267,24 @@ impl App {
         frame.render_widget(paragraph.scroll((scroll, 0)), inner);
     }
 
+    /// Appends the loaded record's curation state (title, prior reviewer
+    /// decision, tags) to the inspector lines, when a `--record` is attached.
+    fn push_record_lines(&self, lines: &mut Vec<Line<'static>>, dim: Style) {
+        let Some(rec) = &self.record else { return };
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("record ", dim),
+            Span::raw(rec.title.clone()),
+        ]));
+        lines.push(Line::from(format!(
+            "review {}",
+            rec.reviewer.as_deref().unwrap_or("—")
+        )));
+        if !rec.tags.is_empty() {
+            lines.push(Line::from(format!("tags  {}", rec.tags.join(" "))));
+        }
+    }
+
     /// Builds the inspector's content lines: track, section, curation,
     /// transport (live state first — the PR #38 liveness ordering), then the
     /// static structure and complexity blocks.
@@ -316,6 +343,11 @@ impl App {
             }
         )));
         lines.push(Line::from(format!("pos {}", self.position_label())));
+
+        // The record digest is static (loaded once at startup), so it sits
+        // below the live transport state, with the other static blocks
+        // (Codex P2, PR #42 — the same liveness ordering as PR #38).
+        self.push_record_lines(&mut lines, dim);
 
         lines.push(Line::raw(""));
         lines.push(Line::styled("structure (S14)", dim));
@@ -615,6 +647,48 @@ mod tests {
         assert!(
             after.iter().any(|l| l.contains("ply")),
             "the tail stays reachable when lines wrap"
+        );
+    }
+
+    // TDD red phase: the inspector surfaces the loaded record's curation
+    // state (the S8 slice before rename/tag). References `App::set_record`,
+    // which does not exist yet, so the crate fails to compile until the
+    // green step.
+    #[test]
+    fn inspector_shows_the_loaded_record_state() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: Some("accepted".to_string()),
+            tags: vec!["clean_riff".to_string(), "maj7".to_string()],
+        });
+        let frame = app.snapshot(80, 24).expect("snapshot");
+        let text = frame.join("\n");
+        assert!(text.contains("Curated"), "record title shows in the dock");
+        assert!(text.contains("accepted"), "prior reviewer decision shows");
+        assert!(text.contains("clean_riff"), "record tags show");
+    }
+
+    // TDD red phase: Codex P2 (PR #42) — the record digest is static and
+    // must not push the live transport state out of a short dock: the
+    // liveness ordering (PR #38) clips static tails, never live state.
+    #[test]
+    fn record_summary_keeps_transport_visible() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: Some("accepted".to_string()),
+            tags: vec!["clean_riff".to_string()],
+        });
+        let frame = app.snapshot(80, 12).expect("snapshot");
+        let text = frame.join("\n");
+        assert!(
+            text.contains("transport"),
+            "live transport stays visible above the static record digest"
         );
     }
 

@@ -1024,3 +1024,26 @@ Architectural decisions go to [`adr/`](adr/) instead.
   the renderer's wrapped row count and terminal size, leaking layout into
   the interaction core). Accepted: `render_inspector` takes `&mut self`,
   and a snapshot can now normalise the stored offset as a side effect.
+
+- 2026-06-11 — In the context of the S8 curation backlog (rename/tag,
+  `preview/src/curation.rs` / `tui.rs`), facing the curator editing tags
+  blind (the dock showed only the pending a/x decision, not what the
+  record already carries), we decided for **a read-only record digest
+  first**: `summarize_record` flattens title/reviewer/tags to UI-level
+  strings in the schema's wire casing (derived via serde so names cannot
+  drift) and the inspector shows them under the live curation line — and
+  against starting with tag *editing* (a write path before the curator
+  can see current state inverts the workflow), and against passing
+  `ChunkMeta` into the renderer (ADR-0016: no domain types in the UI).
+  Accepted: one more startup file read, warn-and-continue when the
+  record is unreadable (quit-time persist still fails loudly).
+
+- 2026-06-12 — In the context of Codex P2 on PR #42 (the record digest's
+  dock position, `preview/src/tui.rs`), facing the digest landing above
+  the transport block and pushing live play state out of a short dock
+  (regressing the PR #38 liveness ordering), we decided for **moving the
+  digest below transport, with the other static blocks** — it is loaded
+  once at startup and never changes during a session — and against
+  shrinking or inlining the digest (three lines is already minimal, and
+  hiding tags would defeat the slice's purpose). Accepted: on very short
+  terminals the digest itself clips first; PgUp/PgDn (PR #41) reaches it.
