@@ -1062,3 +1062,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Accepted: the bitmask caps the palette at 32 tags; a schema growing
   past that needs a wider mask, and `tag_palette`'s length test will
   flag it.
+
+- 2026-06-12 — In the context of the S8 curation rename slice
+  (`preview/src/viewport.rs` / `tui.rs`), facing where the rename text
+  buffer lives (the interaction core is Copy and renderer-agnostic, but
+  text входит through renderer-specific events), we decided for **the
+  mode flag in the core, the buffer in the frontend** —
+  `Viewport.renaming` toggled by `RenameStart`/`RenameEnd` (gated on
+  `ViewContext.has_record`), while the TUI owns the byte buffer and maps
+  keys itself inside the mode ('q' is text there, not quit; egui will
+  use its native TextEdit and share only the flag) — and against a
+  fixed-size char array in the core (arbitrary cap, wasted Copy bytes),
+  and against frontend-local mode (the egui frontend would re-implement
+  the gating). Accepted: commit/cancel semantics live per-frontend; the
+  core cannot tell them apart.
