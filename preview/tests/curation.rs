@@ -8,7 +8,9 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::missing_assert_message,
-    clippy::str_to_string
+    clippy::str_to_string,
+    clippy::indexing_slicing,
+    clippy::tuple_array_conversions
 )]
 
 use griff_core::corpus::{
@@ -353,7 +355,10 @@ fn split_record_rejects_an_out_of_range_point() {
             "the second half must start strictly inside the range"
         );
     }
-    assert!(split_record(&json, 3).is_ok(), "the first interior bar works");
+    assert!(
+        split_record(&json, 3).is_ok(),
+        "the first interior bar works"
+    );
     assert!(split_record(&json, 6).is_ok(), "the last bar works");
 }
 
@@ -492,13 +497,17 @@ fn merge_records_keeps_a_shared_cohort_and_drops_a_disagreement() {
     let b = serde_json::to_string(&second).expect("serialize");
     let merged: ChunkMeta =
         serde_json::from_str(&merge_records(&a, &b).expect("merge ok")).expect("parses");
-    assert_eq!(merged.style_cohort, Some(StyleCohort::Core), "agreement holds");
+    assert_eq!(
+        merged.style_cohort,
+        Some(StyleCohort::Core),
+        "agreement holds"
+    );
 
     second.style_cohort = Some(StyleCohort::Adjacent);
-    let b = serde_json::to_string(&second).expect("serialize");
-    let merged: ChunkMeta =
-        serde_json::from_str(&merge_records(&a, &b).expect("merge ok")).expect("parses");
-    assert_eq!(merged.style_cohort, None, "a disagreement is dropped");
+    let disagreeing = serde_json::to_string(&second).expect("serialize");
+    let dropped: ChunkMeta =
+        serde_json::from_str(&merge_records(&a, &disagreeing).expect("merge ok")).expect("parses");
+    assert_eq!(dropped.style_cohort, None, "a disagreement is dropped");
 }
 
 #[test]
