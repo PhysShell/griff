@@ -10,7 +10,7 @@
 //! overwritten (re-curation is the established healing path). Pure; the
 //! frontend shell owns the file I/O.
 
-use griff_core::corpus::{ChunkMeta, ReviewerDecision, SwancoreTag};
+use griff_core::corpus::{BoundaryEntry, ChunkId, ChunkMeta, ReviewerDecision, SwancoreTag};
 
 use crate::viewport::CurationDecision;
 
@@ -38,6 +38,15 @@ pub enum CurationError {
     UnknownTag,
     /// A rename would leave the record without a title.
     EmptyTitle,
+    /// A split/merge needs the record's `source.bar_range`, which is absent.
+    MissingBarRange,
+    /// The split bar does not fall strictly inside the record's bar range.
+    SplitOutOfRange,
+    /// The merged records' bar ranges are not consecutive in the source.
+    NotAdjacent,
+    /// The merged records disagree on source or timing (filename, format,
+    /// tick grid, time signature, or tuning).
+    MergeMismatch,
 }
 
 /// The full tag palette in wire casing: one entry per [`SwancoreTag`]
@@ -83,6 +92,163 @@ pub fn rename_record(json: &str, title: &str) -> Result<String, CurationError> {
     }
     trimmed.clone_into(&mut meta.title);
     serde_json::to_string(&meta).map_err(|_| CurationError::ParseFailed)
+}
+
+/// Splits the record's extent at `at_bar` (absolute source bar): the first
+/// half keeps bars `[start, at_bar - 1]`, the second `[at_bar, end]`.
+///
+/// The halves derive their ids (`.1`/`.2`) and titles (`(1/2)`/`(2/2)`) from
+/// the original; tags, techniques, and quality flags carry over. Boundaries
+/// are partitioned at the split tick — a straddler stays in the first half,
+/// clamped — and the second half's are rebased to its new start. The
+/// reviewer decision and the whole-extent measurements (structure, gesture,
+/// complexity) reset: each half is a new record the curator reviews afresh.
+///
+/// # Errors
+/// [`CurationError::ParseFailed`] when `json` is not a `ChunkMeta` record;
+/// [`CurationError::MissingBarRange`] when the record has no
+/// `source.bar_range`; [`CurationError::SplitOutOfRange`] unless
+/// `start < at_bar <= end`.
+pub fn split_record(json: &str, at_bar: u32) -> Result<(String, String), CurationError> {
+    let meta: ChunkMeta = serde_json::from_str(json).map_err(|_| CurationError::ParseFailed)?;
+    let (start, end) = meta
+        .source
+        .bar_range
+        .ok_or(CurationError::MissingBarRange)?;
+    if at_bar <= start || at_bar > end {
+        return Err(CurationError::SplitOutOfRange);
+    }
+    let split_tick = at_bar
+        .saturating_sub(start)
+        .saturating_mul(ticks_per_bar(&meta));
+
+    let mut first = fresh_extent(meta.clone());
+    first.id = ChunkId(format!("{}.1", meta.id.0));
+    first.title = format!("{} (1/2)", meta.title);
+    first.source.bar_range = Some((start, at_bar.saturating_sub(1)));
+    first.boundaries = meta
+        .boundaries
+        .iter()
+        .filter(|b| b.start_tick < split_tick)
+        .map(|b| BoundaryEntry {
+            end_tick: b.end_tick.min(split_tick),
+            ..*b
+        })
+        .collect();
+
+    let mut second = fresh_extent(meta.clone());
+    second.id = ChunkId(format!("{}.2", meta.id.0));
+    second.title = format!("{} (2/2)", meta.title);
+    second.source.bar_range = Some((at_bar, end));
+    second.boundaries = meta
+        .boundaries
+        .iter()
+        .filter(|b| b.start_tick >= split_tick)
+        .map(|b| BoundaryEntry {
+            start_tick: b.start_tick.saturating_sub(split_tick),
+            end_tick: b.end_tick.saturating_sub(split_tick),
+            ..*b
+        })
+        .collect();
+
+    match (
+        serde_json::to_string(&first),
+        serde_json::to_string(&second),
+    ) {
+        (Ok(a), Ok(b)) => Ok((a, b)),
+        _ => Err(CurationError::ParseFailed),
+    }
+}
+
+/// Merges two same-source records whose bar ranges are consecutive (`first`
+/// ends on the bar before `second` starts).
+///
+/// The first record's identity — id, title, tempo, timestamps — wins; tags,
+/// techniques, and quality flags union in order; the second record's
+/// boundaries rebase past the first's span. The reviewer decision and the
+/// whole-extent measurements reset, and a cohort/ensemble label survives
+/// only when both records agree on it: the join is a new record the curator
+/// reviews afresh.
+///
+/// # Errors
+/// [`CurationError::ParseFailed`] when either input is not a `ChunkMeta`
+/// record; [`CurationError::MissingBarRange`] when either record has no
+/// `source.bar_range`; [`CurationError::MergeMismatch`] when they disagree
+/// on source or timing; [`CurationError::NotAdjacent`] when the ranges are
+/// not consecutive in source order.
+pub fn merge_records(first: &str, second: &str) -> Result<String, CurationError> {
+    let a: ChunkMeta = serde_json::from_str(first).map_err(|_| CurationError::ParseFailed)?;
+    let b: ChunkMeta = serde_json::from_str(second).map_err(|_| CurationError::ParseFailed)?;
+    let (a_start, a_end) = a.source.bar_range.ok_or(CurationError::MissingBarRange)?;
+    let (b_start, b_end) = b.source.bar_range.ok_or(CurationError::MissingBarRange)?;
+    if a.source.filename != b.source.filename
+        || a.source.format != b.source.format
+        || a.ticks_per_quarter != b.ticks_per_quarter
+        || a.time_signature != b.time_signature
+        || a.tuning != b.tuning
+    {
+        return Err(CurationError::MergeMismatch);
+    }
+    if a_end.checked_add(1) != Some(b_start) {
+        return Err(CurationError::NotAdjacent);
+    }
+    let span = a_end
+        .saturating_sub(a_start)
+        .saturating_add(1)
+        .saturating_mul(ticks_per_bar(&a));
+
+    let mut merged = fresh_extent(a);
+    merged.source.bar_range = Some((a_start, b_end));
+    for tag in b.tags {
+        if !merged.tags.contains(&tag) {
+            merged.tags.push(tag);
+        }
+    }
+    for technique in b.techniques {
+        if !merged.techniques.contains(&technique) {
+            merged.techniques.push(technique);
+        }
+    }
+    for flag in b.quality_flags {
+        if !merged.quality_flags.contains(&flag) {
+            merged.quality_flags.push(flag);
+        }
+    }
+    merged
+        .boundaries
+        .extend(b.boundaries.iter().map(|e| BoundaryEntry {
+            start_tick: e.start_tick.saturating_add(span),
+            end_tick: e.end_tick.saturating_add(span),
+            ..*e
+        }));
+    if merged.style_cohort != b.style_cohort {
+        merged.style_cohort = None;
+    }
+    if merged.ensemble != b.ensemble {
+        merged.ensemble = None;
+    }
+    serde_json::to_string(&merged).map_err(|_| CurationError::ParseFailed)
+}
+
+/// One bar of the record's grid in ticks (`tpq × 4 × num / den`); a corrupt
+/// zero denominator yields a zero-tick bar instead of dividing by zero.
+fn ticks_per_bar(meta: &ChunkMeta) -> u32 {
+    let (num, den) = meta.time_signature;
+    u32::from(meta.ticks_per_quarter)
+        .saturating_mul(4)
+        .saturating_mul(u32::from(num))
+        .checked_div(u32::from(den))
+        .unwrap_or(0)
+}
+
+/// Resets what a changed extent invalidates: the reviewer decision and the
+/// whole-extent measurements (structure, gesture, complexity).
+const fn fresh_extent(mut meta: ChunkMeta) -> ChunkMeta {
+    meta.reviewer = None;
+    meta.structure = None;
+    meta.gesture = None;
+    meta.complexity = None;
+    meta
 }
 
 /// Digests a serialized `ChunkMeta` record into a [`RecordSummary`].
