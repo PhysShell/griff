@@ -438,6 +438,104 @@ mod tests {
         assert!(!vp.show_inspector);
     }
 
+    // TDD red phase: split/merge marks (S8 curation slice 5). The interaction
+    // core keeps UI-level facts only — the split point as a tick (ticks are
+    // already the core's currency) and a pending-merge flag; the shell maps
+    // the tick to a source bar and owns the partner record (ADR-0016).
+    // References fields, intents, and a context gate that do not exist yet,
+    // so the crate fails to compile until the green step.
+
+    fn record_ctx() -> ViewContext {
+        ViewContext {
+            has_record: true,
+            can_merge: true,
+            ..ctx()
+        }
+    }
+
+    #[test]
+    fn new_starts_with_no_pending_split_or_merge() {
+        let c = record_ctx();
+        let vp = Viewport::new(&c, 52);
+        assert_eq!(vp.split_tick, None);
+        assert!(!vp.merging);
+    }
+
+    #[test]
+    fn split_mark_toggles_at_the_playhead() {
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 960;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, Some(960), "the mark lands on the playhead");
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, None, "the same spot again is an undo");
+    }
+
+    #[test]
+    fn split_mark_follows_a_moved_playhead() {
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 960;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        vp.play_tick = 480;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, Some(480), "a new spot moves the mark");
+    }
+
+    #[test]
+    fn split_mark_requires_a_record_and_an_interior_playhead() {
+        let c = ctx(); // has_record = false
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 960;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, None, "nothing to split without --record");
+
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = c.tick_start;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, None, "a split at the very start is empty");
+        vp.play_tick = c.tick_end;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, None, "a split at the very end is empty");
+    }
+
+    #[test]
+    fn merge_toggles_when_a_partner_is_attached() {
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::MergeToggle, &c);
+        assert!(vp.merging);
+        vp.apply(Intent::MergeToggle, &c);
+        assert!(!vp.merging, "the same intent again is an undo");
+    }
+
+    #[test]
+    fn merge_is_a_noop_without_a_partner() {
+        let c = ViewContext {
+            has_record: true,
+            ..ctx() // can_merge = false: no --merge partner attached
+        };
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::MergeToggle, &c);
+        assert!(!vp.merging);
+    }
+
+    #[test]
+    fn split_and_merge_are_mutually_exclusive() {
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 960;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        vp.apply(Intent::MergeToggle, &c);
+        assert!(vp.merging);
+        assert_eq!(vp.split_tick, None, "arming a merge disarms the split");
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, Some(960));
+        assert!(!vp.merging, "arming a split disarms the merge");
+    }
+
     #[test]
     fn new_anchors_at_span_start() {
         let c = ctx();
