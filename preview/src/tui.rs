@@ -110,6 +110,12 @@ impl App {
             initial_tags: 0,
             has_record: false,
             can_merge: false,
+            // The split gate mirrors persistence's floor-to-bar rule, so the
+            // core needs the plotted grid's bar length (0 = no grid known).
+            bar_ticks: match view.bar_lines.as_slice() {
+                [first, second, ..] => second.saturating_sub(*first),
+                _ => 0,
+            },
         };
         let vp = Viewport::new(&ctx, view.high_pitch);
         Self {

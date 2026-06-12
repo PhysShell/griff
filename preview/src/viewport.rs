@@ -48,6 +48,11 @@ pub struct ViewContext {
     /// [`Intent::MergeToggle`]. The partner itself is shell-side; the
     /// viewport sees only the flag (ADR-0016).
     pub can_merge: bool,
+    /// One bar of the plotted grid in ticks (`0` = unknown, no bar gate).
+    /// Persistence floors a split tick to its containing bar, so a tick
+    /// inside the first bar can never persist; the split gate uses this to
+    /// refuse it up front.
+    pub bar_ticks: u32,
 }
 
 /// A curation decision pending on the viewed chunk (S8).
@@ -272,11 +277,14 @@ impl Viewport {
     }
 
     /// Marks the playhead as the pending split point, or clears the mark when
-    /// it is already there. Only an interior playhead splits a record into
-    /// two non-empty extents, and arming a split disarms a pending merge —
-    /// one record cannot take both rewrites in one pass.
+    /// it is already there. Only a playhead at or past the second bar
+    /// boundary splits a record into two non-empty extents — persistence
+    /// floors the tick to its containing bar, so anything inside the first
+    /// bar would be rejected at quit time. Arming a split disarms a pending
+    /// merge — one record cannot take both rewrites in one pass.
     fn toggle_split(&mut self, ctx: &ViewContext) {
-        if ctx.has_record && self.play_tick > ctx.tick_start && self.play_tick < ctx.tick_end {
+        let first_valid = ctx.tick_start.saturating_add(ctx.bar_ticks.max(1));
+        if ctx.has_record && self.play_tick >= first_valid && self.play_tick < ctx.tick_end {
             self.split_tick = if self.split_tick == Some(self.play_tick) {
                 None
             } else {
@@ -374,6 +382,7 @@ mod tests {
             initial_tags: 0,
             has_record: false,
             can_merge: false,
+            bar_ticks: 0,
         }
     }
 
