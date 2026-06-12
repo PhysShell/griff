@@ -560,6 +560,35 @@ mod tests {
         assert_eq!(gated.split_tick, None, "a split at the very end is empty");
     }
 
+    // TDD red phase: the split gate must also stop at the final barline
+    // (Codex P2, PR #45, round 4) — a note ringing past it extends the
+    // plotted tick_end, and a playhead in that tail floors to a bar past
+    // the record's range at persist time. References ViewContext.grid_end,
+    // which does not exist yet, so the crate fails to compile until green.
+
+    #[test]
+    fn split_mark_refuses_the_ringing_tail_past_the_last_barline() {
+        let c = ViewContext {
+            tick_end: 2200, // a note rings past the final barline at 1920
+            grid_end: 1920,
+            ..record_ctx()
+        };
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 2000;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(
+            vp.split_tick, None,
+            "the tail past the last barline floors out of the record's range"
+        );
+        vp.play_tick = 1900;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(
+            vp.split_tick,
+            Some(1900),
+            "inside the bar grid the mark still arms"
+        );
+    }
+
     #[test]
     fn merge_toggles_when_a_partner_is_attached() {
         let c = record_ctx();

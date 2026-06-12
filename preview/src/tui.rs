@@ -1120,6 +1120,18 @@ mod tests {
         );
     }
 
+    // TDD red phase (Codex P2, PR #45, round 4): App::new must seed the
+    // core's grid end from the view's final barline, so the split gate can
+    // refuse a playhead in a ringing note's tail past it.
+    #[test]
+    fn app_seeds_the_grid_end_from_the_final_barline() {
+        let app = demo_app();
+        assert_eq!(
+            app.ctx.grid_end, 1920,
+            "the last bar line is the split gate's ceiling"
+        );
+    }
+
     #[test]
     fn merge_flow_requires_an_attached_partner() {
         use crate::curation::RecordSummary;
