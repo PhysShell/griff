@@ -1104,3 +1104,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   fails — both hardenings Codex P2, PR #45). Accepted: a merge is
   destructive at the file level (the partner's id/title vanish);
   recovering it is a VCS concern, not the seam's.
+
+- 2026-06-12 — In the context of the preview inspector on a single-bar
+  score (one note in `valid_minimal.mid` read as `variation 100%` /
+  `complexity 100%` / `str 100%`), facing bar-ratio metrics that are
+  vacuous rather than measured when `bar_count = 1` (repeatability is
+  core's no-second-bar abstention, so `variation = 1 − 0` and the
+  distinct-signature ratios are `1/1` by construction), we decided for
+  dashing them out in the TUI (`—`, no meter bar) while keeping
+  `loopability` and the per-note axes numeric — and against changing the
+  core types to `Option<f64>` (a corpus-schema/CLI-wide change for a
+  display concern) and against dashing the per-note axes' documented
+  zero floors (those are honest abstentions already), to achieve an
+  inspector that does not assert magnitudes it never measured, accepting
+  that the CLI `inspect` output still prints the raw numbers and that
+  the relevance rule lives in the renderer.
