@@ -472,6 +472,8 @@ mod tests {
             tag_cursor: 0,
             tags: 0,
             renaming: false,
+            split_tick: None,
+            merging: false,
         };
         (view, analysis, vp)
     }

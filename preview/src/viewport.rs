@@ -44,6 +44,10 @@ pub struct ViewContext {
     /// Whether a chunk record is attached (`--record`): gates record-editing
     /// intents such as [`Intent::RenameStart`].
     pub has_record: bool,
+    /// Whether a merge partner record is attached (`--merge`): gates
+    /// [`Intent::MergeToggle`]. The partner itself is shell-side; the
+    /// viewport sees only the flag (ADR-0016).
+    pub can_merge: bool,
 }
 
 /// A curation decision pending on the viewed chunk (S8).
@@ -61,6 +65,9 @@ pub enum CurationDecision {
 
 /// Interactive, renderer-agnostic viewport state. Mutated only by the reducer
 /// ([`Viewport::apply`]) and the pure playback helpers.
+// The flags are independent UI facts, not an encoded state machine, so the
+// excessive-bools lint carries no signal here.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
     /// Leftmost visible tick.
@@ -90,6 +97,11 @@ pub struct Viewport {
     /// Whether the rename mode is active. The text buffer itself is
     /// frontend-local; the core keeps only the mode.
     pub renaming: bool,
+    /// The pending split point as a tick, or `None` until the curator marks
+    /// one. The shell maps it to a source bar at persist time (ADR-0016).
+    pub split_tick: Option<u32>,
+    /// Whether a merge with the attached partner record is pending.
+    pub merging: bool,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -136,6 +148,12 @@ pub enum Intent {
     RenameStart,
     /// Leave the rename mode (the frontend commits or cancels its buffer).
     RenameEnd,
+    /// Mark the playhead tick as the pending split point; the same spot
+    /// again clears it. Arming a split disarms a pending merge.
+    SplitAtPlayhead,
+    /// Toggle the pending merge with the attached partner record. Arming a
+    /// merge disarms a pending split.
+    MergeToggle,
 }
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
@@ -169,6 +187,8 @@ impl Viewport {
             tag_cursor: 0,
             tags: ctx.initial_tags,
             renaming: false,
+            split_tick: None,
+            merging: false,
         }
     }
 
@@ -245,8 +265,36 @@ impl Viewport {
                 }
             }
             Intent::RenameEnd => self.renaming = false,
+            Intent::SplitAtPlayhead => self.toggle_split(ctx),
+            Intent::MergeToggle => self.toggle_merge(ctx),
         }
         Step::Continue
+    }
+
+    /// Marks the playhead as the pending split point, or clears the mark when
+    /// it is already there. Only an interior playhead splits a record into
+    /// two non-empty extents, and arming a split disarms a pending merge —
+    /// one record cannot take both rewrites in one pass.
+    fn toggle_split(&mut self, ctx: &ViewContext) {
+        if ctx.has_record && self.play_tick > ctx.tick_start && self.play_tick < ctx.tick_end {
+            self.split_tick = if self.split_tick == Some(self.play_tick) {
+                None
+            } else {
+                Some(self.play_tick)
+            };
+            self.merging = false;
+        }
+    }
+
+    /// Toggles the pending merge with the attached partner record; arming it
+    /// disarms a pending split (the same one-rewrite-per-pass rule).
+    fn toggle_merge(&mut self, ctx: &ViewContext) {
+        if ctx.can_merge {
+            self.merging = !self.merging;
+            if self.merging {
+                self.split_tick = None;
+            }
+        }
     }
 
     /// Sets `decision`, clearing it when the same decision is already pending
@@ -325,6 +373,7 @@ mod tests {
             tag_count: 0,
             initial_tags: 0,
             has_record: false,
+            can_merge: false,
         }
     }
 
@@ -485,20 +534,20 @@ mod tests {
 
     #[test]
     fn split_mark_requires_a_record_and_an_interior_playhead() {
-        let c = ctx(); // has_record = false
-        let mut vp = Viewport::new(&c, 52);
+        let plain = ctx(); // has_record = false
+        let mut vp = Viewport::new(&plain, 52);
         vp.play_tick = 960;
-        vp.apply(Intent::SplitAtPlayhead, &c);
+        vp.apply(Intent::SplitAtPlayhead, &plain);
         assert_eq!(vp.split_tick, None, "nothing to split without --record");
 
         let c = record_ctx();
-        let mut vp = Viewport::new(&c, 52);
-        vp.play_tick = c.tick_start;
-        vp.apply(Intent::SplitAtPlayhead, &c);
-        assert_eq!(vp.split_tick, None, "a split at the very start is empty");
-        vp.play_tick = c.tick_end;
-        vp.apply(Intent::SplitAtPlayhead, &c);
-        assert_eq!(vp.split_tick, None, "a split at the very end is empty");
+        let mut gated = Viewport::new(&c, 52);
+        gated.play_tick = c.tick_start;
+        gated.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(gated.split_tick, None, "a split at the very start is empty");
+        gated.play_tick = c.tick_end;
+        gated.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(gated.split_tick, None, "a split at the very end is empty");
     }
 
     #[test]

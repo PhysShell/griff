@@ -106,6 +106,7 @@ impl App {
             tag_count: 0,
             initial_tags: 0,
             has_record: false,
+            can_merge: false,
         };
         let vp = Viewport::new(&ctx, view.high_pitch);
         Self {
