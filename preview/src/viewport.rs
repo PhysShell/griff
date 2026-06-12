@@ -112,6 +112,9 @@ pub struct Viewport {
     pub split_tick: Option<u32>,
     /// Whether a merge with the attached partner record is pending.
     pub merging: bool,
+    /// Whether the help overlay (the `?` cheatsheet) is shown. The overlay
+    /// text is frontend-local; the core keeps only the toggle (ADR-0016).
+    pub show_help: bool,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -164,6 +167,8 @@ pub enum Intent {
     /// Toggle the pending merge with the attached partner record. Arming a
     /// merge disarms a pending split.
     MergeToggle,
+    /// Show or hide the help overlay (the `?` keybinding cheatsheet).
+    ToggleHelp,
 }
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
@@ -199,6 +204,7 @@ impl Viewport {
             renaming: false,
             split_tick: None,
             merging: false,
+            show_help: false,
         }
     }
 
@@ -277,6 +283,7 @@ impl Viewport {
             Intent::RenameEnd => self.renaming = false,
             Intent::SplitAtPlayhead => self.toggle_split(ctx),
             Intent::MergeToggle => self.toggle_merge(ctx),
+            Intent::ToggleHelp => self.show_help = !self.show_help,
         }
         Step::Continue
     }

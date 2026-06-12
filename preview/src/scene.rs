@@ -474,6 +474,7 @@ mod tests {
             renaming: false,
             split_tick: None,
             merging: false,
+            show_help: false,
         };
         (view, analysis, vp)
     }

@@ -17,4 +17,4 @@ C3  ││         ┊          ┃                    ││                   
     ││         ┊          ┃                    ││rhy  25%   pit  50%           │
     ││         ┊          ┃                    ││tec   0%   har  13%           │
     ││         ┊          ┃                    │└──────────────────────────────┘
-q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x 
+? help · q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab secti
