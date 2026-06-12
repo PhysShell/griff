@@ -229,3 +229,289 @@ fn rename_record_on_garbage_input_fails() {
         CurationError::ParseFailed
     );
 }
+
+// ── split/merge seam (S8 curation slice 5) ──────────────────────────────────
+// TDD red phase: the record splitter and the record merger. A record's extent
+// is its `source.bar_range`; split partitions it at a bar, merge joins two
+// same-source adjacent records. Both invalidate what was measured or reviewed
+// over the old extent (reviewer + structure/gesture/complexity reset) — the
+// halves and the join are new records the curator reviews afresh. References
+// `split_record`, `merge_records`, and four `CurationError` variants that do
+// not exist yet, so the suite fails to compile until the green step.
+
+fn record_with_range(first_bar: u32, last_bar: u32) -> ChunkMeta {
+    let mut meta = record();
+    meta.source.bar_range = Some((first_bar, last_bar));
+    meta
+}
+
+/// One source bar at 960 TPQ in 4/4.
+const BAR: u32 = 3840;
+
+#[test]
+fn split_record_partitions_the_bar_range() {
+    use griff_preview::curation::split_record;
+
+    let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
+    let (a, b) = split_record(&json, 2).expect("split ok");
+    let first: ChunkMeta = serde_json::from_str(&a).expect("first half parses");
+    let second: ChunkMeta = serde_json::from_str(&b).expect("second half parses");
+
+    assert_eq!(first.source.bar_range, Some((0, 1)));
+    assert_eq!(second.source.bar_range, Some((2, 4)));
+    assert_eq!(first.id.0, "cur_001.1", "halves get derived ids");
+    assert_eq!(second.id.0, "cur_001.2");
+    assert_eq!(first.title, "Curated (1/2)", "halves get derived titles");
+    assert_eq!(second.title, "Curated (2/2)");
+    for half in [&first, &second] {
+        assert_eq!(half.source.filename, "cur.mid", "source carries over");
+        assert_eq!(half.tags, vec![SwancoreTag::CleanRiff], "tags carry over");
+        assert_eq!(half.ticks_per_quarter, 960);
+        assert_eq!(half.tuning, "standard_e");
+    }
+}
+
+#[test]
+fn split_record_partitions_boundaries_at_the_split_tick() {
+    use griff_core::corpus::BoundaryEntry;
+    use griff_preview::curation::split_record;
+
+    let mut meta = record_with_range(0, 4);
+    meta.boundaries = vec![
+        BoundaryEntry {
+            start_tick: 0,
+            end_tick: BAR,
+            score: 0.9,
+        },
+        // Straddles the split point: stays in the first half, clamped.
+        BoundaryEntry {
+            start_tick: BAR,
+            end_tick: 3 * BAR,
+            score: 0.8,
+        },
+        BoundaryEntry {
+            start_tick: 3 * BAR,
+            end_tick: 4 * BAR,
+            score: 0.7,
+        },
+    ];
+    let json = serde_json::to_string(&meta).expect("serialize");
+    let (a, b) = split_record(&json, 2).expect("split ok");
+    let first: ChunkMeta = serde_json::from_str(&a).expect("parses");
+    let second: ChunkMeta = serde_json::from_str(&b).expect("parses");
+
+    assert_eq!(first.boundaries.len(), 2);
+    assert_eq!(
+        (first.boundaries[1].start_tick, first.boundaries[1].end_tick),
+        (BAR, 2 * BAR),
+        "a straddling boundary is clamped to the split tick"
+    );
+    assert_eq!(second.boundaries.len(), 1);
+    assert_eq!(
+        (
+            second.boundaries[0].start_tick,
+            second.boundaries[0].end_tick
+        ),
+        (BAR, 2 * BAR),
+        "second-half boundaries are rebased to its start"
+    );
+}
+
+#[test]
+fn split_record_resets_review_and_measured_metrics() {
+    use griff_core::structure::ComplexityProfile;
+    use griff_preview::curation::split_record;
+
+    let mut meta = record_with_range(0, 4);
+    meta.reviewer = Some(ReviewerDecision::Accepted);
+    meta.complexity = Some(ComplexityProfile {
+        rhythmic: 0.5,
+        pitch: 0.5,
+        technical: 0.5,
+        harmonic: 0.5,
+        playability: 0.5,
+        structural: 0.5,
+    });
+    let json = serde_json::to_string(&meta).expect("serialize");
+    let (a, b) = split_record(&json, 2).expect("split ok");
+    for half in [a, b] {
+        let half: ChunkMeta = serde_json::from_str(&half).expect("parses");
+        assert_eq!(half.reviewer, None, "a half is a new record to review");
+        assert_eq!(half.complexity, None, "whole-extent measurements drop");
+    }
+}
+
+#[test]
+fn split_record_rejects_an_out_of_range_point() {
+    use griff_preview::curation::split_record;
+
+    let json = serde_json::to_string(&record_with_range(2, 6)).expect("serialize");
+    for at_bar in [0, 1, 2, 7] {
+        assert_eq!(
+            split_record(&json, at_bar).unwrap_err(),
+            CurationError::SplitOutOfRange,
+            "the second half must start strictly inside the range"
+        );
+    }
+    assert!(split_record(&json, 3).is_ok(), "the first interior bar works");
+    assert!(split_record(&json, 6).is_ok(), "the last bar works");
+}
+
+#[test]
+fn split_record_requires_a_bar_range() {
+    use griff_preview::curation::split_record;
+
+    let mut meta = record();
+    meta.source.bar_range = None;
+    let json = serde_json::to_string(&meta).expect("serialize");
+    assert_eq!(
+        split_record(&json, 1).unwrap_err(),
+        CurationError::MissingBarRange
+    );
+}
+
+#[test]
+fn split_record_on_garbage_input_fails() {
+    use griff_preview::curation::split_record;
+
+    assert_eq!(
+        split_record("not json", 1).unwrap_err(),
+        CurationError::ParseFailed
+    );
+}
+
+#[test]
+fn merge_records_joins_adjacent_same_source_records() {
+    use griff_core::corpus::BoundaryEntry;
+    use griff_preview::curation::merge_records;
+
+    let mut first = record_with_range(0, 1);
+    first.boundaries = vec![BoundaryEntry {
+        start_tick: 0,
+        end_tick: BAR,
+        score: 0.9,
+    }];
+    let mut second = record_with_range(2, 4);
+    second.id = ChunkId("cur_002".to_owned());
+    second.title = "Other".to_owned();
+    second.tags = vec![SwancoreTag::CleanRiff, SwancoreTag::Maj7];
+    second.boundaries = vec![BoundaryEntry {
+        start_tick: 0,
+        end_tick: BAR,
+        score: 0.8,
+    }];
+    let a = serde_json::to_string(&first).expect("serialize");
+    let b = serde_json::to_string(&second).expect("serialize");
+
+    let merged = merge_records(&a, &b).expect("merge ok");
+    let back: ChunkMeta = serde_json::from_str(&merged).expect("parses");
+    assert_eq!(back.source.bar_range, Some((0, 4)));
+    assert_eq!(back.id.0, "cur_001", "the first record's identity wins");
+    assert_eq!(back.title, "Curated");
+    assert_eq!(
+        back.tags,
+        vec![SwancoreTag::CleanRiff, SwancoreTag::Maj7],
+        "tags are an order-preserving union"
+    );
+    assert_eq!(back.boundaries.len(), 2);
+    assert_eq!(
+        (back.boundaries[1].start_tick, back.boundaries[1].end_tick),
+        (2 * BAR, 3 * BAR),
+        "the second record's boundaries are rebased past the first's span"
+    );
+    assert_eq!(back.reviewer, None, "the join is a new record to review");
+}
+
+#[test]
+fn merge_records_rejects_non_adjacent_ranges() {
+    use griff_preview::curation::merge_records;
+
+    let a = serde_json::to_string(&record_with_range(0, 1)).expect("serialize");
+    let gap = serde_json::to_string(&record_with_range(3, 4)).expect("serialize");
+    assert_eq!(
+        merge_records(&a, &gap).unwrap_err(),
+        CurationError::NotAdjacent
+    );
+    let b = serde_json::to_string(&record_with_range(2, 4)).expect("serialize");
+    assert_eq!(
+        merge_records(&b, &a).unwrap_err(),
+        CurationError::NotAdjacent,
+        "order matters: the first record must come first in the source"
+    );
+}
+
+#[test]
+fn merge_records_rejects_a_source_or_timing_mismatch() {
+    use griff_preview::curation::merge_records;
+
+    let a = serde_json::to_string(&record_with_range(0, 1)).expect("serialize");
+
+    let mut other_file = record_with_range(2, 4);
+    other_file.source.filename = "elsewhere.mid".to_owned();
+    let b = serde_json::to_string(&other_file).expect("serialize");
+    assert_eq!(
+        merge_records(&a, &b).unwrap_err(),
+        CurationError::MergeMismatch,
+        "records from different sources never merge"
+    );
+
+    let mut other_grid = record_with_range(2, 4);
+    other_grid.ticks_per_quarter = 480;
+    let c = serde_json::to_string(&other_grid).expect("serialize");
+    assert_eq!(
+        merge_records(&a, &c).unwrap_err(),
+        CurationError::MergeMismatch,
+        "a tick-grid mismatch cannot be concatenated"
+    );
+}
+
+#[test]
+fn merge_records_requires_both_bar_ranges() {
+    use griff_preview::curation::merge_records;
+
+    let a = serde_json::to_string(&record_with_range(0, 1)).expect("serialize");
+    let mut unranged = record();
+    unranged.source.bar_range = None;
+    let b = serde_json::to_string(&unranged).expect("serialize");
+    assert_eq!(
+        merge_records(&a, &b).unwrap_err(),
+        CurationError::MissingBarRange
+    );
+}
+
+#[test]
+fn merge_records_keeps_a_shared_cohort_and_drops_a_disagreement() {
+    use griff_core::corpus::StyleCohort;
+    use griff_preview::curation::merge_records;
+
+    let mut first = record_with_range(0, 1);
+    first.style_cohort = Some(StyleCohort::Core);
+    let mut second = record_with_range(2, 4);
+    second.style_cohort = Some(StyleCohort::Core);
+    let a = serde_json::to_string(&first).expect("serialize");
+    let b = serde_json::to_string(&second).expect("serialize");
+    let merged: ChunkMeta =
+        serde_json::from_str(&merge_records(&a, &b).expect("merge ok")).expect("parses");
+    assert_eq!(merged.style_cohort, Some(StyleCohort::Core), "agreement holds");
+
+    second.style_cohort = Some(StyleCohort::Adjacent);
+    let b = serde_json::to_string(&second).expect("serialize");
+    let merged: ChunkMeta =
+        serde_json::from_str(&merge_records(&a, &b).expect("merge ok")).expect("parses");
+    assert_eq!(merged.style_cohort, None, "a disagreement is dropped");
+}
+
+#[test]
+fn merge_records_on_garbage_input_fails() {
+    use griff_preview::curation::merge_records;
+
+    let a = serde_json::to_string(&record_with_range(0, 1)).expect("serialize");
+    assert_eq!(
+        merge_records("not json", &a).unwrap_err(),
+        CurationError::ParseFailed
+    );
+    assert_eq!(
+        merge_records(&a, "not json").unwrap_err(),
+        CurationError::ParseFailed
+    );
+}
