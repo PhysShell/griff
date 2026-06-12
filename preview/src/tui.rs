@@ -1061,6 +1061,41 @@ mod tests {
         );
     }
 
+    // TDD red phase: the `?` help overlay reaches the TUI (the
+    // discoverability slice). '?' toggles a centered cheatsheet, any key
+    // dismisses it (the rename-modal precedent), and the overlay names the
+    // curation keys. References an intent and a field that do not exist yet,
+    // so the crate fails to compile until the green step.
+
+    #[test]
+    fn question_mark_maps_to_toggle_help() {
+        assert_eq!(
+            App::key_intent(KeyCode::Char('?')),
+            Some(Intent::ToggleHelp)
+        );
+    }
+
+    #[test]
+    fn help_overlay_lists_the_curation_keys() {
+        let mut app = demo_app();
+        app.on_key(KeyCode::Char('?'));
+        assert!(app.vp.show_help, "? opens the help overlay");
+        let text = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(text.contains("Help"), "the overlay carries a title");
+        assert!(text.contains("split"), "the overlay lists split");
+        assert!(text.contains("merge"), "the overlay lists merge");
+    }
+
+    #[test]
+    fn any_key_dismisses_the_help_overlay() {
+        let mut app = demo_app();
+        app.on_key(KeyCode::Char('?'));
+        assert!(app.vp.show_help);
+        let cont = app.on_key(KeyCode::Char('j'));
+        assert!(cont, "dismissing the help keeps the app running");
+        assert!(!app.vp.show_help, "any key closes the overlay");
+    }
+
     // TDD red phase: split/merge reaches the TUI (S8 curation slice 5).
     // 's' marks the playhead as the pending split point, 'm' arms the merge
     // with the partner record attached via the new `set_merge_partner`, the

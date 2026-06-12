@@ -508,6 +508,23 @@ mod tests {
         assert!(!vp.show_inspector);
     }
 
+    // TDD red phase: an in-app help overlay (the `?` discoverability slice).
+    // The interaction core keeps only the toggle flag — the cheatsheet text
+    // is frontend-local, like the rename buffer (ADR-0016). References a
+    // field and an intent that do not exist yet, so the crate fails to
+    // compile until the green step.
+
+    #[test]
+    fn help_overlay_toggles_via_intent() {
+        let c = ctx();
+        let mut vp = Viewport::new(&c, 52);
+        assert!(!vp.show_help, "the overlay starts hidden");
+        vp.apply(Intent::ToggleHelp, &c);
+        assert!(vp.show_help, "the intent reveals it");
+        vp.apply(Intent::ToggleHelp, &c);
+        assert!(!vp.show_help, "the same intent again hides it");
+    }
+
     // TDD red phase: split/merge marks (S8 curation slice 5). The interaction
     // core keeps UI-level facts only — the split point as a tick (ticks are
     // already the core's currency) and a pending-merge flag; the shell maps
