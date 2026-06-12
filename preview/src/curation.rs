@@ -103,9 +103,11 @@ pub fn rename_record(json: &str, title: &str) -> Result<String, CurationError> {
 /// (`(1/2)`/`(2/2)`); tags, techniques, and quality flags carry over.
 /// Boundaries are partitioned at the split tick — a straddler stays in the
 /// first half, clamped — and the second half's are rebased to its new
-/// start. The reviewer decision and the whole-extent measurements
-/// (structure, gesture, complexity) reset: each half is a new record the
-/// curator reviews afresh.
+/// start. The reviewer decision, the whole-extent measurements
+/// (structure, gesture, complexity), and the ensemble link reset: each
+/// half is a new record the curator reviews (and, if needed, re-groups)
+/// afresh — two halves sharing the original `group_id`+`part_index` would
+/// duplicate the membership.
 ///
 /// # Errors
 /// [`CurationError::ParseFailed`] when `json` is not a `ChunkMeta` record;
@@ -130,7 +132,12 @@ pub fn split_record(
         .saturating_sub(start)
         .saturating_mul(ticks_per_bar(&meta));
 
+    // Two halves sharing the original group_id+part_index would duplicate
+    // the ensemble membership (one chunk member per source span), so the
+    // link does not survive a split — unlike merge, where agreement means
+    // the halves of the same part are rejoining.
     let mut first = fresh_extent(meta.clone());
+    first.ensemble = None;
     first.id = ChunkId(format!("{}.1", meta.id.0));
     first.title = format!("{} (1/2)", meta.title);
     first.source.bar_range = Some((start, at_bar.saturating_sub(1)));
@@ -145,6 +152,7 @@ pub fn split_record(
         .collect();
 
     let mut second = fresh_extent(meta.clone());
+    second.ensemble = None;
     second.id = ChunkId(format!("{}.{second_slot}", meta.id.0));
     second.title = format!("{} (2/2)", meta.title);
     second.source.bar_range = Some((at_bar, end));
