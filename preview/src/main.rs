@@ -206,18 +206,19 @@ fn persist_outcome(
 
 /// Splits the record at the marked tick: the first half replaces the record
 /// file, the second half lands in the first vacant `.N` sibling — never
-/// over an existing record (Codex P2, PR #45).
+/// over an existing record, and with its `ChunkId` derived from that same
+/// slot, so the id and the filename cannot disagree (Codex P2, PR #45).
 fn persist_split(path: &str, json: &str, tick: u32) -> ExitCode {
-    let (first, second) = match split_record_at_tick(json, tick) {
+    let Some((slot, second_path)) = vacant_sibling_path(path) else {
+        eprintln!("cannot split record {path}: every sibling slot is taken");
+        return ExitCode::FAILURE;
+    };
+    let (first, second) = match split_record_at_tick(json, tick, slot) {
         Ok(halves) => halves,
         Err(err) => {
             eprintln!("cannot split record {path}: {err:?}");
             return ExitCode::FAILURE;
         }
-    };
-    let Some(second_path) = vacant_sibling_path(path) else {
-        eprintln!("cannot split record {path}: every sibling slot is taken");
-        return ExitCode::FAILURE;
     };
     if let Err(err) = fs::write(&second_path, second) {
         eprintln!("cannot write {second_path}: {err}");
@@ -281,14 +282,17 @@ fn persist_merge(path: &str, json: &str, partner_path: &str) -> ExitCode {
 }
 
 /// The first vacant `.N` sibling next to the record (`chunk.json` →
-/// `chunk.2.json`, then `chunk.3.json`, …); `None` when every slot up to
-/// `.99` is taken. A split must never overwrite a neighboring record.
-fn vacant_sibling_path(path: &str) -> Option<String> {
+/// `chunk.2.json`, then `chunk.3.json`, …) with its slot number; `None`
+/// when every slot up to `.99` is taken. A split must never overwrite a
+/// neighboring record, and the slot feeds the second half's `ChunkId`.
+fn vacant_sibling_path(path: &str) -> Option<(u32, String)> {
     let make = |n: u32| {
-        path.strip_suffix(".json")
-            .map_or_else(|| format!("{path}.{n}"), |stem| format!("{stem}.{n}.json"))
+        let sibling = path
+            .strip_suffix(".json")
+            .map_or_else(|| format!("{path}.{n}"), |stem| format!("{stem}.{n}.json"));
+        (n, sibling)
     };
-    (2..=99).map(make).find(|p| !Path::new(p).exists())
+    (2..=99).map(make).find(|(_, p)| !Path::new(p).exists())
 }
 
 /// Parses a `WIDTHxHEIGHT` spec into clamped terminal dimensions.

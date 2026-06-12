@@ -585,7 +585,10 @@ fn split_record_derives_the_second_id_from_the_slot() {
         second.id.0, "cur_001.5",
         "the second half's id mirrors the slot its file lands in"
     );
-    assert_eq!(second.title, "Curated (2/2)", "the title stays a half label");
+    assert_eq!(
+        second.title, "Curated (2/2)",
+        "the title stays a half label"
+    );
 }
 
 #[test]

@@ -97,25 +97,33 @@ pub fn rename_record(json: &str, title: &str) -> Result<String, CurationError> {
 /// Splits the record's extent at `at_bar` (absolute source bar): the first
 /// half keeps bars `[start, at_bar - 1]`, the second `[at_bar, end]`.
 ///
-/// The halves derive their ids (`.1`/`.2`) and titles (`(1/2)`/`(2/2)`) from
-/// the original; tags, techniques, and quality flags carry over. Boundaries
-/// are partitioned at the split tick — a straddler stays in the first half,
-/// clamped — and the second half's are rebased to its new start. The
-/// reviewer decision and the whole-extent measurements (structure, gesture,
-/// complexity) reset: each half is a new record the curator reviews afresh.
+/// The halves derive their ids from the original — `.1` for the first,
+/// `.{second_slot}` for the second, so the id always mirrors the sibling
+/// slot the caller stores the file in (Codex P2, PR #45) — and their titles
+/// (`(1/2)`/`(2/2)`); tags, techniques, and quality flags carry over.
+/// Boundaries are partitioned at the split tick — a straddler stays in the
+/// first half, clamped — and the second half's are rebased to its new
+/// start. The reviewer decision and the whole-extent measurements
+/// (structure, gesture, complexity) reset: each half is a new record the
+/// curator reviews afresh.
 ///
 /// # Errors
 /// [`CurationError::ParseFailed`] when `json` is not a `ChunkMeta` record;
 /// [`CurationError::MissingBarRange`] when the record has no
 /// `source.bar_range`; [`CurationError::SplitOutOfRange`] unless
-/// `start < at_bar <= end`.
-pub fn split_record(json: &str, at_bar: u32) -> Result<(String, String), CurationError> {
+/// `start < at_bar <= end` and `second_slot >= 2` (a lower slot would
+/// collide with the first half's `.1`).
+pub fn split_record(
+    json: &str,
+    at_bar: u32,
+    second_slot: u32,
+) -> Result<(String, String), CurationError> {
     let meta: ChunkMeta = serde_json::from_str(json).map_err(|_| CurationError::ParseFailed)?;
     let (start, end) = meta
         .source
         .bar_range
         .ok_or(CurationError::MissingBarRange)?;
-    if at_bar <= start || at_bar > end {
+    if at_bar <= start || at_bar > end || second_slot < 2 {
         return Err(CurationError::SplitOutOfRange);
     }
     let split_tick = at_bar
@@ -137,7 +145,7 @@ pub fn split_record(json: &str, at_bar: u32) -> Result<(String, String), Curatio
         .collect();
 
     let mut second = fresh_extent(meta.clone());
-    second.id = ChunkId(format!("{}.2", meta.id.0));
+    second.id = ChunkId(format!("{}.{second_slot}", meta.id.0));
     second.title = format!("{} (2/2)", meta.title);
     second.source.bar_range = Some((at_bar, end));
     second.boundaries = meta
@@ -168,7 +176,11 @@ pub fn split_record(json: &str, at_bar: u32) -> Result<(String, String), Curatio
 /// # Errors
 /// Everything [`split_record`] emits; a tick inside the first bar floors to
 /// the range start and is therefore [`CurationError::SplitOutOfRange`].
-pub fn split_record_at_tick(json: &str, tick: u32) -> Result<(String, String), CurationError> {
+pub fn split_record_at_tick(
+    json: &str,
+    tick: u32,
+    second_slot: u32,
+) -> Result<(String, String), CurationError> {
     let meta: ChunkMeta = serde_json::from_str(json).map_err(|_| CurationError::ParseFailed)?;
     let (start, _) = meta
         .source
@@ -177,7 +189,7 @@ pub fn split_record_at_tick(json: &str, tick: u32) -> Result<(String, String), C
     let offset = tick
         .checked_div(ticks_per_bar(&meta))
         .ok_or(CurationError::SplitOutOfRange)?;
-    split_record(json, start.saturating_add(offset))
+    split_record(json, start.saturating_add(offset), second_slot)
 }
 
 /// Merges two same-source records whose bar ranges are consecutive (`first`
