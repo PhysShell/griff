@@ -81,7 +81,7 @@ pub fn rename_record(json: &str, title: &str) -> Result<String, CurationError> {
     if trimmed.is_empty() {
         return Err(CurationError::EmptyTitle);
     }
-    meta.title = trimmed.to_owned();
+    trimmed.clone_into(&mut meta.title);
     serde_json::to_string(&meta).map_err(|_| CurationError::ParseFailed)
 }
 
