@@ -68,7 +68,15 @@ front-ends and audio build on them:
       opens a buffer seeded with the live title (text stays
       frontend-local; the core keeps only the renaming flag), Enter
       commits, Esc cancels, quit persists via `curation::rename_record`
-      (trimmed, never blank). Remaining: split/merge.
+      (trimmed, never blank). **Fifth slice landed 2026-06-12
+      (split/merge)** — the curation action set is complete: 's' pins a
+      split to the playhead (the shell floors it to the containing source
+      bar; the record file keeps the first half, the first vacant `.N`
+      sibling takes the second — never over an existing record), 'm' arms
+      a merge with the `--merge=PARTNER_JSON` record
+      (same source, consecutive bar ranges; the absorbed partner file is
+      removed). Both reset the reviewer and the whole-extent measurements
+      — see the 2026-06-12 split/merge decision.
 - [ ] Boundary overlays (S4) and candidate history — **overlays landed
       2026-06-11**: `Analysis.boundaries` carries the S4 start ticks under a
       PPQN-scaled default config, the scene places `BoundaryMark` columns

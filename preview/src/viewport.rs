@@ -44,6 +44,20 @@ pub struct ViewContext {
     /// Whether a chunk record is attached (`--record`): gates record-editing
     /// intents such as [`Intent::RenameStart`].
     pub has_record: bool,
+    /// Whether a merge partner record is attached (`--merge`): gates
+    /// [`Intent::MergeToggle`]. The partner itself is shell-side; the
+    /// viewport sees only the flag (ADR-0016).
+    pub can_merge: bool,
+    /// One bar of the plotted grid in ticks (`0` = unknown, no bar gate).
+    /// Persistence floors a split tick to its containing bar, so a tick
+    /// inside the first bar can never persist; the split gate uses this to
+    /// refuse it up front.
+    pub bar_ticks: u32,
+    /// The final barline tick (`0` = unknown, the gate falls back to
+    /// [`ViewContext::tick_end`]). A ringing note can extend the plotted
+    /// span past the last barline, and a split in that tail floors past the
+    /// record's range at persist time; the split gate stops here instead.
+    pub grid_end: u32,
 }
 
 /// A curation decision pending on the viewed chunk (S8).
@@ -61,6 +75,9 @@ pub enum CurationDecision {
 
 /// Interactive, renderer-agnostic viewport state. Mutated only by the reducer
 /// ([`Viewport::apply`]) and the pure playback helpers.
+// The flags are independent UI facts, not an encoded state machine, so the
+// excessive-bools lint carries no signal here.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
     /// Leftmost visible tick.
@@ -90,6 +107,11 @@ pub struct Viewport {
     /// Whether the rename mode is active. The text buffer itself is
     /// frontend-local; the core keeps only the mode.
     pub renaming: bool,
+    /// The pending split point as a tick, or `None` until the curator marks
+    /// one. The shell maps it to a source bar at persist time (ADR-0016).
+    pub split_tick: Option<u32>,
+    /// Whether a merge with the attached partner record is pending.
+    pub merging: bool,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -136,6 +158,12 @@ pub enum Intent {
     RenameStart,
     /// Leave the rename mode (the frontend commits or cancels its buffer).
     RenameEnd,
+    /// Mark the playhead tick as the pending split point; the same spot
+    /// again clears it. Arming a split disarms a pending merge.
+    SplitAtPlayhead,
+    /// Toggle the pending merge with the attached partner record. Arming a
+    /// merge disarms a pending split.
+    MergeToggle,
 }
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
@@ -169,6 +197,8 @@ impl Viewport {
             tag_cursor: 0,
             tags: ctx.initial_tags,
             renaming: false,
+            split_tick: None,
+            merging: false,
         }
     }
 
@@ -245,8 +275,45 @@ impl Viewport {
                 }
             }
             Intent::RenameEnd => self.renaming = false,
+            Intent::SplitAtPlayhead => self.toggle_split(ctx),
+            Intent::MergeToggle => self.toggle_merge(ctx),
         }
         Step::Continue
+    }
+
+    /// Marks the playhead as the pending split point, or clears the mark when
+    /// it is already there. Only a playhead between the second bar boundary
+    /// and the final barline splits a record into two non-empty extents —
+    /// persistence floors the tick to its containing bar, so anything inside
+    /// the first bar or in a ringing tail past the grid would be rejected at
+    /// quit time. Arming a split disarms a pending merge — one record cannot
+    /// take both rewrites in one pass.
+    fn toggle_split(&mut self, ctx: &ViewContext) {
+        let first_valid = ctx.tick_start.saturating_add(ctx.bar_ticks.max(1));
+        let end = if ctx.grid_end > 0 {
+            ctx.grid_end.min(ctx.tick_end)
+        } else {
+            ctx.tick_end
+        };
+        if ctx.has_record && self.play_tick >= first_valid && self.play_tick < end {
+            self.split_tick = if self.split_tick == Some(self.play_tick) {
+                None
+            } else {
+                Some(self.play_tick)
+            };
+            self.merging = false;
+        }
+    }
+
+    /// Toggles the pending merge with the attached partner record; arming it
+    /// disarms a pending split (the same one-rewrite-per-pass rule).
+    fn toggle_merge(&mut self, ctx: &ViewContext) {
+        if ctx.can_merge {
+            self.merging = !self.merging;
+            if self.merging {
+                self.split_tick = None;
+            }
+        }
     }
 
     /// Sets `decision`, clearing it when the same decision is already pending
@@ -325,6 +392,9 @@ mod tests {
             tag_count: 0,
             initial_tags: 0,
             has_record: false,
+            can_merge: false,
+            bar_ticks: 0,
+            grid_end: 0,
         }
     }
 
@@ -436,6 +506,162 @@ mod tests {
         vp.apply(Intent::ToggleInspector, &c);
         assert_eq!(vp.inspector_scroll, 0, "a hidden dock forgets its scroll");
         assert!(!vp.show_inspector);
+    }
+
+    // TDD red phase: split/merge marks (S8 curation slice 5). The interaction
+    // core keeps UI-level facts only — the split point as a tick (ticks are
+    // already the core's currency) and a pending-merge flag; the shell maps
+    // the tick to a source bar and owns the partner record (ADR-0016).
+    // References fields, intents, and a context gate that do not exist yet,
+    // so the crate fails to compile until the green step.
+
+    fn record_ctx() -> ViewContext {
+        ViewContext {
+            has_record: true,
+            can_merge: true,
+            bar_ticks: 480,
+            ..ctx()
+        }
+    }
+
+    #[test]
+    fn new_starts_with_no_pending_split_or_merge() {
+        let c = record_ctx();
+        let vp = Viewport::new(&c, 52);
+        assert_eq!(vp.split_tick, None);
+        assert!(!vp.merging);
+    }
+
+    #[test]
+    fn split_mark_toggles_at_the_playhead() {
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 960;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, Some(960), "the mark lands on the playhead");
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, None, "the same spot again is an undo");
+    }
+
+    #[test]
+    fn split_mark_follows_a_moved_playhead() {
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 960;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        vp.play_tick = 480;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, Some(480), "a new spot moves the mark");
+    }
+
+    #[test]
+    fn split_mark_requires_a_record_and_an_interior_playhead() {
+        let plain = ctx(); // has_record = false
+        let mut vp = Viewport::new(&plain, 52);
+        vp.play_tick = 960;
+        vp.apply(Intent::SplitAtPlayhead, &plain);
+        assert_eq!(vp.split_tick, None, "nothing to split without --record");
+
+        let c = record_ctx();
+        let mut gated = Viewport::new(&c, 52);
+        gated.play_tick = c.tick_start;
+        gated.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(gated.split_tick, None, "a split at the very start is empty");
+        gated.play_tick = c.tick_end;
+        gated.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(gated.split_tick, None, "a split at the very end is empty");
+    }
+
+    // TDD red phase: the split gate must also stop at the final barline
+    // (Codex P2, PR #45, round 4) — a note ringing past it extends the
+    // plotted tick_end, and a playhead in that tail floors to a bar past
+    // the record's range at persist time. References ViewContext.grid_end,
+    // which does not exist yet, so the crate fails to compile until green.
+
+    #[test]
+    fn split_mark_refuses_the_ringing_tail_past_the_last_barline() {
+        let c = ViewContext {
+            tick_end: 2200, // a note rings past the final barline at 1920
+            grid_end: 1920,
+            ..record_ctx()
+        };
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 2000;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(
+            vp.split_tick, None,
+            "the tail past the last barline floors out of the record's range"
+        );
+        vp.play_tick = 1900;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(
+            vp.split_tick,
+            Some(1900),
+            "inside the bar grid the mark still arms"
+        );
+    }
+
+    #[test]
+    fn merge_toggles_when_a_partner_is_attached() {
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::MergeToggle, &c);
+        assert!(vp.merging);
+        vp.apply(Intent::MergeToggle, &c);
+        assert!(!vp.merging, "the same intent again is an undo");
+    }
+
+    // TDD red phase: the split gate must match the persistence rule (Codex
+    // P2, PR #45) — a tick inside the first bar floors to the range start
+    // and is always SplitOutOfRange at persist time, so arming it lies to
+    // the curator. References ViewContext.bar_ticks, which does not exist
+    // yet, so the crate fails to compile until the green step.
+
+    #[test]
+    fn split_mark_refuses_the_first_bar() {
+        let c = record_ctx(); // bar_ticks = 480
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 100;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(
+            vp.split_tick, None,
+            "a tick inside the first bar floors to the range start — never persistable"
+        );
+        vp.play_tick = 479;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, None, "still inside the first bar");
+        vp.play_tick = 480;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(
+            vp.split_tick,
+            Some(480),
+            "the second bar boundary is the first valid split point"
+        );
+    }
+
+    #[test]
+    fn merge_is_a_noop_without_a_partner() {
+        let c = ViewContext {
+            has_record: true,
+            ..ctx() // can_merge = false: no --merge partner attached
+        };
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::MergeToggle, &c);
+        assert!(!vp.merging);
+    }
+
+    #[test]
+    fn split_and_merge_are_mutually_exclusive() {
+        let c = record_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.play_tick = 960;
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        vp.apply(Intent::MergeToggle, &c);
+        assert!(vp.merging);
+        assert_eq!(vp.split_tick, None, "arming a merge disarms the split");
+        vp.apply(Intent::SplitAtPlayhead, &c);
+        assert_eq!(vp.split_tick, Some(960));
+        assert!(!vp.merging, "arming a split disarms the merge");
     }
 
     #[test]
