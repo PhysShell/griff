@@ -185,3 +185,47 @@ fn set_tags_on_garbage_input_fails() {
         CurationError::ParseFailed
     );
 }
+
+// ── rename seam (S8 curation slice 4) ───────────────────────────────────────
+// TDD red phase: the title writer. References `rename_record` and
+// `CurationError::EmptyTitle`, which do not exist yet, so the suite fails
+// to compile until the green step.
+
+#[test]
+fn rename_record_rewrites_only_the_title() {
+    use griff_preview::curation::rename_record;
+
+    let json = serde_json::to_string(&record()).expect("serialize");
+    let updated = rename_record(&json, "Verse riff, take 2").expect("update ok");
+    let back: ChunkMeta = serde_json::from_str(&updated).expect("updated record parses");
+
+    let mut expected = record();
+    expected.title = "Verse riff, take 2".to_owned();
+    assert_eq!(back, expected, "only the title field changes");
+}
+
+#[test]
+fn rename_record_trims_and_rejects_an_empty_title() {
+    use griff_preview::curation::rename_record;
+
+    let json = serde_json::to_string(&record()).expect("serialize");
+    let updated = rename_record(&json, "  padded  ").expect("update ok");
+    let back: ChunkMeta = serde_json::from_str(&updated).expect("parses");
+    assert_eq!(back.title, "padded", "surrounding whitespace is trimmed");
+
+    assert_eq!(
+        rename_record(&json, "   ").unwrap_err(),
+        CurationError::EmptyTitle,
+        "a blank title cannot erase the record's name"
+    );
+}
+
+#[test]
+fn rename_record_on_garbage_input_fails() {
+    use griff_preview::curation::rename_record;
+
+    assert_eq!(
+        rename_record("not json", "x").unwrap_err(),
+        CurationError::ParseFailed
+    );
+}
