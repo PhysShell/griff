@@ -709,6 +709,70 @@ mod tests {
         assert_ne!(bottom, up, "one PgUp from the bottom moves the dock");
     }
 
+    // TDD red phase: tag editing reaches the TUI (S8 curation slice 3).
+    // 't' cycles the palette cursor, 'T' toggles the tag, the record block
+    // shows the live tag set and the cursor, and the changed set is
+    // surfaced for quit-time persistence. References items that do not
+    // exist yet, so the crate fails to compile until the green step.
+
+    #[test]
+    fn tag_keys_map_to_tag_intents() {
+        assert_eq!(App::key_intent(KeyCode::Char('t')), Some(Intent::TagNext));
+        assert_eq!(
+            App::key_intent(KeyCode::Char('T')),
+            Some(Intent::TagToggle)
+        );
+    }
+
+    #[test]
+    fn set_record_seeds_the_tag_state() {
+        use crate::curation::{tag_palette, RecordSummary};
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: vec!["clean_riff".to_string(), "maj7".to_string()],
+        });
+        assert_eq!(
+            usize::from(app.ctx.tag_count),
+            tag_palette().len(),
+            "the full palette is cyclable"
+        );
+        assert_eq!(app.vp.tags & 0b1, 0b1, "clean_riff (palette[0]) is set");
+        assert_eq!(app.tags_if_changed(), None, "untouched set persists nothing");
+    }
+
+    #[test]
+    fn toggling_a_tag_updates_the_dock_and_the_outcome() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: vec!["clean_riff".to_string(), "maj7".to_string()],
+        });
+        let before = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(
+            before.contains("tag▸ clean_riff"),
+            "the cursor line names palette[0]"
+        );
+
+        // Cursor sits on clean_riff; toggling clears it (repeat to undo).
+        app.vp.apply(Intent::TagToggle, &app.ctx.clone());
+        let after = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(
+            !after.contains("tags  clean_riff"),
+            "the live tags line drops the cleared tag"
+        );
+        assert_eq!(
+            app.tags_if_changed(),
+            Some(vec!["maj7".to_string()]),
+            "the changed set is surfaced for persistence"
+        );
+    }
+
     #[test]
     fn page_keys_map_to_inspector_scroll() {
         assert_eq!(
