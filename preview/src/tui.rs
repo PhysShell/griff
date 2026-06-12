@@ -97,6 +97,8 @@ impl App {
             ppq: view.ppq,
             tempo_bpm: view.tempo_bpm,
             section_starts: analysis.sections.iter().map(|s| s.tick_start).collect(),
+            tag_count: 0,
+            initial_tags: 0,
         };
         let vp = Viewport::new(&ctx, view.high_pitch);
         Self {

@@ -34,6 +34,13 @@ pub struct ViewContext {
     pub tempo_bpm: f64,
     /// Onset tick of each named section, in playback order.
     pub section_starts: Vec<u32>,
+    /// Length of the tag palette the shell exposes (0 = no record attached,
+    /// tag intents are no-ops). The palette itself is shell-side; the
+    /// viewport sees only indices (ADR-0016).
+    pub tag_count: u8,
+    /// Bitmask of palette indices set on the loaded record, seeding
+    /// [`Viewport::tags`].
+    pub initial_tags: u32,
 }
 
 /// A curation decision pending on the viewed chunk (S8).
@@ -72,6 +79,11 @@ pub struct Viewport {
     /// Inspector dock scroll offset in rows. Renderers clamp it to their own
     /// content overflow at draw time; the reducer only steps and resets it.
     pub inspector_scroll: u16,
+    /// Cursor into the shell's tag palette.
+    pub tag_cursor: u8,
+    /// Membership bitmask over the palette: bit `i` set = tag `i` on the
+    /// chunk. Seeded from [`ViewContext::initial_tags`].
+    pub tags: u32,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -110,6 +122,10 @@ pub enum Intent {
     Approve,
     /// Mark the viewed chunk rejected; repeating it clears the decision.
     Reject,
+    /// Move the tag cursor to the next palette entry (wraps).
+    TagNext,
+    /// Toggle the cursor's tag on the chunk; repeating it untoggles.
+    TagToggle,
 }
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
@@ -140,6 +156,8 @@ impl Viewport {
             show_inspector: true,
             decision: None,
             inspector_scroll: 0,
+            tag_cursor: 0,
+            tags: ctx.initial_tags,
         }
     }
 
@@ -200,6 +218,16 @@ impl Viewport {
             }
             Intent::Approve => self.toggle_decision(CurationDecision::Approve),
             Intent::Reject => self.toggle_decision(CurationDecision::Reject),
+            Intent::TagNext => {
+                if ctx.tag_count > 0 {
+                    self.tag_cursor = self.tag_cursor.wrapping_add(1) % ctx.tag_count;
+                }
+            }
+            Intent::TagToggle => {
+                if ctx.tag_count > 0 {
+                    self.tags ^= 1_u32 << self.tag_cursor;
+                }
+            }
         }
         Step::Continue
     }
@@ -277,6 +305,8 @@ mod tests {
             ppq: 480,
             tempo_bpm: 120.0,
             section_starts: vec![0, 960],
+            tag_count: 0,
+            initial_tags: 0,
         }
     }
 
