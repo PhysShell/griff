@@ -471,6 +471,7 @@ mod tests {
             inspector_scroll: 0,
             tag_cursor: 0,
             tags: 0,
+            renaming: false,
         };
         (view, analysis, vp)
     }

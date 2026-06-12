@@ -101,6 +101,7 @@ impl App {
             section_starts: analysis.sections.iter().map(|s| s.tick_start).collect(),
             tag_count: 0,
             initial_tags: 0,
+            has_record: false,
         };
         let vp = Viewport::new(&ctx, view.high_pitch);
         Self {

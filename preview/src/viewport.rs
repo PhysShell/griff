@@ -41,6 +41,9 @@ pub struct ViewContext {
     /// Bitmask of palette indices set on the loaded record, seeding
     /// [`Viewport::tags`].
     pub initial_tags: u32,
+    /// Whether a chunk record is attached (`--record`): gates record-editing
+    /// intents such as [`Intent::RenameStart`].
+    pub has_record: bool,
 }
 
 /// A curation decision pending on the viewed chunk (S8).
@@ -84,6 +87,9 @@ pub struct Viewport {
     /// Membership bitmask over the palette: bit `i` set = tag `i` on the
     /// chunk. Seeded from [`ViewContext::initial_tags`].
     pub tags: u32,
+    /// Whether the rename mode is active. The text buffer itself is
+    /// frontend-local; the core keeps only the mode.
+    pub renaming: bool,
 }
 
 /// A semantic, device-independent UI action. Frontends map raw input to these;
@@ -126,6 +132,10 @@ pub enum Intent {
     TagNext,
     /// Toggle the cursor's tag on the chunk; repeating it untoggles.
     TagToggle,
+    /// Enter the rename mode (no-op without an attached record).
+    RenameStart,
+    /// Leave the rename mode (the frontend commits or cancels its buffer).
+    RenameEnd,
 }
 
 /// The outcome of reducing an [`Intent`]: whether the app should keep running.
@@ -158,6 +168,7 @@ impl Viewport {
             inspector_scroll: 0,
             tag_cursor: 0,
             tags: ctx.initial_tags,
+            renaming: false,
         }
     }
 
@@ -228,6 +239,12 @@ impl Viewport {
                     self.tags ^= 1_u32 << self.tag_cursor;
                 }
             }
+            Intent::RenameStart => {
+                if ctx.has_record {
+                    self.renaming = true;
+                }
+            }
+            Intent::RenameEnd => self.renaming = false,
         }
         Step::Continue
     }
@@ -307,6 +324,7 @@ mod tests {
             section_starts: vec![0, 960],
             tag_count: 0,
             initial_tags: 0,
+            has_record: false,
         }
     }
 
