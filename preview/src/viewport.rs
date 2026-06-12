@@ -280,6 +280,59 @@ mod tests {
         }
     }
 
+    // TDD red phase: tag editing (S8 curation slice 3). The viewport keeps
+    // UI-level tag state only — a cursor over an opaque palette and a
+    // membership bitmask, both seeded from the context; the shell maps
+    // indices to schema names at the persistence seam (ADR-0016).
+    // References fields and intents that do not exist yet, so the crate
+    // fails to compile until the green step.
+
+    fn tag_ctx() -> ViewContext {
+        ViewContext {
+            tag_count: 4,
+            initial_tags: 0b0101,
+            ..ctx()
+        }
+    }
+
+    #[test]
+    fn new_seeds_tags_from_the_context() {
+        let c = tag_ctx();
+        let vp = Viewport::new(&c, 52);
+        assert_eq!(vp.tags, 0b0101, "the record's tags arrive as a bitmask");
+        assert_eq!(vp.tag_cursor, 0);
+    }
+
+    #[test]
+    fn tag_cursor_cycles_through_the_palette() {
+        let c = tag_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        for expected in [1, 2, 3, 0] {
+            vp.apply(Intent::TagNext, &c);
+            assert_eq!(vp.tag_cursor, expected, "wraps at tag_count");
+        }
+    }
+
+    #[test]
+    fn tag_toggle_flips_the_cursor_bit() {
+        let c = tag_ctx();
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::TagToggle, &c);
+        assert_eq!(vp.tags, 0b0100, "bit 0 cleared (repeat-to-undo idiom)");
+        vp.apply(Intent::TagToggle, &c);
+        assert_eq!(vp.tags, 0b0101, "toggled back");
+    }
+
+    #[test]
+    fn tag_intents_are_noops_without_a_palette() {
+        let c = ctx(); // tag_count = 0: no record attached
+        let mut vp = Viewport::new(&c, 52);
+        vp.apply(Intent::TagNext, &c);
+        vp.apply(Intent::TagToggle, &c);
+        assert_eq!(vp.tag_cursor, 0);
+        assert_eq!(vp.tags, 0);
+    }
+
     // TDD red phase: the scrollable inspector (the S8 follow-up recorded
     // with the PR #38 liveness decision). References a field and intents
     // that do not exist yet, so the crate fails to compile until green.
