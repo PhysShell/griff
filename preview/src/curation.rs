@@ -36,6 +36,8 @@ pub enum CurationError {
     ParseFailed,
     /// A tag name does not match any schema variant.
     UnknownTag,
+    /// A rename would leave the record without a title.
+    EmptyTitle,
 }
 
 /// The full tag palette in wire casing: one entry per [`SwancoreTag`]
@@ -64,6 +66,22 @@ pub fn set_tags(json: &str, names: &[String]) -> Result<String, CurationError> {
                 .map_err(|_| CurationError::UnknownTag)
         })
         .collect::<Result<Vec<SwancoreTag>, CurationError>>()?;
+    serde_json::to_string(&meta).map_err(|_| CurationError::ParseFailed)
+}
+
+/// Rewrites the record's `title` to `title` (trimmed); every other field
+/// passes through untouched.
+///
+/// # Errors
+/// [`CurationError::ParseFailed`] when `json` is not a `ChunkMeta` record;
+/// [`CurationError::EmptyTitle`] when the trimmed title is empty.
+pub fn rename_record(json: &str, title: &str) -> Result<String, CurationError> {
+    let mut meta: ChunkMeta = serde_json::from_str(json).map_err(|_| CurationError::ParseFailed)?;
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err(CurationError::EmptyTitle);
+    }
+    meta.title = trimmed.to_owned();
     serde_json::to_string(&meta).map_err(|_| CurationError::ParseFailed)
 }
 
