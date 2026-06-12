@@ -127,3 +127,61 @@ fn garbage_summary_input_fails() {
         CurationError::ParseFailed
     );
 }
+
+// ── tag editing seam (S8 curation slice 3) ──────────────────────────────────
+// TDD red phase: the tag palette and the tags writer. References
+// `tag_palette`, `set_tags`, and `CurationError::UnknownTag`, which do not
+// exist yet, so the suite fails to compile until the green step.
+
+#[test]
+fn tag_palette_covers_every_schema_variant() {
+    use griff_preview::curation::tag_palette;
+
+    let palette = tag_palette();
+    assert_eq!(
+        palette.len(),
+        SwancoreTag::all_variants().len(),
+        "one palette entry per schema variant"
+    );
+    for (name, variant) in palette.iter().zip(SwancoreTag::all_variants()) {
+        let parsed: SwancoreTag = serde_json::from_value(serde_json::Value::String(name.clone()))
+            .expect("every palette name parses back");
+        assert_eq!(parsed, *variant, "palette order mirrors all_variants");
+    }
+    assert!(palette.contains(&"clean_riff".to_owned()));
+}
+
+#[test]
+fn set_tags_rewrites_only_the_tags() {
+    use griff_preview::curation::set_tags;
+
+    let json = serde_json::to_string(&record()).expect("serialize");
+    let updated =
+        set_tags(&json, &["maj7".to_owned(), "power_chord".to_owned()]).expect("update ok");
+    let back: ChunkMeta = serde_json::from_str(&updated).expect("updated record parses");
+
+    let mut expected = record();
+    expected.tags = vec![SwancoreTag::Maj7, SwancoreTag::PowerChord];
+    assert_eq!(back, expected, "only the tags field changes");
+}
+
+#[test]
+fn set_tags_rejects_an_unknown_name() {
+    use griff_preview::curation::set_tags;
+
+    let json = serde_json::to_string(&record()).expect("serialize");
+    assert_eq!(
+        set_tags(&json, &["not_a_tag".to_owned()]).unwrap_err(),
+        CurationError::UnknownTag
+    );
+}
+
+#[test]
+fn set_tags_on_garbage_input_fails() {
+    use griff_preview::curation::set_tags;
+
+    assert_eq!(
+        set_tags("not json", &[]).unwrap_err(),
+        CurationError::ParseFailed
+    );
+}

@@ -469,6 +469,8 @@ mod tests {
             show_inspector: true,
             decision: None,
             inspector_scroll: 0,
+            tag_cursor: 0,
+            tags: 0,
         };
         (view, analysis, vp)
     }

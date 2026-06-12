@@ -1047,3 +1047,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   shrinking or inlining the digest (three lines is already minimal, and
   hiding tags would defeat the slice's purpose). Accepted: on very short
   terminals the digest itself clips first; PgUp/PgDn (PR #41) reaches it.
+
+- 2026-06-12 — In the context of the S8 curation tag slice
+  (`preview/src/viewport.rs` / `curation.rs`), facing how tag editing
+  crosses the ADR-0016 boundary (the interaction core holds no domain
+  types, but `SwancoreTag` has 27 variants), we decided for **opaque
+  integers in the core** — `ViewContext.tag_count` + a `u32` membership
+  bitmask and a `u8` cursor, with the palette
+  (`curation::tag_palette`, derived from `SwancoreTag::all_variants` via
+  serde) living shell-side and indices mapped to names only at the
+  persistence seam (`set_tags`) — and against mirroring the tag enum
+  into the core (27 UI variants to keep in sync), and against shell-side
+  toggle state (the egui frontend would re-implement the interaction).
+  Accepted: the bitmask caps the palette at 32 tags; a schema growing
+  past that needs a wider mask, and `tag_palette`'s length test will
+  flag it.

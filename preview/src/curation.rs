@@ -10,7 +10,7 @@
 //! overwritten (re-curation is the established healing path). Pure; the
 //! frontend shell owns the file I/O.
 
-use griff_core::corpus::{ChunkMeta, ReviewerDecision};
+use griff_core::corpus::{ChunkMeta, ReviewerDecision, SwancoreTag};
 
 use crate::viewport::CurationDecision;
 
@@ -34,6 +34,37 @@ pub struct RecordSummary {
 pub enum CurationError {
     /// The input is not a parseable `ChunkMeta` record.
     ParseFailed,
+    /// A tag name does not match any schema variant.
+    UnknownTag,
+}
+
+/// The full tag palette in wire casing: one entry per [`SwancoreTag`]
+/// variant, in `all_variants` order. Renderers cycle this list; the names
+/// are derived via serde, so they cannot drift from the schema.
+#[must_use]
+pub fn tag_palette() -> Vec<String> {
+    SwancoreTag::all_variants()
+        .iter()
+        .filter_map(|t| wire_name(serde_json::to_value(t)))
+        .collect()
+}
+
+/// Rewrites the record's `tags` to exactly `names` (wire casing, in order);
+/// every other field passes through untouched.
+///
+/// # Errors
+/// [`CurationError::ParseFailed`] when `json` is not a `ChunkMeta` record;
+/// [`CurationError::UnknownTag`] when a name matches no schema variant.
+pub fn set_tags(json: &str, names: &[String]) -> Result<String, CurationError> {
+    let mut meta: ChunkMeta = serde_json::from_str(json).map_err(|_| CurationError::ParseFailed)?;
+    meta.tags = names
+        .iter()
+        .map(|n| {
+            serde_json::from_value(serde_json::Value::String(n.clone()))
+                .map_err(|_| CurationError::UnknownTag)
+        })
+        .collect::<Result<Vec<SwancoreTag>, CurationError>>()?;
+    serde_json::to_string(&meta).map_err(|_| CurationError::ParseFailed)
 }
 
 /// Digests a serialized `ChunkMeta` record into a [`RecordSummary`].

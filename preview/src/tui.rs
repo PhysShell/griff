@@ -33,7 +33,7 @@ use ratatui::{DefaultTerminal, Frame, Terminal};
 use griff_core::classify::BarClass;
 
 use crate::analysis::Analysis;
-use crate::curation::RecordSummary;
+use crate::curation::{tag_palette, RecordSummary};
 use crate::scene::{resolve, CellRole, GridSize, Scene, SceneCell, GUTTER};
 use crate::view::PianoRollView;
 use crate::viewport::{CurationDecision, Intent, Step, ViewContext, Viewport};
@@ -83,6 +83,8 @@ pub struct App {
     analysis: Analysis,
     file: String,
     record: Option<RecordSummary>,
+    /// The tag palette in wire casing; the viewport cycles its indices.
+    palette: Vec<String>,
     vp: Viewport,
     ctx: ViewContext,
 }
@@ -97,6 +99,8 @@ impl App {
             ppq: view.ppq,
             tempo_bpm: view.tempo_bpm,
             section_starts: analysis.sections.iter().map(|s| s.tick_start).collect(),
+            tag_count: 0,
+            initial_tags: 0,
         };
         let vp = Viewport::new(&ctx, view.high_pitch);
         Self {
@@ -104,15 +108,48 @@ impl App {
             analysis,
             file,
             record: None,
+            palette: Vec::new(),
             vp,
             ctx,
         }
     }
 
     /// Attaches the digest of the `--record` chunk so the inspector shows
-    /// the record's current curation state (title, reviewer, tags).
+    /// the record's current curation state (title, reviewer, tags), and
+    /// seeds the tag-editing state: the palette becomes cyclable and the
+    /// record's tags arrive in the viewport as a bitmask.
     pub fn set_record(&mut self, record: RecordSummary) {
+        self.palette = tag_palette();
+        let mask = self
+            .palette
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| record.tags.contains(name))
+            .fold(0_u32, |m, (i, _)| m | (1_u32 << i));
+        self.ctx.tag_count = u8::try_from(self.palette.len()).unwrap_or(u8::MAX);
+        self.ctx.initial_tags = mask;
+        self.vp.tags = mask;
         self.record = Some(record);
+    }
+
+    /// The live tag set in palette order when it differs from the record's,
+    /// or `None` when nothing changed (nothing to persist).
+    #[must_use]
+    pub fn tags_if_changed(&self) -> Option<Vec<String>> {
+        if self.record.is_none() || self.vp.tags == self.ctx.initial_tags {
+            return None;
+        }
+        Some(self.live_tags())
+    }
+
+    /// The viewport's tag bitmask mapped back to palette names, in order.
+    fn live_tags(&self) -> Vec<String> {
+        self.palette
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.vp.tags & (1_u32 << i) != 0)
+            .map(|(_, name)| name.clone())
+            .collect()
     }
 
     /// Renders one frame into a `TestBackend` of the given size and returns the
@@ -170,6 +207,8 @@ impl App {
             KeyCode::Char('0') | KeyCode::Home => Intent::Home,
             KeyCode::Char('a') => Intent::Approve,
             KeyCode::Char('x') => Intent::Reject,
+            KeyCode::Char('t') => Intent::TagNext,
+            KeyCode::Char('T') => Intent::TagToggle,
             _ => return None,
         })
     }
@@ -280,8 +319,16 @@ impl App {
             "review {}",
             rec.reviewer.as_deref().unwrap_or("—")
         )));
-        if !rec.tags.is_empty() {
-            lines.push(Line::from(format!("tags  {}", rec.tags.join(" "))));
+        let live = self.live_tags();
+        if !live.is_empty() {
+            lines.push(Line::from(format!("tags  {}", live.join(" "))));
+        }
+        if let Some(name) = self.palette.get(usize::from(self.vp.tag_cursor)) {
+            let set = self.vp.tags & (1_u32 << self.vp.tag_cursor) != 0;
+            lines.push(Line::from(format!(
+                "tag▸ {name} [{}]",
+                if set { "x" } else { " " }
+            )));
         }
     }
 
@@ -398,7 +445,8 @@ impl App {
 /// Renders the static footer hint line.
 fn render_footer(area: Rect, frame: &mut Frame<'_>) {
     let hint =
-        "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x curate";
+        "q quit · space play · ←/→ scroll · ↑/↓ pitch · +/- zoom · [/]/tab section · a/x curate \
+· t/T tag";
     frame.render_widget(
         Paragraph::new(Line::styled(
             hint,
@@ -530,18 +578,23 @@ fn buffer_lines(buf: &Buffer) -> Vec<String> {
 ///
 /// # Errors
 /// Propagates terminal setup, draw, and input errors from `ratatui`.
+/// What the curator left behind on quit, for the shell to persist: the
+/// pending decision (if any) and the tag set (when it changed).
+pub type CurationOutcome = (Option<CurationDecision>, Option<Vec<String>>);
+
 /// Runs the interactive TUI to completion and returns the curation decision
-/// pending when the user quit (if any), for the shell to persist.
+/// pending when the user quit (if any) plus the tag set when it changed,
+/// for the shell to persist.
 ///
 /// # Errors
 /// Propagates terminal I/O errors from `ratatui`.
-pub fn run(mut app: App) -> io::Result<Option<CurationDecision>> {
+pub fn run(mut app: App) -> io::Result<CurationOutcome> {
     let mut terminal = ratatui::try_init()?;
     let size = terminal.size()?;
     app.fit(size.width);
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
-    result.map(|()| app.vp.decision)
+    result.map(|()| (app.vp.decision, app.tags_if_changed()))
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
@@ -705,6 +758,71 @@ mod tests {
         app.vp.apply(Intent::InspectorScrollUp, &app.ctx.clone());
         let up = app.snapshot(80, 12).expect("snapshot");
         assert_ne!(bottom, up, "one PgUp from the bottom moves the dock");
+    }
+
+    // TDD red phase: tag editing reaches the TUI (S8 curation slice 3).
+    // 't' cycles the palette cursor, 'T' toggles the tag, the record block
+    // shows the live tag set and the cursor, and the changed set is
+    // surfaced for quit-time persistence. References items that do not
+    // exist yet, so the crate fails to compile until the green step.
+
+    #[test]
+    fn tag_keys_map_to_tag_intents() {
+        assert_eq!(App::key_intent(KeyCode::Char('t')), Some(Intent::TagNext));
+        assert_eq!(App::key_intent(KeyCode::Char('T')), Some(Intent::TagToggle));
+    }
+
+    #[test]
+    fn set_record_seeds_the_tag_state() {
+        use crate::curation::{tag_palette, RecordSummary};
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: vec!["clean_riff".to_string(), "maj7".to_string()],
+        });
+        assert_eq!(
+            usize::from(app.ctx.tag_count),
+            tag_palette().len(),
+            "the full palette is cyclable"
+        );
+        assert_eq!(app.vp.tags & 0b1, 0b1, "clean_riff (palette[0]) is set");
+        assert_eq!(
+            app.tags_if_changed(),
+            None,
+            "untouched set persists nothing"
+        );
+    }
+
+    #[test]
+    fn toggling_a_tag_updates_the_dock_and_the_outcome() {
+        use crate::curation::RecordSummary;
+
+        let mut app = demo_app();
+        app.set_record(RecordSummary {
+            title: "Curated".to_string(),
+            reviewer: None,
+            tags: vec!["clean_riff".to_string(), "maj7".to_string()],
+        });
+        let before = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(
+            before.contains("tag▸ clean_riff"),
+            "the cursor line names palette[0]"
+        );
+
+        // Cursor sits on clean_riff; toggling clears it (repeat to undo).
+        app.vp.apply(Intent::TagToggle, &app.ctx.clone());
+        let after = app.snapshot(80, 24).expect("snapshot").join("\n");
+        assert!(
+            !after.contains("tags  clean_riff"),
+            "the live tags line drops the cleared tag"
+        );
+        assert_eq!(
+            app.tags_if_changed(),
+            Some(vec!["maj7".to_string()]),
+            "the changed set is surfaced for persistence"
+        );
     }
 
     #[test]
