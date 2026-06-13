@@ -74,9 +74,9 @@ pub struct NormVoice {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NormNote {
     /// Absolute onset tick.
-    pub onset: u32,
+    pub onset_tick: u32,
     /// Duration in ticks.
-    pub dur: u32,
+    pub dur_tick: u32,
     /// MIDI pitch (0–127).
     pub pitch: u8,
     /// MIDI velocity (0–127).
@@ -164,7 +164,7 @@ fn voice_notes_in_bar(voice: &Voice, bar: &MasterBar) -> Vec<NormNote> {
 
     notes.sort_by_key(|note| {
         (
-            note.onset,
+            note.onset_tick,
             note.pitch,
             note.string.unwrap_or(0),
             note.fret.unwrap_or(0),
@@ -187,8 +187,8 @@ fn norm_note(note: &AtomNote, spans: &[&TechniqueSpan]) -> NormNote {
     span_names.sort();
     span_names.dedup();
     NormNote {
-        onset,
-        dur: note.duration.0,
+        onset_tick: onset,
+        dur_tick: note.duration.0,
         pitch: note.pitch.0,
         velocity: note.velocity.0,
         string,

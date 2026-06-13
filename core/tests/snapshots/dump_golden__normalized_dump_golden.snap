@@ -32,8 +32,8 @@ expression: json
               "id": 0,
               "notes": [
                 {
-                  "onset": 0,
-                  "dur": 480,
+                  "onset_tick": 0,
+                  "dur_tick": 480,
                   "pitch": 64,
                   "velocity": 80,
                   "string": 1,
@@ -46,8 +46,8 @@ expression: json
                   ]
                 },
                 {
-                  "onset": 480,
-                  "dur": 480,
+                  "onset_tick": 480,
+                  "dur_tick": 480,
                   "pitch": 67,
                   "velocity": 90,
                   "spans": [
