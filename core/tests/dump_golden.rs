@@ -89,3 +89,62 @@ fn normalized_dump_golden() {
     let json = serde_json::to_string_pretty(&normalized).expect("serialize");
     insta::assert_snapshot!(json);
 }
+
+/// One note in a bar, as a `Single` event group.
+fn one_note_group(onset: u32, value: u8) -> EventGroup {
+    EventGroup {
+        kind: EventGroupKind::Single,
+        atoms: vec![AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(onset),
+            duration: Ticks(480),
+            pitch: pitch(value),
+            velocity: Velocity::new(80).expect("valid velocity"),
+            marks: NoteMarks::empty(),
+            position: None,
+        })],
+        technique_spans: vec![],
+    }
+}
+
+#[test]
+fn bar_voices_sorted_by_id_regardless_of_import_order() {
+    let score = Score {
+        ticks_per_quarter: 480,
+        master_bars: vec![MasterBar {
+            index: 0,
+            tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered range"),
+            time_signature: TimeSignature::new(4, 4).expect("valid meter"),
+            tempo: Tempo::new(120.0).expect("valid tempo"),
+        }],
+        tracks: vec![Track {
+            name: None,
+            channel: 0,
+            // Deliberately out of id order: a deterministic dump must not echo it.
+            voices: vec![
+                Voice {
+                    id: 1,
+                    event_groups: vec![one_note_group(0, 60)],
+                },
+                Voice {
+                    id: 0,
+                    event_groups: vec![one_note_group(480, 62)],
+                },
+            ],
+            tuning: Tuning::standard_e(),
+        }],
+        source_meta: None,
+        loss: griff_core::score::LossReport::new(),
+    };
+
+    let normalized = normalize(&score);
+    let ids: Vec<u8> = normalized.tracks[0].bars[0]
+        .voices
+        .iter()
+        .map(|voice| voice.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec![0, 1],
+        "bar voices must be sorted by id, not by import order"
+    );
+}
