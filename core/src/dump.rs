@@ -15,7 +15,10 @@
 
 use serde::Serialize;
 
-use crate::score::Score;
+use crate::{
+    event::{NoteMark, SpanTechnique},
+    score::{AtomEvent, AtomNote, ImportWarning, MasterBar, Score, TechniqueSpan, Track, Voice},
+};
 
 /// A normalized, serializable projection of a whole [`Score`] (ADR-0020).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -94,6 +97,140 @@ pub struct NormNote {
 
 /// Projects a [`Score`] into its [`NormalizedScore`] (ADR-0020).
 #[must_use]
-pub fn normalize(_score: &Score) -> NormalizedScore {
-    unimplemented!("dump::normalize — green step")
+pub fn normalize(score: &Score) -> NormalizedScore {
+    let tracks = score
+        .tracks
+        .iter()
+        .map(|track| NormTrack {
+            name: track.name.clone(),
+            channel: track.channel,
+            tuning: track.tuning.open_strings().iter().map(|p| p.0).collect(),
+            bars: score
+                .master_bars
+                .iter()
+                .map(|bar| norm_bar(track, bar))
+                .collect(),
+        })
+        .collect();
+    let loss = score.loss.warnings.iter().map(warning_label).collect();
+    NormalizedScore {
+        ppqn: score.ticks_per_quarter,
+        loss,
+        tracks,
+    }
+}
+
+/// Projects one track's content within one master bar.
+fn norm_bar(track: &Track, bar: &MasterBar) -> NormBar {
+    let voices = track
+        .voices
+        .iter()
+        .filter_map(|voice| {
+            let notes = voice_notes_in_bar(voice, bar);
+            (!notes.is_empty()).then_some(NormVoice { id: voice.id, notes })
+        })
+        .collect();
+    NormBar {
+        index: bar.index,
+        time_sig: [bar.time_signature.numerator, bar.time_signature.denominator],
+        tempo: bar.tempo.0,
+        start_tick: bar.tick_range.start.0,
+        end_tick: bar.tick_range.end.0,
+        voices,
+    }
+}
+
+/// Collects and canonically sorts a voice's notes whose onset falls in `bar`.
+fn voice_notes_in_bar(voice: &Voice, bar: &MasterBar) -> Vec<NormNote> {
+    let spans: Vec<&TechniqueSpan> = voice
+        .event_groups
+        .iter()
+        .flat_map(|group| group.technique_spans.iter())
+        .collect();
+
+    let mut notes: Vec<NormNote> = voice
+        .event_groups
+        .iter()
+        .flat_map(|group| group.atoms.iter())
+        .filter_map(|atom| match atom {
+            AtomEvent::Note(note) => {
+                let onset = note.absolute_start.0;
+                (onset >= bar.tick_range.start.0 && onset < bar.tick_range.end.0)
+                    .then(|| norm_note(note, &spans))
+            }
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+
+    notes.sort_by_key(|note| {
+        (
+            note.onset,
+            note.pitch,
+            note.string.unwrap_or(0),
+            note.fret.unwrap_or(0),
+        )
+    });
+    notes
+}
+
+/// Projects one note, attaching the spans whose range covers its onset.
+fn norm_note(note: &AtomNote, spans: &[&TechniqueSpan]) -> NormNote {
+    let (string, fret) = note.position.map_or((None, None), |pos| {
+        (Some(pos.position.string), Some(pos.position.fret))
+    });
+    let onset = note.absolute_start.0;
+    let mut span_names: Vec<String> = spans
+        .iter()
+        .filter(|span| onset >= span.tick_range.start.0 && onset < span.tick_range.end.0)
+        .map(|span| span_name(span.technique).to_owned())
+        .collect();
+    span_names.sort();
+    span_names.dedup();
+    NormNote {
+        onset,
+        dur: note.duration.0,
+        pitch: note.pitch.0,
+        velocity: note.velocity.0,
+        string,
+        fret,
+        marks: note.marks.iter().map(|m| mark_name(m).to_owned()).collect(),
+        spans: span_names,
+    }
+}
+
+/// Stable wire label for a per-note mark.
+const fn mark_name(mark: NoteMark) -> &'static str {
+    match mark {
+        NoteMark::Accent => "accent",
+        NoteMark::Ghost => "ghost",
+        NoteMark::Staccato => "staccato",
+        NoteMark::DeadNote => "dead_note",
+        NoteMark::HarmonicNatural => "harmonic_natural",
+        NoteMark::HarmonicPinch => "harmonic_pinch",
+        NoteMark::Tap => "tap",
+    }
+}
+
+/// Stable wire label for a spanning technique.
+const fn span_name(technique: SpanTechnique) -> &'static str {
+    match technique {
+        SpanTechnique::Slide => "slide",
+        SpanTechnique::Bend => "bend",
+        SpanTechnique::Legato => "legato",
+        SpanTechnique::PalmMute => "palm_mute",
+        SpanTechnique::HammerOn => "hammer_on",
+        SpanTechnique::PullOff => "pull_off",
+        SpanTechnique::Vibrato => "vibrato",
+    }
+}
+
+/// Stable wire label for an import warning.
+fn warning_label(warning: &ImportWarning) -> String {
+    match warning {
+        ImportWarning::TrackNameInvalidUtf8 { track_index } => {
+            format!("track_name_invalid_utf8:{track_index}")
+        }
+        ImportWarning::SmpteTimingUnsupported => "smpte_timing_unsupported".to_owned(),
+        ImportWarning::Other(message) => format!("other:{message}"),
+    }
 }

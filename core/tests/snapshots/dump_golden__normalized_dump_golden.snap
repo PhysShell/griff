@@ -1,0 +1,64 @@
+---
+source: core/tests/dump_golden.rs
+expression: json
+---
+{
+  "ppqn": 480,
+  "loss": [],
+  "tracks": [
+    {
+      "name": "Guitar",
+      "channel": 0,
+      "tuning": [
+        64,
+        59,
+        55,
+        50,
+        45,
+        40
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "time_sig": [
+            4,
+            4
+          ],
+          "tempo": 120.0,
+          "start_tick": 0,
+          "end_tick": 1920,
+          "voices": [
+            {
+              "id": 0,
+              "notes": [
+                {
+                  "onset": 0,
+                  "dur": 480,
+                  "pitch": 64,
+                  "velocity": 80,
+                  "string": 1,
+                  "fret": 0,
+                  "marks": [
+                    "accent"
+                  ],
+                  "spans": [
+                    "palm_mute"
+                  ]
+                },
+                {
+                  "onset": 480,
+                  "dur": 480,
+                  "pitch": 67,
+                  "velocity": 90,
+                  "spans": [
+                    "palm_mute"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
