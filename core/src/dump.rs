@@ -122,7 +122,7 @@ pub fn normalize(score: &Score) -> NormalizedScore {
 
 /// Projects one track's content within one master bar.
 fn norm_bar(track: &Track, bar: &MasterBar) -> NormBar {
-    let voices = track
+    let mut voices: Vec<NormVoice> = track
         .voices
         .iter()
         .filter_map(|voice| {
@@ -130,6 +130,8 @@ fn norm_bar(track: &Track, bar: &MasterBar) -> NormBar {
             (!notes.is_empty()).then_some(NormVoice { id: voice.id, notes })
         })
         .collect();
+    // Canonical order independent of `track.voices` import order (ADR-0020).
+    voices.sort_by_key(|voice| voice.id);
     NormBar {
         index: bar.index,
         time_sig: [bar.time_signature.numerator, bar.time_signature.denominator],
