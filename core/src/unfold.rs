@@ -27,11 +27,40 @@ const MAX_EXPANSION: usize = 64;
 /// preceding open repeats from the song start.
 #[must_use]
 pub fn played_bar_order(score: &Score) -> Vec<usize> {
-    // Stub (red phase): the written order, ignoring repeats. The four expansion
-    // tests fail against this until the real projection lands.
     let bar_count = score.master_bars.len();
-    let _cap = bar_count.saturating_mul(MAX_EXPANSION);
-    (0..bar_count).collect()
+    if bar_count == 0 {
+        return Vec::new();
+    }
+    let cap = bar_count.saturating_mul(MAX_EXPANSION);
+    let mut order: Vec<usize> = Vec::new();
+    // Passes already taken through each close bar (indexed by bar), so a
+    // repeated section is emitted exactly `play_count` times.
+    let mut passes: Vec<u8> = vec![0; bar_count];
+    // The bar a `:|` jumps back to: the most recent `|:`, or the song start.
+    let mut section_start = 0_usize;
+    let mut cursor = 0_usize;
+
+    while cursor < bar_count && order.len() < cap {
+        order.push(cursor);
+        let Some(bar) = score.master_bars.get(cursor) else {
+            break;
+        };
+        if bar.repeat.start {
+            section_start = cursor;
+        }
+        if bar.repeat.closes() {
+            if let Some(taken) = passes.get_mut(cursor) {
+                // This arrival is one pass through the close.
+                *taken = taken.saturating_add(1);
+                if *taken < bar.repeat.play_count {
+                    cursor = section_start;
+                    continue;
+                }
+            }
+        }
+        cursor = cursor.saturating_add(1);
+    }
+    order
 }
 
 #[cfg(test)]
