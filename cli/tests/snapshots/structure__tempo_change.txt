@@ -1,0 +1,12 @@
+$ griff structure <OUT>
+exit: 0
+--- stdout ---
+PPQN: 480
+Track 0 "Lead"  3 bars
+  pattern period : 1 bars (1920t)
+  sub-bar period : none
+  repeatability  : 1.00   variation 0.00
+  loopability    : 0.79
+  complexity     : 0.33
+  character      : looped
+--- stderr ---

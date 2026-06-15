@@ -66,6 +66,14 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Measure each track's structural character (S14): pattern period,
+    /// repeatability, loopability, and complexity — a "song map".
+    Structure {
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
+        #[arg(value_name = "FILE")]
+        path: PathBuf,
+    },
+
     /// Interactively curate a MIDI or Guitar Pro file into a corpus `ChunkMeta` JSON record.
     Curate {
         /// Path to the MIDI or Guitar Pro file to curate.
@@ -91,6 +99,7 @@ fn run() -> Result<(), CliError> {
         Command::Inspect { path, unfold } => cmd_inspect(&path, unfold),
         Command::Export { input, output } => cmd_export(&input, &output),
         Command::Classify { path } => cmd_classify(&path),
+        Command::Structure { path } => cmd_structure(&path),
         Command::Curate {
             path,
             output,
@@ -315,6 +324,61 @@ fn cmd_classify(path: &Path) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// Prints each track's S14 structure metrics — a "song map" (ADR-0015):
+/// pattern period, repeatability, loopability, complexity, and a coarse
+/// looped / through-composed / mixed character.
+fn cmd_structure(path: &Path) -> Result<(), CliError> {
+    let data = fs::read(path)?;
+    let score = import::import_score_auto(&data)?;
+
+    println!("PPQN: {}", score.ticks_per_quarter);
+    for (ti, track) in score.tracks.iter().enumerate() {
+        let name = track.name.as_deref().unwrap_or("<unnamed>");
+        match structure::measure_structure(&score, ti) {
+            Ok(metrics) => print_structure(ti, name, &metrics),
+            Err(err) => println!("Track {ti} \"{name}\" — cannot measure: {err:?}"),
+        }
+    }
+    Ok(())
+}
+
+/// Prints one track's structure metrics as a readable block (S14, ADR-0015).
+fn print_structure(ti: usize, name: &str, m: &structure::StructureMetrics) {
+    println!("Track {ti} \"{name}\"  {bars} bars", bars = m.bar_count);
+    match (
+        m.detected_pattern_period_bars,
+        m.detected_pattern_period_ticks,
+    ) {
+        (Some(bars), Some(ticks)) => println!("  pattern period : {bars} bars ({ticks}t)"),
+        _ => println!("  pattern period : none (through-composed)"),
+    }
+    match m.detected_subbar_period_ticks {
+        Some(ticks) => println!("  sub-bar period : {ticks}t"),
+        None => println!("  sub-bar period : none"),
+    }
+    println!(
+        "  repeatability  : {rep:.2}   variation {var:.2}",
+        rep = m.repeatability_score,
+        var = m.variation_score,
+    );
+    println!("  loopability    : {:.2}", m.loopability_score);
+    println!("  complexity     : {:.2}", m.structural_complexity);
+    println!("  character      : {}", structure_character(m));
+}
+
+/// A coarse, human-readable reading of the metrics: a span with a detected
+/// period and strong repeatability is looped; one with mostly distinct bars and
+/// no period is through-composed; anything between is mixed.
+fn structure_character(m: &structure::StructureMetrics) -> &'static str {
+    if m.detected_pattern_period_bars.is_some() && m.repeatability_score >= 0.5 {
+        "looped"
+    } else if m.detected_pattern_period_bars.is_none() && m.structural_complexity >= 0.7 {
+        "through-composed"
+    } else {
+        "mixed"
+    }
 }
 
 fn cmd_curate(path: &Path, output: Option<&Path>, ensemble: bool) -> Result<(), CliError> {

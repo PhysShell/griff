@@ -1,0 +1,19 @@
+$ griff structure <OUT>
+exit: 0
+--- stdout ---
+PPQN: 480
+Track 0 "Clean"  1 bars
+  pattern period : none (through-composed)
+  sub-bar period : none
+  repeatability  : 0.00   variation 1.00
+  loopability    : 0.92
+  complexity     : 1.00
+  character      : through-composed
+Track 1 "Solo"  1 bars
+  pattern period : none (through-composed)
+  sub-bar period : none
+  repeatability  : 0.00   variation 1.00
+  loopability    : 0.50
+  complexity     : 1.00
+  character      : through-composed
+--- stderr ---
