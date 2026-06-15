@@ -24,3 +24,4 @@ pub mod scoring;
 pub mod similarity;
 pub mod slice;
 pub mod structure;
+pub mod unfold;
