@@ -16,11 +16,13 @@
 //! via the BCFZ/BCFS container path in the `guitarpro` crate.  GP7+ (`.gp`,
 //! ZIP-based) is out of scope for S3.
 //!
-//! Every import produces a [`LossReport`] carried on [`Score`].  Losses
-//! include tied notes and percussion tracks. Co-occurring techniques are
-//! preserved (ADR-0018): harmonics/accent/ghost/staccato/dead-note become
-//! per-note `NoteMark`s and each spanning technique (hammer-on, slide, bend,
-//! palm-mute, vibrato) its own `TechniqueSpan`.
+//! Every import produces a [`LossReport`] carried on [`Score`].  Tied notes
+//! continue the preceding note on their string (extending its duration);
+//! percussion tracks and other unsupported note kinds remain losses.
+//! Co-occurring techniques are preserved (ADR-0018):
+//! harmonics/accent/ghost/staccato/dead-note become per-note `NoteMark`s and
+//! each spanning technique (hammer-on, slide, bend, palm-mute, vibrato) its own
+//! `TechniqueSpan`.
 
 use crate::{
     event::{
@@ -310,6 +312,7 @@ fn append_beat(
     let group_index = acc.groups.len();
     let mut atoms: Vec<AtomEvent> = Vec::new();
     let mut technique_spans: Vec<TechniqueSpan> = Vec::new();
+    let mut continued = false;
 
     for note in &beat.notes {
         match note.kind {
@@ -343,9 +346,12 @@ fn append_beat(
                     acc.held.insert(string, (group_index, atom_index));
                 }
             }
-            guitarpro::NoteType::Tie
-            | guitarpro::NoteType::Rest
-            | guitarpro::NoteType::Unknown(_) => {
+            guitarpro::NoteType::Tie => {
+                if extend_tie(note, dur_ticks, acc) {
+                    continued = true;
+                }
+            }
+            guitarpro::NoteType::Rest | guitarpro::NoteType::Unknown(_) => {
                 acc.loss.add(ImportWarning::Other(format!(
                     "GP note kind {kind:?} not fully supported; skipped",
                     kind = note.kind,
@@ -355,7 +361,10 @@ fn append_beat(
     }
 
     if atoms.is_empty() {
-        acc.groups.push(rest_group(start, duration));
+        // An all-tie beat has extended its held notes and needs no event itself.
+        if !continued {
+            acc.groups.push(rest_group(start, duration));
+        }
         return;
     }
 
@@ -369,6 +378,29 @@ fn append_beat(
         atoms,
         technique_spans,
     });
+}
+
+/// Continues a tied note onto the most recent note on its string by extending
+/// that note's duration. Returns `true` when a held note was found; otherwise
+/// records a loss (an orphan tie) and returns `false`.
+fn extend_tie(note: &guitarpro::Note, dur_ticks: u32, acc: &mut VoiceAccum<'_>) -> bool {
+    let location = u8::try_from(note.string)
+        .ok()
+        .and_then(|string| acc.held.get(&string).copied());
+    if let Some((group_index, atom_index)) = location {
+        if let Some(AtomEvent::Note(held)) = acc
+            .groups
+            .get_mut(group_index)
+            .and_then(|group| group.atoms.get_mut(atom_index))
+        {
+            held.duration = Ticks(held.duration.0.saturating_add(dur_ticks));
+            return true;
+        }
+    }
+    acc.loss.add(ImportWarning::Other(
+        "GP tie has no preceding note on its string; skipped".to_owned(),
+    ));
+    false
 }
 
 fn rest_group(start: Ticks, duration: Ticks) -> EventGroup {
