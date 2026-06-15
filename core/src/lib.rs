@@ -16,6 +16,7 @@ pub mod fretboard;
 pub mod generate;
 pub mod gesture;
 pub mod gp;
+pub mod import;
 pub mod midi;
 pub mod novelty;
 pub mod score;
