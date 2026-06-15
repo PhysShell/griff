@@ -29,8 +29,8 @@ use griff_core::{
     },
     generate::GenerationSeed,
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
-        TechniqueSpan, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
 };
@@ -72,6 +72,7 @@ fn score_with_part_a(bar_count: usize, pitches: &[u8]) -> Score {
                     denominator: 4,
                 },
                 tempo: Tempo::new(120.0).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
             }
         })
         .collect();
@@ -308,6 +309,7 @@ fn rhythm_lock_preserves_irregular_grid_and_meter_change() {
                 denominator: 4,
             },
             tempo: Tempo::new(120.0).expect("120 BPM"),
+            repeat: RepeatMarker::default(),
         },
         MasterBar {
             index: 1,
@@ -317,6 +319,7 @@ fn rhythm_lock_preserves_irregular_grid_and_meter_change() {
                 denominator: 4,
             },
             tempo: Tempo::new(120.0).expect("120 BPM"),
+            repeat: RepeatMarker::default(),
         },
     ];
     let onsets = [0_u32, 960, 1920, 2880];
@@ -452,6 +455,7 @@ fn analyze_part_includes_spanning_techniques() {
                 denominator: 4,
             },
             tempo: Tempo(120.0),
+            repeat: RepeatMarker::default(),
         }],
         tracks: vec![Track {
             name: None,

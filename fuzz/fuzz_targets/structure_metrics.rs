@@ -20,7 +20,8 @@ use libfuzzer_sys::fuzz_target;
 use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
+        Track, Voice,
     },
     slice::TickRange,
     structure::measure_structure,
@@ -49,6 +50,7 @@ fn build_score(bar_count: usize, ppqn: u16, pitches: &[u8]) -> Option<Score> {
             tick_range: TickRange::new(Ticks(start), Ticks(end)).ok()?,
             time_signature: TimeSignature::new(4, 4).ok()?,
             tempo: Tempo::new(120.0).ok()?,
+            repeat: RepeatMarker::default(),
         });
     }
 

@@ -28,7 +28,8 @@ use griff_core::{
         Velocity,
     },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, Track, Voice,
     },
     slice::TickRange,
 };
@@ -219,6 +220,7 @@ fn build_score(bars: Vec<BarSpec>) -> Score {
             tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(len))).unwrap(),
             time_signature: TimeSignature::new(num, den).unwrap(),
             tempo: Tempo::new(120.0).unwrap(),
+            repeat: RepeatMarker::default(),
         })
         .collect();
 

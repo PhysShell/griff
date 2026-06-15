@@ -16,7 +16,7 @@ use crate::{
     fretboard::{self, assign_inferred_positions, FingeringWeights},
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, ImportWarning, LossReport, MasterBar,
-        Score, SourceMeta, Track as ScoreTrack, Voice,
+        RepeatMarker, Score, SourceMeta, Track as ScoreTrack, Voice,
     },
     slice::TickRange,
 };
@@ -399,6 +399,7 @@ fn build_master_bars(
             tick_range,
             time_signature: sig,
             tempo,
+            repeat: RepeatMarker::default(),
         });
 
         index = index.checked_add(1).ok_or(MidiError::TickOverflow)?;
@@ -691,7 +692,7 @@ mod tests {
         event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
         score::{
             AtomEvent as ScoreAtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport,
-            MasterBar, Score, Track as ScoreTrack2, Voice,
+            MasterBar, RepeatMarker, Score, Track as ScoreTrack2, Voice,
         },
         slice::TickRange,
     };
@@ -917,6 +918,7 @@ mod tests {
                 tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("valid range"),
                 time_signature: TimeSignature::new(4, 4).expect("4/4 valid"),
                 tempo: Tempo::new(140.0).expect("140 BPM valid"),
+                repeat: RepeatMarker::default(),
             }],
             tracks: vec![mk_track(0), mk_track(1)],
             source_meta: None,

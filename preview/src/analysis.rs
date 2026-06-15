@@ -155,7 +155,7 @@ mod tests {
     use super::*;
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::score::{
-        AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Track, Voice,
+        AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Track, Voice,
     };
     use griff_core::slice::TickRange;
 
@@ -169,6 +169,7 @@ mod tests {
             tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
             time_signature: TimeSignature::new(4, 4).expect("4/4"),
             tempo: Tempo::new(120.0).expect("120 BPM"),
+            repeat: RepeatMarker::default(),
         };
         let atoms = pitches
             .iter()
