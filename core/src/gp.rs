@@ -16,11 +16,13 @@
 //! via the BCFZ/BCFS container path in the `guitarpro` crate.  GP7+ (`.gp`,
 //! ZIP-based) is out of scope for S3.
 //!
-//! Every import produces a [`LossReport`] carried on [`Score`].  Losses
-//! include tied notes and percussion tracks. Co-occurring techniques are
-//! preserved (ADR-0018): harmonics/accent/ghost/staccato/dead-note become
-//! per-note `NoteMark`s and each spanning technique (hammer-on, slide, bend,
-//! palm-mute, vibrato) its own `TechniqueSpan`.
+//! Every import produces a [`LossReport`] carried on [`Score`].  Tied notes
+//! continue the preceding note on their string (extending its duration);
+//! percussion tracks and other unsupported note kinds remain losses.
+//! Co-occurring techniques are preserved (ADR-0018):
+//! harmonics/accent/ghost/staccato/dead-note become per-note `NoteMark`s and
+//! each spanning technique (hammer-on, slide, bend, palm-mute, vibrato) its own
+//! `TechniqueSpan`.
 
 use crate::{
     event::{
@@ -35,6 +37,7 @@ use crate::{
 };
 use guitarpro::model::key_signature::Duration as GpDuration;
 use guitarpro::model::note::NoteEffect as GpNoteEffect;
+use std::collections::HashMap;
 
 /// Guitar Pro internal PPQN (pulses per quarter note).
 const GP_PPQN: u16 = 960;
@@ -242,6 +245,14 @@ fn build_gp_voice(
     loss: &mut LossReport,
 ) -> Option<Voice> {
     let mut event_groups: Vec<EventGroup> = Vec::new();
+    // Most recent sounding note per string — `string → (group index, atom index)`
+    // — so a tie can continue it (ADR-0018).
+    let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
+    let mut acc = VoiceAccum {
+        groups: &mut event_groups,
+        held: &mut held,
+        loss,
+    };
 
     for measure in &gp_track.measures {
         let Some(gp_voice) = measure.voices.get(voice_idx) else {
@@ -256,8 +267,7 @@ fn build_gp_voice(
                 .start
                 .map_or(cursor, |s| i64_to_u32_sat(s).saturating_sub(tick_offset));
 
-            let eg = build_event_group(beat, beat_start, dur_ticks, &gp_track.strings, loss);
-            event_groups.push(eg);
+            append_beat(beat, beat_start, dur_ticks, &gp_track.strings, &mut acc);
             cursor = cursor.saturating_add(dur_ticks);
         }
     }
@@ -273,13 +283,20 @@ fn build_gp_voice(
 
 // ── beat / event-group construction ──────────────────────────────────────────
 
-fn build_event_group(
+/// Mutable per-voice state threaded through beat construction.
+struct VoiceAccum<'a> {
+    groups: &'a mut Vec<EventGroup>,
+    held: &'a mut HashMap<u8, (usize, usize)>,
+    loss: &'a mut LossReport,
+}
+
+fn append_beat(
     beat: &guitarpro::Beat,
     beat_start: u32,
     dur_ticks: u32,
     strings: &[(i8, i8)],
-    loss: &mut LossReport,
-) -> EventGroup {
+    acc: &mut VoiceAccum<'_>,
+) {
     let start = Ticks(beat_start);
     let duration = Ticks(dur_ticks);
 
@@ -288,17 +305,20 @@ fn build_event_group(
         || beat.status == guitarpro::BeatStatus::Empty
         || beat.notes.is_empty()
     {
-        return rest_group(start, duration);
+        acc.groups.push(rest_group(start, duration));
+        return;
     }
 
+    let group_index = acc.groups.len();
     let mut atoms: Vec<AtomEvent> = Vec::new();
     let mut technique_spans: Vec<TechniqueSpan> = Vec::new();
+    let mut continued = false;
 
     for note in &beat.notes {
         match note.kind {
             guitarpro::NoteType::Normal | guitarpro::NoteType::Dead => {
                 let Some(midi) = gp_note_midi_pitch(note, strings) else {
-                    loss.add(ImportWarning::Other(
+                    acc.loss.add(ImportWarning::Other(
                         "GP note pitch out of range; note skipped".to_owned(),
                     ));
                     continue;
@@ -312,6 +332,7 @@ fn build_event_group(
                 if matches!(note.kind, guitarpro::NoteType::Dead) {
                     marks.insert(NoteMark::DeadNote);
                 }
+                let atom_index = atoms.len();
                 atoms.push(AtomEvent::Note(AtomNote {
                     absolute_start: start,
                     duration,
@@ -321,11 +342,17 @@ fn build_event_group(
                     // Guitar Pro is a source of truth for (string, fret) — ADR-0018.
                     position: gp_note_position(note).map(NotePosition::explicit),
                 }));
+                if let Ok(string) = u8::try_from(note.string) {
+                    acc.held.insert(string, (group_index, atom_index));
+                }
             }
-            guitarpro::NoteType::Tie
-            | guitarpro::NoteType::Rest
-            | guitarpro::NoteType::Unknown(_) => {
-                loss.add(ImportWarning::Other(format!(
+            guitarpro::NoteType::Tie => {
+                if extend_tie(note, dur_ticks, acc) {
+                    continued = true;
+                }
+            }
+            guitarpro::NoteType::Rest | guitarpro::NoteType::Unknown(_) => {
+                acc.loss.add(ImportWarning::Other(format!(
                     "GP note kind {kind:?} not fully supported; skipped",
                     kind = note.kind,
                 )));
@@ -334,7 +361,11 @@ fn build_event_group(
     }
 
     if atoms.is_empty() {
-        return rest_group(start, duration);
+        // An all-tie beat has extended its held notes and needs no event itself.
+        if !continued {
+            acc.groups.push(rest_group(start, duration));
+        }
+        return;
     }
 
     let kind = if atoms.len() == 1 {
@@ -342,11 +373,34 @@ fn build_event_group(
     } else {
         EventGroupKind::Chord
     };
-    EventGroup {
+    acc.groups.push(EventGroup {
         kind,
         atoms,
         technique_spans,
+    });
+}
+
+/// Continues a tied note onto the most recent note on its string by extending
+/// that note's duration. Returns `true` when a held note was found; otherwise
+/// records a loss (an orphan tie) and returns `false`.
+fn extend_tie(note: &guitarpro::Note, dur_ticks: u32, acc: &mut VoiceAccum<'_>) -> bool {
+    let location = u8::try_from(note.string)
+        .ok()
+        .and_then(|string| acc.held.get(&string).copied());
+    if let Some((group_index, atom_index)) = location {
+        if let Some(AtomEvent::Note(held)) = acc
+            .groups
+            .get_mut(group_index)
+            .and_then(|group| group.atoms.get_mut(atom_index))
+        {
+            held.duration = Ticks(held.duration.0.saturating_add(dur_ticks));
+            return true;
+        }
     }
+    acc.loss.add(ImportWarning::Other(
+        "GP tie has no preceding note on its string; skipped".to_owned(),
+    ));
+    false
 }
 
 fn rest_group(start: Ticks, duration: Ticks) -> EventGroup {
@@ -508,6 +562,7 @@ mod tests {
     use super::*;
     use guitarpro::model::effects::BendEffect;
     use guitarpro::model::key_signature::Duration as GpDurationTest;
+    use std::collections::HashMap;
 
     // ── detect_gp_version ─────────────────────────────────────────────────────
 
@@ -763,17 +818,74 @@ mod tests {
             status: guitarpro::BeatStatus::Normal,
             ..Default::default()
         };
+        let mut groups: Vec<EventGroup> = Vec::new();
+        let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
         let mut loss = LossReport::new();
-        let eg = build_event_group(&beat, 0, 480, &strings, &mut loss);
+        let mut acc = VoiceAccum {
+            groups: &mut groups,
+            held: &mut held,
+            loss: &mut loss,
+        };
+        append_beat(&beat, 0, 480, &strings, &mut acc);
 
-        assert_eq!(eg.atoms.len(), 1);
-        let AtomEvent::Note(note) = &eg.atoms[0] else {
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].atoms.len(), 1);
+        let AtomEvent::Note(note) = &groups[0].atoms[0] else {
             panic!("a dead note must import as a Note, not a Rest");
         };
         assert!(note.marks.contains(NoteMark::DeadNote));
         assert_eq!(
             note.position.map(|p| p.position),
             Some(FretboardPosition { string: 3, fret: 5 })
+        );
+    }
+
+    #[test]
+    fn tied_note_extends_previous_note_duration() {
+        // A tie (NoteType::Tie) continues the previous note on the same string:
+        // it must extend that note's duration, not drop the held time nor emit a
+        // separate event.
+        let strings = vec![(1_i8, 64_i8), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        let struck = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                value: 2,
+                string: 3,
+                kind: guitarpro::NoteType::Normal,
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+        let tie = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                value: 2,
+                string: 3,
+                kind: guitarpro::NoteType::Tie,
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+
+        let mut groups: Vec<EventGroup> = Vec::new();
+        let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut loss = LossReport::new();
+        let mut acc = VoiceAccum {
+            groups: &mut groups,
+            held: &mut held,
+            loss: &mut loss,
+        };
+        append_beat(&struck, 0, 480, &strings, &mut acc);
+        append_beat(&tie, 480, 240, &strings, &mut acc);
+
+        assert_eq!(groups.len(), 1, "a tie must not create a new event group");
+        assert_eq!(groups[0].atoms.len(), 1);
+        let AtomEvent::Note(note) = &groups[0].atoms[0] else {
+            panic!("expected the struck note");
+        };
+        assert_eq!(
+            note.duration.0, 720,
+            "tie must extend the held note to struck + tie duration"
         );
     }
 
