@@ -723,6 +723,58 @@ mod tests {
     }
 
     #[test]
+    fn gp_bend_emits_explicit_span() {
+        // A bend is source-of-truth pitch expression (ADR-0018): it must surface
+        // as a Bend TechniqueSpan, not be silently dropped.
+        let effect = GpNoteEffect {
+            bend: Some(guitarpro::model::effects::BendEffect::default()),
+            ..GpNoteEffect::default()
+        };
+        let mut spans = Vec::new();
+        let _ = map_gp_note_marks(&effect, Ticks(0), Ticks(480), &mut spans);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].technique, SpanTechnique::Bend);
+        assert_eq!(spans[0].evidence, TechniqueEvidence::explicit());
+    }
+
+    #[test]
+    fn dead_note_imports_as_dead_marked_note() {
+        // A muted "X" note (NoteType::Dead) still carries a real (string, fret):
+        // it must import as a positioned note bearing NoteMark::DeadNote, not be
+        // dropped to loss.
+        let strings = vec![
+            (1_i8, 64_i8),
+            (2, 59),
+            (3, 55),
+            (4, 50),
+            (5, 45),
+            (6, 40),
+        ];
+        let beat = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                value: 5, // fret 5
+                string: 3,
+                kind: guitarpro::NoteType::Dead,
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+        let mut loss = LossReport::new();
+        let eg = build_event_group(&beat, 0, 480, &strings, &mut loss);
+
+        assert_eq!(eg.atoms.len(), 1);
+        let AtomEvent::Note(note) = &eg.atoms[0] else {
+            panic!("a dead note must import as a Note, not a Rest");
+        };
+        assert!(note.marks.contains(NoteMark::DeadNote));
+        assert_eq!(
+            note.position.map(|p| p.position),
+            Some(FretboardPosition { string: 3, fret: 5 })
+        );
+    }
+
+    #[test]
     fn i64_to_u32_sat_positive() {
         assert_eq!(i64_to_u32_sat(960), 960);
         assert_eq!(i64_to_u32_sat(0), 0);
