@@ -148,3 +148,62 @@ fn bar_voices_sorted_by_id_regardless_of_import_order() {
         "bar voices must be sorted by id, not by import order"
     );
 }
+
+/// A positioned chord note at `onset` on `string`/`fret` sounding `value`.
+fn chord_note(onset: u32, string: u8, fret: u8, value: u8) -> AtomEvent {
+    AtomEvent::Note(AtomNote {
+        absolute_start: Ticks(onset),
+        duration: Ticks(480),
+        pitch: pitch(value),
+        velocity: Velocity::new(80).expect("valid velocity"),
+        marks: NoteMarks::empty(),
+        position: Some(NotePosition::explicit(FretboardPosition { string, fret })),
+    })
+}
+
+#[test]
+fn same_onset_notes_sorted_by_string_before_pitch() {
+    // A two-note chord at one onset. In standard tuning string 1 is the highest
+    // pitch, so string order and pitch order disagree: ADR-0020 mandates
+    // `(bar, voice, onset, string)`, not pitch. The notes are fed in pitch order
+    // (what a pitch-first key would already bless), so the assertion passes only
+    // when the dump truly keys on string.
+    let score = Score {
+        ticks_per_quarter: 480,
+        master_bars: vec![MasterBar {
+            index: 0,
+            tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered range"),
+            time_signature: TimeSignature::new(4, 4).expect("valid meter"),
+            tempo: Tempo::new(120.0).expect("valid tempo"),
+        }],
+        tracks: vec![Track {
+            name: None,
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: vec![EventGroup {
+                    kind: EventGroupKind::Chord,
+                    // B3 on string 2 then E4 on string 1: pitch-ascending, i.e.
+                    // the reverse of the canonical string order.
+                    atoms: vec![chord_note(0, 2, 0, 59), chord_note(0, 1, 0, 64)],
+                    technique_spans: vec![],
+                }],
+            }],
+            tuning: Tuning::standard_e(),
+        }],
+        source_meta: None,
+        loss: griff_core::score::LossReport::new(),
+    };
+
+    let normalized = normalize(&score);
+    let strings: Vec<Option<u8>> = normalized.tracks[0].bars[0].voices[0]
+        .notes
+        .iter()
+        .map(|note| note.string)
+        .collect();
+    assert_eq!(
+        strings,
+        vec![Some(1), Some(2)],
+        "same-onset chord notes must order by string (ADR-0020), not pitch"
+    );
+}
