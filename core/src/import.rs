@@ -5,7 +5,7 @@
 //! `.mid` file through one entry point.
 
 use crate::{
-    gp::GpImportError,
+    gp::{self, GpImportError},
     midi::{self, MidiError},
     score::Score,
 };
@@ -22,7 +22,17 @@ pub enum ImportError {
 }
 
 /// Imports a [`Score`] from raw bytes, detecting Guitar Pro vs MIDI by content.
+///
+/// Guitar Pro is tried first (it has a recognisable header); anything its
+/// detector rejects falls through to the MIDI importer. A Guitar Pro *parse*
+/// failure surfaces as [`ImportError::Gp`] rather than being masked by the MIDI
+/// fallback.
 pub fn import_score_auto(data: &[u8]) -> Result<Score, ImportError> {
-    // Stub: MIDI only — Guitar Pro dispatch lands in the next commit.
-    midi::import_score(data).map_err(ImportError::Midi)
+    match gp::import_gp_score(data) {
+        Ok(score) => Ok(score),
+        Err(GpImportError::UnsupportedFormat) => {
+            midi::import_score(data).map_err(ImportError::Midi)
+        }
+        Err(other) => Err(ImportError::Gp(other)),
+    }
 }
