@@ -1,10 +1,10 @@
 //! S0 golden/characterization tests for the `griff` CLI.
 //!
 //! Every CLI subcommand (`import`, `inspect`, `export`, `classify`,
-//! `structure`, `phrases`) is run against every committed fixture and its
-//! stdout/stderr pinned to a golden snapshot. These tests describe what the CLI
-//! *does* today; they must not be "fixed" by changing expectations without a
-//! deliberate re-bless.
+//! `structure`, `phrases`, `generate`) is run against every committed fixture
+//! and its stdout/stderr pinned to a golden snapshot. These tests describe what
+//! the CLI *does* today; they must not be "fixed" by changing expectations
+//! without a deliberate re-bless.
 //!
 //! Regenerate fixtures: `cargo test -p griff-cli -- --ignored regenerate`
 //! Re-bless snapshots:  `GRIFF_BLESS=1 cargo test -p griff-cli`
@@ -120,6 +120,28 @@ fn export_golden() {
         assert!(
             dst.exists(),
             "export must have written the output file for `{name}`"
+        );
+        fs::remove_file(&dst).ok();
+    }
+}
+
+#[test]
+fn generate_golden() {
+    for (name, _) in fixtures() {
+        let src = fixture_path(name);
+        let dst = env::temp_dir().join(format!("griff_s0_generate_{name}.mid"));
+        fs::remove_file(&dst).ok();
+
+        let out = griff(
+            &["generate", src.to_str().unwrap(), dst.to_str().unwrap()],
+            dst.to_str(),
+        );
+        let out = out.replace(src.to_str().unwrap(), "<SRC>");
+        assert_golden(&format!("generate__{name}"), &out);
+
+        assert!(
+            dst.exists(),
+            "generate must have written the output file for `{name}`"
         );
         fs::remove_file(&dst).ok();
     }

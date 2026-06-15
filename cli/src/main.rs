@@ -14,8 +14,8 @@ use griff_core::{
         ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, PairRelation, QualityFlag,
         ReviewerDecision, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
     },
-    event::{NoteMarks, NotePosition, TechniqueSource, Ticks},
-    gesture,
+    event::{NoteMarks, NotePosition, Pitch, TechniqueSource, Ticks},
+    generate, gesture,
     import::{self, ImportError},
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
@@ -83,6 +83,23 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Generate a fresh riff (S6) seeded from a tab's scale, rhythm, meter, and
+    /// pitch range, and write it to a MIDI file.
+    Generate {
+        /// Source MIDI or Guitar Pro file whose material seeds the generator.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+        /// Output `.mid` file for the generated riff.
+        #[arg(value_name = "OUTPUT")]
+        output: PathBuf,
+        /// Deterministic seed — the same seed always yields the same riff.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        /// Number of bars to generate.
+        #[arg(long, default_value_t = 8)]
+        bars: usize,
+    },
+
     /// Interactively curate a MIDI or Guitar Pro file into a corpus `ChunkMeta` JSON record.
     Curate {
         /// Path to the MIDI or Guitar Pro file to curate.
@@ -110,6 +127,12 @@ fn run() -> Result<(), CliError> {
         Command::Classify { path } => cmd_classify(&path),
         Command::Structure { path } => cmd_structure(&path),
         Command::Phrases { path } => cmd_phrases(&path),
+        Command::Generate {
+            input,
+            output,
+            seed,
+            bars,
+        } => cmd_generate(&input, &output, seed, bars),
         Command::Curate {
             path,
             output,
@@ -467,6 +490,134 @@ fn phrase_reasons(r: boundary::BoundaryReason) -> String {
     }
 }
 
+/// Generates a fresh riff (S6) seeded from the source's musical material — its
+/// pitch palette, the rhythm of its first sounding bar, and its meter, tempo,
+/// and range — then writes the result to a MIDI file.
+fn cmd_generate(input: &Path, output: &Path, seed: u64, bars: usize) -> Result<(), CliError> {
+    let data = fs::read(input)?;
+    let score = import::import_score_auto(&data)?;
+    let request = generation_request_from_score(&score, seed, bars)?;
+    let candidate = generate::generate(&request)?;
+    let out_bytes = midi::export_score(&candidate.score)?;
+    fs::write(output, &out_bytes)?;
+    println!(
+        "generated {bars} bars ({strategy:?}, seed {seed}) from a {tones}-tone scale \
+         ({n} bytes) -> {out}",
+        strategy = candidate.strategy,
+        tones = request.pitch_material.intervals.len(),
+        n = out_bytes.len(),
+        out = output.display(),
+    );
+    Ok(())
+}
+
+/// Builds a tab-seeded [`generate::RuleGenerationRequest`]: the scale is the
+/// source's distinct pitch classes, the rhythm template its first sounding bar,
+/// and meter / tempo / range its transport.
+fn generation_request_from_score(
+    score: &Score,
+    seed: u64,
+    bars: usize,
+) -> Result<generate::RuleGenerationRequest, CliError> {
+    if bars == 0 {
+        return Err(CliError::Generate(generate::GenerationError::BarCountZero));
+    }
+    let pitches = all_pitches(score);
+    let (lo, hi) = pitch_range(&pitches)?;
+    let first_bar = score.master_bars.first().ok_or(CliError::Generate(
+        generate::GenerationError::InvalidConstraints,
+    ))?;
+    let constraints = generate::GenerationConstraints {
+        bar_count: bars,
+        time_signature: first_bar.time_signature,
+        tempo: first_bar.tempo,
+        ticks_per_quarter: Ticks(u32::from(score.ticks_per_quarter)),
+        pitch_lo: lo,
+        pitch_hi: hi,
+    };
+    Ok(generate::RuleGenerationRequest {
+        seed: generate::GenerationSeed(seed),
+        pitch_material: pitch_material_from(lo, &pitches),
+        constraints,
+        source_rhythms: vec![first_bar_rhythm(score)],
+        strategy: generate::GenerationStrategy::RhythmCopyPitchSubstitute,
+    })
+}
+
+/// Every note pitch across all tracks and voices, in track/voice order.
+fn all_pitches(score: &Score) -> Vec<u8> {
+    score
+        .tracks
+        .iter()
+        .flat_map(|t| &t.voices)
+        .flat_map(|v| &v.event_groups)
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some(n.pitch.0),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect()
+}
+
+/// The lowest and highest pitch present; errors (no pitch material) when the
+/// source is silent.
+fn pitch_range(pitches: &[u8]) -> Result<(Pitch, Pitch), CliError> {
+    let lo = pitches.iter().min().copied().ok_or(CliError::Generate(
+        generate::GenerationError::EmptyPitchMaterial,
+    ))?;
+    let hi = pitches.iter().max().copied().unwrap_or(lo);
+    Ok((Pitch(lo), Pitch(hi)))
+}
+
+/// A scale rooted at `lo` whose intervals are the distinct semitone classes the
+/// source uses, so the generated riff stays in the tab's pitch palette.
+fn pitch_material_from(lo: Pitch, pitches: &[u8]) -> generate::PitchMaterial {
+    let mut intervals: Vec<u8> = pitches
+        .iter()
+        .map(|&p| p.saturating_sub(lo.0).checked_rem(12).unwrap_or(0))
+        .collect();
+    intervals.sort_unstable();
+    intervals.dedup();
+    if intervals.is_empty() {
+        intervals.push(0);
+    }
+    generate::PitchMaterial {
+        root: lo,
+        intervals,
+    }
+}
+
+/// The note durations of the first *sounding* bar — the earliest master bar
+/// holding any note across all tracks and voices — in onset order, as the
+/// rhythm template the generator copies. Falls back to four quarter notes only
+/// when the source is entirely silent.
+fn first_bar_rhythm(score: &Score) -> Vec<Ticks> {
+    for bar in &score.master_bars {
+        let mut notes: Vec<(u32, Ticks)> = score
+            .tracks
+            .iter()
+            .flat_map(|t| &t.voices)
+            .flat_map(|v| &v.event_groups)
+            .flat_map(|g| &g.atoms)
+            .filter_map(|a| match a {
+                AtomEvent::Note(n)
+                    if n.absolute_start.0 >= bar.tick_range.start.0
+                        && n.absolute_start.0 < bar.tick_range.end.0 =>
+                {
+                    Some((n.absolute_start.0, n.duration))
+                }
+                _ => None,
+            })
+            .collect();
+        if !notes.is_empty() {
+            notes.sort_by_key(|&(onset, _)| onset);
+            return notes.into_iter().map(|(_, dur)| dur).collect();
+        }
+    }
+    let quarter = Ticks(u32::from(score.ticks_per_quarter));
+    vec![quarter; 4]
+}
+
 fn cmd_curate(path: &Path, output: Option<&Path>, ensemble: bool) -> Result<(), CliError> {
     let data = fs::read(path)?;
     let score = import::import_score_auto(&data)?;
@@ -814,6 +965,7 @@ enum CliError {
     Midi(MidiError),
     Json(serde_json::Error),
     Ensemble(String),
+    Generate(generate::GenerationError),
 }
 
 impl fmt::Display for CliError {
@@ -824,6 +976,7 @@ impl fmt::Display for CliError {
             Self::Midi(e) => write!(f, "MIDI error: {e}"),
             Self::Json(e) => write!(f, "JSON error: {e}"),
             Self::Ensemble(msg) => write!(f, "ensemble error: {msg}"),
+            Self::Generate(e) => write!(f, "generation error: {e:?}"),
         }
     }
 }
@@ -843,6 +996,12 @@ impl From<MidiError> for CliError {
 impl From<ImportError> for CliError {
     fn from(e: ImportError) -> Self {
         Self::Import(e)
+    }
+}
+
+impl From<generate::GenerationError> for CliError {
+    fn from(e: generate::GenerationError) -> Self {
+        Self::Generate(e)
     }
 }
 

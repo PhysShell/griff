@@ -1,0 +1,5 @@
+$ griff generate <SRC> <OUT>
+exit: 0
+--- stdout ---
+generated 8 bars (RhythmCopyPitchSubstitute, seed 0) from a 4-tone scale (558 bytes) -> <OUT>
+--- stderr ---
