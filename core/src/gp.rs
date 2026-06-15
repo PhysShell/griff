@@ -809,6 +809,55 @@ mod tests {
     }
 
     #[test]
+    fn tied_note_extends_previous_note_duration() {
+        // A tie (NoteType::Tie) continues the previous note on the same string:
+        // it must extend that note's duration, not drop the held time nor emit a
+        // separate event.
+        let strings = vec![(1_i8, 64_i8), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        let struck = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                value: 2,
+                string: 3,
+                kind: guitarpro::NoteType::Normal,
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+        let tie = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                value: 2,
+                string: 3,
+                kind: guitarpro::NoteType::Tie,
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+
+        let mut groups: Vec<EventGroup> = Vec::new();
+        let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut loss = LossReport::new();
+        let mut acc = VoiceAccum {
+            groups: &mut groups,
+            held: &mut held,
+            loss: &mut loss,
+        };
+        append_beat(&struck, 0, 480, &strings, &mut acc);
+        append_beat(&tie, 480, 240, &strings, &mut acc);
+
+        assert_eq!(groups.len(), 1, "a tie must not create a new event group");
+        assert_eq!(groups[0].atoms.len(), 1);
+        let AtomEvent::Note(note) = &groups[0].atoms[0] else {
+            panic!("expected the struck note");
+        };
+        assert_eq!(
+            note.duration.0, 720,
+            "tie must extend the held note to struck + tie duration"
+        );
+    }
+
+    #[test]
     fn i64_to_u32_sat_positive() {
         assert_eq!(i64_to_u32_sat(960), 960);
         assert_eq!(i64_to_u32_sat(0), 0);
