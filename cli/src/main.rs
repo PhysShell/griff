@@ -421,6 +421,18 @@ fn measure_group_relations(score: &Score, tracks: &[usize]) -> Result<Vec<PairRe
     Ok(relations)
 }
 
+/// Maps an imported score's source-format tag (set by the importer) to the
+/// corpus [`SourceFormat`]; an unknown or absent tag falls back to MIDI.
+fn source_format(score: &Score) -> SourceFormat {
+    match score.source_meta.as_ref().and_then(|m| m.format.as_deref()) {
+        Some("GP3") => SourceFormat::Gp3,
+        Some("GP4") => SourceFormat::Gp4,
+        Some("GP5") => SourceFormat::Gp5,
+        Some("GP6") => SourceFormat::Gpx,
+        _ => SourceFormat::Midi,
+    }
+}
+
 /// Measures `track_index` (when present) and assembles one chunk record.
 #[allow(clippy::too_many_arguments)] // a private assembly seam shared by both curate modes
 fn build_chunk_meta(
@@ -457,7 +469,7 @@ fn build_chunk_meta(
         title,
         source: SourceRef {
             filename,
-            format: SourceFormat::Midi,
+            format: source_format(score),
             bar_range: None,
         },
         tempo_bpm,
@@ -675,13 +687,40 @@ impl From<ImportError> for CliError {
     clippy::indexing_slicing
 )]
 mod tests {
+    use griff_core::corpus::SourceFormat;
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, SourceMeta,
+        Voice,
     };
     use griff_core::slice::TickRange;
 
-    use super::{measure_group_relations, primary_voice_note_count, track_note_count, Track};
+    use super::{
+        measure_group_relations, primary_voice_note_count, source_format, track_note_count, Track,
+    };
+
+    fn score_tagged(format: Option<&str>) -> Score {
+        Score {
+            ticks_per_quarter: 480,
+            master_bars: Vec::new(),
+            tracks: Vec::new(),
+            source_meta: format.map(|f| SourceMeta {
+                format: Some(f.to_owned()),
+            }),
+            loss: LossReport::new(),
+        }
+    }
+
+    #[test]
+    fn source_format_follows_the_importer_tag() {
+        assert_eq!(
+            source_format(&score_tagged(Some("MIDI"))),
+            SourceFormat::Midi
+        );
+        assert_eq!(source_format(&score_tagged(Some("GP5"))), SourceFormat::Gp5);
+        assert_eq!(source_format(&score_tagged(Some("GP6"))), SourceFormat::Gpx);
+        assert_eq!(source_format(&score_tagged(None)), SourceFormat::Midi);
+    }
 
     fn quarter(start: u32, pitch: u8) -> AtomEvent {
         AtomEvent::Note(AtomNote {
