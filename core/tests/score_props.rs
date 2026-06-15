@@ -98,7 +98,9 @@ fn build_score(bars: Vec<BarSpec>) -> Score {
 
     let master_bars: Vec<MasterBar> = (0..num_bars)
         .map(|i| {
-            let start = u32::try_from(i).unwrap_or(0).saturating_mul(BAR_TICKS);
+            let start = u32::try_from(i)
+                .expect("bar index fits in u32")
+                .saturating_mul(BAR_TICKS);
             MasterBar {
                 index: i,
                 tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(BAR_TICKS)))
@@ -112,7 +114,9 @@ fn build_score(bars: Vec<BarSpec>) -> Score {
     let mut v0: Vec<EventGroup> = Vec::new();
     let mut v1: Vec<EventGroup> = Vec::new();
     for (bi, (c0, c1)) in bars.into_iter().enumerate() {
-        let bar_start = u32::try_from(bi).unwrap_or(0).saturating_mul(BAR_TICKS);
+        let bar_start = u32::try_from(bi)
+            .expect("bar index fits in u32")
+            .saturating_mul(BAR_TICKS);
         if bi == 0 {
             // Guaranteed chord + second voice so every case is non-vacuous.
             if let Some(g) = chord_group(bar_start, &[(2, 0), (1, 0)], &open) {
@@ -204,7 +208,7 @@ proptest! {
         let mut dump_keys: Vec<NoteKey> = Vec::new();
 
         for track in &norm.tracks {
-            let tuning_len = u8::try_from(track.tuning.len()).unwrap_or(u8::MAX);
+            let tuning_len = u8::try_from(track.tuning.len()).expect("tuning fits in u8");
             for bar in &track.bars {
                 prop_assert!(bar.start_tick <= bar.end_tick, "bar range must be half-open");
 
@@ -246,12 +250,16 @@ proptest! {
                             n.onset_tick >= bar.start_tick && n.onset_tick < bar.end_tick,
                             "onset must fall in the bar's half-open range"
                         );
+                        prop_assert_eq!(
+                            n.string.is_some(),
+                            n.fret.is_some(),
+                            "string and fret must both be present or both absent"
+                        );
                         if let Some(string) = n.string {
                             prop_assert!(
                                 (1..=tuning_len).contains(&string),
                                 "string must lie within the track tuning"
                             );
-                            prop_assert!(n.fret.is_some(), "a positioned note keeps its fret");
                         }
                         dump_keys.push((n.onset_tick, n.string, n.fret, n.pitch));
                     }
