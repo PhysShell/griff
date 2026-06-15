@@ -7,13 +7,14 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use griff_core::{
+    boundary,
     classify::{self, BarClass},
     complement,
     corpus::{
         ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, PairRelation, QualityFlag,
         ReviewerDecision, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
     },
-    event::{NoteMarks, NotePosition, TechniqueSource},
+    event::{NoteMarks, NotePosition, TechniqueSource, Ticks},
     gesture,
     import::{self, ImportError},
     midi::{self, MidiError},
@@ -66,6 +67,14 @@ enum Command {
         path: PathBuf,
     },
 
+    /// Detect phrase boundaries per track (S4): where one musical phrase ends
+    /// and the next begins, with the heuristic signals that fired.
+    Phrases {
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
+        #[arg(value_name = "FILE")]
+        path: PathBuf,
+    },
+
     /// Interactively curate a MIDI or Guitar Pro file into a corpus `ChunkMeta` JSON record.
     Curate {
         /// Path to the MIDI or Guitar Pro file to curate.
@@ -91,6 +100,7 @@ fn run() -> Result<(), CliError> {
         Command::Inspect { path, unfold } => cmd_inspect(&path, unfold),
         Command::Export { input, output } => cmd_export(&input, &output),
         Command::Classify { path } => cmd_classify(&path),
+        Command::Phrases { path } => cmd_phrases(&path),
         Command::Curate {
             path,
             output,
@@ -315,6 +325,82 @@ fn cmd_classify(path: &Path) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// Detects phrase boundaries per track (S4) and prints each with its bar, tick,
+/// aggregate score, and the heuristic signals that fired.
+fn cmd_phrases(path: &Path) -> Result<(), CliError> {
+    let data = fs::read(path)?;
+    let score = import::import_score_auto(&data)?;
+    // The default config's tick gaps are tuned for GP's 960 PPQN; scale them to
+    // the file's own resolution so a phrase is the same musical distance
+    // whatever the source encoding (2 quarter notes apart, snapped to 1/16).
+    let ppqn = u32::from(score.ticks_per_quarter);
+    let config = boundary::BoundaryConfig {
+        min_gap: Ticks(ppqn.saturating_mul(2)),
+        quantize_ticks: Ticks(ppqn.checked_div(4).unwrap_or(1).max(1)),
+        ..boundary::BoundaryConfig::default()
+    };
+
+    println!("PPQN: {}", score.ticks_per_quarter);
+    for (ti, track) in score.tracks.iter().enumerate() {
+        let name = track.name.as_deref().unwrap_or("<unnamed>");
+        let boundaries = boundary::detect_phrase_boundaries(&score, ti, &config);
+        println!(
+            "Track {ti} \"{name}\"  {bars} bars — {n} phrase boundaries",
+            bars = score.master_bars.len(),
+            n = boundaries.len(),
+        );
+        for b in &boundaries {
+            println!(
+                "  bar {bar:4}  t={tick:<7}  score={sc:.2}  [{reasons}]",
+                bar = bar_at_tick(&score, b.start_tick.0),
+                tick = b.start_tick.0,
+                sc = b.score,
+                reasons = phrase_reasons(b.reason),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The index of the master bar containing `tick`, or the last bar when the tick
+/// falls at or past the end of the timeline.
+fn bar_at_tick(score: &Score, tick: u32) -> usize {
+    score
+        .master_bars
+        .iter()
+        .find(|mb| tick >= mb.tick_range.start.0 && tick < mb.tick_range.end.0)
+        .map_or_else(|| score.master_bars.len().saturating_sub(1), |mb| mb.index)
+}
+
+/// Renders the heuristic signals that fired at a phrase boundary as a comma
+/// list (S4); `motif_boundary` is reserved for S5+ and never fires here.
+fn phrase_reasons(r: boundary::BoundaryReason) -> String {
+    let mut tags: Vec<&str> = Vec::new();
+    if r.pause {
+        tags.push("pause");
+    }
+    if r.cadence {
+        tags.push("cadence");
+    }
+    if r.rhythm_reset {
+        tags.push("rhythm_reset");
+    }
+    if r.register_jump {
+        tags.push("register_jump");
+    }
+    if r.density_change {
+        tags.push("density_change");
+    }
+    if r.manual_override {
+        tags.push("manual");
+    }
+    if tags.is_empty() {
+        "-".to_owned()
+    } else {
+        tags.join(", ")
+    }
 }
 
 fn cmd_curate(path: &Path, output: Option<&Path>, ensemble: bool) -> Result<(), CliError> {

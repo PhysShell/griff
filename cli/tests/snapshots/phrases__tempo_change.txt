@@ -1,0 +1,6 @@
+$ griff phrases <OUT>
+exit: 0
+--- stdout ---
+PPQN: 480
+Track 0 "Lead"  3 bars — 0 phrase boundaries
+--- stderr ---
