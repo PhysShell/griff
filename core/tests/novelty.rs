@@ -35,7 +35,8 @@ use griff_core::{
         measure_novelty, novelty_axes, novelty_weights_v1, NoveltyError, NOVELTY_AXIS_LABELS,
     },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, Track, Voice,
     },
     scoring::{rank_indices, Scored},
     slice::TickRange,
@@ -97,6 +98,7 @@ fn build_score(ppqn: u16, tracks: Vec<Track>) -> Score {
                     denominator: 4,
                 },
                 tempo: Tempo::new(120.0).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
             }
         })
         .collect();

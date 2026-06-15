@@ -19,7 +19,7 @@ use griff_core::{
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::TickRange,
-    structure,
+    structure, unfold,
 };
 
 /// griff — guitar riff engine.
@@ -44,6 +44,9 @@ enum Command {
         /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
+        /// Expand repeats (`|: … :|×N`) into the as-played bar sequence.
+        #[arg(long)]
+        unfold: bool,
     },
 
     /// Import a MIDI or Guitar Pro file and write it back out as MIDI.
@@ -85,7 +88,7 @@ fn run() -> Result<(), CliError> {
     let cli = Cli::parse();
     match cli.command {
         Command::Import { path } => cmd_import(&path),
-        Command::Inspect { path } => cmd_inspect(&path),
+        Command::Inspect { path, unfold } => cmd_inspect(&path, unfold),
         Command::Export { input, output } => cmd_export(&input, &output),
         Command::Classify { path } => cmd_classify(&path),
         Command::Curate {
@@ -169,11 +172,18 @@ fn cmd_import(path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn cmd_inspect(path: &Path) -> Result<(), CliError> {
+fn cmd_inspect(path: &Path, unfold: bool) -> Result<(), CliError> {
     let data = fs::read(path)?;
     let score = import::import_score_auto(&data)?;
 
     println!("PPQN: {}", score.ticks_per_quarter);
+    // The bar order is the same for every track: the written bars by default,
+    // the as-played sequence (repeats expanded) with `--unfold`. Compute once.
+    let order: Vec<usize> = if unfold {
+        unfold::played_bar_order(&score)
+    } else {
+        (0..score.master_bars.len()).collect()
+    };
     for (ti, track) in score.tracks.iter().enumerate() {
         let name = track.name.as_deref().unwrap_or("<unnamed>");
         let tuning: Vec<String> = track
@@ -188,15 +198,28 @@ fn cmd_inspect(path: &Path) -> Result<(), CliError> {
             ch = track.channel,
         );
         let voice = primary_voice(track);
-        for mb in &score.master_bars {
+        for (play_pos, &src) in order.iter().enumerate() {
+            let Some(mb) = score.master_bars.get(src) else {
+                continue;
+            };
             let notes = voice.map_or(0, |v| note_count_in_range(v, mb.tick_range));
-            println!(
-                "  Bar {bi:4}  {num}/{den}  {bpm:.1} BPM  {notes} notes",
-                bi = mb.index,
-                num = mb.time_signature.numerator,
-                den = mb.time_signature.denominator,
-                bpm = mb.tempo.0,
-            );
+            if unfold {
+                println!(
+                    "  Play {play_pos:4}  src Bar {bi:4}  {num}/{den}  {bpm:.1} BPM  {notes} notes",
+                    bi = mb.index,
+                    num = mb.time_signature.numerator,
+                    den = mb.time_signature.denominator,
+                    bpm = mb.tempo.0,
+                );
+            } else {
+                println!(
+                    "  Bar {bi:4}  {num}/{den}  {bpm:.1} BPM  {notes} notes",
+                    bi = mb.index,
+                    num = mb.time_signature.numerator,
+                    den = mb.time_signature.denominator,
+                    bpm = mb.tempo.0,
+                );
+            }
         }
         if let Some(v) = voice {
             for group in &v.event_groups {
@@ -690,8 +713,8 @@ mod tests {
     use griff_core::corpus::SourceFormat;
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, SourceMeta,
-        Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, SourceMeta, Voice,
     };
     use griff_core::slice::TickRange;
 
@@ -774,6 +797,7 @@ mod tests {
                     denominator: 4,
                 },
                 tempo: Tempo::new(120.0).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
             }],
             tracks,
             source_meta: None,

@@ -34,8 +34,8 @@ use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     generate::PitchMaterial,
     score::{
-        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
-        Track, Voice,
+        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     },
     scoring::{rank_indices, Scored},
     slice::TickRange,
@@ -83,6 +83,7 @@ fn build_score(bar_count: usize, atoms: Vec<AtomEvent>) -> Score {
                     denominator: 4,
                 },
                 tempo: Tempo::new(120.0).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
             }
         })
         .collect();

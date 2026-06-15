@@ -4,7 +4,8 @@ use crate::event::{
     NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, ValidationError, Velocity,
 };
 use crate::score::{
-    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
+    Track, Voice,
 };
 use crate::slice::TickRange;
 
@@ -225,6 +226,7 @@ fn bars_to_score(
             tick_range,
             time_signature: c.time_signature,
             tempo: c.tempo,
+            repeat: RepeatMarker::default(),
         });
 
         let mut cursor = bar_start;

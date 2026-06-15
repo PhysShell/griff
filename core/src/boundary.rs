@@ -502,8 +502,8 @@ mod tests {
     use crate::{
         event::{Tempo, Ticks, TimeSignature, Tuning},
         score::{
-            AtomEvent, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track,
-            Voice,
+            AtomEvent, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+            Score, Track, Voice,
         },
         slice::TickRange,
     };
@@ -551,6 +551,7 @@ mod tests {
             tick_range: tick_range(0, 3840),
             time_signature: ts_4_4(),
             tempo: tempo_120(),
+            repeat: RepeatMarker::default(),
         };
         Score {
             ticks_per_quarter: 960,
@@ -586,12 +587,14 @@ mod tests {
                     tick_range: tick_range(0, 3840),
                     time_signature: ts_4_4(),
                     tempo: tempo_120(),
+                    repeat: RepeatMarker::default(),
                 },
                 MasterBar {
                     index: 1,
                     tick_range: tick_range(3840, 7680),
                     time_signature: ts_4_4(),
                     tempo: tempo_120(),
+                    repeat: RepeatMarker::default(),
                 },
             ],
             tracks: vec![track],
@@ -761,6 +764,7 @@ mod tests {
             tick_range: tick_range(0, 3840),
             time_signature: ts_4_4(),
             tempo: tempo_120(),
+            repeat: RepeatMarker::default(),
         };
         let bars = vec![mb];
         // Tick == bar start → cadence signal fires.

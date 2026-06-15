@@ -26,8 +26,8 @@ use griff_core::{
         Tuning, Velocity,
     },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
-        TechniqueSpan, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
     structure::{measure_complexity, measure_structure, StructureError},
@@ -62,6 +62,7 @@ fn build_score(bars: &[Vec<u8>]) -> Score {
                     denominator: 4,
                 },
                 tempo: Tempo::new(120.0).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
             }
         })
         .collect();
@@ -274,6 +275,7 @@ fn measures_all_voices_of_a_track() {
                     denominator: 4,
                 },
                 tempo: Tempo::new(120.0).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
             }
         })
         .collect();
@@ -353,6 +355,7 @@ fn loopability_penalizes_leading_silence() {
                     denominator: 4,
                 },
                 tempo: Tempo::new(120.0).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
             }
         })
         .collect();
@@ -500,6 +503,7 @@ fn no_subbar_period_on_a_mixed_meter_timeline() {
             denominator: 4,
         },
         tempo: Tempo::new(120.0).expect("120 BPM"),
+        repeat: RepeatMarker::default(),
     });
     for (i, &p) in [40_u8, 47, 40].iter().enumerate() {
         score.tracks[0].voices[0].event_groups.push(EventGroup {

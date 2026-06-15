@@ -19,8 +19,8 @@ use griff_core::{
         TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
     },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
-        TechniqueSpan, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
 };
@@ -68,6 +68,7 @@ fn sample_score() -> Score {
             tick_range: range,
             time_signature: TimeSignature::new(4, 4).expect("valid meter"),
             tempo: Tempo::new(120.0).expect("valid tempo"),
+            repeat: RepeatMarker::default(),
         }],
         tracks: vec![Track {
             name: Some("Guitar".to_owned()),
@@ -115,6 +116,7 @@ fn bar_voices_sorted_by_id_regardless_of_import_order() {
             tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered range"),
             time_signature: TimeSignature::new(4, 4).expect("valid meter"),
             tempo: Tempo::new(120.0).expect("valid tempo"),
+            repeat: RepeatMarker::default(),
         }],
         tracks: vec![Track {
             name: None,
@@ -175,6 +177,7 @@ fn same_onset_notes_sorted_by_string_before_pitch() {
             tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered range"),
             time_signature: TimeSignature::new(4, 4).expect("valid meter"),
             tempo: Tempo::new(120.0).expect("valid tempo"),
+            repeat: RepeatMarker::default(),
         }],
         tracks: vec![Track {
             name: None,

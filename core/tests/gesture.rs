@@ -32,7 +32,8 @@ use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     gesture::{measure_gesture, GestureError},
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score, Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, Track, Voice,
     },
     slice::TickRange,
 };
@@ -56,6 +57,7 @@ fn score_with_notes(bar_count: usize, notes: &[(u32, u32, u8)]) -> Score {
                     denominator: 4,
                 },
                 tempo: Tempo::new(120.0).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
             }
         })
         .collect();

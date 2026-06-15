@@ -31,7 +31,7 @@ use crate::{
     },
     score::{
         AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
-        MasterBar, Score, SourceMeta, TechniqueSpan, Track, Voice,
+        MasterBar, RepeatMarker, Score, SourceMeta, TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
 };
@@ -88,6 +88,30 @@ fn gp_meter(hdr: &guitarpro::MeasureHeader) -> (u8, u8) {
     #[allow(clippy::cast_possible_truncation)]
     let den_u8 = den_raw.min(128) as u8;
     (numerator, den_u8.next_power_of_two())
+}
+
+/// Reads a measure header's simple repeat barlines into a [`RepeatMarker`].
+///
+/// `version_major` disambiguates the play count: GP6 (GPIF) stores the raw
+/// total number of plays, while the GP3/4/5 binary reader stores one fewer
+/// (the `guitarpro` crate already decremented it), so the binary path is
+/// bumped by one to recover the play count. `repeat_close == -1` means the bar
+/// has no closing repeat barline.
+fn gp_repeat(hdr: &guitarpro::MeasureHeader, version_major: u8) -> RepeatMarker {
+    let play_count = if hdr.repeat_close > -1 {
+        let raw = u8::try_from(hdr.repeat_close).unwrap_or(0);
+        if version_major >= 6 {
+            raw
+        } else {
+            raw.saturating_add(1)
+        }
+    } else {
+        0
+    };
+    RepeatMarker {
+        start: hdr.repeat_open,
+        play_count,
+    }
 }
 
 // ── error type ────────────────────────────────────────────────────────────────
@@ -171,8 +195,16 @@ fn gp_song_to_score(song: &guitarpro::Song) -> Score {
     let starts = cumulative_bar_starts(&meters);
     let raw_tempos: Vec<i32> = song.measure_headers.iter().map(|h| h.tempo).collect();
     let tempos = carry_tempos(&raw_tempos);
+    // Repeats live on the master timeline (ADR-0003); they stay folded here and
+    // are expanded on demand by the `unfold` projection.
+    let version_major = song.version.number.0;
+    let repeats: Vec<RepeatMarker> = song
+        .measure_headers
+        .iter()
+        .map(|h| gp_repeat(h, version_major))
+        .collect();
 
-    let master_bars = build_gp_master_bars(&meters, &starts, &tempos);
+    let master_bars = build_gp_master_bars(&meters, &starts, &tempos, &repeats);
     let tracks: Vec<Track> = song
         .tracks
         .iter()
@@ -192,7 +224,12 @@ fn gp_song_to_score(song: &guitarpro::Song) -> Score {
 
 // ── master bar construction ───────────────────────────────────────────────────
 
-fn build_gp_master_bars(meters: &[(u8, u8)], starts: &[u32], tempos: &[f64]) -> Vec<MasterBar> {
+fn build_gp_master_bars(
+    meters: &[(u8, u8)],
+    starts: &[u32],
+    tempos: &[f64],
+    repeats: &[RepeatMarker],
+) -> Vec<MasterBar> {
     meters
         .iter()
         .enumerate()
@@ -215,6 +252,7 @@ fn build_gp_master_bars(meters: &[(u8, u8)], starts: &[u32], tempos: &[f64]) -> 
                 },
                 time_signature,
                 tempo,
+                repeat: repeats.get(idx).copied().unwrap_or_default(),
             }
         })
         .collect()
@@ -611,7 +649,7 @@ mod tests {
         let meters = [(4_u8, 4_u8), (2, 4), (4, 4)];
         let starts = cumulative_bar_starts(&meters);
         let tempos = carry_tempos(&[120, 0, 90]);
-        let bars = build_gp_master_bars(&meters, &starts, &tempos);
+        let bars = build_gp_master_bars(&meters, &starts, &tempos, &[]);
 
         let ranges: Vec<(u32, u32)> = bars
             .iter()
@@ -623,6 +661,74 @@ mod tests {
         assert!((119.5..120.5).contains(&bars[0].tempo.0));
         assert!((119.5..120.5).contains(&bars[1].tempo.0));
         assert!((89.5..90.5).contains(&bars[2].tempo.0));
+    }
+
+    // ── gp_repeat ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn gp_repeat_reads_open_and_gp6_close_count() {
+        // GP6 (GPIF) stores the raw play count: `:|×2` → play_count 2.
+        let open = guitarpro::MeasureHeader {
+            repeat_open: true,
+            repeat_close: -1,
+            ..Default::default()
+        };
+        let open_marker = gp_repeat(&open, 6);
+        assert!(open_marker.start, "an `|:` header opens a section");
+        assert_eq!(open_marker.play_count, 0, "an open carries no close count");
+        assert!(!open_marker.closes());
+
+        let close = guitarpro::MeasureHeader {
+            repeat_open: false,
+            repeat_close: 2,
+            ..Default::default()
+        };
+        let close_marker = gp_repeat(&close, 6);
+        assert!(!close_marker.start);
+        assert_eq!(close_marker.play_count, 2, "GP6 stores the raw play count");
+        assert!(close_marker.closes());
+    }
+
+    #[test]
+    fn gp_repeat_binary_path_recovers_play_count() {
+        // GP3/4/5 binary stores one fewer (the crate decremented it), so a
+        // standard single repeat is stored as 1 and recovers to two plays.
+        let close = guitarpro::MeasureHeader {
+            repeat_close: 1,
+            ..Default::default()
+        };
+        assert_eq!(gp_repeat(&close, 5).play_count, 2);
+
+        let none = guitarpro::MeasureHeader {
+            repeat_close: -1,
+            ..Default::default()
+        };
+        assert_eq!(gp_repeat(&none, 5).play_count, 0, "-1 means no close");
+    }
+
+    #[test]
+    fn master_bars_carry_repeat_markers() {
+        // A `|:` on bar 0 and a `:|×2` on bar 2 must land on the master bars.
+        let meters = [(4_u8, 4_u8), (4, 4), (4, 4)];
+        let starts = cumulative_bar_starts(&meters);
+        let tempos = carry_tempos(&[120, 120, 120]);
+        let repeats = vec![
+            RepeatMarker {
+                start: true,
+                play_count: 0,
+            },
+            RepeatMarker::default(),
+            RepeatMarker {
+                start: false,
+                play_count: 2,
+            },
+        ];
+        let bars = build_gp_master_bars(&meters, &starts, &tempos, &repeats);
+        assert!(bars[0].repeat.start);
+        assert!(!bars[0].repeat.closes());
+        assert!(!bars[1].repeat.start);
+        assert!(bars[2].repeat.closes());
+        assert_eq!(bars[2].repeat.play_count, 2);
     }
 
     // ── detect_gp_version ─────────────────────────────────────────────────────

@@ -218,6 +218,32 @@ pub struct Track {
     pub tuning: Tuning,
 }
 
+/// Repeat barlines carried by a [`MasterBar`] (ADR-0003).
+///
+/// Models simple repeated sections — `|: … :|×N`. Alternate endings (voltas)
+/// and jump directions (D.C./D.S., coda/segno) are not yet represented; an
+/// importer that meets them records a loss and leaves this at its default.
+/// `RepeatMarker::default()` means the bar carries no repeat barline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RepeatMarker {
+    /// This bar opens a repeated section (`|:`).
+    pub start: bool,
+    /// Total number of times the section closing on this bar is played
+    /// (`:|×n`); `0` when the bar carries no closing repeat barline. A genuine
+    /// repeat is `>= 2` (played once, then repeated at least once more).
+    pub play_count: u8,
+}
+
+impl RepeatMarker {
+    /// `true` when this bar closes a section that is actually played more than
+    /// once. A `play_count` of `0` (no close) or `1` (degenerate) is not a
+    /// repeat and yields `false`.
+    #[must_use]
+    pub const fn closes(self) -> bool {
+        self.play_count >= 2
+    }
+}
+
 /// A score-level bar whose meter and tempo are shared across all tracks.
 ///
 /// `MasterBar` is the single source of truth for transport (ADR-0003).
@@ -231,6 +257,8 @@ pub struct MasterBar {
     pub time_signature: TimeSignature,
     /// Tempo at the start of this bar in BPM.
     pub tempo: Tempo,
+    /// Repeat barlines on this bar (ADR-0003); `RepeatMarker::default()` = none.
+    pub repeat: RepeatMarker,
 }
 
 /// Top-level musical document in the canonical model.
