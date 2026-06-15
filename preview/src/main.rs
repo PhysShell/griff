@@ -1,15 +1,16 @@
-//! `griff-preview` — interactive terminal piano-roll for a `.mid` file (S8).
+//! `griff-preview` — interactive terminal piano-roll for a MIDI or Guitar Pro
+//! file (S8).
 //!
 //! Usage:
 //!
 //! ```text
-//! griff-preview <file.mid>                    # interactive TUI
-//! griff-preview <file.mid> --snapshot=WxH     # print one headless frame and exit
-//! griff-preview <file.mid> --record=<chunk>   # persist a/x, t/T, r, s curation into the record
-//! griff-preview <file.mid> --record=<chunk> --merge=<next>  # unlock m (merge with <next>)
+//! griff-preview <file>                    # interactive TUI
+//! griff-preview <file> --snapshot=WxH     # print one headless frame and exit
+//! griff-preview <file> --record=<chunk>   # persist a/x, t/T, r, s curation into the record
+//! griff-preview <file> --record=<chunk> --merge=<next>  # unlock m (merge with <next>)
 //! ```
 //!
-//! It imports the file through the core MIDI importer, builds a
+//! It imports the file through the core importer (MIDI or Guitar Pro), builds a
 //! [`griff_preview::view::PianoRollView`] and its [`griff_preview::analysis`],
 //! then either launches the `ratatui` front-end or renders a single frame to
 //! stdout via a headless backend (useful in CI / over a pipe).
@@ -18,7 +19,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::{env, fs};
 
-use griff_core::midi::import_score;
+use griff_core::import::import_score_auto;
 use griff_preview::analysis::analyze;
 use griff_preview::curation::{
     decide_record, merge_records, rename_record, set_tags, split_record_at_tick, summarize_record,
@@ -29,9 +30,7 @@ use griff_preview::view::build_view;
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let Some(path) = args.next() else {
-        eprintln!(
-            "usage: griff-preview <file.mid> [--snapshot=WIDTHxHEIGHT] [--record=CHUNK_JSON]"
-        );
+        eprintln!("usage: griff-preview <file> [--snapshot=WIDTHxHEIGHT] [--record=CHUNK_JSON]");
         return ExitCode::FAILURE;
     };
 
@@ -41,7 +40,7 @@ fn main() -> ExitCode {
     for arg in args {
         if arg == "-h" || arg == "--help" {
             println!(
-                "usage: griff-preview <file.mid> [--snapshot=WIDTHxHEIGHT] [--record=CHUNK_JSON] \
+                "usage: griff-preview <file> [--snapshot=WIDTHxHEIGHT] [--record=CHUNK_JSON] \
 [--merge=PARTNER_JSON]"
             );
             return ExitCode::SUCCESS;
@@ -68,7 +67,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let score = match import_score(&bytes) {
+    let score = match import_score_auto(&bytes) {
         Ok(score) => score,
         Err(err) => {
             eprintln!("cannot import {path}: {err}");

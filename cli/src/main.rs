@@ -15,6 +15,7 @@ use griff_core::{
     },
     event::{NoteMarks, NotePosition, TechniqueSource},
     gesture,
+    import::{self, ImportError},
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::TickRange,
@@ -31,23 +32,23 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Parse a MIDI file and print a one-line summary per track.
+    /// Parse a MIDI or Guitar Pro file and print a one-line summary per track.
     Import {
-        /// Path to the `.mid` file.
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
     },
 
-    /// Print a detailed bar-by-bar inspection of a MIDI file.
+    /// Print a detailed bar-by-bar inspection of a MIDI or Guitar Pro file.
     Inspect {
-        /// Path to the `.mid` file.
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
     },
 
-    /// Import a MIDI file and write it back out (roundtrip check).
+    /// Import a MIDI or Guitar Pro file and write it back out as MIDI.
     Export {
-        /// Input `.mid` file.
+        /// Input MIDI or Guitar Pro file.
         #[arg(value_name = "INPUT")]
         input: PathBuf,
         /// Output `.mid` file.
@@ -55,16 +56,16 @@ enum Command {
         output: PathBuf,
     },
 
-    /// Classify each bar of a MIDI file as Riff, Solo, Breakdown, Clean, or Unknown.
+    /// Classify each bar of a MIDI or Guitar Pro file as Riff, Solo, Breakdown, Clean, or Unknown.
     Classify {
-        /// Path to the `.mid` file.
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
     },
 
-    /// Interactively curate a MIDI file into a corpus `ChunkMeta` JSON record.
+    /// Interactively curate a MIDI or Guitar Pro file into a corpus `ChunkMeta` JSON record.
     Curate {
-        /// Path to the `.mid` file to curate.
+        /// Path to the MIDI or Guitar Pro file to curate.
         #[arg(value_name = "FILE")]
         path: PathBuf,
         /// Output path for the `ChunkMeta` JSON (default: `<file>.chunk.json`).
@@ -152,7 +153,7 @@ fn track_note_count(track: &Track) -> usize {
 
 fn cmd_import(path: &Path) -> Result<(), CliError> {
     let data = fs::read(path)?;
-    let score = midi::import_score(&data)?;
+    let score = import::import_score_auto(&data)?;
 
     println!("PPQN: {}", score.ticks_per_quarter);
     println!("Bars: {}", score.master_bars.len());
@@ -170,7 +171,7 @@ fn cmd_import(path: &Path) -> Result<(), CliError> {
 
 fn cmd_inspect(path: &Path) -> Result<(), CliError> {
     let data = fs::read(path)?;
-    let score = midi::import_score(&data)?;
+    let score = import::import_score_auto(&data)?;
 
     println!("PPQN: {}", score.ticks_per_quarter);
     for (ti, track) in score.tracks.iter().enumerate() {
@@ -242,7 +243,7 @@ fn fmt_marks(marks: NoteMarks) -> String {
 
 fn cmd_export(input: &Path, output: &Path) -> Result<(), CliError> {
     let data = fs::read(input)?;
-    let score = midi::import_score(&data)?;
+    let score = import::import_score_auto(&data)?;
     let out_bytes = midi::export_score(&score)?;
     fs::write(output, &out_bytes)?;
     println!(
@@ -256,7 +257,7 @@ fn cmd_export(input: &Path, output: &Path) -> Result<(), CliError> {
 
 fn cmd_classify(path: &Path) -> Result<(), CliError> {
     let data = fs::read(path)?;
-    let score = midi::import_score(&data)?;
+    let score = import::import_score_auto(&data)?;
 
     println!("PPQN: {}", score.ticks_per_quarter);
     for (ti, track) in score.tracks.iter().enumerate() {
@@ -295,7 +296,7 @@ fn cmd_classify(path: &Path) -> Result<(), CliError> {
 
 fn cmd_curate(path: &Path, output: Option<&Path>, ensemble: bool) -> Result<(), CliError> {
     let data = fs::read(path)?;
-    let score = midi::import_score(&data)?;
+    let score = import::import_score_auto(&data)?;
 
     print_score_summary(path, &score);
     let inputs = gather_curate_inputs(ensemble)?;
@@ -624,6 +625,7 @@ fn parse_indices<T: Copy>(input: &str, variants: &[T]) -> Vec<T> {
 #[derive(Debug)]
 enum CliError {
     Io(IoError),
+    Import(ImportError),
     Midi(MidiError),
     Json(serde_json::Error),
     Ensemble(String),
@@ -633,6 +635,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::Import(e) => write!(f, "import error: {e}"),
             Self::Midi(e) => write!(f, "MIDI error: {e}"),
             Self::Json(e) => write!(f, "JSON error: {e}"),
             Self::Ensemble(msg) => write!(f, "ensemble error: {msg}"),
@@ -649,6 +652,12 @@ impl From<IoError> for CliError {
 impl From<MidiError> for CliError {
     fn from(e: MidiError) -> Self {
         Self::Midi(e)
+    }
+}
+
+impl From<ImportError> for CliError {
+    fn from(e: ImportError) -> Self {
+        Self::Import(e)
     }
 }
 
