@@ -17,9 +17,10 @@
 //! ZIP-based) is out of scope for S3.
 //!
 //! Every import produces a [`LossReport`] carried on [`Score`].  Losses
-//! include tied/dead notes and percussion tracks. Co-occurring techniques are
-//! preserved (ADR-0018): harmonics/accent/ghost/staccato become per-note
-//! `NoteMark`s and each spanning technique its own `TechniqueSpan`.
+//! include tied notes and percussion tracks. Co-occurring techniques are
+//! preserved (ADR-0018): harmonics/accent/ghost/staccato/dead-note become
+//! per-note `NoteMark`s and each spanning technique (hammer-on, slide, bend,
+//! palm-mute, vibrato) its own `TechniqueSpan`.
 
 use crate::{
     event::{
@@ -295,7 +296,7 @@ fn build_event_group(
 
     for note in &beat.notes {
         match note.kind {
-            guitarpro::NoteType::Normal => {
+            guitarpro::NoteType::Normal | guitarpro::NoteType::Dead => {
                 let Some(midi) = gp_note_midi_pitch(note, strings) else {
                     loss.add(ImportWarning::Other(
                         "GP note pitch out of range; note skipped".to_owned(),
@@ -305,7 +306,12 @@ fn build_event_group(
                 let pitch = Pitch(midi);
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 let velocity = Velocity(note.velocity.clamp(0, 127) as u8);
-                let marks = map_gp_note_marks(&note.effect, start, duration, &mut technique_spans);
+                let mut marks =
+                    map_gp_note_marks(&note.effect, start, duration, &mut technique_spans);
+                // A dead ("X") note keeps its (string, fret) but is a muted hit.
+                if matches!(note.kind, guitarpro::NoteType::Dead) {
+                    marks.insert(NoteMark::DeadNote);
+                }
                 atoms.push(AtomEvent::Note(AtomNote {
                     absolute_start: start,
                     duration,
@@ -317,7 +323,6 @@ fn build_event_group(
                 }));
             }
             guitarpro::NoteType::Tie
-            | guitarpro::NoteType::Dead
             | guitarpro::NoteType::Rest
             | guitarpro::NoteType::Unknown(_) => {
                 loss.add(ImportWarning::Other(format!(
@@ -415,6 +420,9 @@ fn map_gp_note_marks(
     if !effect.slides.is_empty() {
         push_span(SpanTechnique::Slide);
     }
+    if effect.bend.is_some() {
+        push_span(SpanTechnique::Bend);
+    }
     if effect.palm_mute {
         push_span(SpanTechnique::PalmMute);
     }
@@ -493,10 +501,12 @@ fn i64_to_u32_sat(v: i64) -> u32 {
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::indexing_slicing,
-    clippy::missing_assert_message
+    clippy::missing_assert_message,
+    clippy::panic
 )]
 mod tests {
     use super::*;
+    use guitarpro::model::effects::BendEffect;
     use guitarpro::model::key_signature::Duration as GpDurationTest;
 
     // ── detect_gp_version ─────────────────────────────────────────────────────
@@ -727,7 +737,7 @@ mod tests {
         // A bend is source-of-truth pitch expression (ADR-0018): it must surface
         // as a Bend TechniqueSpan, not be silently dropped.
         let effect = GpNoteEffect {
-            bend: Some(guitarpro::model::effects::BendEffect::default()),
+            bend: Some(BendEffect::default()),
             ..GpNoteEffect::default()
         };
         let mut spans = Vec::new();
@@ -742,14 +752,7 @@ mod tests {
         // A muted "X" note (NoteType::Dead) still carries a real (string, fret):
         // it must import as a positioned note bearing NoteMark::DeadNote, not be
         // dropped to loss.
-        let strings = vec![
-            (1_i8, 64_i8),
-            (2, 59),
-            (3, 55),
-            (4, 50),
-            (5, 45),
-            (6, 40),
-        ];
+        let strings = vec![(1_i8, 64_i8), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
         let beat = guitarpro::Beat {
             notes: vec![guitarpro::Note {
                 value: 5, // fret 5
