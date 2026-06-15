@@ -152,6 +152,7 @@ pub(crate) fn fixtures() -> Vec<(&'static str, Vec<u8>)> {
         ("seven_eight", seven_eight()),
         ("multi_track", multi_track()),
         ("tempo_change", tempo_change()),
+        ("two_phrases", two_phrases()),
     ]
 }
 
@@ -212,6 +213,29 @@ fn tempo_change() -> Vec<u8> {
         vec![
             meta_track(&[(0, 600_000), (1920, 400_000)], 4, 2, 5760),
             note_track(b"Lead", 0, &notes, 5760),
+        ],
+    )
+}
+
+/// 4/4 @ 120 BPM, five bars: two low-register quarter-note bars, a silent bar,
+/// then two high-register eighth-note bars. The silence plus the register and
+/// rhythm change make a clear phrase break, so the S4 detector emits at least
+/// one boundary — pinning the per-boundary output format.
+fn two_phrases() -> Vec<u8> {
+    let mut notes = run(8, 480, 480, &[40, 43, 45, 47], 90);
+    let phrase_two = run(16, 240, 240, &[72, 74, 76, 77], 80)
+        .into_iter()
+        .map(|mut n| {
+            n.start = n.start.saturating_add(5760);
+            n
+        });
+    notes.extend(phrase_two);
+    encode(
+        Format::Parallel,
+        480,
+        vec![
+            meta_track(&[(0, 500_000)], 4, 2, 9600),
+            note_track(b"Lead", 0, &notes, 9600),
         ],
     )
 }
