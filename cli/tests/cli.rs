@@ -1,9 +1,10 @@
 //! S0 golden/characterization tests for the `griff` CLI.
 //!
-//! Every CLI subcommand (`import`, `inspect`, `export`, `classify`, `phrases`)
-//! is run against every committed fixture and its stdout/stderr pinned to a
-//! golden snapshot. These tests describe what the CLI *does* today; they must
-//! not be "fixed" by changing expectations without a deliberate re-bless.
+//! Every CLI subcommand (`import`, `inspect`, `export`, `classify`,
+//! `structure`, `phrases`) is run against every committed fixture and its
+//! stdout/stderr pinned to a golden snapshot. These tests describe what the CLI
+//! *does* today; they must not be "fixed" by changing expectations without a
+//! deliberate re-bless.
 //!
 //! Regenerate fixtures: `cargo test -p griff-cli -- --ignored regenerate`
 //! Re-bless snapshots:  `GRIFF_BLESS=1 cargo test -p griff-cli`
@@ -79,6 +80,15 @@ fn classify_golden() {
         let path = fixture_path(name);
         let out = griff(&["classify", path.to_str().unwrap()], path.to_str());
         assert_golden(&format!("classify__{name}"), &out);
+    }
+}
+
+#[test]
+fn structure_golden() {
+    for (name, _) in fixtures() {
+        let path = fixture_path(name);
+        let out = griff(&["structure", path.to_str().unwrap()], path.to_str());
+        assert_golden(&format!("structure__{name}"), &out);
     }
 }
 
