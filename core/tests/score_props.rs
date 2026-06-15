@@ -6,6 +6,11 @@
 //! note preservation (nothing dropped / added / mutated). Anti-vacuity gates
 //! assert each run actually exercised a same-onset chord and a multi-voice bar,
 //! so the suite can never pass vacuously.
+//!
+//! Default `cases` is 3000 (sub-second). For a deeper sweep, raise it at runtime
+//! — e.g. `PROPTEST_CASES=15000 cargo test -p griff-core --test score_props` —
+//! without touching the committed default; any counterexample proptest finds is
+//! persisted under `proptest-regressions/` and replayed on every later run.
 
 #![allow(
     clippy::unwrap_used,
@@ -196,7 +201,7 @@ fn input_note_keys(score: &Score) -> Vec<NoteKey> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(3000))]
 
     /// `normalize` orders, places, and preserves notes per ADR-0020 / ADR-0021.
     #[test]
