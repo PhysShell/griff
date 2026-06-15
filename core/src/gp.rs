@@ -46,19 +46,48 @@ const GP_PPQN: u16 = 960;
 
 /// Ticks spanned by a `numerator/denominator` bar at [`GP_PPQN`].
 fn bar_ticks(numerator: u8, denominator: u8) -> u32 {
-    u32::from(numerator).saturating_add(u32::from(denominator)) // STUB
+    u32::from(GP_PPQN)
+        .saturating_mul(4)
+        .checked_div(u32::from(denominator.max(1)))
+        .unwrap_or(0)
+        .saturating_mul(u32::from(numerator.max(1)))
 }
 
 /// Cumulative start tick of each bar, summed from its meter — so the timeline
 /// never collapses, whatever (constant) start offsets the GP file carries.
 fn cumulative_bar_starts(meters: &[(u8, u8)]) -> Vec<u32> {
-    meters.iter().map(|_| 0).collect() // STUB
+    let mut starts = Vec::with_capacity(meters.len());
+    let mut cursor = 0_u32;
+    for &(numerator, denominator) in meters {
+        starts.push(cursor);
+        cursor = cursor.saturating_add(bar_ticks(numerator, denominator));
+    }
+    starts
 }
 
 /// Per-bar tempo with carry-forward: a bar with no explicit tempo (GP `0`)
 /// inherits the previous bar's; the default before any tempo is 120 BPM.
 fn carry_tempos(raw_tempos: &[i32]) -> Vec<f64> {
-    raw_tempos.iter().map(|_| 0.0).collect() // STUB
+    let mut tempos = Vec::with_capacity(raw_tempos.len());
+    let mut current = 120.0_f64;
+    for &raw in raw_tempos {
+        if raw > 0 {
+            current = f64::from(raw);
+        }
+        tempos.push(current);
+    }
+    tempos
+}
+
+/// Cleans a GP measure header's meter into a valid `(numerator, denominator)`:
+/// a non-zero numerator and a power-of-two denominator (the [`TimeSignature`]
+/// invariant).
+fn gp_meter(hdr: &guitarpro::MeasureHeader) -> (u8, u8) {
+    let numerator = hdr.time_signature.numerator.unsigned_abs().max(1);
+    let den_raw = hdr.time_signature.denominator.value.max(1);
+    #[allow(clippy::cast_possible_truncation)]
+    let den_u8 = den_raw.min(128) as u8;
+    (numerator, den_u8.next_power_of_two())
 }
 
 // ── error type ────────────────────────────────────────────────────────────────
@@ -134,16 +163,20 @@ fn detect_gp_version(data: &[u8]) -> Option<u8> {
 fn gp_song_to_score(song: &guitarpro::Song) -> Score {
     let mut loss = LossReport::new();
 
-    let tick_offset: u32 = song
-        .measure_headers
-        .first()
-        .map_or(0_u32, |h| i64_to_u32_sat(h.start));
+    // A meter-derived timeline (SPEC: the master timeline is the source of truth
+    // for tempo/meter): bar starts are summed from each bar's meter, never from
+    // GP's own start offsets (which GP6 leaves constant, collapsing everything
+    // into bar 0). Tempo carries forward across bars that don't restate it.
+    let meters: Vec<(u8, u8)> = song.measure_headers.iter().map(gp_meter).collect();
+    let starts = cumulative_bar_starts(&meters);
+    let raw_tempos: Vec<i32> = song.measure_headers.iter().map(|h| h.tempo).collect();
+    let tempos = carry_tempos(&raw_tempos);
 
-    let master_bars = build_gp_master_bars(song, tick_offset);
+    let master_bars = build_gp_master_bars(&meters, &starts, &tempos);
     let tracks: Vec<Track> = song
         .tracks
         .iter()
-        .map(|t| build_gp_track(t, song, tick_offset, &mut loss))
+        .map(|t| build_gp_track(t, song, &starts, &mut loss))
         .collect();
 
     Score {
@@ -159,49 +192,28 @@ fn gp_song_to_score(song: &guitarpro::Song) -> Score {
 
 // ── master bar construction ───────────────────────────────────────────────────
 
-fn build_gp_master_bars(song: &guitarpro::Song, tick_offset: u32) -> Vec<MasterBar> {
-    let headers = &song.measure_headers;
-    headers
+fn build_gp_master_bars(meters: &[(u8, u8)], starts: &[u32], tempos: &[f64]) -> Vec<MasterBar> {
+    meters
         .iter()
         .enumerate()
-        .map(|(idx, hdr)| {
-            let start_tick = i64_to_u32_sat(hdr.start).saturating_sub(tick_offset);
-
-            let end_tick = headers.get(idx.saturating_add(1)).map_or_else(
-                || {
-                    // Last bar: derive end from time signature.
-                    let num = u32::from(hdr.time_signature.numerator.unsigned_abs()).max(1);
-                    let den = u32::from(hdr.time_signature.denominator.value).max(1);
-                    let bar_ticks = u32::from(GP_PPQN)
-                        .saturating_mul(4)
-                        .checked_div(den)
-                        .unwrap_or(0)
-                        .saturating_mul(num);
-                    start_tick.saturating_add(bar_ticks)
-                },
-                |next| i64_to_u32_sat(next.start).saturating_sub(tick_offset),
-            );
-
-            let ts_num = hdr.time_signature.numerator.unsigned_abs().max(1);
-            let ts_den_raw = hdr.time_signature.denominator.value.max(1);
-            // Clamp to u8; denominator must be a power of two per our TimeSignature invariant.
-            #[allow(clippy::cast_possible_truncation)]
-            let ts_den_u8 = ts_den_raw.min(128) as u8;
-            let ts_den = ts_den_u8.next_power_of_two();
-
-            let time_sig = TimeSignature::new(ts_num, ts_den).unwrap_or(TimeSignature {
-                numerator: 4,
-                denominator: 4,
-            });
-            let tempo = Tempo::new(f64::from(hdr.tempo.max(1))).unwrap_or(Tempo(120.0_f64));
+        .map(|(idx, &(numerator, denominator))| {
+            let start = starts.get(idx).copied().unwrap_or(0);
+            let end = start.saturating_add(bar_ticks(numerator, denominator));
+            let time_signature =
+                TimeSignature::new(numerator, denominator).unwrap_or(TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                });
+            let tempo =
+                Tempo::new(tempos.get(idx).copied().unwrap_or(120.0)).unwrap_or(Tempo(120.0_f64));
 
             MasterBar {
                 index: idx,
                 tick_range: TickRange {
-                    start: Ticks(start_tick),
-                    end: Ticks(end_tick),
+                    start: Ticks(start),
+                    end: Ticks(end),
                 },
-                time_signature: time_sig,
+                time_signature,
                 tempo,
             }
         })
@@ -213,7 +225,7 @@ fn build_gp_master_bars(song: &guitarpro::Song, tick_offset: u32) -> Vec<MasterB
 fn build_gp_track(
     gp_track: &guitarpro::Track,
     song: &guitarpro::Song,
-    tick_offset: u32,
+    starts: &[u32],
     loss: &mut LossReport,
 ) -> Track {
     let channel = song
@@ -229,7 +241,7 @@ fn build_gp_track(
         .unwrap_or(0);
 
     let voices: Vec<Voice> = (0..voice_count)
-        .filter_map(|vi| build_gp_voice(gp_track, vi, tick_offset, loss))
+        .filter_map(|vi| build_gp_voice(gp_track, vi, starts, loss))
         .collect();
 
     Track {
@@ -260,7 +272,7 @@ fn gp_tuning(strings: &[(i8, i8)]) -> Tuning {
 fn build_gp_voice(
     gp_track: &guitarpro::Track,
     voice_idx: usize,
-    tick_offset: u32,
+    starts: &[u32],
     loss: &mut LossReport,
 ) -> Option<Voice> {
     let mut event_groups: Vec<EventGroup> = Vec::new();
@@ -273,20 +285,18 @@ fn build_gp_voice(
         loss,
     };
 
-    for measure in &gp_track.measures {
+    for (bar_index, measure) in gp_track.measures.iter().enumerate() {
         let Some(gp_voice) = measure.voices.get(voice_idx) else {
             continue;
         };
-        let measure_start = i64_to_u32_sat(measure.start).saturating_sub(tick_offset);
-        let mut cursor = measure_start;
+        // Beats lay out by accumulated duration from the bar's meter-derived
+        // start. The bar is the measure's position in the track — GP6 leaves
+        // `header_index` zero — so it shares the score's master timeline.
+        let mut cursor = starts.get(bar_index).copied().unwrap_or(0);
 
         for beat in &gp_voice.beats {
             let dur_ticks = gp_duration_ticks(&beat.duration).max(1);
-            let beat_start = beat
-                .start
-                .map_or(cursor, |s| i64_to_u32_sat(s).saturating_sub(tick_offset));
-
-            append_beat(beat, beat_start, dur_ticks, &gp_track.strings, &mut acc);
+            append_beat(beat, cursor, dur_ticks, &gp_track.strings, &mut acc);
             cursor = cursor.saturating_add(dur_ticks);
         }
     }
@@ -552,21 +562,6 @@ fn gp_duration_ticks(dur: &GpDuration) -> u32 {
         .unwrap_or(time)
 }
 
-/// Saturating cast from `i64` to `u32`: clamps negative values to 0 and
-/// values above `u32::MAX` to `u32::MAX`.
-fn i64_to_u32_sat(v: i64) -> u32 {
-    if v <= 0 {
-        0_u32
-    } else if v > i64::from(u32::MAX) {
-        u32::MAX
-    } else {
-        // Safety: v is in 1..=u32::MAX, guaranteed by the branches above.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let r = v as u32;
-        r
-    }
-}
-
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -608,6 +603,26 @@ mod tests {
             vec![122.0, 122.0, 122.0, 90.0, 90.0]
         );
         assert_eq!(carry_tempos(&[0, 0]), vec![120.0, 120.0]);
+    }
+
+    #[test]
+    fn master_bars_lay_out_cumulatively_with_meter_and_tempo() {
+        // 4/4, 2/4, 4/4 with a tempo set on bar 0 and changed on bar 2.
+        let meters = [(4_u8, 4_u8), (2, 4), (4, 4)];
+        let starts = cumulative_bar_starts(&meters);
+        let tempos = carry_tempos(&[120, 0, 90]);
+        let bars = build_gp_master_bars(&meters, &starts, &tempos);
+
+        let ranges: Vec<(u32, u32)> = bars
+            .iter()
+            .map(|b| (b.tick_range.start.0, b.tick_range.end.0))
+            .collect();
+        assert_eq!(ranges, vec![(0, 3840), (3840, 5760), (5760, 9600)]);
+        assert_eq!(bars[1].time_signature.numerator, 2);
+        // Tempo: bar 0 explicit 120, bar 1 carries it forward, bar 2 changes to 90.
+        assert!((119.5..120.5).contains(&bars[0].tempo.0));
+        assert!((119.5..120.5).contains(&bars[1].tempo.0));
+        assert!((89.5..90.5).contains(&bars[2].tempo.0));
     }
 
     // ── detect_gp_version ─────────────────────────────────────────────────────
@@ -933,24 +948,6 @@ mod tests {
             note.duration.0, 720,
             "tie must extend the held note to struck + tie duration"
         );
-    }
-
-    #[test]
-    fn i64_to_u32_sat_positive() {
-        assert_eq!(i64_to_u32_sat(960), 960);
-        assert_eq!(i64_to_u32_sat(0), 0);
-    }
-
-    #[test]
-    fn i64_to_u32_sat_negative() {
-        assert_eq!(i64_to_u32_sat(-1), 0);
-        assert_eq!(i64_to_u32_sat(i64::MIN), 0);
-    }
-
-    #[test]
-    fn i64_to_u32_sat_overflow() {
-        assert_eq!(i64_to_u32_sat(i64::from(u32::MAX)), u32::MAX);
-        assert_eq!(i64_to_u32_sat(i64::MAX), u32::MAX);
     }
 
     // ── gp_song_to_score: empty song ─────────────────────────────────────────────
