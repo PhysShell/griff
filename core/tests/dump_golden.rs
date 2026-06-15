@@ -19,8 +19,8 @@ use griff_core::{
         TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
     },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, MasterBar, Score, TechniqueSpan, Track,
-        Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, Score,
+        TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
 };
@@ -79,7 +79,7 @@ fn sample_score() -> Score {
             tuning: Tuning::standard_e(),
         }],
         source_meta: None,
-        loss: griff_core::score::LossReport::new(),
+        loss: LossReport::new(),
     }
 }
 
@@ -133,7 +133,7 @@ fn bar_voices_sorted_by_id_regardless_of_import_order() {
             tuning: Tuning::standard_e(),
         }],
         source_meta: None,
-        loss: griff_core::score::LossReport::new(),
+        loss: LossReport::new(),
     };
 
     let normalized = normalize(&score);
@@ -192,7 +192,7 @@ fn same_onset_notes_sorted_by_string_before_pitch() {
             tuning: Tuning::standard_e(),
         }],
         source_meta: None,
-        loss: griff_core::score::LossReport::new(),
+        loss: LossReport::new(),
     };
 
     let normalized = normalize(&score);

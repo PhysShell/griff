@@ -9,9 +9,11 @@
 //! back into one.
 //!
 //! Canonicalisation (SPEC §6): notes are bucketed into master bars by onset and
-//! sorted by `(onset, pitch, string, fret)`, so group structure and import
-//! ordering do not affect the output. Empty voices are dropped; transport-only
-//! bars stay (their meter/tempo is meaningful).
+//! sorted by `(onset, string, fret, pitch)` — the `(bar, voice, onset, string)`
+//! order ADR-0020 mandates, with `fret`/`pitch` as final tie-breaks for a total
+//! order — so group structure and import ordering do not affect the output.
+//! Empty voices are dropped; transport-only bars stay (their meter/tempo is
+//! meaningful).
 
 use serde::Serialize;
 
@@ -66,7 +68,7 @@ pub struct NormBar {
 pub struct NormVoice {
     /// Voice identifier; 0 is the primary voice.
     pub id: u8,
-    /// Notes, sorted by `(onset, pitch, string, fret)`.
+    /// Notes, sorted by `(onset, string, fret, pitch)` (ADR-0020).
     pub notes: Vec<NormNote>,
 }
 
@@ -167,9 +169,9 @@ fn voice_notes_in_bar(voice: &Voice, bar: &MasterBar) -> Vec<NormNote> {
     notes.sort_by_key(|note| {
         (
             note.onset_tick,
-            note.pitch,
             note.string.unwrap_or(0),
             note.fret.unwrap_or(0),
+            note.pitch,
         )
     });
     notes
