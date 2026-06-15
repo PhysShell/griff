@@ -42,6 +42,25 @@ use std::collections::HashMap;
 /// Guitar Pro internal PPQN (pulses per quarter note).
 const GP_PPQN: u16 = 960;
 
+// ── timeline helpers ──────────────────────────────────────────────────────────
+
+/// Ticks spanned by a `numerator/denominator` bar at [`GP_PPQN`].
+fn bar_ticks(numerator: u8, denominator: u8) -> u32 {
+    u32::from(numerator).saturating_add(u32::from(denominator)) // STUB
+}
+
+/// Cumulative start tick of each bar, summed from its meter — so the timeline
+/// never collapses, whatever (constant) start offsets the GP file carries.
+fn cumulative_bar_starts(meters: &[(u8, u8)]) -> Vec<u32> {
+    meters.iter().map(|_| 0).collect() // STUB
+}
+
+/// Per-bar tempo with carry-forward: a bar with no explicit tempo (GP `0`)
+/// inherits the previous bar's; the default before any tempo is 120 BPM.
+fn carry_tempos(raw_tempos: &[i32]) -> Vec<f64> {
+    raw_tempos.iter().map(|_| 0.0).collect() // STUB
+}
+
 // ── error type ────────────────────────────────────────────────────────────────
 
 /// Error that can occur when importing a Guitar Pro file.
@@ -563,6 +582,33 @@ mod tests {
     use guitarpro::model::effects::BendEffect;
     use guitarpro::model::key_signature::Duration as GpDurationTest;
     use std::collections::HashMap;
+
+    #[test]
+    fn bar_ticks_from_meter() {
+        assert_eq!(bar_ticks(4, 4), 3840); // GP_PPQN 960 * 4/4 * 4
+        assert_eq!(bar_ticks(2, 4), 1920);
+        assert_eq!(bar_ticks(3, 4), 2880);
+        assert_eq!(bar_ticks(6, 8), 2880);
+    }
+
+    #[test]
+    fn cumulative_bar_starts_accumulate_per_meter() {
+        // 4/4, 2/4, 4/4 → 0, 3840, 3840 + 1920 = 5760.
+        assert_eq!(
+            cumulative_bar_starts(&[(4, 4), (2, 4), (4, 4)]),
+            vec![0, 3840, 5760]
+        );
+    }
+
+    #[test]
+    fn carry_tempos_holds_the_last_set_tempo() {
+        // A tempo set once holds until changed; a leading gap is the 120 default.
+        assert_eq!(
+            carry_tempos(&[122, 0, 0, 90, 0]),
+            vec![122.0, 122.0, 122.0, 90.0, 90.0]
+        );
+        assert_eq!(carry_tempos(&[0, 0]), vec![120.0, 120.0]);
+    }
 
     // ── detect_gp_version ─────────────────────────────────────────────────────
 
