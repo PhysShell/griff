@@ -56,10 +56,10 @@ oracle tiers.
 4. **Three oracle tiers.**
    - **A — Golden (exact).** Tiny fixtures authored in code via PyGuitarPro
      (one technique per file). griff's IR dump is diffed against a committed
-     golden `*.norm.json`, re-blessed on intent change (the project's
-     hand-rolled golden convention, `GRIFF_BLESS=1`; not `insta`, per
-     decisions.log 2026-05-19). Ground truth is the authoring code's intent,
-     *not* a reparse.
+     golden `*.norm.json`, re-blessed on intent change via the `insta`
+     snapshot crate (`INSTA_UPDATE=always`), adopted for the golden tier per
+     decisions.log 2026-06-12 (reversing the 2026-05-19 `insta` rejection).
+     Ground truth is the authoring code's intent, *not* a reparse.
    - **B — Loss-oracle (subset).** Real `.gp5` files. PyGuitarPro enumerates
      the file; the assertion is `reference ⊆ (IR ∪ LossReport)` — every
      semantic element is either represented in the IR **or** explicitly
