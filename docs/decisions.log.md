@@ -1119,3 +1119,69 @@ Architectural decisions go to [`adr/`](adr/) instead.
   inspector that does not assert magnitudes it never measured, accepting
   that the CLI `inspect` output still prints the raw numbers and that
   the relevance rule lives in the renderer.
+
+- 2026-06-12 — In the context of starting mass GP-tab curation (S5),
+  facing that `ChunkMeta` carries no rights information and that corpus
+  content is git-ignored with no per-chunk provenance record, we decided
+  for a **`RightsInfo` struct as a `ChunkMeta` schema v7 optional field**
+  — `rights_status` enum (`PublicDomain` / `CcBy` / `CcBySa` /
+  `CopyrightedComposition` / `Unknown`), `acquisition` enum
+  (`CommunityTabSite` / `PurchasedOfficial` / `SelfTranscribed` /
+  `OmrFromScan` / `ArtistProvided`), `redistributable: bool`, and a free
+  `notes` string (URL, date, publisher) — with `griff curate` prompting
+  for it and `skip_serializing_if` / `serde(default)` so pre-v7 records
+  round-trip byte-identically — and against an ad-hoc freeform `notes`
+  string alone (no machine-readable filter: `novelty.rs` and any future
+  export gate need `redistributable` as a typed fact, not a human scan
+  of a freeform note), and against deferring the field until after mass
+  curation (rights status cannot be derived from notes; backfill =
+  re-researching provenance per source for every curated chunk — cost
+  scales with corpus size, not with code). Clarification: `RightsInfo`
+  is not an OSS licence; it is rights-status plus acquisition
+  provenance. For scraped community tabs (UG/Songsterr) of modern metal:
+  `CopyrightedComposition` / `CommunityTabSite` / `redistributable:
+  false`; for purchased Sheet Happens GP: `CopyrightedComposition` /
+  `PurchasedOfficial` / `redistributable: false`; for PDMX / public-
+  domain MusicXML: `PublicDomain` / `redistributable: true`; for
+  self-transcribed material: `CopyrightedComposition` /
+  `SelfTranscribed` / `redistributable: false` (own transcription does
+  not transfer composition rights). Accepted: the schema bump is v7,
+  the field is optional so existing records load as `None`, and the
+  curate prompt must land before the first production curation session.
+
+- 2026-06-12 — In the context of the same S5 corpus start, facing that
+  `griff curate` is hardcoded to `midi::import_score` /
+  `SourceFormat::Midi` (`cli/src/main.rs`), while GP is the declared
+  primary import format (decisions 2026-06-05 / ADR-0018), we decided
+  for **wiring `gp::import_score` into `griff curate` before GP-based
+  mass curation begins** — dispatch on extension to the specific
+  per-version `SourceFormat` variant already in the enum (`.gp3` →
+  `Gp3`, `.gp4` → `Gp4`, `.gp5` → `Gp5`, `.gpx` → `Gpx`; `.mid` /
+  `.midi` → `Midi`), recording that variant in `SourceRef` — and against
+  deferring until after a GP-based corpus is started (curating GP files
+  via MIDI conversion loses string / fret / technique data that GP
+  provides directly and misrecords `SourceFormat::Midi` on every
+  affected chunk; correcting N chunks requires re-ingesting each from
+  the original GP file and repeating the interactive curation prompt —
+  cost linear in corpus size). Caveat: if the initial curation cohort is
+  MIDI-only (no GP sources), the wiring can follow after that cohort;
+  this is a sequencing constraint, not an unconditional deadline.
+  Accepted: the existing `gp.rs` importer (S3 done) makes the code
+  change small; the GP curate path must emit a `LossReport` just as
+  the MIDI path does.
+
+- 2026-06-12 — *(Unresolved future direction, not a decision.)* A
+  **native chord-symbol / harmony layer** — a `ChordSymbol` type parsed
+  from Harte notation in Rust (not a Python sidecar), usable as a
+  first-class generation input (chord-per-bar spec compiling into S6
+  pitch-material constraints) and as a richer harmonic context for S13
+  `PartProfile` (beyond the Krumhansl–Schmuckler key estimate). No
+  `ChordSymbol` type exists today. Candidate ADR, deferred: the
+  schema-v7 optional-field migration pattern means it can be added after
+  the initial corpus without a rewrite (recomputed from source). Gate:
+  S7 traversal is gated on corpus ≥ 100 phrases; the harmony layer
+  adds value mainly as a S7 edge attribute and S6 constraint input, so
+  it logically follows the corpus phase. Prior art to survey before the
+  ADR: Harte et al. 2005 (the Harte chord syntax), `chord-rs` or similar
+  Rust crates (for prior-art reuse vs native reimplementation per
+  AGENTS.md). Captured so it is not lost; no commitment to build.
