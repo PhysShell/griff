@@ -9,6 +9,7 @@ pub mod classify;
 pub mod closure;
 pub mod complement;
 pub mod corpus;
+pub mod dump;
 pub mod event;
 pub mod feature;
 pub mod fretboard;

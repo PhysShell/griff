@@ -1120,6 +1120,29 @@ Architectural decisions go to [`adr/`](adr/) instead.
   that the CLI `inspect` output still prints the raw numbers and that
   the relevance rule lives in the renderer.
 
+- 2026-06-12 — In the context of building the GP-import validation harness
+  (ADR-0020), facing whether its golden tier reuses the hand-rolled
+  `GRIFF_BLESS` golden tooling or adopts the `insta` snapshot crate, we
+  decided to **reverse the standing `insta` rejection and adopt `insta`** as a
+  `dev-dependency` — and against keeping the rejection — because the original
+  reasons no longer hold: the MSRV argument is moot (the maintainer no longer
+  holds Rust 1.74; `rust-toolchain.toml` already pins `channel = "stable"`,
+  the `rust-version = 1.74` field is metadata a dev-dependency cannot break),
+  and a spike confirmed the cost is small: `insta` 1.48 builds on stable, and
+  its whole added subtree (`console`, `similar`, `once_cell`, `encode_unicode`,
+  `unicode-width`, `windows-sys`/`windows-link`) is licensed within the
+  `deny.toml` allowlist (MIT / Apache-2.0 / Unicode-3.0), with only the
+  duplicate `unicode-width` / `windows-sys` versions tripping the
+  `multiple-versions = "warn"` (not deny) gate. `insta` ships in no product
+  binary (dev-dep only), and it gives the normalized-dump golden the redaction
+  / `rounded_redaction` / sorted-redaction tooling the hand-rolled path would
+  have to reimplement for the float/ordering determinism the dump needs
+  anyway. This narrows the supersession to the golden *mechanism*; it does not
+  reopen the lean-dependency posture (AGENTS.md prior-art rule) for product
+  crates. Accepted: a `cargo-deny advisories` check (not runnable offline in
+  the spike) remains the authoritative CI gate, the existing `GRIFF_BLESS`
+  goldens stay as-is (no mass migration), and the workspace now carries two
+  snapshot mechanisms until/unless one is retired.
 - 2026-06-12 — In the context of starting mass GP-tab curation (S5),
   facing that `ChunkMeta` carries no rights information and that corpus
   content is git-ignored with no per-chunk provenance record, we decided
