@@ -14,7 +14,7 @@ use griff_core::{
         ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, PairRelation, QualityFlag,
         ReviewerDecision, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
     },
-    event::{NoteMarks, NotePosition, TechniqueSource},
+    event::{NoteMarks, NotePosition, TechniqueSource, Ticks},
     gesture,
     import::{self, ImportError},
     midi::{self, MidiError},
@@ -332,7 +332,15 @@ fn cmd_classify(path: &Path) -> Result<(), CliError> {
 fn cmd_phrases(path: &Path) -> Result<(), CliError> {
     let data = fs::read(path)?;
     let score = import::import_score_auto(&data)?;
-    let config = boundary::BoundaryConfig::default();
+    // The default config's tick gaps are tuned for GP's 960 PPQN; scale them to
+    // the file's own resolution so a phrase is the same musical distance
+    // whatever the source encoding (2 quarter notes apart, snapped to 1/16).
+    let ppqn = u32::from(score.ticks_per_quarter);
+    let config = boundary::BoundaryConfig {
+        min_gap: Ticks(ppqn.saturating_mul(2)),
+        quantize_ticks: Ticks(ppqn.checked_div(4).unwrap_or(1).max(1)),
+        ..boundary::BoundaryConfig::default()
+    };
 
     println!("PPQN: {}", score.ticks_per_quarter);
     for (ti, track) in score.tracks.iter().enumerate() {

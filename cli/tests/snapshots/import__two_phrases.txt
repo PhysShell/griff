@@ -1,0 +1,8 @@
+$ griff import <OUT>
+exit: 0
+--- stdout ---
+PPQN: 480
+Bars: 5
+Tracks: 1
+  [0] ch=00  notes=   24  "Lead"
+--- stderr ---
