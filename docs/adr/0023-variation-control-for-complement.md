@@ -65,7 +65,7 @@ We add **`VariationControl`** — the pitch-variability *ask*, orthogonal to
    No new RNG is introduced.
 
 5. **Provenance is ask-vs-is.** `VariedComplement { complement, control,
-   realized_spread }` carries the control that asked and B's realised pitch
+   realized_spread }` carries the control that asked and B's realized pitch
    ambitus as a fraction of the target band — the `GesturedCandidate` duality.
    An out-of-range control is the typed `VariationError::InvalidControl`, never a
    silent clamp.
