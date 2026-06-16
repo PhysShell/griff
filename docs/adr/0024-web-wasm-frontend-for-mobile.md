@@ -36,8 +36,9 @@ What the browser changes versus the native plan is narrow: (1) audio — S8 plan
    the M2 target.
 
 2. **The M1 MVP is a thin, throwaway front, not egui** — an *import-free*
-   `cdylib` (`web/`, no `wasm-bindgen`, no framework) that exports three C-ABI
-   functions, plus a static `index.html` + `app.js` that loads the `.wasm` with
+   `cdylib` (`web/`, no `wasm-bindgen`, no framework) that exports two C-ABI
+   functions (`arrange`, `arrange_len`) plus the linear `memory`, with a static
+   `index.html` + `app.js` that loads the `.wasm` with
    `WebAssembly.instantiate(bytes, {})` and marshals a small JSON result through
    linear memory. This unlocks phone testing now without the egui/Trunk/
    wasm-bindgen toolchain. It is disposable, not a second canonical renderer, so

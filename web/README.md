@@ -6,7 +6,8 @@ A browser front for the complement arranger — built so the engine can be drive
 
 This is the **MVP** (ADR-0024 §2): a deliberately thin, throwaway front — no
 `wasm-bindgen`, no framework. `griff-web` is an *import-free* `cdylib` that
-exports three C-ABI functions; the page (`static/`) loads the `.wasm` with
+exports two C-ABI functions (`arrange`, `arrange_len`) plus the linear `memory`;
+the page (`static/`) loads the `.wasm` with
 `WebAssembly.instantiate(bytes, {})` and marshals a small JSON result through
 linear memory. The canonical `egui` frontend (ADR-0016) replaces it at M2.
 

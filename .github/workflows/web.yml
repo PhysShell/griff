@@ -9,10 +9,9 @@ on:
     paths: ['web/**', 'core/**', '.github/workflows/web.yml']
   workflow_dispatch:
 
+# Least privilege: only the deploy job gets pages/id-token (scoped below).
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deploy at a time; let an in-progress run finish.
 concurrency:
@@ -24,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install wasm target
         run: rustup target add wasm32-unknown-unknown
       - name: Cache cargo
@@ -43,6 +44,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

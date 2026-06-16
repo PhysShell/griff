@@ -184,10 +184,12 @@ fn build_json(mode: u32, seed: u64, offset: i32, variation: f32) -> String {
         }
         Err(e) => {
             // Surface the typed error; still return A so the page can draw it.
+            // Escape it: a Debug repr can carry quotes/backslashes that would
+            // otherwise break the JSON the browser parses.
+            let err = json_escape(&format!("{e:?}"));
             let _ = write!(
                 json,
-                "\"realized_spread\":0,\"error\":\"{:?}\",\"tracks\":[",
-                e
+                "\"realized_spread\":0,\"error\":\"{err}\",\"tracks\":[",
             );
             json.push_str("{\"name\":\"A\",\"role\":\"a\",\"notes\":");
             push_notes(&mut json, &score.tracks[0]);
