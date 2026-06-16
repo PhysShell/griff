@@ -2,6 +2,7 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
   const els = {
+    file: $('file'), track: $('track'),
     mode: $('mode'), seed: $('seed'), seedOut: $('seedOut'),
     offset: $('offset'), offsetOut: $('offsetOut'),
     variation: $('variation'), varOut: $('varOut'),
@@ -31,7 +32,8 @@
     const seed = +els.seed.value;
     const offset = +els.offset.value;
     const variation = (+els.variation.value) / 100;
-    const ptr = wasm.arrange(mode, seed, offset, variation);
+    const track = +els.track.value;
+    const ptr = wasm.arrange(mode, seed, offset, variation, track);
     const len = wasm.arrange_len();
     // Read AFTER the call: arrange() may have grown linear memory.
     const view = new Uint8Array(wasm.memory.buffer, ptr, len);
@@ -53,6 +55,50 @@
     els.status.textContent =
       `A: ${a ? a.notes.length : 0} notes · B: ${b ? b.notes.length : 0} notes` +
       ` · realized spread ${Number(current.realized_spread).toFixed(2)}`;
+  }
+
+  // ---- file loading (import-free MIDI; see ADR-0024) ----
+  const escapeHtml = (s) => String(s).replace(/[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function loadFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const bytes = new Uint8Array(reader.result);
+        const ptr = wasm.input_alloc(bytes.length);
+        // View AFTER input_alloc: reserving the buffer may have grown memory.
+        new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
+        const rptr = wasm.load_score(bytes.length);
+        const view = new Uint8Array(wasm.memory.buffer, rptr, wasm.load_len());
+        const summary = JSON.parse(new TextDecoder('utf-8').decode(view));
+        if (summary.error) {
+          els.status.classList.add('error');
+          els.status.textContent = 'load failed: ' + summary.error;
+          return;
+        }
+        els.status.classList.remove('error');
+        populateTracks(summary);
+        arrange();
+      } catch (err) {
+        els.status.classList.add('error');
+        els.status.textContent = 'load failed: ' + err;
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function populateTracks(summary) {
+    const opts = ['<option value="-1">built-in sample</option>'];
+    let firstWithNotes = -1;
+    for (const t of summary.tracks) {
+      opts.push(`<option value="${t.i}">${escapeHtml(t.name)} · ${t.notes} notes</option>`);
+      if (firstWithNotes < 0 && t.notes > 0) firstWithNotes = t.i;
+    }
+    els.track.innerHTML = opts.join('');
+    els.track.value = String(firstWithNotes >= 0 ? firstWithNotes : -1);
+    els.status.textContent =
+      `loaded ${summary.tracks.length} track(s) · ${summary.bars} bars — pick a track, then ▶`;
   }
 
   // ---- drawing ----
@@ -179,6 +225,11 @@
       els.varOut.textContent = (els.variation.value / 100).toFixed(2); arrange();
     });
     els.mode.addEventListener('change', arrange);
+    els.track.addEventListener('change', arrange);
+    els.file.addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) loadFile(f);
+    });
     els.gen.addEventListener('click', arrange);
     els.play.addEventListener('click', play);
     els.stop.addEventListener('click', stop);

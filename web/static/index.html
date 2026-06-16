@@ -11,11 +11,24 @@
   <main>
     <h1>griff <span class="muted">· complement playground</span></h1>
     <p class="muted small">
-      A fixed sample lead (part A) + a generated complement (part B), all in the
-      browser. Deterministic: same controls → same result. (ADR-0024, MVP)
+      Load your own MIDI tab (or use the built-in sample) as part A, and griff
+      generates a complement part B — all in the browser. Deterministic: same
+      controls → same result. (ADR-0024, MVP)
     </p>
 
     <section class="controls">
+      <label>
+        Load tab <span class="hint">MIDI (.mid) — Guitar Pro coming</span>
+        <input id="file" type="file" accept=".mid,.midi,audio/midi" />
+      </label>
+
+      <label>
+        Track
+        <select id="track">
+          <option value="-1">built-in sample</option>
+        </select>
+      </label>
+
       <label>
         Mode
         <select id="mode">
