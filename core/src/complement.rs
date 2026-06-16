@@ -81,6 +81,58 @@ pub struct ComplementSpec {
     pub register_offset: i8,
 }
 
+/// Pitch-variability *ask*, orthogonal to [`RelationMode`] (ADR-0023).
+///
+/// The [`crate::gesture::GestureControl`] duality for the complement arranger:
+/// it shapes B's pitch over a fixed rhythmic skeleton and never moves an onset,
+/// so a grid-locked mode stays grid-locked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VariationControl {
+    /// Fraction of the band's scale ladder B may use, `0.0..=1.0`. `0.0` pins
+    /// every note to the band's anchor degree (a static line, still locked to
+    /// A's grid); `1.0` uses the whole band — the unconstrained default that
+    /// matches [`arrange_complement`].
+    pub pitch_spread: f64,
+}
+
+impl VariationControl {
+    /// The identity control: the whole band, i.e. [`arrange_complement`]'s
+    /// behaviour.
+    pub const FULL: Self = Self { pitch_spread: 1.0 };
+    /// A static line: B collapses onto the band's anchor degree.
+    pub const LOCKED: Self = Self { pitch_spread: 0.0 };
+
+    /// Whether the control is in range: a finite `pitch_spread` within
+    /// `0.0..=1.0`.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.pitch_spread.is_finite() && (0.0..=1.0).contains(&self.pitch_spread)
+    }
+}
+
+/// A varied complement: the arranged candidate plus provenance — the control
+/// that asked for it (ask) and B's realised pitch spread (is).
+#[derive(Debug, Clone)]
+pub struct VariedComplement {
+    /// The arranged candidate (A's score with B appended).
+    pub complement: ComplementCandidate,
+    /// The control this candidate was arranged against.
+    pub control: VariationControl,
+    /// B's realised pitch ambitus as a fraction of the target band,
+    /// `0.0..=1.0` — what the spread actually *is*, not what was asked.
+    pub realized_spread: f64,
+}
+
+/// Errors the varied arrangement entry point can emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariationError {
+    /// The [`VariationControl`] is out of range (non-finite or outside
+    /// `0.0..=1.0`).
+    InvalidControl,
+    /// The underlying arrangement failed.
+    Arrange(ComplementError),
+}
+
 /// Major or natural minor — the two scale shapes the key estimate considers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyMode {
@@ -621,11 +673,57 @@ fn shift_pitch(pitch: u8, semitones: i8) -> u8 {
 /// Returns a [`ComplementCandidate`] whose `score` is A's score with B appended
 /// as a new track on the same master bars. Deterministic for a fixed
 /// `(score, track_index, spec, seed)`.
+///
+/// Equivalent to [`arrange_complement_varied`] with [`VariationControl::FULL`]
+/// (the whole-band pitch window).
 pub fn arrange_complement(
     score: &Score,
     track_index: usize,
     spec: ComplementSpec,
     seed: GenerationSeed,
+) -> Result<ComplementCandidate, ComplementError> {
+    arrange_complement_inner(score, track_index, spec, seed, VariationControl::FULL)
+}
+
+/// Arranges a complement under a [`VariationControl`], with ask-vs-is provenance.
+///
+/// Returns the candidate plus the control and B's realised spread
+/// ([`VariedComplement`]). The control shapes B's pitch only — onsets stay
+/// locked to the chosen [`RelationMode`]'s skeleton — and an out-of-range
+/// control is the typed [`VariationError::InvalidControl`].
+///
+/// Deterministic for a fixed `(score, track_index, spec, seed, control)`
+/// (SPEC §6): the control narrows the seeded pitch hash, it does not add
+/// randomness.
+pub fn arrange_complement_varied(
+    score: &Score,
+    track_index: usize,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+    control: VariationControl,
+) -> Result<VariedComplement, VariationError> {
+    if !control.is_valid() {
+        return Err(VariationError::InvalidControl);
+    }
+    let complement = arrange_complement_inner(score, track_index, spec, seed, control)
+        .map_err(VariationError::Arrange)?;
+    let realized_spread = realized_band_spread(score, track_index, spec, &complement);
+    Ok(VariedComplement {
+        complement,
+        control,
+        realized_spread,
+    })
+}
+
+/// Shared dispatch for both entry points: the ladder-substitution modes
+/// (`rhythm_lock`, `register_contrast`, `call_response`) honour `control`'s
+/// pitch spread; the others have no ladder to window and ignore it.
+fn arrange_complement_inner(
+    score: &Score,
+    track_index: usize,
+    spec: ComplementSpec,
+    seed: GenerationSeed,
+    control: VariationControl,
 ) -> Result<ComplementCandidate, ComplementError> {
     if score.master_bars.is_empty() {
         return Err(ComplementError::EmptyScore);
@@ -636,15 +734,17 @@ pub fn arrange_complement(
     }
 
     match spec.mode {
-        RelationMode::RhythmLock => arrange_rhythm_lock(score, track_index, &profile, spec, seed),
+        RelationMode::RhythmLock => {
+            arrange_rhythm_lock(score, track_index, &profile, spec, seed, control)
+        }
         RelationMode::RegisterContrast => {
-            arrange_register_contrast(score, track_index, &profile, spec, seed)
+            arrange_register_contrast(score, track_index, &profile, spec, seed, control)
         }
         RelationMode::SupportLayer => {
             arrange_support_layer(score, track_index, &profile, spec, seed)
         }
         RelationMode::CallResponse => {
-            arrange_call_response(score, track_index, &profile, spec, seed)
+            arrange_call_response(score, track_index, &profile, spec, seed, control)
         }
         RelationMode::OctaveDouble => {
             arrange_octave_double(score, track_index, &profile, spec, seed)
@@ -653,6 +753,40 @@ pub fn arrange_complement(
             arrange_counter_melody(score, track_index, &profile, spec, seed)
         }
     }
+}
+
+/// Measures B's realised pitch spread: its ambitus as a fraction of the target
+/// band `[band_lo, band_hi]` (the `shifted_band` A's register maps to). `0.0`
+/// when B is a single pitch, a degenerate band, or has no notes.
+fn realized_band_spread(
+    score: &Score,
+    track_index: usize,
+    spec: ComplementSpec,
+    complement: &ComplementCandidate,
+) -> f64 {
+    let Ok(profile) = analyze_part(score, track_index) else {
+        return 0.0;
+    };
+    let Some(register) = profile.register else {
+        return 0.0;
+    };
+    let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
+    let span = band_hi.saturating_sub(band_lo);
+    if span == 0 {
+        return 0.0;
+    }
+    let b_notes = complement
+        .score
+        .tracks
+        .get(complement.part_b_index)
+        .map_or_else(Vec::new, voice_notes);
+    let (Some(lo), Some(hi)) = (
+        b_notes.iter().map(|n| n.pitch).min(),
+        b_notes.iter().map(|n| n.pitch).max(),
+    ) else {
+        return 0.0;
+    };
+    f64::from(hi.saturating_sub(lo)) / f64::from(span)
 }
 
 /// `counter_melody`: an independent line against A, delegated to the S6
@@ -808,12 +942,14 @@ fn arrange_octave_double(
 /// rhythm is locked exactly even when A has rests, off-beat starts, different
 /// rhythms in later bars, or per-bar meter changes — A's onsets already respect
 /// A's master-bar timeline. Pitch selection is seed-deterministic.
+#[allow(clippy::too_many_arguments)] // a ladder mode threading the variation control
 fn arrange_rhythm_lock(
     score: &Score,
     track_index: usize,
     profile: &PartProfile,
     spec: ComplementSpec,
     seed: GenerationSeed,
+    control: VariationControl,
 ) -> Result<ComplementCandidate, ComplementError> {
     // Register band for B: A's band shifted, clamped, and ordered.
     let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
@@ -823,7 +959,7 @@ fn arrange_rhythm_lock(
         .tracks
         .get(track_index)
         .ok_or(ComplementError::TrackIndexOutOfRange)?;
-    let event_groups = grid_locked_groups(a_track, profile, band_lo, band_hi, seed);
+    let event_groups = grid_locked_groups(a_track, profile, band_lo, band_hi, seed, control);
 
     Ok(finish_candidate(
         score,
@@ -844,12 +980,14 @@ fn arrange_rhythm_lock(
 /// zero offset, or a large shift folded back by the clamp), the contrast
 /// contract cannot be met and the spec is rejected as
 /// [`ComplementError::InvalidSpec`] rather than silently overlapped.
+#[allow(clippy::too_many_arguments)] // a ladder mode threading the variation control
 fn arrange_register_contrast(
     score: &Score,
     track_index: usize,
     profile: &PartProfile,
     spec: ComplementSpec,
     seed: GenerationSeed,
+    control: VariationControl,
 ) -> Result<ComplementCandidate, ComplementError> {
     let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
     let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
@@ -864,7 +1002,7 @@ fn arrange_register_contrast(
         .tracks
         .get(track_index)
         .ok_or(ComplementError::TrackIndexOutOfRange)?;
-    let event_groups = grid_locked_groups(a_track, profile, band_lo, band_hi, seed);
+    let event_groups = grid_locked_groups(a_track, profile, band_lo, band_hi, seed, control);
 
     Ok(finish_candidate(
         score,
@@ -946,12 +1084,14 @@ fn arrange_support_layer(
 /// the band shifted by `spec.register_offset`. B's onsets are disjoint from
 /// A's by construction. No qualifying gap is
 /// [`ComplementError::NoGapsToAnswer`].
+#[allow(clippy::too_many_arguments)] // a ladder mode threading the variation control
 fn arrange_call_response(
     score: &Score,
     track_index: usize,
     profile: &PartProfile,
     spec: ComplementSpec,
     seed: GenerationSeed,
+    control: VariationControl,
 ) -> Result<ComplementCandidate, ComplementError> {
     let register = profile.register.ok_or(ComplementError::PartHasNoNotes)?;
     let (band_lo, band_hi) = shifted_band(register, spec.register_offset);
@@ -991,12 +1131,13 @@ fn arrange_call_response(
     let min_gap = u32::from(score.ticks_per_quarter);
     let scale = scale_intervals_from(profile, band_lo);
     let ladder = band_scale_ladder(band_lo, band_hi, &scale);
+    let window = spread_window(ladder.len(), control.pitch_spread);
     let event_groups: Vec<EventGroup> = gaps
         .iter()
         .filter(|(start, end)| end.saturating_sub(*start) >= min_gap)
         .enumerate()
         .map(|(i, &(start, end))| {
-            let ladder_index = pitch_index(seed.0, i, ladder.len());
+            let ladder_index = pitch_index(seed.0, i, window);
             let pitch_val = ladder.get(ladder_index).copied().unwrap_or(band_lo);
             // The call this gap answers: the last A note sounding before it.
             let call_velocity = a_notes
@@ -1045,23 +1186,27 @@ fn shifted_band(register: PitchRange, offset: i8) -> (u8, u8) {
 /// B's event groups on A's exact onset grid: every B note keeps A's onset,
 /// duration, and velocity, with the pitch substituted seed-deterministically
 /// from A's harmonic context mapped into the `[band_lo, band_hi]` register band.
+#[allow(clippy::too_many_arguments)] // shared grid builder threading the variation control
 fn grid_locked_groups(
     a_track: &Track,
     profile: &PartProfile,
     band_lo: u8,
     band_hi: u8,
     seed: GenerationSeed,
+    control: VariationControl,
 ) -> Vec<EventGroup> {
     // Scale: A's harmonic context, as intervals above the band's low note,
     // anchored to A's pitch classes (the band picks the octave, not the key).
     let intervals = scale_intervals_from(profile, band_lo);
     let ladder = band_scale_ladder(band_lo, band_hi, &intervals);
+    // Pitch spread narrows how much of the ladder B may wander across.
+    let window = spread_window(ladder.len(), control.pitch_spread);
 
     voice_notes(a_track)
         .iter()
         .enumerate()
         .map(|(i, n)| {
-            let ladder_index = pitch_index(seed.0, i, ladder.len());
+            let ladder_index = pitch_index(seed.0, i, window);
             let pitch_val = ladder.get(ladder_index).copied().unwrap_or(band_lo);
             let pitch = Pitch::new(pitch_val).unwrap_or(Pitch(band_lo));
             // `n.velocity` originates from a valid AtomNote, so it is always in range.
@@ -1192,13 +1337,36 @@ fn scale_intervals_from(profile: &PartProfile, band_lo: u8) -> Vec<u8> {
     intervals
 }
 
+/// The number of bottom ladder entries B may wander across under a pitch-spread
+/// control: `pitch_spread` scales the `ladder_len`, rounded, floored at 1 so B
+/// always has at least the anchor degree, capped at the full ladder.
+///
+/// `pitch_spread = 1.0` returns `ladder_len` (the whole band — the identity
+/// window that reproduces the unconstrained arranger); `0.0` returns `1` (every
+/// pick collapses onto degree 0). `ladder_len == 0` returns `0` (an empty
+/// ladder, handled by the caller's `unwrap_or`).
+fn spread_window(ladder_len: usize, pitch_spread: f64) -> usize {
+    if ladder_len == 0 {
+        return 0;
+    }
+    let spread = pitch_spread.clamp(0.0, 1.0);
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )] // ladder_len ≤ MIDI range; result clamped to [1, ladder_len]
+    let window = (spread * ladder_len as f64).round() as usize;
+    window.clamp(1, ladder_len)
+}
+
 /// Every on-scale pitch within `[lo, hi]`, across all octaves, ascending — the
 /// full ladder B draws from.
 ///
 /// `intervals` are mod-12 offsets above `lo`'s pitch class, so each octave
 /// repeats the same shape. Spanning the whole band (not just `lo..=lo + 11`) is
 /// what lets B inhabit A's real register instead of collapsing into the bottom
-/// octave — every degree (ladder_index) was previously placed only in the lowest octave.
+/// octave — every degree (`ladder_index`) was previously placed only in the
+/// lowest octave.
 fn band_scale_ladder(lo: u8, hi: u8, intervals: &[u8]) -> Vec<u8> {
     let hi16 = u16::from(hi);
     let mut ladder: Vec<u8> = Vec::new();
@@ -1222,7 +1390,8 @@ fn band_scale_ladder(lo: u8, hi: u8, intervals: &[u8]) -> Vec<u8> {
     ladder
 }
 
-/// Seed-deterministic scale-degree (ladder_index) picker for note `index` (`SplitMix64` finalizer).
+/// Seed-deterministic scale-degree (`ladder_index`) picker for note `index`
+/// (`SplitMix64` finalizer).
 fn pitch_index(seed: u64, index: usize, modulo: usize) -> usize {
     if modulo == 0 {
         return 0;

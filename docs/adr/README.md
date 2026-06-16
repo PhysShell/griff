@@ -28,6 +28,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0020](0020-gp-import-validation-harness.md) | Validate Guitar Pro import against a reference oracle | Proposed |
 | [0021](0021-property-invariants-over-canonical-score.md) | Property-based invariants over the canonical Score | Proposed |
 | [0022](0022-repeat-unfolding-as-projection.md) | Repeat unfolding is a projection, not a model rewrite | Proposed |
+| [0023](0023-variation-control-for-complement.md) | Control pitch/contour spread of complementary parts | Proposed |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
