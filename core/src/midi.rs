@@ -333,11 +333,11 @@ pub fn import_score(data: &[u8]) -> Result<Score, MidiError> {
 /// names are preserved.  Only the first [`Voice`] of each track is emitted.
 pub fn export_score(score: &Score) -> Result<Vec<u8>, MidiError> {
     let ppqn = Ppqn(score.ticks_per_quarter);
-    let format = if score.tracks.len() == 1 {
-        Format::SingleTrack
-    } else {
-        Format::Parallel
-    };
+    // A dedicated meta/conductor chunk is always emitted (ADR-0003), so even a
+    // single note track yields ≥2 chunks. SMF Type 0 must contain exactly one
+    // track chunk, so the file is always Type 1 (`Parallel`); declaring Type 0
+    // here produced a spec-invalid file that strict readers reject.
+    let format = Format::Parallel;
 
     let mut smf_tracks: Vec<Vec<TrackEvent<'static>>> = vec![build_score_meta_track(score, ppqn)?];
     for track in &score.tracks {
@@ -696,7 +696,7 @@ mod tests {
         },
         slice::TickRange,
     };
-    use midly::{MetaMessage, Smf, TrackEventKind};
+    use midly::{Format, MetaMessage, Smf, TrackEventKind};
 
     /// Bytes of the `tempo_change` fixture (two-tempo file from the S0 corpus).
     const TEMPO_CHANGE_MID: &[u8] = include_bytes!(concat!(
@@ -879,6 +879,29 @@ mod tests {
             original.tracks.len(),
             reimported.tracks.len(),
             "roundtrip must preserve track count"
+        );
+    }
+
+    /// A single-track score still emits a dedicated meta chunk (ADR-0003), so the
+    /// exported file always holds ≥2 chunks and must be declared Type 1
+    /// (`Parallel`). Declaring Type 0 (`SingleTrack`) alongside a separate meta
+    /// chunk yields a spec-invalid file ("a type 0 file must contain exactly one
+    /// track") that strict readers reject.
+    #[test]
+    fn export_score_single_track_is_type1_parallel() {
+        let score = import_score(VALID_MINIMAL_MID).expect("import_score must succeed");
+        assert_eq!(score.tracks.len(), 1, "fixture must be single-track");
+
+        let bytes = export_score(&score).expect("export_score must succeed");
+        let smf = Smf::parse(&bytes).expect("exported bytes must be valid SMF");
+
+        assert!(
+            smf.tracks.len() >= 2,
+            "a dedicated meta chunk is always emitted, so ≥2 chunks exist"
+        );
+        assert!(
+            matches!(smf.header.format, Format::Parallel),
+            "a file carrying a separate meta chunk must be Type 1, not Type 0"
         );
     }
 
