@@ -20,8 +20,9 @@
 
 use griff_core::{
     complement::{
-        analyze_part, arrange_complement, measure_pair_axes, validate_pair, ComplementError,
-        ComplementSpec, KeyMode, RelationMode,
+        analyze_part, arrange_complement, arrange_complement_varied, measure_pair_axes,
+        validate_pair, ComplementError, ComplementSpec, KeyMode, RelationMode, VariationControl,
+        VariationError,
     },
     event::{
         NoteMark, NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature,
@@ -253,6 +254,137 @@ fn rhythm_lock_b_uses_full_register_band_not_just_bottom_octave() {
     assert!(
         hi > 60,
         "B must reach A's upper register (band 48..84), got max {hi}",
+    );
+}
+
+// ── VariationControl: pitch/contour spread (ADR-0023) ────────────────────────
+
+/// A wide, three-octave part A so the band ladder has room to spread.
+fn wide_part_a() -> Score {
+    score_with_part_a(2, &[48, 55, 60, 67, 72, 79, 84])
+}
+
+const RHYTHM_LOCK: ComplementSpec = ComplementSpec {
+    mode: RelationMode::RhythmLock,
+    register_offset: 0,
+};
+
+/// Full spread is the identity window: the varied path must reproduce plain
+/// `arrange_complement` byte-for-byte, so the default behaviour is unchanged.
+#[test]
+fn variation_full_spread_equals_plain_arrange() {
+    let score = wide_part_a();
+    let plain = arrange_complement(&score, 0, RHYTHM_LOCK, GenerationSeed(5)).expect("arrange ok");
+    let varied = arrange_complement_varied(
+        &score,
+        0,
+        RHYTHM_LOCK,
+        GenerationSeed(5),
+        VariationControl::FULL,
+    )
+    .expect("varied ok");
+    assert_eq!(
+        note_pitches(&varied.complement.score, varied.complement.part_b_index),
+        note_pitches(&plain.score, plain.part_b_index),
+        "VariationControl::FULL must be the identity window",
+    );
+}
+
+/// Zero spread pins B to the band's anchor degree — one distinct pitch, no
+/// matter the seed — while keeping A's onset grid (pitch only, never onsets).
+#[test]
+fn variation_zero_spread_collapses_b_to_a_single_pitch() {
+    let score = wide_part_a();
+    let varied = arrange_complement_varied(
+        &score,
+        0,
+        RHYTHM_LOCK,
+        GenerationSeed(5),
+        VariationControl::LOCKED,
+    )
+    .expect("varied ok");
+
+    let mut distinct = note_pitches(&varied.complement.score, varied.complement.part_b_index);
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        1,
+        "zero spread pins B to a single anchor degree, got {distinct:?}",
+    );
+    // Onsets stay locked to A's grid — variation shapes pitch, never rhythm.
+    let mut b_onsets = note_onsets(&varied.complement.score, varied.complement.part_b_index);
+    let mut a_onsets = note_onsets(&score, 0);
+    b_onsets.sort_unstable();
+    a_onsets.sort_unstable();
+    assert_eq!(
+        b_onsets, a_onsets,
+        "variation must not move onsets off A's grid",
+    );
+}
+
+/// Deterministic for a fixed `(spec, seed, control)` — SPEC §6.
+#[test]
+fn variation_is_deterministic_for_fixed_seed_and_control() {
+    let score = wide_part_a();
+    let control = VariationControl { pitch_spread: 0.5 };
+    let a = arrange_complement_varied(&score, 0, RHYTHM_LOCK, GenerationSeed(7), control)
+        .expect("varied ok");
+    let b = arrange_complement_varied(&score, 0, RHYTHM_LOCK, GenerationSeed(7), control)
+        .expect("varied ok");
+    assert_eq!(
+        note_pitches(&a.complement.score, a.complement.part_b_index),
+        note_pitches(&b.complement.score, b.complement.part_b_index),
+    );
+}
+
+/// An out-of-range spread is a typed error, not a silent clamp.
+#[test]
+fn variation_rejects_out_of_range_control() {
+    let score = wide_part_a();
+    for bad in [1.5_f64, -0.1, f64::NAN, f64::INFINITY] {
+        let control = VariationControl { pitch_spread: bad };
+        assert!(
+            matches!(
+                arrange_complement_varied(&score, 0, RHYTHM_LOCK, GenerationSeed(1), control),
+                Err(VariationError::InvalidControl)
+            ),
+            "spread {bad} must be rejected as InvalidControl",
+        );
+    }
+}
+
+/// The candidate carries the control that asked (ask) and B's realised pitch
+/// spread (is) — the GesturedCandidate duality.
+#[test]
+fn variation_provenance_carries_control_and_realized_spread() {
+    let score = wide_part_a();
+    let full = arrange_complement_varied(
+        &score,
+        0,
+        RHYTHM_LOCK,
+        GenerationSeed(5),
+        VariationControl::FULL,
+    )
+    .expect("varied ok");
+    assert_eq!(full.control, VariationControl::FULL, "ask is echoed back");
+    assert!(
+        full.realized_spread > 0.0,
+        "a full-spread B over a wide band realises a non-zero ambitus, got {}",
+        full.realized_spread,
+    );
+
+    let locked = arrange_complement_varied(
+        &score,
+        0,
+        RHYTHM_LOCK,
+        GenerationSeed(5),
+        VariationControl::LOCKED,
+    )
+    .expect("varied ok");
+    assert_eq!(
+        locked.realized_spread, 0.0,
+        "a single-pitch B realises zero spread",
     );
 }
 
