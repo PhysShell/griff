@@ -1,0 +1,5 @@
+$ griff complement <SRC> <OUT> --mode bad_mode
+exit: 1
+--- stdout ---
+--- stderr ---
+error: argument error: unknown complement mode 'bad_mode' (try rhythm_lock, register_contrast, call_response, support_layer, octave_double, counter_melody)

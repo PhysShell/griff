@@ -1,0 +1,5 @@
+$ griff complement <SRC> <OUT>
+exit: 0
+--- stdout ---
+complement (rhythm_lock, seed 0) — part B appended as track 2 (276 bytes) -> <OUT>
+--- stderr ---

@@ -100,6 +100,29 @@ enum Command {
         bars: usize,
     },
 
+    /// Arrange a complementary part (S13) for a tab's primary track — a second
+    /// guitar/bass derived from it — and write both parts to a MIDI file.
+    Complement {
+        /// Source MIDI or Guitar Pro file whose primary track is part A.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+        /// Output `.mid` file for A plus the generated part B.
+        #[arg(value_name = "OUTPUT")]
+        output: PathBuf,
+        /// Relation mode: `rhythm_lock`, `register_contrast`, `call_response`,
+        /// `support_layer`, `octave_double`, or `counter_melody`.
+        #[arg(long, default_value = "rhythm_lock")]
+        mode: String,
+        /// Deterministic seed — the same seed always yields the same part.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        /// Semitone shift of B's register relative to A (e.g. -12 = octave
+        /// down). Defaults per mode: `octave_double` and `register_contrast`
+        /// reject a zero shift, so they default to -12; others to 0.
+        #[arg(long, allow_hyphen_values = true)]
+        offset: Option<i8>,
+    },
+
     /// Interactively curate a MIDI or Guitar Pro file into a corpus `ChunkMeta` JSON record.
     Curate {
         /// Path to the MIDI or Guitar Pro file to curate.
@@ -133,6 +156,13 @@ fn run() -> Result<(), CliError> {
             seed,
             bars,
         } => cmd_generate(&input, &output, seed, bars),
+        Command::Complement {
+            input,
+            output,
+            mode,
+            seed,
+            offset,
+        } => cmd_complement(&input, &output, &mode, seed, offset),
         Command::Curate {
             path,
             output,
@@ -618,6 +648,73 @@ fn first_bar_rhythm(score: &Score) -> Vec<Ticks> {
     vec![quarter; 4]
 }
 
+/// Arranges a complementary part B (S13) for the primary track of `input` and
+/// writes A plus B to a MIDI file.
+fn cmd_complement(
+    input: &Path,
+    output: &Path,
+    mode: &str,
+    seed: u64,
+    offset: Option<i8>,
+) -> Result<(), CliError> {
+    let data = fs::read(input)?;
+    let score = import::import_score_auto(&data)?;
+    let relation = parse_relation_mode(mode)?;
+    // Part A is the first track that actually sounds: GP import keeps rest-only
+    // tracks, so track 0 may be empty while a later track carries the riff.
+    let track_index = score
+        .tracks
+        .iter()
+        .position(|t| primary_voice_note_count(t) > 0)
+        .ok_or(CliError::Complement(
+            complement::ComplementError::PartHasNoNotes,
+        ))?;
+    let spec = complement::ComplementSpec {
+        mode: relation,
+        register_offset: offset.unwrap_or_else(|| default_offset(relation)),
+    };
+    let candidate =
+        complement::arrange_complement(&score, track_index, spec, generate::GenerationSeed(seed))?;
+    let out_bytes = midi::export_score(&candidate.score)?;
+    fs::write(output, &out_bytes)?;
+    println!(
+        "complement ({label}, seed {seed}) — part B appended as track {b} \
+         ({n} bytes) -> {out}",
+        label = relation.label(),
+        b = candidate.part_b_index,
+        n = out_bytes.len(),
+        out = output.display(),
+    );
+    Ok(())
+}
+
+/// The default register shift when `--offset` is omitted: an octave down for
+/// the modes that reject a zero shift, otherwise none.
+const fn default_offset(mode: complement::RelationMode) -> i8 {
+    match mode {
+        complement::RelationMode::OctaveDouble | complement::RelationMode::RegisterContrast => -12,
+        _ => 0,
+    }
+}
+
+/// Parses a `--mode` string into a [`complement::RelationMode`].
+fn parse_relation_mode(mode: &str) -> Result<complement::RelationMode, CliError> {
+    Ok(match mode {
+        "rhythm_lock" => complement::RelationMode::RhythmLock,
+        "register_contrast" => complement::RelationMode::RegisterContrast,
+        "call_response" => complement::RelationMode::CallResponse,
+        "support_layer" => complement::RelationMode::SupportLayer,
+        "octave_double" => complement::RelationMode::OctaveDouble,
+        "counter_melody" => complement::RelationMode::CounterMelody,
+        other => {
+            return Err(CliError::Argument(format!(
+                "unknown complement mode '{other}' (try rhythm_lock, register_contrast, \
+                 call_response, support_layer, octave_double, counter_melody)"
+            )));
+        }
+    })
+}
+
 fn cmd_curate(path: &Path, output: Option<&Path>, ensemble: bool) -> Result<(), CliError> {
     let data = fs::read(path)?;
     let score = import::import_score_auto(&data)?;
@@ -964,8 +1061,10 @@ enum CliError {
     Import(ImportError),
     Midi(MidiError),
     Json(serde_json::Error),
+    Argument(String),
     Ensemble(String),
     Generate(generate::GenerationError),
+    Complement(complement::ComplementError),
 }
 
 impl fmt::Display for CliError {
@@ -975,8 +1074,10 @@ impl fmt::Display for CliError {
             Self::Import(e) => write!(f, "import error: {e}"),
             Self::Midi(e) => write!(f, "MIDI error: {e}"),
             Self::Json(e) => write!(f, "JSON error: {e}"),
+            Self::Argument(msg) => write!(f, "argument error: {msg}"),
             Self::Ensemble(msg) => write!(f, "ensemble error: {msg}"),
             Self::Generate(e) => write!(f, "generation error: {e:?}"),
+            Self::Complement(e) => write!(f, "complement error: {e:?}"),
         }
     }
 }
@@ -1002,6 +1103,12 @@ impl From<ImportError> for CliError {
 impl From<generate::GenerationError> for CliError {
     fn from(e: generate::GenerationError) -> Self {
         Self::Generate(e)
+    }
+}
+
+impl From<complement::ComplementError> for CliError {
+    fn from(e: complement::ComplementError) -> Self {
+        Self::Complement(e)
     }
 }
 
