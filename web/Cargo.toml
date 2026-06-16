@@ -1,0 +1,31 @@
+# Excluded from the root workspace (see root Cargo.toml `exclude`): this crate
+# only builds for `wasm32-unknown-unknown`, like `fuzz/` only builds on nightly.
+[package]
+name = "griff-web"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Browser playground (WASM) for the griff engine — see docs/adr/0024."
+
+[lib]
+# `rlib` alongside `cdylib` lets the host-side unit tests link the crate; the
+# wasm build still emits the cdylib.
+crate-type = ["cdylib", "rlib"]
+
+# `default-features = false` drops the GP importer (guitarpro/zip/time/getrandom
+# → wasm-bindgen), leaving a lean, import-free wasm module.
+[dependencies]
+griff-core = { path = "../core", default-features = false }
+
+# A pure-compute WASM module: no unwinding (smaller, no import surface), squeezed
+# for mobile download.
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+
+# Own workspace root (like `fuzz/`): isolates the wasm-only target and profile
+# from the stable host workspace.
+[workspace]

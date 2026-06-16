@@ -15,6 +15,7 @@ pub mod feature;
 pub mod fretboard;
 pub mod generate;
 pub mod gesture;
+#[cfg(feature = "gp")]
 pub mod gp;
 pub mod import;
 pub mod midi;

@@ -29,6 +29,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0021](0021-property-invariants-over-canonical-score.md) | Property-based invariants over the canonical Score | Proposed |
 | [0022](0022-repeat-unfolding-as-projection.md) | Repeat unfolding is a projection, not a model rewrite | Proposed |
 | [0023](0023-variation-control-for-complement.md) | Control pitch/contour spread of complementary parts | Proposed |
+| [0024](0024-web-wasm-frontend-for-mobile.md) | Ship the egui frontend to the browser (WASM) for mobile testing | Proposed |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
