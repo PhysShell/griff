@@ -342,7 +342,7 @@ fn variation_is_deterministic_for_fixed_seed_and_control() {
 #[test]
 fn variation_rejects_out_of_range_control() {
     let score = wide_part_a();
-    for bad in [1.5_f64, -0.1, f64::NAN, f64::INFINITY] {
+    for bad in [1.5_f64, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let control = VariationControl { pitch_spread: bad };
         assert!(
             matches!(
