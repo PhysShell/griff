@@ -1,0 +1,5 @@
+$ griff complement <SRC> <OUT> --mode counter_melody --seed 42 --offset -12
+exit: 0
+--- stdout ---
+complement (counter_melody, seed 42) — part B appended as track 1 (246 bytes) -> <OUT>
+--- stderr ---

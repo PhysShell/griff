@@ -1,10 +1,10 @@
 //! S0 golden/characterization tests for the `griff` CLI.
 //!
 //! Every CLI subcommand (`import`, `inspect`, `export`, `classify`,
-//! `structure`, `phrases`, `generate`) is run against every committed fixture
-//! and its stdout/stderr pinned to a golden snapshot. These tests describe what
-//! the CLI *does* today; they must not be "fixed" by changing expectations
-//! without a deliberate re-bless.
+//! `structure`, `phrases`, `generate`, `complement`) is run against every
+//! committed fixture and its stdout/stderr pinned to a golden snapshot. These
+//! tests describe what the CLI *does* today; they must not be "fixed" by
+//! changing expectations without a deliberate re-bless.
 //!
 //! Regenerate fixtures: `cargo test -p griff-cli -- --ignored regenerate`
 //! Re-bless snapshots:  `GRIFF_BLESS=1 cargo test -p griff-cli`
@@ -145,6 +145,83 @@ fn generate_golden() {
         );
         fs::remove_file(&dst).ok();
     }
+}
+
+#[test]
+fn complement_golden() {
+    for (name, _) in fixtures() {
+        let src = fixture_path(name);
+        let dst = env::temp_dir().join(format!("griff_s0_complement_{name}.mid"));
+        fs::remove_file(&dst).ok();
+
+        let out = griff(
+            &["complement", src.to_str().unwrap(), dst.to_str().unwrap()],
+            dst.to_str(),
+        );
+        let out = out.replace(src.to_str().unwrap(), "<SRC>");
+        assert_golden(&format!("complement__{name}"), &out);
+
+        assert!(
+            dst.exists(),
+            "complement must have written the output file for `{name}`"
+        );
+        fs::remove_file(&dst).ok();
+    }
+}
+
+/// Pins the non-default argument path: a different `--mode`, an explicit
+/// `--seed`, and a negative `--offset` (which clap must accept as a value).
+#[test]
+fn complement_options_golden() {
+    let src = fixture_path("simple_4_4");
+    let dst = env::temp_dir().join("griff_s0_complement_opts.mid");
+    fs::remove_file(&dst).ok();
+
+    let out = griff(
+        &[
+            "complement",
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--mode",
+            "counter_melody",
+            "--seed",
+            "42",
+            "--offset",
+            "-12",
+        ],
+        dst.to_str(),
+    );
+    let out = out.replace(src.to_str().unwrap(), "<SRC>");
+    assert_golden("complement__opts_counter_melody", &out);
+
+    assert!(dst.exists(), "complement must have written the output file");
+    fs::remove_file(&dst).ok();
+}
+
+/// Pins the invalid-mode failure path: a clear argument error, no output file.
+#[test]
+fn complement_invalid_mode_golden() {
+    let src = fixture_path("simple_4_4");
+    let dst = env::temp_dir().join("griff_s0_complement_invalid.mid");
+    fs::remove_file(&dst).ok();
+
+    let out = griff(
+        &[
+            "complement",
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--mode",
+            "bad_mode",
+        ],
+        dst.to_str(),
+    );
+    let out = out.replace(src.to_str().unwrap(), "<SRC>");
+    assert_golden("error__complement_invalid_mode", &out);
+
+    assert!(
+        !dst.exists(),
+        "complement must not write an output file when the mode is invalid"
+    );
 }
 
 /// A missing input file is observable CLI behavior worth pinning.
