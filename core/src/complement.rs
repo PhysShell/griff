@@ -996,8 +996,8 @@ fn arrange_call_response(
         .filter(|(start, end)| end.saturating_sub(*start) >= min_gap)
         .enumerate()
         .map(|(i, &(start, end))| {
-            let degree = pitch_index(seed.0, i, ladder.len());
-            let pitch_val = ladder.get(degree).copied().unwrap_or(band_lo);
+            let ladder_index = pitch_index(seed.0, i, ladder.len());
+            let pitch_val = ladder.get(ladder_index).copied().unwrap_or(band_lo);
             // The call this gap answers: the last A note sounding before it.
             let call_velocity = a_notes
                 .iter()
@@ -1061,8 +1061,8 @@ fn grid_locked_groups(
         .iter()
         .enumerate()
         .map(|(i, n)| {
-            let degree = pitch_index(seed.0, i, ladder.len());
-            let pitch_val = ladder.get(degree).copied().unwrap_or(band_lo);
+            let ladder_index = pitch_index(seed.0, i, ladder.len());
+            let pitch_val = ladder.get(ladder_index).copied().unwrap_or(band_lo);
             let pitch = Pitch::new(pitch_val).unwrap_or(Pitch(band_lo));
             // `n.velocity` originates from a valid AtomNote, so it is always in range.
             let velocity = Velocity::new(n.velocity).unwrap_or(Velocity(0));
@@ -1198,7 +1198,7 @@ fn scale_intervals_from(profile: &PartProfile, band_lo: u8) -> Vec<u8> {
 /// `intervals` are mod-12 offsets above `lo`'s pitch class, so each octave
 /// repeats the same shape. Spanning the whole band (not just `lo..=lo + 11`) is
 /// what lets B inhabit A's real register instead of collapsing into the bottom
-/// octave — every degree was previously placed only in the lowest octave.
+/// octave — every degree (ladder_index) was previously placed only in the lowest octave.
 fn band_scale_ladder(lo: u8, hi: u8, intervals: &[u8]) -> Vec<u8> {
     let hi16 = u16::from(hi);
     let mut ladder: Vec<u8> = Vec::new();
@@ -1222,7 +1222,7 @@ fn band_scale_ladder(lo: u8, hi: u8, intervals: &[u8]) -> Vec<u8> {
     ladder
 }
 
-/// Seed-deterministic scale-degree picker for note `index` (`SplitMix64` finalizer).
+/// Seed-deterministic scale-degree (ladder_index) picker for note `index` (`SplitMix64` finalizer).
 fn pitch_index(seed: u64, index: usize, modulo: usize) -> usize {
     if modulo == 0 {
         return 0;
