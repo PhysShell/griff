@@ -18,11 +18,13 @@ use std::{
 };
 
 use griff_core::{
+    boundary,
     complement::measure_pair_axes,
     corpus::{
-        Acquisition, ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, RightsInfo, RightsStatus,
-        StyleCohort,
+        Acquisition, ChunkId, ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef, RightsInfo,
+        RightsStatus, StyleCohort, SCHEMA_VERSION,
     },
+    event::Ticks,
     gesture, midi,
     score::AtomEvent,
     structure,
@@ -432,5 +434,140 @@ fn curate_records_rights() {
             redistributable: true,
             notes: "pdmx.example/score, 2026-06-16".to_owned(),
         })
+    );
+}
+
+/// S4 wiring: curate persists the measured track's detected phrase boundaries
+/// (no longer hardcoded empty), matching what the detector reports.
+#[test]
+fn curate_records_phrase_boundaries() {
+    // two_phrases has detectable boundaries (unlike the single-phrase fixtures).
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/two_phrases.mid");
+    let out_path = std::env::temp_dir().join(format!(
+        "griff_curate_bnd_{}.chunk.json",
+        std::process::id()
+    ));
+
+    let mut child = Command::new(griff_bin())
+        .arg("curate")
+        .arg(&fixture)
+        .arg("--output")
+        .arg(&out_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn griff curate");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"bnd_001\nBoundaries\n\n\n\n\n\n")
+        .expect("write curate answers");
+    let out = child.wait_with_output().expect("wait for curate");
+    assert!(
+        out.status.success(),
+        "curate must exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&out_path).expect("curate wrote the record");
+    let _cleanup = std::fs::remove_file(&out_path);
+    let meta: ChunkMeta = serde_json::from_str(&json).expect("record parses as ChunkMeta");
+
+    // Recompute with the same PPQN-scaled config the curate path applies.
+    let bytes = std::fs::read(&fixture).expect("fixture bytes");
+    let score = midi::import_score(&bytes).expect("fixture imports");
+    let track = score
+        .tracks
+        .iter()
+        .position(|t| {
+            t.voices
+                .iter()
+                .flat_map(|v| &v.event_groups)
+                .flat_map(|g| &g.atoms)
+                .any(|a| matches!(a, AtomEvent::Note(_)))
+        })
+        .expect("fixture has a note-bearing track");
+    let ppqn = u32::from(score.ticks_per_quarter);
+    let config = boundary::BoundaryConfig {
+        min_gap: Ticks(ppqn.saturating_mul(2)),
+        quantize_ticks: Ticks(ppqn.checked_div(4).unwrap_or(1).max(1)),
+        ..Default::default()
+    };
+    let expected: Vec<(u32, u32)> = boundary::detect_phrase_boundaries(&score, track, &config)
+        .into_iter()
+        .map(|b| (b.start_tick.0, b.end_tick.0))
+        .collect();
+    let got: Vec<(u32, u32)> = meta
+        .boundaries
+        .iter()
+        .map(|b| (b.start_tick, b.end_tick))
+        .collect();
+
+    assert!(
+        !got.is_empty(),
+        "two_phrases fixture has detectable boundaries"
+    );
+    assert_eq!(got, expected, "curate persists the detector's boundaries");
+}
+
+/// `griff manifest` assembles a `CorpusManifest` from a directory of curated
+/// chunk records at the current schema version.
+#[test]
+fn manifest_builds_from_curated_chunks() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/two_phrases.mid");
+    let dir = std::env::temp_dir().join(format!("griff_manifest_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create corpus dir");
+
+    for id in ["m_001", "m_002"] {
+        let mut child = Command::new(griff_bin())
+            .arg("curate")
+            .arg(&fixture)
+            .arg("--output")
+            .arg(dir.join(format!("{id}.chunk.json")))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn curate");
+        child
+            .stdin
+            .as_mut()
+            .expect("piped stdin")
+            .write_all(format!("{id}\nChunk {id}\n\n\n\n\n\n").as_bytes())
+            .expect("write curate answers");
+        assert!(
+            child
+                .wait_with_output()
+                .expect("wait for curate")
+                .status
+                .success(),
+            "curate must exit 0"
+        );
+    }
+
+    let out = Command::new(griff_bin())
+        .arg("manifest")
+        .arg(&dir)
+        .output()
+        .expect("run griff manifest");
+    assert!(
+        out.status.success(),
+        "manifest must exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let manifest_json =
+        std::fs::read_to_string(dir.join("manifest.json")).expect("manifest was written");
+    let _cleanup = std::fs::remove_dir_all(&dir);
+    let manifest: CorpusManifest =
+        serde_json::from_str(&manifest_json).expect("manifest parses as CorpusManifest");
+
+    assert_eq!(manifest.schema_version, SCHEMA_VERSION);
+    assert_eq!(
+        manifest.chunks.len(),
+        2,
+        "both curated chunks land in the manifest"
     );
 }

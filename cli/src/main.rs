@@ -11,9 +11,9 @@ use griff_core::{
     classify::{self, BarClass},
     complement,
     corpus::{
-        Acquisition, ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, PairRelation, QualityFlag,
-        ReviewerDecision, RightsInfo, RightsStatus, SourceFormat, SourceRef, StyleCohort,
-        SwancoreTag,
+        Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef,
+        PairRelation, QualityFlag, ReviewerDecision, RightsInfo, RightsStatus, SourceFormat,
+        SourceRef, StyleCohort, SwancoreTag, SCHEMA_VERSION,
     },
     event::{NoteMarks, NotePosition, Pitch, TechniqueSource, Ticks},
     generate, gesture,
@@ -140,6 +140,18 @@ enum Command {
         #[arg(long)]
         ensemble: bool,
     },
+
+    /// Build a corpus manifest from a directory of curated `*.chunk.json` /
+    /// `*.group.json` records and print a coverage summary (count toward the
+    /// S7 ~100-phrase gate, cohort mix, rights, and review status).
+    Manifest {
+        /// Directory holding the curated chunk and group JSON records.
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
+        /// Output path for the manifest JSON (default: `<dir>/manifest.json`).
+        #[arg(short, long, value_name = "OUTPUT")]
+        output: Option<PathBuf>,
+    },
 }
 
 fn run() -> Result<(), CliError> {
@@ -169,6 +181,7 @@ fn run() -> Result<(), CliError> {
             output,
             ensemble,
         } => cmd_curate(&path, output.as_deref(), ensemble),
+        Command::Manifest { dir, output } => cmd_manifest(&dir, output.as_deref()),
     }
 }
 
@@ -855,6 +868,26 @@ fn source_format(score: &Score) -> SourceFormat {
     }
 }
 
+/// Detects phrase boundaries (S4) for `track_index`, scaling the detector's
+/// tick gaps to the score's PPQN exactly as `griff phrases` does, and maps them
+/// to corpus [`BoundaryEntry`] records.
+fn detect_boundaries(score: &Score, track_index: usize) -> Vec<BoundaryEntry> {
+    let ppqn = u32::from(score.ticks_per_quarter);
+    let config = boundary::BoundaryConfig {
+        min_gap: Ticks(ppqn.saturating_mul(2)),
+        quantize_ticks: Ticks(ppqn.checked_div(4).unwrap_or(1).max(1)),
+        ..boundary::BoundaryConfig::default()
+    };
+    boundary::detect_phrase_boundaries(score, track_index, &config)
+        .into_iter()
+        .map(|b| BoundaryEntry {
+            start_tick: b.start_tick.0,
+            end_tick: b.end_tick.0,
+            score: b.score,
+        })
+        .collect()
+}
+
 /// Measures `track_index` (when present) and assembles one chunk record.
 #[allow(clippy::too_many_arguments)] // a private assembly seam shared by both curate modes
 fn build_chunk_meta(
@@ -884,6 +917,7 @@ fn build_chunk_meta(
     let structure = track_index.and_then(|idx| structure::measure_structure(score, idx).ok());
     let gesture = track_index.and_then(|idx| gesture::measure_gesture(score, idx).ok());
     let complexity = track_index.and_then(|idx| structure::measure_complexity(score, idx).ok());
+    let boundaries = track_index.map_or_else(Vec::new, |idx| detect_boundaries(score, idx));
 
     let now = "2026-05-20T00:00:00Z".to_owned();
     ChunkMeta {
@@ -899,7 +933,7 @@ fn build_chunk_meta(
         time_signature,
         tuning: inputs.tuning.clone(),
         tags: inputs.tags.clone(),
-        boundaries: Vec::new(),
+        boundaries,
         techniques: Vec::new(),
         quality_flags: inputs.quality_flags.clone(),
         reviewer: inputs.reviewer,
@@ -942,6 +976,86 @@ fn write_output(path: &Path, json: &str) -> Result<(), CliError> {
     fs::write(path, json)?;
     println!("wrote {}", path.display());
     Ok(())
+}
+
+/// Builds a [`CorpusManifest`] from a directory of curated records, prints a
+/// coverage summary, and writes the manifest. Globs `*.chunk.json` into chunks
+/// and `*.group.json` into groups (both sorted, so the manifest is
+/// deterministic regardless of directory order).
+fn cmd_manifest(dir: &Path, output: Option<&Path>) -> Result<(), CliError> {
+    let mut chunk_paths: Vec<PathBuf> = Vec::new();
+    let mut group_paths: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".group.json") {
+            group_paths.push(path);
+        } else if name.ends_with(".chunk.json") {
+            chunk_paths.push(path);
+        }
+    }
+    chunk_paths.sort();
+    group_paths.sort();
+
+    let mut chunks = Vec::with_capacity(chunk_paths.len());
+    for path in &chunk_paths {
+        let json = fs::read_to_string(path)?;
+        chunks.push(serde_json::from_str::<ChunkMeta>(&json).map_err(CliError::Json)?);
+    }
+    let mut groups = Vec::with_capacity(group_paths.len());
+    for path in &group_paths {
+        let json = fs::read_to_string(path)?;
+        groups.push(serde_json::from_str::<EnsembleGroup>(&json).map_err(CliError::Json)?);
+    }
+
+    let manifest = CorpusManifest {
+        schema_version: SCHEMA_VERSION,
+        chunks,
+        groups,
+    };
+    print_manifest_summary(&manifest);
+
+    let out_path = output.map_or_else(|| dir.join("manifest.json"), PathBuf::from);
+    let json = serde_json::to_string_pretty(&manifest).map_err(CliError::Json)?;
+    write_output(&out_path, &json)
+}
+
+/// Prints corpus coverage: progress toward the S7 ~100-phrase gate, cohort mix
+/// (decisions 2026-06-11 targets ~70-80% core), rights coverage, and reviews.
+fn print_manifest_summary(manifest: &CorpusManifest) {
+    let chunks = &manifest.chunks;
+    let n = chunks.len();
+    let core = chunks
+        .iter()
+        .filter(|c| c.style_cohort == Some(StyleCohort::Core))
+        .count();
+    let adjacent = chunks
+        .iter()
+        .filter(|c| c.style_cohort == Some(StyleCohort::Adjacent))
+        .count();
+    let accepted = chunks
+        .iter()
+        .filter(|c| c.reviewer == Some(ReviewerDecision::Accepted))
+        .count();
+    let with_rights = chunks.iter().filter(|c| c.rights.is_some()).count();
+    let redistributable = chunks
+        .iter()
+        .filter(|c| c.rights.as_ref().is_some_and(|r| r.redistributable))
+        .count();
+
+    println!("Corpus manifest (schema v{})", manifest.schema_version);
+    println!("Chunks : {n}  (S7 graph layer recommended at ~100)");
+    println!(
+        "Cohort : {core} core / {adjacent} adjacent / {} unlabeled",
+        n.saturating_sub(core).saturating_sub(adjacent)
+    );
+    println!("Review : {accepted}/{n} accepted");
+    println!("Rights : {with_rights}/{n} recorded · {redistributable} redistributable");
+    if !manifest.groups.is_empty() {
+        println!("Groups : {}", manifest.groups.len());
+    }
 }
 
 struct CurateInputs {
