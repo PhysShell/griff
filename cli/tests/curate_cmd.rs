@@ -19,7 +19,10 @@ use std::{
 
 use griff_core::{
     complement::measure_pair_axes,
-    corpus::{ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, StyleCohort},
+    corpus::{
+        Acquisition, ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, RightsInfo, RightsStatus,
+        StyleCohort,
+    },
     gesture, midi,
     score::AtomEvent,
     structure,
@@ -380,5 +383,54 @@ fn curate_records_complexity_of_the_first_note_bearing_track() {
         meta.complexity,
         Some(expected),
         "curate persists the measured complexity profile"
+    );
+}
+
+/// Schema v7: the rights prompt (after the reviewer decision) is recorded —
+/// status, acquisition, redistributable flag, and free-form notes.
+#[test]
+fn curate_records_rights() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple_4_4.mid");
+    let out_path =
+        std::env::temp_dir().join(format!("griff_curate_v7_{}.chunk.json", std::process::id()));
+
+    let mut child = Command::new(griff_bin())
+        .arg("curate")
+        .arg(&fixture)
+        .arg("--output")
+        .arg(&out_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn griff curate");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        // id, title, tuning, cohort, tags, flags, decision (all blank/default),
+        // then rights: status 0=public_domain, acquisition 2=self_transcribed,
+        // redistributable 1=yes, notes.
+        .write_all(b"rt_001\nRights Chunk\n\n\n\n\n\n0\n2\n1\npdmx.example/score, 2026-06-16\n")
+        .expect("write curate answers");
+    let out = child.wait_with_output().expect("wait for curate");
+    assert!(
+        out.status.success(),
+        "curate must exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let json = std::fs::read_to_string(&out_path).expect("curate wrote the record");
+    let _cleanup = std::fs::remove_file(&out_path);
+    let meta: ChunkMeta = serde_json::from_str(&json).expect("record parses as ChunkMeta");
+
+    assert_eq!(
+        meta.rights,
+        Some(RightsInfo {
+            rights_status: RightsStatus::PublicDomain,
+            acquisition: Acquisition::SelfTranscribed,
+            redistributable: true,
+            notes: "pdmx.example/score, 2026-06-16".to_owned(),
+        })
     );
 }

@@ -11,8 +11,9 @@ use griff_core::{
     classify::{self, BarClass},
     complement,
     corpus::{
-        ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, PairRelation, QualityFlag,
-        ReviewerDecision, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
+        Acquisition, ChunkId, ChunkMeta, EnsembleGroup, EnsembleRef, PairRelation, QualityFlag,
+        ReviewerDecision, RightsInfo, RightsStatus, SourceFormat, SourceRef, StyleCohort,
+        SwancoreTag,
     },
     event::{NoteMarks, NotePosition, Pitch, TechniqueSource, Ticks},
     generate, gesture,
@@ -907,6 +908,7 @@ fn build_chunk_meta(
         complexity,
         style_cohort: Some(inputs.style_cohort),
         ensemble,
+        rights: Some(inputs.rights.clone()),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -950,6 +952,7 @@ struct CurateInputs {
     tags: Vec<SwancoreTag>,
     quality_flags: Vec<QualityFlag>,
     reviewer: Option<ReviewerDecision>,
+    rights: RightsInfo,
 }
 
 fn gather_curate_inputs(ensemble: bool) -> Result<CurateInputs, CliError> {
@@ -1011,6 +1014,8 @@ fn gather_curate_inputs(ensemble: bool) -> Result<CurateInputs, CliError> {
         _ => None,
     };
 
+    let rights = gather_rights(&mut input_buf)?;
+
     Ok(CurateInputs {
         id,
         title,
@@ -1019,6 +1024,52 @@ fn gather_curate_inputs(ensemble: bool) -> Result<CurateInputs, CliError> {
         tags,
         quality_flags,
         reviewer,
+        rights,
+    })
+}
+
+/// Prompts for the schema-v7 rights record (decisions 2026-06-12). Defaults
+/// match the common case — a scraped community tab of a copyrighted modern-metal
+/// composition, not redistributable — so a blank answer is the safe one.
+fn gather_rights(input_buf: &mut String) -> Result<RightsInfo, CliError> {
+    println!(
+        "Rights status: 0=public_domain  1=cc_by  2=cc_by_sa  \
+         3=copyrighted_composition  4=unknown"
+    );
+    let status_input = prompt_line(input_buf, "Rights [3=copyrighted_composition]")?;
+    let rights_status = match status_input.trim() {
+        "0" => RightsStatus::PublicDomain,
+        "1" => RightsStatus::CcBy,
+        "2" => RightsStatus::CcBySa,
+        "4" => RightsStatus::Unknown,
+        _ => RightsStatus::CopyrightedComposition,
+    };
+
+    println!(
+        "Acquisition: 0=community_tab_site  1=purchased_official  2=self_transcribed  \
+         3=omr_from_scan  4=artist_provided"
+    );
+    let acq_input = prompt_line(input_buf, "Acquisition [0=community_tab_site]")?;
+    let acquisition = match acq_input.trim() {
+        "1" => Acquisition::PurchasedOfficial,
+        "2" => Acquisition::SelfTranscribed,
+        "3" => Acquisition::OmrFromScan,
+        "4" => Acquisition::ArtistProvided,
+        _ => Acquisition::CommunityTabSite,
+    };
+
+    let redist_input = prompt_line(input_buf, "Redistributable? 0=no 1=yes [0=no]")?;
+    let redistributable = redist_input.trim() == "1";
+
+    let notes = prompt_line(input_buf, "Rights notes (source URL, date, publisher)")?
+        .trim()
+        .to_owned();
+
+    Ok(RightsInfo {
+        rights_status,
+        acquisition,
+        redistributable,
+        notes,
     })
 }
 
