@@ -990,13 +990,14 @@ fn arrange_call_response(
 
     let min_gap = u32::from(score.ticks_per_quarter);
     let scale = scale_intervals_from(profile, band_lo);
+    let ladder = band_scale_ladder(band_lo, band_hi, &scale);
     let event_groups: Vec<EventGroup> = gaps
         .iter()
         .filter(|(start, end)| end.saturating_sub(*start) >= min_gap)
         .enumerate()
         .map(|(i, &(start, end))| {
-            let degree = pitch_index(seed.0, i, scale.len());
-            let pitch_val = degree_to_pitch(band_lo, band_hi, &scale, degree);
+            let degree = pitch_index(seed.0, i, ladder.len());
+            let pitch_val = ladder.get(degree).copied().unwrap_or(band_lo);
             // The call this gap answers: the last A note sounding before it.
             let call_velocity = a_notes
                 .iter()
@@ -1054,13 +1055,14 @@ fn grid_locked_groups(
     // Scale: A's harmonic context, as intervals above the band's low note,
     // anchored to A's pitch classes (the band picks the octave, not the key).
     let intervals = scale_intervals_from(profile, band_lo);
+    let ladder = band_scale_ladder(band_lo, band_hi, &intervals);
 
     voice_notes(a_track)
         .iter()
         .enumerate()
         .map(|(i, n)| {
-            let degree = pitch_index(seed.0, i, intervals.len());
-            let pitch_val = degree_to_pitch(band_lo, band_hi, &intervals, degree);
+            let degree = pitch_index(seed.0, i, ladder.len());
+            let pitch_val = ladder.get(degree).copied().unwrap_or(band_lo);
             let pitch = Pitch::new(pitch_val).unwrap_or(Pitch(band_lo));
             // `n.velocity` originates from a valid AtomNote, so it is always in range.
             let velocity = Velocity::new(n.velocity).unwrap_or(Velocity(0));
@@ -1190,13 +1192,34 @@ fn scale_intervals_from(profile: &PartProfile, band_lo: u8) -> Vec<u8> {
     intervals
 }
 
-/// Maps a scale `degree` to a concrete pitch inside `[lo, hi]`.
-fn degree_to_pitch(lo: u8, hi: u8, intervals: &[u8], degree: usize) -> u8 {
-    let idx = degree.checked_rem(intervals.len()).unwrap_or(0);
-    let interval = intervals.get(idx).copied().unwrap_or(0);
-    let raw = u16::from(lo).saturating_add(u16::from(interval));
-    let clamped = raw.clamp(u16::from(lo), u16::from(hi));
-    u8::try_from(clamped).unwrap_or(hi)
+/// Every on-scale pitch within `[lo, hi]`, across all octaves, ascending — the
+/// full ladder B draws from.
+///
+/// `intervals` are mod-12 offsets above `lo`'s pitch class, so each octave
+/// repeats the same shape. Spanning the whole band (not just `lo..=lo + 11`) is
+/// what lets B inhabit A's real register instead of collapsing into the bottom
+/// octave — every degree was previously placed only in the lowest octave.
+fn band_scale_ladder(lo: u8, hi: u8, intervals: &[u8]) -> Vec<u8> {
+    let hi16 = u16::from(hi);
+    let mut ladder: Vec<u8> = Vec::new();
+    let mut base = u16::from(lo);
+    while base <= hi16 {
+        for &interval in intervals {
+            let p = base.saturating_add(u16::from(interval));
+            if p <= hi16 {
+                if let Ok(p8) = u8::try_from(p) {
+                    ladder.push(p8);
+                }
+            }
+        }
+        base = base.saturating_add(12);
+    }
+    ladder.sort_unstable();
+    ladder.dedup();
+    if ladder.is_empty() {
+        ladder.push(lo);
+    }
+    ladder
 }
 
 /// Seed-deterministic scale-degree picker for note `index` (`SplitMix64` finalizer).

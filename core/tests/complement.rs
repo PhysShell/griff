@@ -232,6 +232,30 @@ fn rhythm_lock_b_pitches_within_offset_register() {
     }
 }
 
+/// Regression: B must draw from A's *whole* register band, not just its bottom
+/// octave. A part spanning multiple octaves previously collapsed B into
+/// `[band_lo, band_lo + 11]` because pitch selection only placed scale degrees
+/// in the lowest octave — so B always sounded low and cramped relative to A.
+#[test]
+fn rhythm_lock_b_uses_full_register_band_not_just_bottom_octave() {
+    // A spans 48..84 (three octaves); offset 0 keeps B's band identical to A's.
+    let score = score_with_part_a(2, &[48, 55, 60, 67, 72, 79, 84]);
+    let spec = ComplementSpec {
+        mode: RelationMode::RhythmLock,
+        register_offset: 0,
+    };
+    let cand = arrange_complement(&score, 0, spec, GenerationSeed(5)).expect("arrange ok");
+
+    let pitches = note_pitches(&cand.score, cand.part_b_index);
+    let hi = *pitches.iter().max().expect("B has notes");
+    // The band floor is 48, so the old bottom-octave cap was 59. Reaching above
+    // 60 is impossible unless B uses the band's upper octaves.
+    assert!(
+        hi > 60,
+        "B must reach A's upper register (band 48..84), got max {hi}",
+    );
+}
+
 #[test]
 fn rhythm_lock_axis_scores_report_locked_rhythm() {
     let score = score_with_part_a(2, &[60, 62, 64, 65]);
