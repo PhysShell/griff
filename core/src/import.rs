@@ -4,8 +4,9 @@
 //! content, so the product accepts either a `.gp3/.gp4/.gp5/.gpx` tab or a
 //! `.mid` file through one entry point.
 
+#[cfg(feature = "gp")]
+use crate::gp::{self, GpImportError};
 use crate::{
-    gp::{self, GpImportError},
     midi::{self, MidiError},
     score::Score,
 };
@@ -14,6 +15,7 @@ use crate::{
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
     /// The bytes looked like Guitar Pro, but the Guitar Pro adapter failed.
+    #[cfg(feature = "gp")]
     #[error("Guitar Pro import failed: {0}")]
     Gp(#[from] GpImportError),
     /// The bytes were not Guitar Pro, and the MIDI adapter failed.
@@ -26,13 +28,15 @@ pub enum ImportError {
 /// Guitar Pro is tried first (it has a recognisable header); anything its
 /// detector rejects falls through to the MIDI importer. A Guitar Pro *parse*
 /// failure surfaces as [`ImportError::Gp`] rather than being masked by the MIDI
-/// fallback.
+/// fallback. Without the `gp` feature only MIDI is recognised.
 pub fn import_score_auto(data: &[u8]) -> Result<Score, ImportError> {
-    match gp::import_gp_score(data) {
-        Ok(score) => Ok(score),
-        Err(GpImportError::UnsupportedFormat) => {
-            midi::import_score(data).map_err(ImportError::Midi)
+    #[cfg(feature = "gp")]
+    {
+        match gp::import_gp_score(data) {
+            Ok(score) => return Ok(score),
+            Err(GpImportError::UnsupportedFormat) => {} // fall through to MIDI
+            Err(other) => return Err(ImportError::Gp(other)),
         }
-        Err(other) => Err(ImportError::Gp(other)),
     }
+    midi::import_score(data).map_err(ImportError::Midi)
 }

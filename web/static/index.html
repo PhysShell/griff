@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#10131a" />
+  <title>griff · complement playground</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main>
+    <h1>griff <span class="muted">· complement playground</span></h1>
+    <p class="muted small">
+      A fixed sample lead (part A) + a generated complement (part B), all in the
+      browser. Deterministic: same controls → same result. (ADR-0024, MVP)
+    </p>
+
+    <section class="controls">
+      <label>
+        Mode
+        <select id="mode">
+          <option value="0">rhythm_lock</option>
+          <option value="1">register_contrast</option>
+          <option value="2">call_response</option>
+          <option value="3">support_layer</option>
+          <option value="4">octave_double</option>
+          <option value="5" selected>counter_melody</option>
+        </select>
+      </label>
+
+      <label>
+        Seed <output id="seedOut">5</output>
+        <input id="seed" type="range" min="0" max="64" step="1" value="5" />
+      </label>
+
+      <label>
+        Register offset <output id="offsetOut">0</output> st
+        <input id="offset" type="range" min="-24" max="24" step="1" value="0" />
+      </label>
+
+      <label>
+        Pitch spread <output id="varOut">1.00</output>
+        <input id="variation" type="range" min="0" max="100" step="1" value="100" />
+        <span class="hint">grid-locked modes only (rhythm_lock / register_contrast / call_response)</span>
+      </label>
+    </section>
+
+    <section class="transport">
+      <button id="gen" class="primary">Generate</button>
+      <button id="play">▶ Play</button>
+      <button id="stop">⏹ Stop</button>
+    </section>
+
+    <canvas id="roll" aria-label="piano roll"></canvas>
+
+    <p id="status" class="status muted small">loading engine…</p>
+    <p class="muted small">
+      Part A = blue · Part B = amber. Built from <code>griff-core</code> compiled
+      to WASM; audio is a placeholder synth (a real SoundFont comes later).
+    </p>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

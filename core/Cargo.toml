@@ -13,8 +13,15 @@ categories.workspace   = true
 [dependencies]
 midly      = { workspace = true }
 thiserror  = { workspace = true }
-guitarpro  = { version = "0.3", default-features = false }
+guitarpro  = { version = "0.3", default-features = false, optional = true }
 serde      = { workspace = true }
+
+[features]
+default = ["gp"]
+# Guitar Pro import. Pulls `guitarpro`/`zip` (and a `wasm-bindgen` subtree via
+# `time`/`getrandom`); disable it (`default-features = false`) for lean,
+# import-free wasm builds that only need MIDI — see ADR-0024.
+gp = ["dep:guitarpro"]
 
 [dev-dependencies]
 serde_json = { workspace = true }
