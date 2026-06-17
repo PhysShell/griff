@@ -14,6 +14,9 @@
 //!   returns `{ppqn, tempo, realized_spread, error, tracks:[A, B]}`.
 //! - `load_score(bytes)` parses an uploaded MIDI or Guitar Pro file, stashes the
 //!   [`Score`], and returns a `{error, ppqn, tempo, bars, tracks}` summary.
+//! - `detect_boundaries_json(track)` previews S4 phrase cuts, and
+//!   `build_chunk_json(track, …)` captures a track as a schema-v7 `chunk.json`
+//!   (ADR-0026) for download and later `griff manifest`.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -30,6 +33,13 @@ use griff_core::score::{
     AtomEvent, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score, Track, Voice,
 };
 use griff_core::slice::TickRange;
+
+use griff_core::boundary::{self, BoundaryConfig};
+use griff_core::corpus::{
+    Acquisition, BoundaryEntry, ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, RightsInfo,
+    RightsStatus, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
+};
+use griff_core::{gesture, structure};
 
 const PPQN: u16 = 480;
 const BAR: u32 = 1920; // 4/4 at 480 PPQN
@@ -377,6 +387,313 @@ fn note_count(track: &Track) -> usize {
     })
 }
 
+// ── chunk.json capture (ADR-0026) ─────────────────────────────────────────────
+//
+// A thin, download-only path: measure a loaded track exactly as `griff curate`
+// does and serialize a real `corpus::ChunkMeta`, so the bytes match what
+// `griff manifest` reads. No persistence, no editing — that is the S8 web dock.
+
+/// Maps an imported score's source-format tag to the corpus [`SourceFormat`]
+/// (mirrors the CLI's `source_format`); an unknown/absent tag falls back to MIDI.
+fn source_format(score: &Score) -> SourceFormat {
+    match score.source_meta.as_ref().and_then(|m| m.format.as_deref()) {
+        Some("GP3") => SourceFormat::Gp3,
+        Some("GP4") => SourceFormat::Gp4,
+        Some("GP5") => SourceFormat::Gp5,
+        Some("GP6") => SourceFormat::Gpx,
+        _ => SourceFormat::Midi,
+    }
+}
+
+/// Detects S4 phrase boundaries for `track_index`, scaling the detector's tick
+/// gaps to the score PPQN exactly as `griff curate`/`griff phrases` do.
+fn detect_boundaries(score: &Score, track_index: usize) -> Vec<BoundaryEntry> {
+    let ppqn = u32::from(score.ticks_per_quarter);
+    let config = BoundaryConfig {
+        min_gap: Ticks(ppqn.saturating_mul(2)),
+        quantize_ticks: Ticks(ppqn.checked_div(4).unwrap_or(1).max(1)),
+        ..BoundaryConfig::default()
+    };
+    boundary::detect_phrase_boundaries(score, track_index, &config)
+        .into_iter()
+        .map(|b| BoundaryEntry {
+            start_tick: b.start_tick.0,
+            end_tick: b.end_tick.0,
+            score: b.score,
+        })
+        .collect()
+}
+
+/// Space/comma-separated indices → variants (mirrors the CLI's `parse_indices`).
+fn parse_indices<T: Copy>(input: &str, variants: &[T]) -> Vec<T> {
+    input
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter_map(|s| s.parse::<usize>().ok())
+        .filter_map(|i| variants.get(i).copied())
+        .collect()
+}
+
+/// Rights-status code (the CLI's prompt order) → enum; unknown → copyrighted.
+fn rights_status_from(code: u32) -> RightsStatus {
+    match code {
+        0 => RightsStatus::PublicDomain,
+        1 => RightsStatus::CcBy,
+        2 => RightsStatus::CcBySa,
+        4 => RightsStatus::Unknown,
+        _ => RightsStatus::CopyrightedComposition,
+    }
+}
+
+/// Acquisition code (the CLI's prompt order) → enum; unknown → community tab.
+fn acquisition_from(code: u32) -> Acquisition {
+    match code {
+        1 => Acquisition::PurchasedOfficial,
+        2 => Acquisition::SelfTranscribed,
+        3 => Acquisition::OmrFromScan,
+        4 => Acquisition::ArtistProvided,
+        _ => Acquisition::CommunityTabSite,
+    }
+}
+
+/// Reviewer code → optional decision (anything outside 0..=2 → none).
+fn reviewer_from(code: i32) -> Option<ReviewerDecision> {
+    match code {
+        0 => Some(ReviewerDecision::Accepted),
+        1 => Some(ReviewerDecision::Rejected),
+        2 => Some(ReviewerDecision::NeedsReview),
+        _ => None,
+    }
+}
+
+/// Style-cohort code → enum (1 = adjacent, else core).
+fn cohort_from(code: u32) -> StyleCohort {
+    if code == 1 {
+        StyleCohort::Adjacent
+    } else {
+        StyleCohort::Core
+    }
+}
+
+/// Assembles a schema-v7 [`ChunkMeta`] for `track_index`, mirroring the CLI's
+/// `build_chunk_meta` (single-track, no ensemble). `created_at`/`updated_at` come
+/// from the caller so the output is a pure function of its inputs (SPEC §6).
+#[allow(clippy::too_many_arguments)] // a capture seam mirroring the CLI's curate inputs
+fn build_chunk_meta_record(
+    score: &Score,
+    track_index: usize,
+    id: &str,
+    title: &str,
+    filename: &str,
+    tuning: &str,
+    cohort: u32,
+    tags_idx: &str,
+    quality_idx: &str,
+    reviewer: i32,
+    rights_status: u32,
+    acquisition: u32,
+    redistributable: bool,
+    notes: &str,
+    created_at: &str,
+    updated_at: &str,
+) -> Result<ChunkMeta, String> {
+    if track_index >= score.tracks.len() {
+        return Err(format!(
+            "track {track_index} out of range (score has {} tracks)",
+            score.tracks.len()
+        ));
+    }
+    let (tempo_bpm, time_signature) = score.master_bars.first().map_or((120.0, (4u8, 4u8)), |b| {
+        (
+            b.tempo.0,
+            (b.time_signature.numerator, b.time_signature.denominator),
+        )
+    });
+
+    let tuning = if tuning.trim().is_empty() {
+        "standard_e".to_owned()
+    } else {
+        tuning.trim().to_owned()
+    };
+    let tags = parse_indices(tags_idx, SwancoreTag::all_variants());
+    let all_flags = [
+        QualityFlag::Clean,
+        QualityFlag::Lossy,
+        QualityFlag::Quantized,
+        QualityFlag::FlatDynamics,
+    ];
+    let quality_flags = if quality_idx.trim().is_empty() {
+        vec![QualityFlag::Clean]
+    } else {
+        parse_indices(quality_idx, &all_flags)
+    };
+    let filename = if filename.trim().is_empty() {
+        "unknown.mid".to_owned()
+    } else {
+        filename.trim().to_owned()
+    };
+
+    Ok(ChunkMeta {
+        id: ChunkId(id.trim().to_owned()),
+        title: title.trim().to_owned(),
+        source: SourceRef {
+            filename,
+            format: source_format(score),
+            bar_range: None,
+        },
+        tempo_bpm,
+        ticks_per_quarter: score.ticks_per_quarter,
+        time_signature,
+        tuning,
+        tags,
+        boundaries: detect_boundaries(score, track_index),
+        techniques: Vec::new(),
+        quality_flags,
+        reviewer: reviewer_from(reviewer),
+        structure: structure::measure_structure(score, track_index).ok(),
+        gesture: gesture::measure_gesture(score, track_index).ok(),
+        complexity: structure::measure_complexity(score, track_index).ok(),
+        style_cohort: Some(cohort_from(cohort)),
+        ensemble: None,
+        rights: Some(RightsInfo {
+            rights_status: rights_status_from(rights_status),
+            acquisition: acquisition_from(acquisition),
+            redistributable,
+            notes: notes.trim().to_owned(),
+        }),
+        created_at: created_at.to_owned(),
+        updated_at: updated_at.to_owned(),
+    })
+}
+
+/// Builds a chunk record and serializes it to pretty JSON, or returns a
+/// `{"error":"…"}` envelope. Success output is a bare `ChunkMeta` (no `error`
+/// key), byte-compatible with what `griff manifest` reads.
+#[allow(clippy::too_many_arguments)]
+fn chunk_to_json(
+    score: &Score,
+    track_index: usize,
+    id: &str,
+    title: &str,
+    filename: &str,
+    tuning: &str,
+    cohort: u32,
+    tags_idx: &str,
+    quality_idx: &str,
+    reviewer: i32,
+    rights_status: u32,
+    acquisition: u32,
+    redistributable: bool,
+    notes: &str,
+    created_at: &str,
+    updated_at: &str,
+) -> String {
+    match build_chunk_meta_record(
+        score,
+        track_index,
+        id,
+        title,
+        filename,
+        tuning,
+        cohort,
+        tags_idx,
+        quality_idx,
+        reviewer,
+        rights_status,
+        acquisition,
+        redistributable,
+        notes,
+        created_at,
+        updated_at,
+    ) {
+        Ok(meta) => serde_json::to_string_pretty(&meta).unwrap_or_else(|e| {
+            format!(
+                "{{\"error\":\"{}\"}}",
+                json_escape(&format!("serialize: {e}"))
+            )
+        }),
+        Err(e) => format!("{{\"error\":\"{}\"}}", json_escape(&e)),
+    }
+}
+
+/// Emits detected phrase boundaries for `track_index` as
+/// `{"error":null,"boundaries":[{start_tick,end_tick,score}…]}`.
+fn boundaries_to_json(score: &Score, track_index: usize) -> String {
+    if track_index >= score.tracks.len() {
+        return "{\"error\":\"track out of range\",\"boundaries\":[]}".to_owned();
+    }
+    let mut json = String::from("{\"error\":null,\"boundaries\":[");
+    for (k, b) in detect_boundaries(score, track_index)
+        .into_iter()
+        .enumerate()
+    {
+        if k > 0 {
+            json.push(',');
+        }
+        let _ = write!(
+            json,
+            "{{\"start_tick\":{},\"end_tick\":{},\"score\":{:.3}}}",
+            b.start_tick, b.end_tick, b.score
+        );
+    }
+    json.push_str("]}");
+    json
+}
+
+/// Detects phrase boundaries for `track` of the loaded score and returns them as
+/// JSON, so the capture UI can preview phrase cuts before building a chunk.
+#[wasm_bindgen]
+pub fn detect_boundaries_json(track: u32) -> String {
+    LOADED.with(|l| match l.borrow().as_ref() {
+        Some(score) => boundaries_to_json(score, track as usize),
+        None => "{\"error\":\"no score loaded\",\"boundaries\":[]}".to_owned(),
+    })
+}
+
+/// Captures `track` of the loaded score as a schema-v7 `chunk.json` (ADR-0026):
+/// measures the track and serializes a `corpus::ChunkMeta`. Returns the chunk
+/// JSON on success or a `{"error":"…"}` envelope (no score / track out of range).
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_chunk_json(
+    track: u32,
+    id: &str,
+    title: &str,
+    filename: &str,
+    tuning: &str,
+    cohort: u32,
+    tags: &str,
+    quality: &str,
+    reviewer: i32,
+    rights_status: u32,
+    acquisition: u32,
+    redistributable: bool,
+    notes: &str,
+    created_at: &str,
+    updated_at: &str,
+) -> String {
+    LOADED.with(|l| match l.borrow().as_ref() {
+        Some(score) => chunk_to_json(
+            score,
+            track as usize,
+            id,
+            title,
+            filename,
+            tuning,
+            cohort,
+            tags,
+            quality,
+            reviewer,
+            rights_status,
+            acquisition,
+            redistributable,
+            notes,
+            created_at,
+            updated_at,
+        ),
+        None => "{\"error\":\"no score loaded\"}".to_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -542,12 +859,19 @@ mod tests {
         };
         let score = sample_part_a();
         let meta = build_chunk_meta_record(
-            &score, 0, "dgd_001", "Test Riff", "riff.gp5", "   ", // blank tuning → default
+            &score,
+            0,
+            "dgd_001",
+            "Test Riff",
+            "riff.gp5",
+            "   ", // blank tuning → default
             1,     // cohort: adjacent
             "0 5", // two tag indices
             "",    // quality blank → [Clean]
             0,     // reviewer: accepted
-            3, 0, false, // rights: copyrighted, community_tab_site, not redistributable
+            3,
+            0,
+            false, // rights: copyrighted, community_tab_site, not redistributable
             "from example.com 2026-06-17",
             "2026-06-17T00:00:00Z",
             "2026-06-17T00:00:00Z",
@@ -555,12 +879,18 @@ mod tests {
         .expect("record builds for an in-range track");
 
         assert_eq!(meta.id.0, "dgd_001");
-        assert_eq!(meta.tuning, "standard_e", "blank tuning defaults like the CLI");
+        assert_eq!(
+            meta.tuning, "standard_e",
+            "blank tuning defaults like the CLI"
+        );
         assert_eq!(meta.style_cohort, Some(StyleCohort::Adjacent));
         assert_eq!(meta.quality_flags, vec![QualityFlag::Clean]);
         assert_eq!(meta.reviewer, Some(ReviewerDecision::Accepted));
         assert_eq!(meta.tags.len(), 2, "two tag indices mapped");
-        let rights = meta.rights.as_ref().expect("rights captured (non-derivable, S5)");
+        let rights = meta
+            .rights
+            .as_ref()
+            .expect("rights captured (non-derivable, S5)");
         assert_eq!(rights.rights_status, RightsStatus::CopyrightedComposition);
         assert_eq!(rights.acquisition, Acquisition::CommunityTabSite);
         assert!(!rights.redistributable);
@@ -576,7 +906,22 @@ mod tests {
     fn build_chunk_record_rejects_out_of_range_track() {
         let score = sample_part_a();
         let err = build_chunk_meta_record(
-            &score, 99, "x", "x", "f.mid", "standard_e", 0, "", "", -1, 3, 0, false, "", "t", "t",
+            &score,
+            99,
+            "x",
+            "x",
+            "f.mid",
+            "standard_e",
+            0,
+            "",
+            "",
+            -1,
+            3,
+            0,
+            false,
+            "",
+            "t",
+            "t",
         )
         .unwrap_err();
         assert!(err.contains("out of range"), "{err}");
@@ -587,10 +932,27 @@ mod tests {
         let score = sample_part_a();
         // Success: a ChunkMeta has no top-level "error" key and parses as one.
         let ok = chunk_to_json(
-            &score, 0, "dgd_002", "Captured", "riff.mid", "standard_e", 0, "", "", -1, 3, 0, false,
-            "", "2026-06-17T00:00:00Z", "2026-06-17T00:00:00Z",
+            &score,
+            0,
+            "dgd_002",
+            "Captured",
+            "riff.mid",
+            "standard_e",
+            0,
+            "",
+            "",
+            -1,
+            3,
+            0,
+            false,
+            "",
+            "2026-06-17T00:00:00Z",
+            "2026-06-17T00:00:00Z",
         );
-        assert!(!ok.contains("\"error\""), "no error key on success: {ok:.160}");
+        assert!(
+            !ok.contains("\"error\""),
+            "no error key on success: {ok:.160}"
+        );
         let meta: griff_core::corpus::ChunkMeta =
             serde_json::from_str(&ok).expect("valid ChunkMeta JSON");
         assert_eq!(meta.id.0, "dgd_002");
@@ -598,7 +960,22 @@ mod tests {
 
         // Failure: an out-of-range track yields a parseable error envelope.
         let bad = chunk_to_json(
-            &score, 99, "x", "x", "f.mid", "standard_e", 0, "", "", -1, 3, 0, false, "", "t", "t",
+            &score,
+            99,
+            "x",
+            "x",
+            "f.mid",
+            "standard_e",
+            0,
+            "",
+            "",
+            -1,
+            3,
+            0,
+            false,
+            "",
+            "t",
+            "t",
         );
         assert!(bad.contains("\"error\":\""), "error envelope: {bad}");
     }
