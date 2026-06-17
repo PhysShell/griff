@@ -1,7 +1,13 @@
 // ES module: loads the wasm-bindgen glue (ADR-0025) and drives the playground.
 // `arrange`/`load_score` return JSON strings, so there is no manual linear-memory
 // marshalling here — wasm-bindgen handles the String/&[u8] boundary.
-import init, { arrange as wasmArrange, load_score as wasmLoadScore } from './griff_web.js';
+import init, {
+  arrange as wasmArrange,
+  load_score as wasmLoadScore,
+  build_chunk_json as wasmBuildChunk,
+  detect_boundaries_json as wasmDetectBoundaries,
+  tag_palette_json as wasmTagPalette,
+} from './griff_web.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -11,11 +17,20 @@ const els = {
   variation: $('variation'), varOut: $('varOut'),
   gen: $('gen'), play: $('play'), stop: $('stop'),
   roll: $('roll'), status: $('status'),
+  // capture panel (chunk.json, ADR-0026)
+  capture: $('capture'),
+  capId: $('capId'), capTitle: $('capTitle'), capTuning: $('capTuning'),
+  capCohort: $('capCohort'), capTags: $('capTags'), capQuality: $('capQuality'),
+  capReviewer: $('capReviewer'), capRights: $('capRights'), capAcq: $('capAcq'),
+  capRedist: $('capRedist'), capNotes: $('capNotes'),
+  capDetect: $('capDetect'), capDownload: $('capDownload'),
+  capBounds: $('capBounds'), capStatus: $('capStatus'),
 };
 
 const PPQN_FALLBACK = 480;
 const MAX_UPLOAD_BYTES = 16 * 1024 * 1024; // mirror the Rust-side upload guard
 let current = null;  // last arrange() result (parsed JSON)
+let fileName = '';   // name of the uploaded file (recorded as the chunk's source)
 let audio = null;    // AudioContext
 let voices = [];     // scheduled oscillators
 let playStartT = 0, playSpan = 0, raf = 0;
@@ -71,6 +86,9 @@ function loadFile(file) {
         return;
       }
       els.status.classList.remove('error');
+      fileName = file.name;
+      if (!els.capTitle.value) els.capTitle.value = file.name.replace(/\.[^.]+$/, '');
+      els.capture.hidden = false;
       populateTracks(summary);
       arrange();
     } catch (err) {
@@ -92,6 +110,63 @@ function populateTracks(summary) {
   els.track.value = String(firstWithNotes >= 0 ? firstWithNotes : -1);
   els.status.textContent =
     `loaded ${summary.tracks.length} track(s) · ${summary.bars} bars — pick a track, then ▶`;
+}
+
+// ---- chunk.json capture (ADR-0026) ----
+function populateTagPalette() {
+  let names = [];
+  try { names = JSON.parse(wasmTagPalette()); } catch (_) { /* leave empty */ }
+  els.capTags.innerHTML = names
+    .map((n, i) => `<option value="${i}">${escapeHtml(n)}</option>`)
+    .join('');
+}
+
+const selectedValues = (sel) =>
+  Array.from(sel.selectedOptions).map((o) => o.value).join(' ');
+
+function capMsg(text, isError) {
+  els.capStatus.classList.toggle('error', !!isError);
+  els.capStatus.textContent = text;
+}
+
+function detectBoundaries() {
+  const track = +els.track.value;
+  if (track < 0) { capMsg('load a tab and pick a track first', true); return; }
+  let res;
+  try { res = JSON.parse(wasmDetectBoundaries(track)); }
+  catch (e) { capMsg('detect failed: ' + e, true); return; }
+  if (res.error) { capMsg('detect failed: ' + res.error, true); return; }
+  const n = res.boundaries.length;
+  els.capBounds.textContent =
+    n ? `${n} phrase boundar${n === 1 ? 'y' : 'ies'} detected` : 'no phrase boundaries detected';
+}
+
+function downloadChunk() {
+  const track = +els.track.value;
+  if (track < 0) { capMsg('load a tab and pick a real track first', true); return; }
+  const id = els.capId.value.trim();
+  if (!id) { capMsg('a chunk ID is required (e.g. dgd_001)', true); return; }
+
+  const now = new Date().toISOString();
+  const json = wasmBuildChunk(
+    track, id, els.capTitle.value, fileName, els.capTuning.value,
+    +els.capCohort.value, selectedValues(els.capTags), selectedValues(els.capQuality),
+    +els.capReviewer.value, +els.capRights.value, +els.capAcq.value,
+    els.capRedist.checked, els.capNotes.value, now, now,
+  );
+
+  let parsed;
+  try { parsed = JSON.parse(json); }
+  catch (_) { capMsg('capture failed: engine returned bad JSON', true); return; }
+  if (parsed.error) { capMsg('capture failed: ' + parsed.error, true); return; }
+
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = `${id}.chunk.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  capMsg(`saved ${id}.chunk.json · ${parsed.boundaries.length} boundaries · ` +
+    `${parsed.tags.length} tag(s) · rights recorded`, false);
 }
 
 // ---- drawing ----
@@ -226,11 +301,14 @@ function bind() {
   els.gen.addEventListener('click', arrange);
   els.play.addEventListener('click', play);
   els.stop.addEventListener('click', stop);
+  els.capDetect.addEventListener('click', detectBoundaries);
+  els.capDownload.addEventListener('click', downloadChunk);
   window.addEventListener('resize', () => draw());
 }
 
 init().then(() => {
   bind();
+  populateTagPalette();
   arrange();
   els.status.textContent = 'ready — load a tab or drag a slider, then ▶ Play';
 }).catch((err) => {
