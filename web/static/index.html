@@ -149,8 +149,8 @@
         <button id="capDetect" type="button">Detect boundaries</button>
         <button id="capDownload" type="button" class="primary">⬇ chunk.json</button>
       </div>
-      <output id="capBounds" class="hint"></output>
-      <p id="capStatus" class="status muted small"></p>
+      <output id="capBounds" class="hint" role="status" aria-live="polite"></output>
+      <p id="capStatus" class="status muted small" role="status" aria-live="polite" aria-atomic="true"></p>
     </section>
   </main>
   <script type="module" src="./app.js"></script>

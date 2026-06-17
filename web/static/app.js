@@ -87,7 +87,11 @@ function loadFile(file) {
       }
       els.status.classList.remove('error');
       fileName = file.name;
-      if (!els.capTitle.value) els.capTitle.value = file.name.replace(/\.[^.]+$/, '');
+      // A new source = a fresh capture context: retitle and clear stale
+      // boundary/status text so we never carry the previous file's metadata.
+      els.capTitle.value = file.name.replace(/\.[^.]+$/, '');
+      els.capBounds.textContent = '';
+      capMsg('', false);
       els.capture.hidden = false;
       populateTracks(summary);
       arrange();
@@ -137,6 +141,7 @@ function detectBoundaries() {
   catch (e) { capMsg('detect failed: ' + e, true); return; }
   if (res.error) { capMsg('detect failed: ' + res.error, true); return; }
   const n = res.boundaries.length;
+  capMsg('', false); // drop any stale error from a previous failed detect
   els.capBounds.textContent =
     n ? `${n} phrase boundar${n === 1 ? 'y' : 'ies'} detected` : 'no phrase boundaries detected';
 }
