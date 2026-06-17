@@ -143,8 +143,27 @@ fn push_notes(json: &mut String, track: &Track) {
     json.push(']');
 }
 
+/// Escapes a string for embedding in JSON. Beyond `\` and `"`, this escapes the
+/// control characters (`U+0000..=U+001F`) that RFC 8259 forbids raw: imported
+/// MIDI/GP track names and `Debug`/`Display` error strings can carry `\n`, `\t`,
+/// or other control bytes that would otherwise make the output unparseable and
+/// crash `JSON.parse` in the browser.
 fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The four knobs behind one arrangement (mirror the UI controls).
@@ -321,7 +340,19 @@ fn note_count(track: &Track) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{arrange_to_json, load_to_json, sample_part_a, ArrangeParams};
+    use super::{arrange_to_json, json_escape, load_to_json, sample_part_a, ArrangeParams};
+
+    #[test]
+    fn json_escape_escapes_quotes_backslashes_and_control_chars() {
+        // Backslash and quote.
+        assert_eq!(json_escape(r#"a\b"c"#), r#"a\\b\"c"#);
+        // The common control chars get their short forms.
+        assert_eq!(json_escape("l1\nl2\tx\r"), "l1\\nl2\\tx\\r");
+        // Other control bytes (e.g. a bell, 0x07) fall back to \uXXXX.
+        assert_eq!(json_escape("\u{0007}"), "\\u0007");
+        // Non-control Unicode passes through untouched (valid in UTF-8 JSON).
+        assert_eq!(json_escape("café ✓"), "café ✓");
+    }
 
     /// Arrange over the built-in sample (the old `build_json` behaviour).
     fn sample_json(mode: u32, seed: u64, offset: i32, variation: f32) -> String {
