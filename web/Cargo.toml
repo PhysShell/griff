@@ -12,10 +12,17 @@ description = "Browser playground (WASM) for the griff engine — see docs/adr/0
 # wasm build still emits the cdylib.
 crate-type = ["cdylib", "rlib"]
 
-# `default-features = false` drops the GP importer (guitarpro/zip/time/getrandom
-# → wasm-bindgen), leaving a lean, import-free wasm module.
+# Guitar Pro import is ON in the browser (GP loading is the unblocker for phone
+# curation). The GP reader needs `wasm-bindgen` (`zip` → `time`/`getrandom` pull
+# js-sys / Web Crypto), so this build is no longer import-free — ADR-0024's lean
+# cdylib is superseded for the web front (see ADR-0025). Built with
+# `wasm-bindgen --target web` (see build.sh); `getrandom`'s `wasm_js` backend
+# needs the matching `--cfg getrandom_backend="wasm_js"` in RUSTFLAGS.
 [dependencies]
-griff-core = { path = "../core", default-features = false }
+griff-core = { path = "../core" }
+# Pinned exact: `wasm-bindgen-cli` must match this version exactly (see build.sh).
+wasm-bindgen = "=0.2.125"
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 # A pure-compute WASM module: no unwinding (smaller, no import surface), squeezed
 # for mobile download.

@@ -9,9 +9,9 @@
 
 use griff_core::complement::AxisScores;
 use griff_core::corpus::{
-    BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef, PairRelation,
-    QualityFlag, ReviewerDecision, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
-    SCHEMA_VERSION,
+    Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef,
+    PairRelation, QualityFlag, ReviewerDecision, RightsInfo, RightsStatus, SourceFormat, SourceRef,
+    StyleCohort, SwancoreTag, SCHEMA_VERSION,
 };
 use griff_core::gesture::GestureStats;
 use griff_core::structure::{ComplexityProfile, StructureMetrics};
@@ -87,20 +87,99 @@ fn minimal_chunk() -> ChunkMeta {
         complexity: None,
         style_cohort: None,
         ensemble: None,
+        rights: None,
         created_at: "2026-05-20T00:00:00Z".to_owned(),
         updated_at: "2026-05-20T00:00:00Z".to_owned(),
     }
 }
 
-// ── schema v6: the per-axis complexity profile (S14) ──────────────────────────
+// ── schema v7: rights + provenance (decisions 2026-06-12) ─────────────────────
 
 #[test]
-fn schema_version_is_6() {
+fn schema_version_is_7() {
     assert_eq!(
-        SCHEMA_VERSION, 6,
-        "the complexity profile bumps the corpus schema"
+        SCHEMA_VERSION, 7,
+        "the rights record bumps the corpus schema"
     );
 }
+
+/// A representative rights record (the common scraped-community-tab case).
+fn sample_rights() -> RightsInfo {
+    RightsInfo {
+        rights_status: RightsStatus::CopyrightedComposition,
+        acquisition: Acquisition::CommunityTabSite,
+        redistributable: false,
+        notes: "ultimate-guitar.com, 2026-06-12".to_owned(),
+    }
+}
+
+#[test]
+fn chunk_meta_with_rights_roundtrips() {
+    let mut meta = minimal_chunk();
+    meta.rights = Some(sample_rights());
+
+    let json = serde_json::to_string(&meta).expect("serialize");
+    assert!(
+        json.contains("\"rights\""),
+        "v7 records carry the rights key"
+    );
+    assert!(
+        json.contains("\"copyrighted_composition\"") && json.contains("\"community_tab_site\""),
+        "rights enums serialize snake_case: {json}"
+    );
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.rights, Some(sample_rights()));
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(json, json2, "JSON round-trip must be byte-identical");
+}
+
+#[test]
+fn pre_v7_record_without_rights_loads_as_none() {
+    // A pre-v7 record has no rights key; it parses as None and re-serializes
+    // without inventing the key.
+    let old_json = serde_json::to_string(&minimal_chunk()).expect("serialize");
+    assert!(
+        !old_json.contains("\"rights\""),
+        "an absent rights record must not introduce a key: {old_json}"
+    );
+
+    let back: ChunkMeta = serde_json::from_str(&old_json).expect("pre-v7 record must parse");
+    assert!(back.rights.is_none());
+    let json2 = serde_json::to_string(&back).expect("re-serialize");
+    assert_eq!(old_json, json2, "JSON round-trip must be byte-identical");
+}
+
+#[test]
+fn all_rights_statuses_roundtrip() {
+    for status in [
+        RightsStatus::PublicDomain,
+        RightsStatus::CcBy,
+        RightsStatus::CcBySa,
+        RightsStatus::CopyrightedComposition,
+        RightsStatus::Unknown,
+    ] {
+        let json = serde_json::to_string(&status).expect("serialize");
+        let back: RightsStatus = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(status, back);
+    }
+}
+
+#[test]
+fn all_acquisitions_roundtrip() {
+    for acq in [
+        Acquisition::CommunityTabSite,
+        Acquisition::PurchasedOfficial,
+        Acquisition::SelfTranscribed,
+        Acquisition::OmrFromScan,
+        Acquisition::ArtistProvided,
+    ] {
+        let json = serde_json::to_string(&acq).expect("serialize");
+        let back: Acquisition = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(acq, back);
+    }
+}
+
+// ── schema v6: the per-axis complexity profile (S14) ──────────────────────────
 
 #[test]
 fn chunk_meta_with_complexity_roundtrips() {
@@ -620,6 +699,39 @@ fn arb_ensemble() -> impl Strategy<Value = Option<EnsembleRef>> {
     prop_opt(link)
 }
 
+fn arb_rights() -> impl Strategy<Value = Option<RightsInfo>> {
+    let status = prop_oneof![
+        Just(RightsStatus::PublicDomain),
+        Just(RightsStatus::CcBy),
+        Just(RightsStatus::CcBySa),
+        Just(RightsStatus::CopyrightedComposition),
+        Just(RightsStatus::Unknown),
+    ];
+    let acquisition = prop_oneof![
+        Just(Acquisition::CommunityTabSite),
+        Just(Acquisition::PurchasedOfficial),
+        Just(Acquisition::SelfTranscribed),
+        Just(Acquisition::OmrFromScan),
+        Just(Acquisition::ArtistProvided),
+    ];
+    // ASCII notes (no quotes/backslashes) keep the JSON round-trip byte-identical.
+    let info = (
+        status,
+        acquisition,
+        any::<bool>(),
+        "[A-Za-z0-9 :/._-]{0,40}",
+    )
+        .prop_map(
+            |(rights_status, acquisition, redistributable, notes)| RightsInfo {
+                rights_status,
+                acquisition,
+                redistributable,
+                notes,
+            },
+        );
+    prop_opt(info)
+}
+
 proptest! {
     #[test]
     fn prop_chunk_meta_json_roundtrip(
@@ -640,6 +752,7 @@ proptest! {
         complexity in arb_complexity(),
         style_cohort in arb_cohort(),
         ensemble in arb_ensemble(),
+        rights in arb_rights(),
     ) {
         let meta = ChunkMeta {
             id: ChunkId(id),
@@ -663,6 +776,7 @@ proptest! {
             complexity,
             style_cohort,
             ensemble,
+            rights,
             created_at: "2026-05-20T00:00:00Z".to_owned(),
             updated_at: "2026-05-20T00:00:00Z".to_owned(),
         };

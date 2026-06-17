@@ -1,24 +1,31 @@
-//! Browser playground (WASM) for the griff complement arranger — ADR-0024.
+//! Browser playground (WASM) for the griff complement arranger — ADR-0024/0025.
 //!
-//! A deliberately thin, throwaway front (ADR-0024 §5): no `wasm-bindgen`, no
-//! framework. It exports three C-ABI functions and marshals a JSON result
-//! through linear memory, so the build is just `cargo build --target
-//! wasm32-unknown-unknown` and the page is static files. The canonical `egui`
-//! frontend (ADR-0016) replaces this at M2.
+//! A deliberately thin, throwaway front (ADR-0024 §5): no framework, just two
+//! `wasm-bindgen` functions returning JSON strings. Loading Guitar Pro tabs
+//! needs the Rust GP reader, which pulls `zip`/`time`/`getrandom` and therefore
+//! `wasm-bindgen` glue — so this build is no longer import-free (ADR-0025
+//! supersedes the lean cdylib for the web front). Built with `wasm-bindgen
+//! --target web` (see `build.sh`). The canonical `egui` frontend (ADR-0016)
+//! replaces this at M2.
 //!
-//! `arrange(mode, seed, offset, variation)` builds a fixed sample part A, runs
-//! [`arrange_complement_varied`], and writes `{ppqn, tempo, realized_spread,
-//! error, tracks:[A, B]}` into a thread-local buffer; JS reads it via
-//! `arrange()` (pointer) + `arrange_len()` (length).
+//! - `arrange(mode, seed, offset, variation, track)` runs
+//!   [`arrange_complement_varied`] over a part A — the built-in sample
+//!   (`track < 0`) or a track of a user-loaded score (`track >= 0`) — and
+//!   returns `{ppqn, tempo, realized_spread, error, tracks:[A, B]}`.
+//! - `load_score(bytes)` parses an uploaded MIDI or Guitar Pro file, stashes the
+//!   [`Score`], and returns a `{error, ppqn, tempo, bars, tracks}` summary.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
+
+use wasm_bindgen::prelude::*;
 
 use griff_core::complement::{
     arrange_complement_varied, ComplementSpec, RelationMode, VariationControl,
 };
 use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
 use griff_core::generate::GenerationSeed;
+use griff_core::import::import_score_auto;
 use griff_core::score::{
     AtomEvent, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score, Track, Voice,
 };
@@ -136,25 +143,108 @@ fn push_notes(json: &mut String, track: &Track) {
     json.push(']');
 }
 
+/// Escapes a string for embedding in JSON. Beyond `\` and `"`, this escapes the
+/// control characters (`U+0000..=U+001F`) that RFC 8259 forbids raw: imported
+/// MIDI/GP track names and `Debug`/`Display` error strings can carry `\n`, `\t`,
+/// or other control bytes that would otherwise make the output unparseable and
+/// crash `JSON.parse` in the browser.
 fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
-/// Builds the result JSON for one arrangement request.
-fn build_json(mode: u32, seed: u64, offset: i32, variation: f32) -> String {
-    let score = sample_part_a();
-    let spec = ComplementSpec {
-        mode: relation_mode(mode),
-        register_offset: offset.clamp(-48, 48) as i8,
-    };
-    let control = VariationControl {
-        pitch_spread: f64::from(variation).clamp(0.0, 1.0),
-    };
+/// Upload guards for the browser, which loads *untrusted* files. Real swancore
+/// tabs are far smaller; these caps stop a giant file from being copied into
+/// wasm memory and a tiny Guitar Pro "archive bomb" whose `BCFZ` header declares
+/// a multi-gigabyte payload — the GP6 reader `Vec::with_capacity`s that declared
+/// length before decompressing a single byte.
+const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GP6_DECOMPRESSED: u32 = 64 * 1024 * 1024;
+
+/// Returns a rejection reason if these bytes should not be handed to the parser
+/// (too large, or a Guitar Pro container declaring an implausible payload).
+fn reject_upload(data: &[u8]) -> Option<String> {
+    if data.len() > MAX_UPLOAD_BYTES {
+        return Some(format!(
+            "file too large: {} bytes (limit {} MiB)",
+            data.len(),
+            MAX_UPLOAD_BYTES / (1024 * 1024)
+        ));
+    }
+    // GP6 `.gpx` BCFZ container: bytes 4..8 are the little-endian declared
+    // uncompressed length. A tiny file can claim gigabytes, so refuse it before
+    // the GP reader allocates that buffer.
+    if data.starts_with(b"BCFZ") {
+        if let Some(hdr) = data.get(4..8) {
+            let declared = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+            if declared > MAX_GP6_DECOMPRESSED {
+                return Some(format!(
+                    "refusing a Guitar Pro file that declares a {declared}-byte \
+                     payload (limit {} MiB) — possible archive bomb",
+                    MAX_GP6_DECOMPRESSED / (1024 * 1024)
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// The four knobs behind one arrangement (mirror the UI controls).
+#[derive(Clone, Copy)]
+struct ArrangeParams {
+    mode: u32,
+    seed: u64,
+    offset: i32,
+    variation: f32,
+}
+
+/// Builds the result JSON for one arrangement request over
+/// `source.tracks[track_index]` as part A. The header `ppqn`/`tempo` are read
+/// off the source so a loaded score plays back at its own resolution.
+fn arrange_to_json(source: &Score, track_index: usize, params: ArrangeParams) -> String {
+    let ppqn = source.ticks_per_quarter;
+    let tempo = source.master_bars.first().map_or(TEMPO, |b| b.tempo.0);
 
     let mut json = String::with_capacity(2048);
-    let _ = write!(json, "{{\"ppqn\":{PPQN},\"tempo\":{TEMPO},");
+    let _ = write!(json, "{{\"ppqn\":{ppqn},\"tempo\":{tempo},");
 
-    match arrange_complement_varied(&score, 0, spec, GenerationSeed(seed), control) {
+    let part_a = match source.tracks.get(track_index) {
+        Some(t) => t,
+        None => {
+            json.push_str("\"realized_spread\":0,\"error\":\"track out of range\",\"tracks\":[]}");
+            return json;
+        }
+    };
+    let a_name = part_a.name.clone().unwrap_or_else(|| "A".to_string());
+
+    let spec = ComplementSpec {
+        mode: relation_mode(params.mode),
+        register_offset: params.offset.clamp(-48, 48) as i8,
+    };
+    let control = VariationControl {
+        pitch_spread: f64::from(params.variation).clamp(0.0, 1.0),
+    };
+
+    match arrange_complement_varied(
+        source,
+        track_index,
+        spec,
+        GenerationSeed(params.seed),
+        control,
+    ) {
         Ok(varied) => {
             let combined = &varied.complement.score;
             let b_index = varied.complement.part_b_index;
@@ -168,8 +258,12 @@ fn build_json(mode: u32, seed: u64, offset: i32, variation: f32) -> String {
                 "\"realized_spread\":{:.3},\"error\":null,\"tracks\":[",
                 varied.realized_spread
             );
-            json.push_str("{\"name\":\"A\",\"role\":\"a\",\"notes\":");
-            push_notes(&mut json, &score.tracks[0]);
+            let _ = write!(
+                json,
+                "{{\"name\":\"{}\",\"role\":\"a\",\"notes\":",
+                json_escape(&a_name)
+            );
+            push_notes(&mut json, part_a);
             json.push('}');
             if let Some(b_track) = combined.tracks.get(b_index) {
                 let _ = write!(
@@ -184,13 +278,19 @@ fn build_json(mode: u32, seed: u64, offset: i32, variation: f32) -> String {
         }
         Err(e) => {
             // Surface the typed error; still return A so the page can draw it.
+            // Escape it: a Debug repr can carry quotes/backslashes that would
+            // otherwise break the JSON the browser parses.
+            let err = json_escape(&format!("{e:?}"));
             let _ = write!(
                 json,
-                "\"realized_spread\":0,\"error\":\"{:?}\",\"tracks\":[",
-                e
+                "\"realized_spread\":0,\"error\":\"{err}\",\"tracks\":["
             );
-            json.push_str("{\"name\":\"A\",\"role\":\"a\",\"notes\":");
-            push_notes(&mut json, &score.tracks[0]);
+            let _ = write!(
+                json,
+                "{{\"name\":\"{}\",\"role\":\"a\",\"notes\":",
+                json_escape(&a_name)
+            );
+            push_notes(&mut json, part_a);
             json.push_str("}]");
         }
     }
@@ -199,35 +299,142 @@ fn build_json(mode: u32, seed: u64, offset: i32, variation: f32) -> String {
 }
 
 thread_local! {
-    static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static LOADED: RefCell<Option<Score>> = const { RefCell::new(None) };
 }
 
-/// Arranges a complement and stores the JSON result; returns a pointer into
-/// WASM linear memory. Read `arrange_len()` bytes from it (valid until the next
-/// `arrange` call).
-#[no_mangle]
-pub extern "C" fn arrange(mode: u32, seed: u32, offset: i32, variation: f32) -> *const u8 {
-    let json = build_json(mode, u64::from(seed), offset, variation);
-    OUT.with(|o| {
-        *o.borrow_mut() = json.into_bytes();
-        o.borrow().as_ptr()
+/// Arranges a complement and returns the result JSON. Part A is the loaded
+/// score's `track` (when `track >= 0` and a score has been loaded), otherwise
+/// the built-in sample.
+#[wasm_bindgen]
+pub fn arrange(mode: u32, seed: u32, offset: i32, variation: f32, track: i32) -> String {
+    let params = ArrangeParams {
+        mode,
+        seed: u64::from(seed),
+        offset,
+        variation,
+    };
+    LOADED.with(|l| match (l.borrow().as_ref(), usize::try_from(track)) {
+        (Some(score), Ok(ti)) => arrange_to_json(score, ti, params),
+        _ => arrange_to_json(&sample_part_a(), 0, params),
     })
 }
 
-/// Length in bytes of the JSON stored by the last [`arrange`] call.
-#[no_mangle]
-pub extern "C" fn arrange_len() -> usize {
-    OUT.with(|o| o.borrow().len())
+/// Parses uploaded file bytes (MIDI or Guitar Pro), stashes the [`Score`] for
+/// later [`arrange`] calls, and returns a JSON track summary. On failure leaves
+/// any previously loaded score in place and returns `{"error":"…","tracks":[]}`.
+#[wasm_bindgen]
+pub fn load_score(bytes: &[u8]) -> String {
+    load_to_json(bytes)
+}
+
+/// Imports `data`, stores the score on success, and returns a JSON summary
+/// `{error, ppqn, tempo, bars, tracks:[{i,name,notes}]}`.
+fn load_to_json(data: &[u8]) -> String {
+    if let Some(reason) = reject_upload(data) {
+        return format!("{{\"error\":\"{}\",\"tracks\":[]}}", json_escape(&reason));
+    }
+    match import_score_auto(data) {
+        Ok(score) => {
+            let ppqn = score.ticks_per_quarter;
+            let tempo = score.master_bars.first().map_or(TEMPO, |b| b.tempo.0);
+            let mut json = String::with_capacity(512);
+            let _ = write!(
+                json,
+                "{{\"error\":null,\"ppqn\":{ppqn},\"tempo\":{tempo},\"bars\":{},\"tracks\":[",
+                score.master_bars.len()
+            );
+            for (i, t) in score.tracks.iter().enumerate() {
+                if i > 0 {
+                    json.push(',');
+                }
+                let name = t.name.clone().unwrap_or_else(|| format!("track {i}"));
+                let _ = write!(
+                    json,
+                    "{{\"i\":{i},\"name\":\"{}\",\"notes\":{}}}",
+                    json_escape(&name),
+                    note_count(t)
+                );
+            }
+            json.push_str("]}");
+            LOADED.with(|l| *l.borrow_mut() = Some(score));
+            json
+        }
+        Err(e) => {
+            let err = json_escape(&format!("{e}"));
+            format!("{{\"error\":\"{err}\",\"tracks\":[]}}")
+        }
+    }
+}
+
+/// Counts pitched notes in a track's primary voice (what the playground draws).
+fn note_count(track: &Track) -> usize {
+    track.voices.first().map_or(0, |v| {
+        v.event_groups
+            .iter()
+            .flat_map(|g| &g.atoms)
+            .filter(|a| matches!(a, AtomEvent::Note(_)))
+            .count()
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::build_json;
+    use super::{arrange_to_json, json_escape, load_to_json, sample_part_a, ArrangeParams};
+
+    #[test]
+    fn json_escape_escapes_quotes_backslashes_and_control_chars() {
+        // Backslash and quote.
+        assert_eq!(json_escape(r#"a\b"c"#), r#"a\\b\"c"#);
+        // The common control chars get their short forms.
+        assert_eq!(json_escape("l1\nl2\tx\r"), "l1\\nl2\\tx\\r");
+        // Other control bytes (e.g. a bell, 0x07) fall back to \uXXXX.
+        assert_eq!(json_escape("\u{0007}"), "\\u0007");
+        // Non-control Unicode passes through untouched (valid in UTF-8 JSON).
+        assert_eq!(json_escape("café ✓"), "café ✓");
+    }
+
+    #[test]
+    fn reject_upload_caps_size_and_refuses_archive_bombs() {
+        use super::{reject_upload, MAX_GP6_DECOMPRESSED, MAX_UPLOAD_BYTES};
+        // A small, ordinary input is accepted.
+        assert!(reject_upload(b"MThd\0\0\0\x06").is_none());
+        // Oversized input is rejected up front.
+        assert!(reject_upload(&vec![0u8; MAX_UPLOAD_BYTES + 1]).is_some());
+        // A BCFZ container declaring more than the cap is refused as a bomb...
+        let mut bomb = b"BCFZ".to_vec();
+        bomb.extend_from_slice(&(MAX_GP6_DECOMPRESSED + 1).to_le_bytes());
+        assert!(reject_upload(&bomb).unwrap().contains("archive bomb"));
+        // ...while a modest declared payload passes the guard.
+        let mut modest = b"BCFZ".to_vec();
+        modest.extend_from_slice(&1024u32.to_le_bytes());
+        assert!(reject_upload(&modest).is_none());
+    }
+
+    #[test]
+    fn load_rejects_oversized_uploads_with_error_json() {
+        let json = load_to_json(&vec![0u8; super::MAX_UPLOAD_BYTES + 1]);
+        assert!(json.contains("file too large"), "{json:.120}");
+        assert!(json.contains("\"tracks\":[]"), "{json:.120}");
+    }
+
+    /// Arrange over the built-in sample (the old `build_json` behaviour).
+    fn sample_json(mode: u32, seed: u64, offset: i32, variation: f32) -> String {
+        arrange_to_json(
+            &sample_part_a(),
+            0,
+            ArrangeParams {
+                mode,
+                seed,
+                offset,
+                variation,
+            },
+        )
+    }
 
     #[test]
     fn every_mode_emits_part_a_and_well_formed_header() {
         for mode in 0..6 {
-            let j = build_json(mode, 5, 0, 1.0);
+            let j = sample_json(mode, 5, 0, 1.0);
             assert!(
                 j.starts_with("{\"ppqn\":480,\"tempo\":120"),
                 "mode {mode}: {j:.60}"
@@ -241,7 +448,7 @@ mod tests {
     #[test]
     fn counter_melody_succeeds_on_the_uniform_sample() {
         // mode 5 = counter_melody; the sample is uniform 4/4, so no NonUniformTimeline.
-        let j = build_json(5, 0, 0, 1.0);
+        let j = sample_json(5, 0, 0, 1.0);
         assert!(j.contains("\"error\":null"), "expected success: {j:.120}");
         assert!(j.contains("\"role\":\"b\""), "counter_melody emits part B");
     }
@@ -249,8 +456,8 @@ mod tests {
     #[test]
     fn pitch_spread_changes_rhythm_lock_output() {
         // mode 0 = rhythm_lock: the knob must move B's pitches.
-        let locked = build_json(0, 5, 0, 0.0);
-        let full = build_json(0, 5, 0, 1.0);
+        let locked = sample_json(0, 5, 0, 0.0);
+        let full = sample_json(0, 5, 0, 1.0);
         assert_ne!(
             locked, full,
             "pitch_spread must change a grid-locked complement"
@@ -259,6 +466,58 @@ mod tests {
 
     #[test]
     fn deterministic_for_identical_args() {
-        assert_eq!(build_json(5, 7, -12, 0.5), build_json(5, 7, -12, 0.5));
+        assert_eq!(sample_json(5, 7, -12, 0.5), sample_json(5, 7, -12, 0.5));
+    }
+
+    #[test]
+    fn load_rejects_non_midi_bytes() {
+        let j = load_to_json(b"definitely not a midi file");
+        assert!(j.contains("\"error\":\""), "expected an error: {j}");
+        assert!(!j.contains("\"error\":null"), "must not claim success");
+    }
+
+    #[test]
+    fn load_then_arrange_round_trips_a_midi_score() {
+        // Export the built-in sample to MIDI, re-import it through the public
+        // entry, and arrange over the imported track — the file-load path.
+        let bytes = griff_core::midi::export_score(&sample_part_a()).expect("export");
+        let summary = load_to_json(&bytes);
+        assert!(summary.contains("\"error\":null"), "import: {summary:.160}");
+        assert!(summary.contains("\"tracks\":["), "summary lists tracks");
+
+        let imported = griff_core::import::import_score_auto(&bytes).expect("reimport");
+        let j = arrange_to_json(
+            &imported,
+            0,
+            ArrangeParams {
+                mode: 5,
+                seed: 0,
+                offset: 0,
+                variation: 1.0,
+            },
+        );
+        assert!(
+            j.contains("\"role\":\"a\""),
+            "arranges the imported track: {j:.160}"
+        );
+    }
+
+    #[test]
+    fn load_routes_guitar_pro_bytes_to_the_gp_reader() {
+        // A header-only GP5 fuzz seed: enough to be recognised as Guitar Pro and
+        // routed to the GP reader, which reports a clean GP parse error. This
+        // proves the `gp` feature is on in the wasm build — a MIDI fallback would
+        // report a "MIDI" error instead. (Couples to griff-core's GP error text:
+        // if that wording changes, update the substring checked below.)
+        let gp = include_bytes!("../../fuzz/corpus/guitar_pro_import/gp5_header_only.gp5");
+        let json = load_to_json(gp);
+        assert!(
+            json.contains("\"error\":\""),
+            "a truncated GP file must surface an error: {json}"
+        );
+        assert!(
+            json.contains("Guitar Pro"),
+            "the GP reader handled it, not the MIDI fallback: {json}"
+        );
     }
 }

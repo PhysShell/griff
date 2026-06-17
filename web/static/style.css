@@ -64,6 +64,16 @@ select {
 /* Big touch targets for phones. */
 input[type="range"] { height: 40px; }
 
+input[type="file"] {
+  width: 100%;
+  color: var(--ink);
+  background: #0d1017;
+  border: 1px solid #2a3146;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 0.9rem;
+}
+
 .transport {
   display: flex;
   gap: 10px;

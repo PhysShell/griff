@@ -42,6 +42,7 @@ fn record() -> ChunkMeta {
         complexity: None,
         style_cohort: None,
         ensemble: None,
+        rights: None,
         created_at: "2026-06-11T00:00:00Z".to_owned(),
         updated_at: "2026-06-11T00:00:00Z".to_owned(),
     }

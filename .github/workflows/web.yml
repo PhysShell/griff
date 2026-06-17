@@ -34,6 +34,20 @@ jobs:
             ~/.cargo/git
             web/target
           key: web-wasm-${{ hashFiles('web/Cargo.toml', 'core/Cargo.toml') }}
+      # GP support needs wasm-bindgen (ADR-0025); the CLI must match the crate
+      # version pinned in web/Cargo.toml. Cache the built binary across runs.
+      - name: Cache wasm-bindgen-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-${{ hashFiles('web/Cargo.toml') }}
+      - name: Install wasm-bindgen-cli
+        run: |
+          if command -v wasm-bindgen >/dev/null; then
+            echo "cached: $(wasm-bindgen --version)"; exit 0
+          fi
+          ver=$(grep -m1 'wasm-bindgen = ' web/Cargo.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          cargo install wasm-bindgen-cli --version "$ver" --locked
       - name: Build playground
         run: ./web/build.sh
       - uses: actions/upload-pages-artifact@v3

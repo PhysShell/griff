@@ -31,7 +31,12 @@ use crate::structure::{ComplexityProfile, StructureMetrics};
 /// - v6 — the per-axis complexity profile (S14): `ChunkMeta` gains optional
 ///   measured [`ComplexityProfile`] under the same pattern; pre-v6 records
 ///   load it as `None` and re-serialize losslessly.
-pub const SCHEMA_VERSION: u32 = 6;
+/// - v7 — per-chunk rights + provenance (decisions 2026-06-12): `ChunkMeta`
+///   gains optional [`RightsInfo`] under the same pattern; pre-v7 records (no
+///   `rights` key) keep loading and re-serialize losslessly. Rights status is
+///   not derivable from content, so it is captured at curation time and cannot
+///   be backfilled.
+pub const SCHEMA_VERSION: u32 = 7;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
 
@@ -243,6 +248,62 @@ pub struct EnsembleGroup {
     pub relations: Vec<PairRelation>,
 }
 
+// ── rights and provenance (schema v7) ─────────────────────────────────────────
+
+/// Rights status of a chunk's underlying material (decisions 2026-06-12).
+///
+/// Not an OSS licence — this records the *composition* rights status, paired
+/// with [`Acquisition`] provenance. Most scraped, purchased, or self-transcribed
+/// modern-metal tabs are `CopyrightedComposition`; only public-domain sources
+/// (e.g. PDMX `MusicXML`) are freely redistributable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RightsStatus {
+    /// Public-domain composition (e.g. PDMX `MusicXML`).
+    PublicDomain,
+    /// Creative Commons Attribution.
+    CcBy,
+    /// Creative Commons Attribution-ShareAlike.
+    CcBySa,
+    /// Composition under copyright (the common case for modern-metal tabs).
+    CopyrightedComposition,
+    /// Rights status not yet determined.
+    Unknown,
+}
+
+/// How a chunk's source file was acquired (decisions 2026-06-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Acquisition {
+    /// Scraped from a community tab site (Ultimate Guitar, Songsterr, …).
+    CommunityTabSite,
+    /// Purchased from an official publisher (e.g. Sheet Happens GP).
+    PurchasedOfficial,
+    /// Transcribed by the curator (own transcription does not transfer the
+    /// underlying composition rights).
+    SelfTranscribed,
+    /// Optical music recognition from a scan.
+    OmrFromScan,
+    /// Provided directly by the artist.
+    ArtistProvided,
+}
+
+/// Per-chunk rights and provenance (schema v7, decisions 2026-06-12).
+///
+/// `redistributable` is a typed fact — not a freeform note — because
+/// `novelty.rs` and any future export gate must filter on it without scanning
+/// prose. Captured at curation time: rights status cannot be derived from the
+/// notes, so backfilling would mean re-researching provenance per source.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RightsInfo {
+    pub rights_status: RightsStatus,
+    pub acquisition: Acquisition,
+    /// Whether the chunk's source material may be redistributed.
+    pub redistributable: bool,
+    /// Free-form provenance note (source URL, acquisition date, publisher).
+    pub notes: String,
+}
+
 // ── chunk metadata ────────────────────────────────────────────────────────────
 
 /// Full annotation for one corpus chunk.
@@ -292,6 +353,11 @@ pub struct ChunkMeta {
     /// the key is skipped when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ensemble: Option<EnsembleRef>,
+    /// Rights and provenance (schema v7, decisions 2026-06-12). Absent in pre-v7
+    /// records — the key is skipped when unset, so older files round-trip
+    /// byte-identically. Captured at curation time; cannot be backfilled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rights: Option<RightsInfo>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-modified timestamp.

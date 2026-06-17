@@ -1208,3 +1208,24 @@ Architectural decisions go to [`adr/`](adr/) instead.
   ADR: Harte et al. 2005 (the Harte chord syntax), `chord-rs` or similar
   Rust crates (for prior-art reuse vs native reimplementation per
   AGENTS.md). Captured so it is not lost; no commitment to build.
+
+- 2026-06-17 — In the context of unblocking phone-side swancore curation
+  (the corpus is GP-heavy, ADR-0005), facing that the M1 web playground
+  was MIDI-only because ADR-0024 built `griff-core` with
+  `default-features = false` to stay import-free, we decided for **loading
+  Guitar Pro in the browser via the shared Rust reader, accepting
+  `wasm-bindgen`** (ADR-0025 supersedes ADR-0024 §2–3, §6): enable `gp` in
+  the wasm build, export two `#[wasm_bindgen]` JSON functions (`arrange`,
+  `load_score`), use `getrandom`'s `wasm_js` backend
+  (`--cfg getrandom_backend="wasm_js"`), and build with a version-pinned
+  `wasm-bindgen-cli` — and against the import-free custom-`getrandom` route
+  (getrandom 0.4.2 fails to compile its custom backend on
+  `wasm32-unknown-unknown`, and `time` → `js-sys` pulls `wasm-bindgen`
+  regardless, so import-free is unreachable), and against a JS GP parser
+  (alphaTab forks parsing out of `griff-core`, so the browser and CLI would
+  diverge on coverage/bugs, plus a heavy JS dependency). Accepted: the
+  payload grows ~90 KiB → ~830 KiB, the toolchain now needs
+  `wasm-bindgen-cli` matched to the crate version (CI installs + caches it),
+  determinism is unaffected (zip never consumes randomness on the read
+  path), the lean MIDI-only wasm path still exists behind
+  `default-features = false`, and ADR-0024's egui M2 plan is untouched.
