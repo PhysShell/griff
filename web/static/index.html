@@ -71,6 +71,87 @@
       Part A = blue · Part B = amber. Built from <code>griff-core</code> compiled
       to WASM; audio is a placeholder synth (a real SoundFont comes later).
     </p>
+
+    <section class="controls capture" id="capture" hidden>
+      <h2>Capture <span class="muted">· chunk.json</span></h2>
+      <p class="hint">
+        Annotates the <strong>selected Track</strong> above with rights + metadata
+        and downloads a <code>chunk.json</code> — collect them in a folder and run
+        <code>griff manifest</code> to fold them into the corpus. (ADR-0026)
+      </p>
+
+      <label>Chunk ID
+        <input id="capId" type="text" autocapitalize="off" autocomplete="off"
+               spellcheck="false" placeholder="dgd_001" />
+      </label>
+      <label>Title <input id="capTitle" type="text" placeholder="Untitled riff" /></label>
+      <label>Tuning <input id="capTuning" type="text" value="standard_e" /></label>
+
+      <label>Style cohort
+        <select id="capCohort">
+          <option value="0" selected>core</option>
+          <option value="1">adjacent</option>
+        </select>
+      </label>
+
+      <label>Tags <span class="hint">tap to multi-select</span>
+        <select id="capTags" multiple size="6"></select>
+      </label>
+
+      <label>Quality flags
+        <select id="capQuality" multiple size="4">
+          <option value="0" selected>clean</option>
+          <option value="1">lossy</option>
+          <option value="2">quantized</option>
+          <option value="3">flat_dynamics</option>
+        </select>
+      </label>
+
+      <label>Reviewer decision
+        <select id="capReviewer">
+          <option value="-1" selected>none</option>
+          <option value="0">accepted</option>
+          <option value="1">rejected</option>
+          <option value="2">needs_review</option>
+        </select>
+      </label>
+
+      <label>Rights status
+        <select id="capRights">
+          <option value="0">public_domain</option>
+          <option value="1">cc_by</option>
+          <option value="2">cc_by_sa</option>
+          <option value="3" selected>copyrighted_composition</option>
+          <option value="4">unknown</option>
+        </select>
+      </label>
+
+      <label>Acquisition
+        <select id="capAcq">
+          <option value="0" selected>community_tab_site</option>
+          <option value="1">purchased_official</option>
+          <option value="2">self_transcribed</option>
+          <option value="3">omr_from_scan</option>
+          <option value="4">artist_provided</option>
+        </select>
+      </label>
+
+      <label class="row">
+        <input id="capRedist" type="checkbox" />
+        <span>Redistributable</span>
+      </label>
+
+      <label>Rights notes <span class="hint">source URL, date, publisher</span>
+        <textarea id="capNotes" rows="2" placeholder="https://… · scraped 2026-06-17"></textarea>
+      </label>
+
+      <div class="transport">
+        <button id="capDetect" type="button">Detect boundaries</button>
+        <button id="capDownload" type="button" class="primary">⬇ chunk.json</button>
+      </div>
+      <output id="capBounds" class="hint" role="status" aria-live="polite"></output>
+      <p id="capStatus" class="status muted small" role="status" aria-live="polite" aria-atomic="true"></p>
+    </section>
   </main>
   <script type="module" src="./app.js"></script>
 </body>
