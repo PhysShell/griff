@@ -166,6 +166,42 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+/// Upload guards for the browser, which loads *untrusted* files. Real swancore
+/// tabs are far smaller; these caps stop a giant file from being copied into
+/// wasm memory and a tiny Guitar Pro "archive bomb" whose `BCFZ` header declares
+/// a multi-gigabyte payload — the GP6 reader `Vec::with_capacity`s that declared
+/// length before decompressing a single byte.
+const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GP6_DECOMPRESSED: u32 = 64 * 1024 * 1024;
+
+/// Returns a rejection reason if these bytes should not be handed to the parser
+/// (too large, or a Guitar Pro container declaring an implausible payload).
+fn reject_upload(data: &[u8]) -> Option<String> {
+    if data.len() > MAX_UPLOAD_BYTES {
+        return Some(format!(
+            "file too large: {} bytes (limit {} MiB)",
+            data.len(),
+            MAX_UPLOAD_BYTES / (1024 * 1024)
+        ));
+    }
+    // GP6 `.gpx` BCFZ container: bytes 4..8 are the little-endian declared
+    // uncompressed length. A tiny file can claim gigabytes, so refuse it before
+    // the GP reader allocates that buffer.
+    if data.starts_with(b"BCFZ") {
+        if let Some(hdr) = data.get(4..8) {
+            let declared = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+            if declared > MAX_GP6_DECOMPRESSED {
+                return Some(format!(
+                    "refusing a Guitar Pro file that declares a {declared}-byte \
+                     payload (limit {} MiB) — possible archive bomb",
+                    MAX_GP6_DECOMPRESSED / (1024 * 1024)
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// The four knobs behind one arrangement (mirror the UI controls).
 #[derive(Clone, Copy)]
 struct ArrangeParams {
@@ -294,6 +330,9 @@ pub fn load_score(bytes: &[u8]) -> String {
 /// Imports `data`, stores the score on success, and returns a JSON summary
 /// `{error, ppqn, tempo, bars, tracks:[{i,name,notes}]}`.
 fn load_to_json(data: &[u8]) -> String {
+    if let Some(reason) = reject_upload(data) {
+        return format!("{{\"error\":\"{}\",\"tracks\":[]}}", json_escape(&reason));
+    }
     match import_score_auto(data) {
         Ok(score) => {
             let ppqn = score.ticks_per_quarter;
@@ -352,6 +391,30 @@ mod tests {
         assert_eq!(json_escape("\u{0007}"), "\\u0007");
         // Non-control Unicode passes through untouched (valid in UTF-8 JSON).
         assert_eq!(json_escape("café ✓"), "café ✓");
+    }
+
+    #[test]
+    fn reject_upload_caps_size_and_refuses_archive_bombs() {
+        use super::{reject_upload, MAX_GP6_DECOMPRESSED, MAX_UPLOAD_BYTES};
+        // A small, ordinary input is accepted.
+        assert!(reject_upload(b"MThd\0\0\0\x06").is_none());
+        // Oversized input is rejected up front.
+        assert!(reject_upload(&vec![0u8; MAX_UPLOAD_BYTES + 1]).is_some());
+        // A BCFZ container declaring more than the cap is refused as a bomb...
+        let mut bomb = b"BCFZ".to_vec();
+        bomb.extend_from_slice(&(MAX_GP6_DECOMPRESSED + 1).to_le_bytes());
+        assert!(reject_upload(&bomb).unwrap().contains("archive bomb"));
+        // ...while a modest declared payload passes the guard.
+        let mut modest = b"BCFZ".to_vec();
+        modest.extend_from_slice(&1024u32.to_le_bytes());
+        assert!(reject_upload(&modest).is_none());
+    }
+
+    #[test]
+    fn load_rejects_oversized_uploads_with_error_json() {
+        let json = load_to_json(&vec![0u8; super::MAX_UPLOAD_BYTES + 1]);
+        assert!(json.contains("file too large"), "{json:.120}");
+        assert!(json.contains("\"tracks\":[]"), "{json:.120}");
     }
 
     /// Arrange over the built-in sample (the old `build_json` behaviour).
@@ -444,7 +507,8 @@ mod tests {
         // A header-only GP5 fuzz seed: enough to be recognised as Guitar Pro and
         // routed to the GP reader, which reports a clean GP parse error. This
         // proves the `gp` feature is on in the wasm build — a MIDI fallback would
-        // report a "MIDI" error instead.
+        // report a "MIDI" error instead. (Couples to griff-core's GP error text:
+        // if that wording changes, update the substring checked below.)
         let gp = include_bytes!("../../fuzz/corpus/guitar_pro_import/gp5_header_only.gp5");
         let json = load_to_json(gp);
         assert!(

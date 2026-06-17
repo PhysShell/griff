@@ -14,6 +14,7 @@ const els = {
 };
 
 const PPQN_FALLBACK = 480;
+const MAX_UPLOAD_BYTES = 16 * 1024 * 1024; // mirror the Rust-side upload guard
 let current = null;  // last arrange() result (parsed JSON)
 let audio = null;    // AudioContext
 let voices = [];     // scheduled oscillators
@@ -50,7 +51,17 @@ const escapeHtml = (s) => String(s).replace(/[&<>"]/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 function loadFile(file) {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    els.status.classList.add('error');
+    els.status.textContent =
+      `load failed: file too large (${file.size} bytes; limit ${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB)`;
+    return;
+  }
   const reader = new FileReader();
+  reader.onerror = () => {
+    els.status.classList.add('error');
+    els.status.textContent = 'load failed: could not read file';
+  };
   reader.onload = () => {
     try {
       const summary = JSON.parse(wasmLoadScore(new Uint8Array(reader.result)));

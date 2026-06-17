@@ -19,10 +19,18 @@ rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 export RUSTFLAGS="${RUSTFLAGS:-} --cfg getrandom_backend=\"wasm_js\""
 ( cd "$here" && cargo build --release --target wasm32-unknown-unknown )
 
+want=$(grep -m1 'wasm-bindgen = ' "$here/Cargo.toml" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 if ! command -v wasm-bindgen >/dev/null 2>&1; then
-  want=$(grep -m1 'wasm-bindgen = ' "$here/Cargo.toml" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
   echo "error: wasm-bindgen CLI not found. Install the matching version:" >&2
   echo "  cargo install wasm-bindgen-cli --version ${want:-<see Cargo.toml>} --locked" >&2
+  exit 1
+fi
+# The CLI must match the wasm-bindgen crate exactly, or the generated glue and
+# the .wasm disagree at runtime. Fail loudly on a mismatch instead of shipping it.
+have=$(wasm-bindgen --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+if [ -n "${want:-}" ] && [ "$have" != "$want" ]; then
+  echo "error: wasm-bindgen CLI version mismatch (have ${have:-none}, want $want)." >&2
+  echo "  cargo install wasm-bindgen-cli --version $want --locked --force" >&2
   exit 1
 fi
 
