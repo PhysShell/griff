@@ -11,15 +11,15 @@
   <main>
     <h1>griff <span class="muted">· complement playground</span></h1>
     <p class="muted small">
-      Load your own MIDI tab (or use the built-in sample) as part A, and griff
-      generates a complement part B — all in the browser. Deterministic: same
-      controls → same result. (ADR-0024, MVP)
+      Load your own MIDI or Guitar Pro tab (or use the built-in sample) as part
+      A, and griff generates a complement part B — all in the browser.
+      Deterministic: same controls → same result. (ADR-0024/0025, MVP)
     </p>
 
     <section class="controls">
       <label>
-        Load tab <span class="hint">MIDI (.mid) — Guitar Pro coming</span>
-        <input id="file" type="file" accept=".mid,.midi,audio/midi" />
+        Load tab <span class="hint">MIDI (.mid) or Guitar Pro (.gp3/.gp4/.gp5/.gpx)</span>
+        <input id="file" type="file" accept=".mid,.midi,audio/midi,.gp3,.gp4,.gp5,.gpx" />
       </label>
 
       <label>
@@ -72,6 +72,6 @@
       to WASM; audio is a placeholder synth (a real SoundFont comes later).
     </p>
   </main>
-  <script src="./app.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

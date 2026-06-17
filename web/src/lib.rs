@@ -1,24 +1,24 @@
-//! Browser playground (WASM) for the griff complement arranger — ADR-0024.
+//! Browser playground (WASM) for the griff complement arranger — ADR-0024/0025.
 //!
-//! A deliberately thin, throwaway front (ADR-0024 §5): no `wasm-bindgen`, no
-//! framework. It exports a handful of C-ABI functions and marshals a JSON
-//! result through linear memory, so the build is just `cargo build --target
-//! wasm32-unknown-unknown` and the page is static files. The canonical `egui`
-//! frontend (ADR-0016) replaces this at M2.
+//! A deliberately thin, throwaway front (ADR-0024 §5): no framework, just two
+//! `wasm-bindgen` functions returning JSON strings. Loading Guitar Pro tabs
+//! needs the Rust GP reader, which pulls `zip`/`time`/`getrandom` and therefore
+//! `wasm-bindgen` glue — so this build is no longer import-free (ADR-0025
+//! supersedes the lean cdylib for the web front). Built with `wasm-bindgen
+//! --target web` (see `build.sh`). The canonical `egui` frontend (ADR-0016)
+//! replaces this at M2.
 //!
-//! `arrange(mode, seed, offset, variation, track)` runs
-//! [`arrange_complement_varied`] over a part A — either the built-in sample
-//! (`track < 0`) or a track of a user-loaded score (`track >= 0`) — and writes
-//! `{ppqn, tempo, realized_spread, error, tracks:[A, B]}` into a thread-local
-//! buffer; JS reads it via the returned pointer + `arrange_len()`.
-//!
-//! File loading is import-free MIDI (the `gp` feature is off in the wasm build,
-//! per ADR-0024): JS writes the file bytes into `input_alloc(len)`, calls
-//! `load_score(len)` to parse + stash the [`Score`], and reads a track summary
-//! (`load_len()`); `arrange(.., track)` then arranges over the chosen track.
+//! - `arrange(mode, seed, offset, variation, track)` runs
+//!   [`arrange_complement_varied`] over a part A — the built-in sample
+//!   (`track < 0`) or a track of a user-loaded score (`track >= 0`) — and
+//!   returns `{ppqn, tempo, realized_spread, error, tracks:[A, B]}`.
+//! - `load_score(bytes)` parses an uploaded MIDI or Guitar Pro file, stashes the
+//!   [`Score`], and returns a `{error, ppqn, tempo, bars, tracks}` summary.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
+
+use wasm_bindgen::prelude::*;
 
 use griff_core::complement::{
     arrange_complement_varied, ComplementSpec, RelationMode, VariationControl,
@@ -244,80 +244,32 @@ fn arrange_to_json(source: &Score, track_index: usize, params: ArrangeParams) ->
 }
 
 thread_local! {
-    static OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    static IN: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static LOADED: RefCell<Option<Score>> = const { RefCell::new(None) };
 }
 
-/// Arranges a complement and stores the JSON result; returns a pointer into
-/// WASM linear memory. Read `arrange_len()` bytes from it (valid until the next
-/// `arrange` call). Part A is the loaded score's `track` (when `track >= 0` and
-/// a score has been loaded), otherwise the built-in sample.
-#[no_mangle]
-pub extern "C" fn arrange(
-    mode: u32,
-    seed: u32,
-    offset: i32,
-    variation: f32,
-    track: i32,
-) -> *const u8 {
+/// Arranges a complement and returns the result JSON. Part A is the loaded
+/// score's `track` (when `track >= 0` and a score has been loaded), otherwise
+/// the built-in sample.
+#[wasm_bindgen]
+pub fn arrange(mode: u32, seed: u32, offset: i32, variation: f32, track: i32) -> String {
     let params = ArrangeParams {
         mode,
         seed: u64::from(seed),
         offset,
         variation,
     };
-    let json = LOADED.with(|l| match (l.borrow().as_ref(), usize::try_from(track)) {
+    LOADED.with(|l| match (l.borrow().as_ref(), usize::try_from(track)) {
         (Some(score), Ok(ti)) => arrange_to_json(score, ti, params),
         _ => arrange_to_json(&sample_part_a(), 0, params),
-    });
-    OUT.with(|o| {
-        *o.borrow_mut() = json.into_bytes();
-        o.borrow().as_ptr()
     })
 }
 
-/// Length in bytes of the JSON stored by the last [`arrange`] call.
-#[no_mangle]
-pub extern "C" fn arrange_len() -> usize {
-    OUT.with(|o| o.borrow().len())
-}
-
-/// Reserves `len` bytes of input buffer and returns a writable pointer into
-/// linear memory. JS copies the uploaded file's bytes here, then calls
-/// [`load_score`]. (Create the JS view *after* this call: memory may grow.)
-#[no_mangle]
-pub extern "C" fn input_alloc(len: usize) -> *mut u8 {
-    IN.with(|b| {
-        let mut b = b.borrow_mut();
-        b.clear();
-        b.resize(len, 0);
-        b.as_mut_ptr()
-    })
-}
-
-/// Parses the first `len` bytes of the input buffer (MIDI; Guitar Pro when the
-/// `gp` feature is on), stashes the [`Score`] for later [`arrange`] calls, and
-/// writes a JSON track summary into the output buffer. Returns a pointer to it;
-/// read [`load_len`] bytes. On failure, leaves any previously loaded score in
-/// place and writes `{"error":"…","tracks":[]}`.
-#[no_mangle]
-pub extern "C" fn load_score(len: usize) -> *const u8 {
-    let json = IN.with(|b| {
-        let bytes = b.borrow();
-        let end = len.min(bytes.len());
-        load_to_json(&bytes[..end])
-    });
-    OUT.with(|o| {
-        *o.borrow_mut() = json.into_bytes();
-        o.borrow().as_ptr()
-    })
-}
-
-/// Length in bytes of the JSON stored by the last [`load_score`] call.
-#[no_mangle]
-pub extern "C" fn load_len() -> usize {
-    OUT.with(|o| o.borrow().len())
+/// Parses uploaded file bytes (MIDI or Guitar Pro), stashes the [`Score`] for
+/// later [`arrange`] calls, and returns a JSON track summary. On failure leaves
+/// any previously loaded score in place and returns `{"error":"…","tracks":[]}`.
+#[wasm_bindgen]
+pub fn load_score(bytes: &[u8]) -> String {
+    load_to_json(bytes)
 }
 
 /// Imports `data`, stores the score on success, and returns a JSON summary
@@ -453,6 +405,24 @@ mod tests {
         assert!(
             j.contains("\"role\":\"a\""),
             "arranges the imported track: {j:.160}"
+        );
+    }
+
+    #[test]
+    fn load_routes_guitar_pro_bytes_to_the_gp_reader() {
+        // A header-only GP5 fuzz seed: enough to be recognised as Guitar Pro and
+        // routed to the GP reader, which reports a clean GP parse error. This
+        // proves the `gp` feature is on in the wasm build — a MIDI fallback would
+        // report a "MIDI" error instead.
+        let gp = include_bytes!("../../fuzz/corpus/guitar_pro_import/gp5_header_only.gp5");
+        let json = load_to_json(gp);
+        assert!(
+            json.contains("\"error\":\""),
+            "a truncated GP file must surface an error: {json}"
+        );
+        assert!(
+            json.contains("Guitar Pro"),
+            "the GP reader handled it, not the MIDI fallback: {json}"
         );
     }
 }

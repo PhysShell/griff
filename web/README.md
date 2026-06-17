@@ -2,47 +2,49 @@
 
 A browser front for the complement arranger — built so the engine can be driven
 (and *heard*) from a phone, no install. See
-[`docs/adr/0024-web-wasm-frontend-for-mobile.md`](../docs/adr/0024-web-wasm-frontend-for-mobile.md).
+[`docs/adr/0024-web-wasm-frontend-for-mobile.md`](../docs/adr/0024-web-wasm-frontend-for-mobile.md)
+and [`docs/adr/0025-guitar-pro-in-browser-needs-wasm-bindgen.md`](../docs/adr/0025-guitar-pro-in-browser-needs-wasm-bindgen.md).
 
-This is the **MVP** (ADR-0024 §2): a deliberately thin, throwaway front — no
-`wasm-bindgen`, no framework. `griff-web` is an *import-free* `cdylib` that
-exports a few C-ABI functions; the page (`static/`) loads the `.wasm` with
-`WebAssembly.instantiate(bytes, {})` and marshals a small JSON result through
-linear memory. The canonical `egui` frontend (ADR-0016) replaces it at M2.
+This is the **MVP**: a deliberately thin, throwaway front — no framework, just two
+`wasm-bindgen` functions returning JSON strings. To load Guitar Pro tabs the Rust
+GP reader pulls `zip`/`time`/`getrandom`, which need `wasm-bindgen` glue, so the
+build is no longer import-free (ADR-0025 supersedes ADR-0024's lean cdylib). The
+canonical `egui` frontend (ADR-0016) replaces it at M2.
 
 ## What it does
 
-Takes a part A — either a built-in sample lead or **a track from a MIDI file you
-load** — and generates a complement (part B) entirely in the browser, with live
-controls for **mode**, **seed**, **register offset**, and **pitch spread** (the
-ADR-0023 `VariationControl`, audible on the grid-locked modes). Deterministic:
-the same controls always produce the same result.
+Takes a part A — either a built-in sample lead or **a track from a MIDI or Guitar
+Pro file you load** — and generates a complement (part B) entirely in the browser,
+with live controls for **mode**, **seed**, **register offset**, and **pitch
+spread** (the ADR-0023 `VariationControl`, audible on the grid-locked modes).
+Deterministic: the same controls always produce the same result.
 
 ## Build & run locally
 
 ```sh
-./web/build.sh                              # → web/dist/ (wasm + static)
+# one-time: install the CLI matching the wasm-bindgen crate version in Cargo.toml
+cargo install wasm-bindgen-cli --version 0.2.125 --locked
+
+./web/build.sh                              # → web/dist/ (wasm + glue + static)
 python3 -m http.server -d web/dist 8080     # open http://localhost:8080
 ```
 
 The crate is wasm32-only and excluded from the root workspace (like `fuzz/`), so
 stable `--workspace` builds/clippy/tests never touch it. It depends on
-`griff-core` with `default-features = false`, dropping the Guitar Pro importer
-(`guitarpro`/`zip`/`time`/`getrandom` → `wasm-bindgen`) — that is what keeps the
-module import-free. MIDI import is always available, so loading a `.mid` works in
-the lean build (~220 KiB once the parser is reachable code); Guitar Pro file
-loading waits on a `getrandom` backend that does not pull in `wasm-bindgen`.
+`griff-core` with the `gp` feature on, so MIDI and Guitar Pro both import through
+the shared `import_score_auto` — the same parser as the CLI. `build.sh` sets
+`--cfg getrandom_backend="wasm_js"` (Web Crypto) and runs `wasm-bindgen --target
+web`; the payload is ~830 KiB (gp + zip + wasm-bindgen).
 
-## ABI
+## API
+
+Two `#[wasm_bindgen]` functions, called from the generated ES module
+(`griff_web.js`); both return a JSON string:
 
 | export | signature | meaning |
 | --- | --- | --- |
-| `arrange` | `(mode:u32, seed:u32, offset:i32, variation:f32, track:i32) -> *const u8` | arrange over part A (`track<0` = built-in sample, `track>=0` = loaded score's track); returns a pointer to JSON |
-| `arrange_len` | `() -> usize` | byte length of the last `arrange` result |
-| `input_alloc` | `(len:usize) -> *mut u8` | reserve `len` bytes for an uploaded file; JS writes the bytes here, then calls `load_score` |
-| `load_score` | `(len:usize) -> *const u8` | parse the input buffer (MIDI), stash the score, return a pointer to a JSON track summary |
-| `load_len` | `() -> usize` | byte length of the last `load_score` summary |
-| `memory` | — | the linear memory JS reads the JSON from |
+| `arrange` | `(mode, seed, offset, variation, track) -> String` | arrange over part A (`track<0` = built-in sample, `track>=0` = the loaded score's track) |
+| `load_score` | `(bytes: &[u8]) -> String` | parse an uploaded MIDI or Guitar Pro file, stash the score, return a track summary |
 
 `mode`: 0 `rhythm_lock`, 1 `register_contrast`, 2 `call_response`,
 3 `support_layer`, 4 `octave_double`, 5 `counter_melody`.
@@ -52,13 +54,14 @@ Load summary JSON: `{error, ppqn, tempo, bars, tracks:[{i, name, notes}]}`.
 
 ## Deploy
 
-`.github/workflows/web.yml` builds `web/dist` and publishes it to GitHub Pages on
-pushes to the default branch (enable Pages → "GitHub Actions" in repo settings).
+`.github/workflows/web.yml` installs the version-matched `wasm-bindgen-cli`, builds
+`web/dist`, and publishes it to GitHub Pages on pushes to the default branch
+(enable Pages → "GitHub Actions" in repo settings).
 
 ## Notes / next
 
 - Audio is a placeholder WebAudio synth (sawtooth + envelope, A left / B right).
   A real SoundFont (guitar tone) is a follow-up.
-- You can load your own **MIDI** file and arrange over any of its tracks;
-  **Guitar Pro** file loading (needs a `wasm-bindgen`-free `getrandom`) and
-  drag-drop are follow-ups.
+- You can load your own **MIDI** or **Guitar Pro** (`.gp3/.gp4/.gp5/.gpx`) file and
+  arrange over any of its tracks. Drag-drop and in-browser corpus curation /
+  download are follow-ups.
