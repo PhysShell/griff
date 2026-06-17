@@ -698,7 +698,7 @@ pub fn build_chunk_json(
 mod tests {
     use super::{
         arrange_to_json, boundaries_to_json, build_chunk_meta_record, chunk_to_json, json_escape,
-        load_to_json, parse_indices, sample_part_a, ArrangeParams,
+        load_to_json, parse_indices, sample_part_a, tag_palette_json, ArrangeParams,
     };
 
     #[test]
@@ -988,5 +988,25 @@ mod tests {
         assert!(j.contains("\"boundaries\":["), "has a boundaries array");
         let oor = boundaries_to_json(&score, 99);
         assert!(oor.contains("out of range"), "out-of-range errors: {oor}");
+    }
+
+    #[test]
+    fn tag_palette_json_lists_every_tag_in_wire_order() {
+        let names: Vec<String> =
+            serde_json::from_str(&tag_palette_json()).expect("array of tag names");
+        // One entry per SwancoreTag, so capture-UI indices line up with the
+        // indices `build_chunk_json` parses.
+        assert_eq!(
+            names.len(),
+            griff_core::corpus::SwancoreTag::all_variants().len()
+        );
+        assert!(!names.is_empty());
+        // Wire names are serde snake_case (lowercase + underscores).
+        assert!(
+            names.iter().all(|n| !n.is_empty()
+                && n.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')),
+            "snake_case palette: {names:?}"
+        );
     }
 }
