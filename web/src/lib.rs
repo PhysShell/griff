@@ -379,7 +379,10 @@ fn note_count(track: &Track) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{arrange_to_json, json_escape, load_to_json, sample_part_a, ArrangeParams};
+    use super::{
+        arrange_to_json, boundaries_to_json, build_chunk_meta_record, chunk_to_json, json_escape,
+        load_to_json, parse_indices, sample_part_a, ArrangeParams,
+    };
 
     #[test]
     fn json_escape_escapes_quotes_backslashes_and_control_chars() {
@@ -519,5 +522,94 @@ mod tests {
             json.contains("Guitar Pro"),
             "the GP reader handled it, not the MIDI fallback: {json}"
         );
+    }
+
+    // ── chunk.json capture (ADR-0026) ─────────────────────────────────────────
+
+    #[test]
+    fn parse_indices_keeps_in_range_indices_only() {
+        let v = [10u8, 20, 30];
+        // Out-of-range indices are dropped; whitespace- or comma-separated.
+        assert_eq!(parse_indices("0 2 5", &v), vec![10, 30]);
+        assert_eq!(parse_indices("1,2", &v), vec![20, 30]);
+        assert!(parse_indices("", &v).is_empty());
+    }
+
+    #[test]
+    fn build_chunk_record_mirrors_curate_and_round_trips_through_corpus() {
+        use griff_core::corpus::{
+            Acquisition, ChunkMeta, QualityFlag, ReviewerDecision, RightsStatus, StyleCohort,
+        };
+        let score = sample_part_a();
+        let meta = build_chunk_meta_record(
+            &score, 0, "dgd_001", "Test Riff", "riff.gp5", "   ", // blank tuning → default
+            1,     // cohort: adjacent
+            "0 5", // two tag indices
+            "",    // quality blank → [Clean]
+            0,     // reviewer: accepted
+            3, 0, false, // rights: copyrighted, community_tab_site, not redistributable
+            "from example.com 2026-06-17",
+            "2026-06-17T00:00:00Z",
+            "2026-06-17T00:00:00Z",
+        )
+        .expect("record builds for an in-range track");
+
+        assert_eq!(meta.id.0, "dgd_001");
+        assert_eq!(meta.tuning, "standard_e", "blank tuning defaults like the CLI");
+        assert_eq!(meta.style_cohort, Some(StyleCohort::Adjacent));
+        assert_eq!(meta.quality_flags, vec![QualityFlag::Clean]);
+        assert_eq!(meta.reviewer, Some(ReviewerDecision::Accepted));
+        assert_eq!(meta.tags.len(), 2, "two tag indices mapped");
+        let rights = meta.rights.as_ref().expect("rights captured (non-derivable, S5)");
+        assert_eq!(rights.rights_status, RightsStatus::CopyrightedComposition);
+        assert_eq!(rights.acquisition, Acquisition::CommunityTabSite);
+        assert!(!rights.redistributable);
+
+        // The emitted JSON must deserialize back into the same corpus ChunkMeta —
+        // i.e. it is byte-compatible with what `griff manifest` consumes.
+        let json = serde_json::to_string_pretty(&meta).expect("serialize");
+        let back: ChunkMeta = serde_json::from_str(&json).expect("griff manifest can read it");
+        assert_eq!(back, meta);
+    }
+
+    #[test]
+    fn build_chunk_record_rejects_out_of_range_track() {
+        let score = sample_part_a();
+        let err = build_chunk_meta_record(
+            &score, 99, "x", "x", "f.mid", "standard_e", 0, "", "", -1, 3, 0, false, "", "t", "t",
+        )
+        .unwrap_err();
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn chunk_to_json_emits_chunkmeta_on_success_and_error_envelope_on_failure() {
+        let score = sample_part_a();
+        // Success: a ChunkMeta has no top-level "error" key and parses as one.
+        let ok = chunk_to_json(
+            &score, 0, "dgd_002", "Captured", "riff.mid", "standard_e", 0, "", "", -1, 3, 0, false,
+            "", "2026-06-17T00:00:00Z", "2026-06-17T00:00:00Z",
+        );
+        assert!(!ok.contains("\"error\""), "no error key on success: {ok:.160}");
+        let meta: griff_core::corpus::ChunkMeta =
+            serde_json::from_str(&ok).expect("valid ChunkMeta JSON");
+        assert_eq!(meta.id.0, "dgd_002");
+        assert!(meta.rights.is_some());
+
+        // Failure: an out-of-range track yields a parseable error envelope.
+        let bad = chunk_to_json(
+            &score, 99, "x", "x", "f.mid", "standard_e", 0, "", "", -1, 3, 0, false, "", "t", "t",
+        );
+        assert!(bad.contains("\"error\":\""), "error envelope: {bad}");
+    }
+
+    #[test]
+    fn boundaries_to_json_reports_for_a_track_and_errors_out_of_range() {
+        let score = sample_part_a();
+        let j = boundaries_to_json(&score, 0);
+        assert!(j.contains("\"error\":null"), "ok: {j:.120}");
+        assert!(j.contains("\"boundaries\":["), "has a boundaries array");
+        let oor = boundaries_to_json(&score, 99);
+        assert!(oor.contains("out of range"), "out-of-range errors: {oor}");
     }
 }
