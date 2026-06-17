@@ -31,6 +31,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0023](0023-variation-control-for-complement.md) | Control pitch/contour spread of complementary parts | Proposed |
 | [0024](0024-web-wasm-frontend-for-mobile.md) | Ship the egui frontend to the browser (WASM) for mobile testing | Proposed (§2–3,6 superseded by ADR-0025) |
 | [0025](0025-guitar-pro-in-browser-needs-wasm-bindgen.md) | Guitar Pro in the browser needs wasm-bindgen (over the import-free web build) | Accepted |
+| [0026](0026-web-chunk-capture-tool.md) | A minimal in-browser chunk.json capture tool (carve-out from "web curation — later") | Accepted |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
