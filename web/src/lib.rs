@@ -639,6 +639,14 @@ fn boundaries_to_json(score: &Score, track_index: usize) -> String {
     json
 }
 
+/// Returns the swancore tag palette — the wire names of
+/// `SwancoreTag::all_variants()` in order — as a JSON array, so the capture UI's
+/// tag indices line up with what [`build_chunk_json`] parses.
+#[wasm_bindgen]
+pub fn tag_palette_json() -> String {
+    serde_json::to_string(SwancoreTag::all_variants()).unwrap_or_else(|_| "[]".to_owned())
+}
+
 /// Detects phrase boundaries for `track` of the loaded score and returns them as
 /// JSON, so the capture UI can preview phrase cuts before building a chunk.
 #[wasm_bindgen]
