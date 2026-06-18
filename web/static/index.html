@@ -95,7 +95,7 @@
       </label>
 
       <fieldset class="checks">
-        <legend>Tags <span class="hint">pick all that apply</span></legend>
+        <legend>Tags <span class="hint">pick all that apply · technique tags are auto-added from notation</span></legend>
         <div id="capTags" class="checkgrid"></div>
       </fieldset>
 
@@ -179,6 +179,17 @@
         </div>
       </section>
     </section>
+
+    <details id="debugPanel" class="debug" open>
+      <summary>Debug log
+        <span class="hint">· verbose trace of every engine call — Copy &amp; paste it into chat</span>
+      </summary>
+      <div class="transport">
+        <button id="dbgCopy" type="button">⧉ Copy</button>
+        <button id="dbgClear" type="button">Clear</button>
+      </div>
+      <pre id="debugLog" class="debuglog" tabindex="0" aria-label="debug log"></pre>
+    </details>
   </main>
   <script type="module" src="./app.js"></script>
 </body>

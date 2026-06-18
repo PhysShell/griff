@@ -1,0 +1,10 @@
+{
+  "name": "griff-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "griff WASM playground — static front-end and its JS unit tests",
+  "scripts": {
+    "test": "node --test"
+  }
+}

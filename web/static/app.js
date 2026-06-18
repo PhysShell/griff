@@ -9,6 +9,7 @@ import init, {
   detect_boundaries_json as wasmDetectBoundaries,
   tag_palette_json as wasmTagPalette,
 } from './griff_web.js';
+import { createDebugLog } from './debuglog.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -32,6 +33,8 @@ const els = {
   splitPos: $('splitPos'), splitInfo: $('splitInfo'),
   splitPlay: $('splitPlay'), splitStop: $('splitStop'),
   splitDownload: $('splitDownload'), splitDownloadAll: $('splitDownloadAll'),
+  // verbose on-page debug log
+  debugLog: $('debugLog'), dbgCopy: $('dbgCopy'), dbgClear: $('dbgClear'),
 };
 
 const PPQN_FALLBACK = 480;
@@ -44,13 +47,72 @@ let audio = null;    // AudioContext
 let voices = [];     // scheduled oscillators
 let playStartT = 0, playSpan = 0, raf = 0;
 
-function arrange() {
+// ---- verbose debug log (on-page, copy-paste friendly) ----
+const MODE_NAMES = ['rhythm_lock', 'register_contrast', 'call_response',
+  'support_layer', 'octave_double', 'counter_melody'];
+// The bounded, timestamped ring buffer lives in debuglog.js so its formatting
+// logic is unit-tested (web/test/debuglog.test.js); here we just mirror it into
+// the <pre> on every write and keep it scrolled to the newest line.
+const log = createDebugLog();
+
+function renderDebug() {
+  if (!els.debugLog) return;
+  els.debugLog.textContent = log.text();
+  els.debugLog.scrollTop = els.debugLog.scrollHeight;
+}
+// `data` (optional) is JSON-stringified, so the exact inputs/outputs of each
+// engine call are visible without opening the browser console.
+function dbg(label, data) { log.push(label, data); renderDebug(); }
+function dbgErr(label, data) { log.err(label, data); renderDebug(); }
+
+// Copies the whole log to the clipboard (https + the click gesture satisfy the
+// Clipboard API on mobile); briefly flashes the button as feedback.
+function copyDebug() {
+  const text = log.text() || '(empty)';
+  const flash = (msg) => {
+    const b = els.dbgCopy, old = b.textContent;
+    b.textContent = msg;
+    setTimeout(() => { b.textContent = old; }, 1200);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => flash('✓ copied'), () => flash('copy failed'));
+  } else {
+    flash('no clipboard');
+  }
+}
+
+function clearDebug() { log.clear(); renderDebug(); }
+
+// `logIt` requests a one-line trace of this arrange (discrete actions: Generate,
+// mode/track change, load); slider drags pass nothing to avoid flooding the log.
+// Errors are always logged regardless.
+function arrange(logIt) {
   const mode = +els.mode.value;
   const seed = +els.seed.value;
   const offset = +els.offset.value;
   const variation = (+els.variation.value) / 100;
   const track = +els.track.value;
-  current = JSON.parse(wasmArrange(mode, seed, offset, variation, track));
+  let next;
+  try {
+    next = JSON.parse(wasmArrange(mode, seed, offset, variation, track));
+  } catch (err) {
+    els.status.classList.add('error');
+    els.status.textContent = 'arrange failed: engine returned bad JSON';
+    dbgErr('arrange failed', { mode: MODE_NAMES[mode] || mode, seed, offset, variation, track, err: String(err) });
+    return;
+  }
+  current = next;
+  if (current.error) {
+    dbgErr('arrange', { mode: MODE_NAMES[mode] || mode, seed, offset, variation, track, error: current.error });
+  } else if (logIt) {
+    const a = current.tracks.find((t) => t.role === 'a');
+    const b = current.tracks.find((t) => t.role === 'b');
+    dbg('arrange', {
+      mode: MODE_NAMES[mode] || mode, seed, offset, variation: +variation.toFixed(2), track,
+      a: a ? a.notes.length : 0, b: b ? b.notes.length : 0,
+      spread: +Number(current.realized_spread).toFixed(2),
+    });
+  }
   draw();
   showStatus();
 }
@@ -75,16 +137,19 @@ const escapeHtml = (s) => String(s).replace(/[&<>"]/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 function loadFile(file) {
+  dbg('load file', { name: file.name, bytes: file.size });
   if (file.size > MAX_UPLOAD_BYTES) {
     els.status.classList.add('error');
     els.status.textContent =
       `load failed: file too large (${file.size} bytes; limit ${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB)`;
+    dbgErr('load rejected', `too large: ${file.size} bytes`);
     return;
   }
   const reader = new FileReader();
   reader.onerror = () => {
     els.status.classList.add('error');
     els.status.textContent = 'load failed: could not read file';
+    dbgErr('load failed', 'could not read file');
   };
   reader.onload = () => {
     try {
@@ -92,6 +157,7 @@ function loadFile(file) {
       if (summary.error) {
         els.status.classList.add('error');
         els.status.textContent = 'load failed: ' + summary.error;
+        dbgErr('load failed', summary.error);
         return;
       }
       els.status.classList.remove('error');
@@ -103,11 +169,16 @@ function loadFile(file) {
       capMsg('', false);
       resetSplit();
       els.capture.hidden = false;
+      dbg('loaded', {
+        tracks: summary.tracks.length, bars: summary.bars,
+        perTrack: summary.tracks.map((t) => `${t.i}:${t.name}=${t.notes}n`),
+      });
       populateTracks(summary);
-      arrange();
+      arrange(true);
     } catch (err) {
       els.status.classList.add('error');
       els.status.textContent = 'load failed: ' + err;
+      dbgErr('load failed', String(err));
     }
   };
   reader.readAsArrayBuffer(file);
@@ -150,36 +221,54 @@ function capMsg(text, isError) {
 
 function detectBoundaries() {
   const track = +els.track.value;
-  if (track < 0) { capMsg('load a tab and pick a track first', true); return; }
+  if (track < 0) { capMsg('load a tab and pick a track first', true); dbgErr('detect', 'no track selected'); return; }
+  dbg('detect boundaries', { track });
   let res;
   try { res = JSON.parse(wasmDetectBoundaries(track)); }
-  catch (e) { capMsg('detect failed: ' + e, true); return; }
-  if (res.error) { capMsg('detect failed: ' + res.error, true); return; }
+  catch (e) { capMsg('detect failed: ' + e, true); dbgErr('detect failed', String(e)); return; }
+  if (res.error) { capMsg('detect failed: ' + res.error, true); dbgErr('detect failed', res.error); return; }
   const n = res.boundaries.length;
   capMsg('', false); // drop any stale error from a previous failed detect
+  dbg('boundaries', { count: n, ticks: res.boundaries });
   els.capBounds.textContent =
     n ? `${n} phrase boundar${n === 1 ? 'y' : 'ies'} detected` : 'no phrase boundaries detected';
 }
 
 function downloadChunk() {
   const track = +els.track.value;
-  if (track < 0) { capMsg('load a tab and pick a real track first', true); return; }
+  if (track < 0) { capMsg('load a tab and pick a real track first', true); dbgErr('capture', 'no track selected'); return; }
   const id = els.capId.value.trim();
-  if (!id) { capMsg('a chunk ID is required (e.g. dgd_001)', true); return; }
+  if (!id) { capMsg('a chunk ID is required (e.g. dgd_001)', true); dbgErr('capture', 'missing chunk id'); return; }
+
+  const tagsIdx = selectedValues(els.capTags);
+  const qualityIdx = selectedValues(els.capQuality);
+  dbg('capture chunk', {
+    track, id, title: els.capTitle.value, tuning: els.capTuning.value,
+    cohort: +els.capCohort.value, tagsIdx: tagsIdx || '(none ticked)', qualityIdx,
+    reviewer: +els.capReviewer.value, rights: +els.capRights.value,
+    acq: +els.capAcq.value, redist: els.capRedist.checked,
+  });
 
   const now = new Date().toISOString();
   const json = wasmBuildChunk(
     track, id, els.capTitle.value, fileName, els.capTuning.value,
-    +els.capCohort.value, selectedValues(els.capTags), selectedValues(els.capQuality),
+    +els.capCohort.value, tagsIdx, qualityIdx,
     +els.capReviewer.value, +els.capRights.value, +els.capAcq.value,
     els.capRedist.checked, els.capNotes.value, now, now,
   );
 
   let parsed;
   try { parsed = JSON.parse(json); }
-  catch (_) { capMsg('capture failed: engine returned bad JSON', true); return; }
-  if (parsed.error) { capMsg('capture failed: ' + parsed.error, true); return; }
+  catch (_) { capMsg('capture failed: engine returned bad JSON', true); dbgErr('capture failed', 'bad JSON from engine'); return; }
+  if (parsed.error) { capMsg('capture failed: ' + parsed.error, true); dbgErr('capture failed', parsed.error); return; }
 
+  // Resolved metadata — shows why `tags` may be empty (none ticked + no
+  // notation-derived technique tags) and which metrics the engine could compute.
+  dbg('captured', {
+    id, tags: parsed.tags, techniques: parsed.techniques,
+    quality: parsed.quality_flags, boundaries: parsed.boundaries.length,
+    metrics: { structure: !!parsed.structure, gesture: !!parsed.gesture, complexity: !!parsed.complexity },
+  });
   saveBlob(`${id}.chunk.json`, json);
   capMsg(`saved ${id}.chunk.json · ${parsed.boundaries.length} boundaries · ` +
     `${parsed.tags.length} tag(s) · rights recorded`, false);
@@ -208,21 +297,37 @@ function splitIntoPhrases() {
   const id = els.capId.value.trim();
   if (!id) { capMsg('a chunk ID is required (e.g. dgd_001)', true); return; }
 
+  const tagsIdx = selectedValues(els.capTags);
+  const qualityIdx = selectedValues(els.capQuality);
+  dbg('split into phrases', { track, id, tagsIdx: tagsIdx || '(none ticked)', qualityIdx });
+
   const now = new Date().toISOString();
   let res;
   try {
     res = JSON.parse(wasmSplitChunks(
       track, id, els.capTitle.value, fileName, els.capTuning.value,
-      +els.capCohort.value, selectedValues(els.capTags), selectedValues(els.capQuality),
+      +els.capCohort.value, tagsIdx, qualityIdx,
       +els.capReviewer.value, +els.capRights.value, +els.capAcq.value,
       els.capRedist.checked, els.capNotes.value, now, now,
     ));
-  } catch (_) { capMsg('split failed: engine returned bad JSON', true); return; }
-  if (res.error) { capMsg('split failed: ' + res.error, true); return; }
+  } catch (_) { capMsg('split failed: engine returned bad JSON', true); dbgErr('split failed', 'bad JSON from engine'); return; }
+  if (res.error) { capMsg('split failed: ' + res.error, true); dbgErr('split failed', res.error); return; }
 
   splitChunks = res.chunks || [];
   splitIdx = 0;
-  if (splitChunks.length === 0) { resetSplit(); capMsg('no sounding phrases to split', true); return; }
+  if (splitChunks.length === 0) { resetSplit(); capMsg('no sounding phrases to split', true); dbg('split result', { phrases: 0 }); return; }
+  // Tags can differ per phrase: chosen tags repeat, but notation-derived
+  // technique tags surface only in the phrases that contain them — so report
+  // every phrase's tags, not just the first (would hide them otherwise).
+  const phraseTags = splitChunks.map((c) => {
+    try { return JSON.parse(c.chunk).tags || []; } catch (_) { return []; }
+  });
+  dbg('split result', {
+    phrases: splitChunks.length,
+    ids: splitChunks.map((c) => c.id),
+    bars: splitChunks.map((c) => `${c.bar_lo}-${c.bar_hi}`),
+    tags: phraseTags,
+  });
   els.splitView.hidden = false;
   capMsg(`split into ${splitChunks.length} phrase chunk(s) — page through and ▶`, false);
   renderPhrase();
@@ -234,8 +339,8 @@ function renderPhrase() {
   stop();
   const ch = splitChunks[splitIdx];
   if (!ch) return;
-  let ppqn = PPQN_FALLBACK, tempo = 120;
-  try { const m = JSON.parse(ch.chunk); ppqn = m.ticks_per_quarter || ppqn; tempo = m.tempo_bpm || tempo; }
+  let ppqn = PPQN_FALLBACK, tempo = 120, tags = [];
+  try { const m = JSON.parse(ch.chunk); ppqn = m.ticks_per_quarter || ppqn; tempo = m.tempo_bpm || tempo; tags = m.tags || []; }
   catch (_) { /* fall back to defaults */ }
   current = {
     ppqn, tempo, error: null, realized_spread: 0,
@@ -244,7 +349,7 @@ function renderPhrase() {
   draw();
   els.splitPos.textContent = `phrase ${splitIdx + 1} / ${splitChunks.length}`;
   els.splitInfo.textContent =
-    `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes`;
+    `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes · ${tags.length} tag(s)`;
   els.splitPrev.disabled = splitIdx === 0;
   els.splitNext.disabled = splitIdx === splitChunks.length - 1;
 }
@@ -393,14 +498,18 @@ function bind() {
   els.variation.addEventListener('input', () => {
     els.varOut.textContent = (els.variation.value / 100).toFixed(2); arrange();
   });
-  els.mode.addEventListener('change', arrange);
+  els.mode.addEventListener('change', () => arrange(true));
   // Phrases are track-specific: a new track invalidates the current split.
-  els.track.addEventListener('change', () => { resetSplit(); arrange(); });
+  els.track.addEventListener('change', () => {
+    resetSplit();
+    dbg('track ->', { i: +els.track.value, name: els.track.options[els.track.selectedIndex]?.text || '' });
+    arrange(true);
+  });
   els.file.addEventListener('change', (e) => {
     const f = e.target.files && e.target.files[0];
     if (f) loadFile(f);
   });
-  els.gen.addEventListener('click', arrange);
+  els.gen.addEventListener('click', () => arrange(true));
   els.play.addEventListener('click', play);
   els.stop.addEventListener('click', stop);
   els.capDetect.addEventListener('click', detectBoundaries);
@@ -412,15 +521,19 @@ function bind() {
   els.splitStop.addEventListener('click', stop);
   els.splitDownload.addEventListener('click', downloadPhrase);
   els.splitDownloadAll.addEventListener('click', downloadAllPhrases);
+  els.dbgCopy.addEventListener('click', copyDebug);
+  els.dbgClear.addEventListener('click', clearDebug);
   window.addEventListener('resize', () => draw());
 }
 
 init().then(() => {
   bind();
   populateTagPalette();
-  arrange();
+  dbg('engine ready');
+  arrange(true);
   els.status.textContent = 'ready — load a tab or drag a slider, then ▶ Play';
 }).catch((err) => {
   els.status.classList.add('error');
   els.status.textContent = 'failed to load engine: ' + err;
+  dbgErr('engine load failed', String(err));
 });

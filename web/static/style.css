@@ -174,3 +174,29 @@ label.row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(
 }
 #splitInfo { display: block; text-align: center; min-height: 1em; }
 button:disabled { opacity: 0.4; cursor: default; }
+
+/* ---- debug log (verbose on-page engine trace) ---- */
+.debug {
+  background: var(--panel);
+  border: 1px solid #232838;
+  border-radius: 14px;
+  padding: 10px 16px 14px;
+  margin: 16px 0;
+}
+.debug summary { cursor: pointer; font-weight: 600; color: var(--ink); }
+.debug summary .hint { font-weight: 400; }
+.debug .transport { margin: 12px 0 8px; }
+.debuglog {
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
+  background: #0c0f16;
+  border: 1px solid #232838;
+  border-radius: 10px;
+  padding: 10px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.debuglog:empty::before { content: "(no events yet)"; color: var(--muted); }

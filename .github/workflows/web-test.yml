@@ -1,0 +1,33 @@
+# Runs the web front-end's JS unit tests (node:test) on PRs and on main.
+# The playground is static ES modules; its pure logic (e.g. the debug-log ring
+# buffer) is unit-tested here without a browser or the wasm build. Rust/WASM
+# building and the Pages deploy live in web.yml.
+name: web-test
+on:
+  pull_request:
+    paths:
+      - 'web/**'
+      - '.github/workflows/web-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/web-test.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Least privilege: this job only checks out and runs tests, never writes.
+    permissions:
+      contents: read
+    steps:
+      # persist-credentials: false — `npm test` runs PR-authored code, so don't
+      # leave the token in .git/config for it to read (zizmor: artipacked).
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run JS unit tests
+        working-directory: web
+        run: npm test
