@@ -1578,47 +1578,34 @@ mod tests {
         assert_eq!(primary_voice_note_count(&measurable), 1);
     }
 
-    #[test]
-    fn phrase_chunks_tile_the_bars_with_bar_range_and_ids() {
-        use super::{phrase_chunks, CurateInputs};
-        use griff_core::corpus::{
-            Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort,
-        };
-        use std::path::Path;
-
-        /// One 4/4 bar with explicit bounds (no arithmetic in the fixture).
-        fn mbar(index: usize, start: u32, end: u32) -> MasterBar {
-            MasterBar {
-                index,
-                tick_range: TickRange::new(Ticks(start), Ticks(end)).expect("ordered"),
-                time_signature: TimeSignature {
-                    numerator: 4,
-                    denominator: 4,
-                },
-                tempo: Tempo::new(120.0).expect("bpm"),
-                repeat: RepeatMarker::default(),
-            }
+    /// One 4/4 bar with explicit bounds (no arithmetic in the fixture).
+    fn mbar(index: usize, start: u32, end: u32) -> MasterBar {
+        MasterBar {
+            index,
+            tick_range: TickRange::new(Ticks(start), Ticks(end)).expect("ordered"),
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            tempo: Tempo::new(120.0).expect("bpm"),
+            repeat: RepeatMarker::default(),
         }
+    }
 
-        // Four bars, a note on each downbeat.
-        let voice = voice_of(
-            0,
-            vec![quarter(0, 60), quarter(1920, 62), quarter(3840, 64), quarter(5760, 65)],
-        );
-        let score = Score {
-            ticks_per_quarter: 480,
-            master_bars: vec![
-                mbar(0, 0, 1920),
-                mbar(1, 1920, 3840),
-                mbar(2, 3840, 5760),
-                mbar(3, 5760, 7680),
-            ],
-            tracks: vec![track_of(vec![voice])],
-            source_meta: None,
-            loss: LossReport::new(),
-        };
+    /// Four contiguous 4/4 bars spanning ticks 0..7680.
+    fn split_master_bars() -> Vec<MasterBar> {
+        vec![
+            mbar(0, 0, 1920),
+            mbar(1, 1920, 3840),
+            mbar(2, 3840, 5760),
+            mbar(3, 5760, 7680),
+        ]
+    }
 
-        let inputs = CurateInputs {
+    /// Single-track curation inputs with id `dgd`.
+    fn split_inputs() -> super::CurateInputs {
+        use griff_core::corpus::{Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort};
+        super::CurateInputs {
             id: "dgd".to_owned(),
             title: "Riff".to_owned(),
             tuning: "standard_e".to_owned(),
@@ -1632,22 +1619,69 @@ mod tests {
                 redistributable: false,
                 notes: String::new(),
             },
+        }
+    }
+
+    #[test]
+    fn phrase_chunks_tile_the_bars_with_inclusive_bar_range_and_ids() {
+        use super::phrase_chunks;
+        use std::path::Path;
+
+        // Four bars, a note on each downbeat.
+        let voice = voice_of(
+            0,
+            vec![quarter(0, 60), quarter(1920, 62), quarter(3840, 64), quarter(5760, 65)],
+        );
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: split_master_bars(),
+            tracks: vec![track_of(vec![voice])],
+            source_meta: None,
+            loss: LossReport::new(),
         };
 
-        let chunks = phrase_chunks(Path::new("riff.gp5"), &score, &inputs).expect("splits");
+        let chunks =
+            phrase_chunks(Path::new("riff.gp5"), &score, &split_inputs()).expect("splits");
         assert!(!chunks.is_empty(), "at least one phrase chunk");
 
-        // Whatever the detector decides, the chunks tile [0,4) contiguously and
-        // each id is suffixed by its phrase index.
+        // Whatever the detector decides, the chunks tile the four bars with
+        // inclusive `[first, last]` ranges, each id suffixed by its phrase index.
         let mut next = 0_u32;
         for (i, chunk) in chunks.iter().enumerate() {
             let (lo, hi) = chunk.source.bar_range.expect("bar_range set");
-            assert_eq!(lo, next, "segment is contiguous with the previous");
-            assert!(hi > lo, "segment spans at least one bar");
+            assert_eq!(lo, next, "first bar follows the previous chunk's last + 1");
+            assert!(hi >= lo, "inclusive last bar is at least the first");
             assert_eq!(chunk.id.0, format!("dgd_p{i}"));
-            next = hi;
+            next = hi.saturating_add(1);
         }
-        assert_eq!(next, 4, "segments cover all four bars");
+        assert_eq!(next, 4, "inclusive ranges cover all four bars");
+    }
+
+    #[test]
+    fn chunks_for_segments_skips_silent_and_uses_inclusive_bar_range() {
+        use super::chunks_for_segments;
+        use std::path::Path;
+
+        // Notes only in bars 0–1; bars 2–3 are silent.
+        let voice = voice_of(0, vec![quarter(0, 60), quarter(1920, 62)]);
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: split_master_bars(),
+            tracks: vec![track_of(vec![voice])],
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        // A sounding [0,2) segment and a silent [2,4) one.
+        let chunks =
+            chunks_for_segments(Path::new("riff.gp5"), &score, &split_inputs(), &[0..2, 2..4]);
+        assert_eq!(chunks.len(), 1, "the silent [2,4) segment is dropped");
+        assert_eq!(
+            chunks[0].source.bar_range,
+            Some((0, 1)),
+            "inclusive last bar is end-1, not the half-open end"
+        );
+        assert_eq!(chunks[0].id.0, "dgd_p0", "kept chunks renumber from 0");
     }
 
     #[test]
