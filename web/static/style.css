@@ -153,3 +153,24 @@ h2 { font-size: 1.05rem; margin: 0 0 0.1rem; }
 label.row { flex-flow: row; display: flex; align-items: center; gap: 10px; color: var(--ink); }
 label.row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent); }
 #capBounds { display: block; margin: 2px; min-height: 1em; }
+
+/* ---- auto-split phrase pager (#2b) ---- */
+.splitview {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #2a3146;
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 4px;
+}
+.splitview .transport { margin-bottom: 0; }
+.pager { align-items: center; }
+.pager output {
+  flex: 1;
+  text-align: center;
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+#splitInfo { display: block; text-align: center; min-height: 1em; }
+button:disabled { opacity: 0.4; cursor: default; }
