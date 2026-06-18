@@ -5,6 +5,7 @@ import init, {
   arrange as wasmArrange,
   load_score as wasmLoadScore,
   build_chunk_json as wasmBuildChunk,
+  split_chunks_json as wasmSplitChunks,
   detect_boundaries_json as wasmDetectBoundaries,
   tag_palette_json as wasmTagPalette,
 } from './griff_web.js';
@@ -25,12 +26,20 @@ const els = {
   capRedist: $('capRedist'), capNotes: $('capNotes'),
   capDetect: $('capDetect'), capDownload: $('capDownload'),
   capBounds: $('capBounds'), capStatus: $('capStatus'),
+  // auto-split phrase pager (#2b)
+  capSplit: $('capSplit'), splitView: $('splitView'),
+  splitPrev: $('splitPrev'), splitNext: $('splitNext'),
+  splitPos: $('splitPos'), splitInfo: $('splitInfo'),
+  splitPlay: $('splitPlay'), splitStop: $('splitStop'),
+  splitDownload: $('splitDownload'), splitDownloadAll: $('splitDownloadAll'),
 };
 
 const PPQN_FALLBACK = 480;
 const MAX_UPLOAD_BYTES = 16 * 1024 * 1024; // mirror the Rust-side upload guard
 let current = null;  // last arrange() result (parsed JSON)
 let fileName = '';   // name of the uploaded file (recorded as the chunk's source)
+let splitChunks = []; // phrase chunks from the last split (#2b)
+let splitIdx = 0;     // currently-viewed phrase
 let audio = null;    // AudioContext
 let voices = [];     // scheduled oscillators
 let playStartT = 0, playSpan = 0, raf = 0;
@@ -92,6 +101,7 @@ function loadFile(file) {
       els.capTitle.value = file.name.replace(/\.[^.]+$/, '');
       els.capBounds.textContent = '';
       capMsg('', false);
+      resetSplit();
       els.capture.hidden = false;
       populateTracks(summary);
       arrange();
@@ -170,13 +180,94 @@ function downloadChunk() {
   catch (_) { capMsg('capture failed: engine returned bad JSON', true); return; }
   if (parsed.error) { capMsg('capture failed: ' + parsed.error, true); return; }
 
-  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-  const a = document.createElement('a');
-  a.href = url; a.download = `${id}.chunk.json`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  saveBlob(`${id}.chunk.json`, json);
   capMsg(`saved ${id}.chunk.json · ${parsed.boundaries.length} boundaries · ` +
     `${parsed.tags.length} tag(s) · rights recorded`, false);
+}
+
+// Triggers a download of `text` (a JSON string) as the file `name`.
+function saveBlob(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// ---- auto-split: one chunk.json per detected phrase (#2b) ----
+// Reuses the capture form's metadata for every phrase; the engine suffixes ids
+// (_p<N>) and titles ((phrase <N>)) and drops phrases silent on the track.
+function resetSplit() {
+  splitChunks = []; splitIdx = 0;
+  if (els.splitView) els.splitView.hidden = true;
+}
+
+function splitIntoPhrases() {
+  const track = +els.track.value;
+  if (track < 0) { capMsg('load a tab and pick a real track first', true); return; }
+  const id = els.capId.value.trim();
+  if (!id) { capMsg('a chunk ID is required (e.g. dgd_001)', true); return; }
+
+  const now = new Date().toISOString();
+  let res;
+  try {
+    res = JSON.parse(wasmSplitChunks(
+      track, id, els.capTitle.value, fileName, els.capTuning.value,
+      +els.capCohort.value, selectedValues(els.capTags), selectedValues(els.capQuality),
+      +els.capReviewer.value, +els.capRights.value, +els.capAcq.value,
+      els.capRedist.checked, els.capNotes.value, now, now,
+    ));
+  } catch (_) { capMsg('split failed: engine returned bad JSON', true); return; }
+  if (res.error) { capMsg('split failed: ' + res.error, true); return; }
+
+  splitChunks = res.chunks || [];
+  splitIdx = 0;
+  if (splitChunks.length === 0) { resetSplit(); capMsg('no sounding phrases to split', true); return; }
+  els.splitView.hidden = false;
+  capMsg(`split into ${splitChunks.length} phrase chunk(s) — page through and ▶`, false);
+  renderPhrase();
+}
+
+// Draws the current phrase into the shared roll and reuses the transport synth
+// (current.tracks/ppqn/tempo is exactly what draw()/play() already read).
+function renderPhrase() {
+  stop();
+  const ch = splitChunks[splitIdx];
+  if (!ch) return;
+  let ppqn = PPQN_FALLBACK, tempo = 120;
+  try { const m = JSON.parse(ch.chunk); ppqn = m.ticks_per_quarter || ppqn; tempo = m.tempo_bpm || tempo; }
+  catch (_) { /* fall back to defaults */ }
+  current = {
+    ppqn, tempo, error: null, realized_spread: 0,
+    tracks: [{ name: ch.title, role: 'a', notes: ch.notes || [] }],
+  };
+  draw();
+  els.splitPos.textContent = `phrase ${splitIdx + 1} / ${splitChunks.length}`;
+  els.splitInfo.textContent =
+    `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes`;
+  els.splitPrev.disabled = splitIdx === 0;
+  els.splitNext.disabled = splitIdx === splitChunks.length - 1;
+}
+
+function stepPhrase(d) {
+  if (splitChunks.length === 0) return;
+  splitIdx = Math.min(splitChunks.length - 1, Math.max(0, splitIdx + d));
+  renderPhrase();
+}
+
+function downloadPhrase() {
+  const ch = splitChunks[splitIdx];
+  if (!ch) { capMsg('split into phrases first', true); return; }
+  saveBlob(`${ch.id}.chunk.json`, ch.chunk);
+  capMsg(`saved ${ch.id}.chunk.json · bars ${ch.bar_lo}–${ch.bar_hi}`, false);
+}
+
+function downloadAllPhrases() {
+  if (splitChunks.length === 0) { capMsg('split into phrases first', true); return; }
+  // Stagger the saves so the browser does not coalesce the rapid clicks.
+  splitChunks.forEach((ch, i) =>
+    setTimeout(() => saveBlob(`${ch.id}.chunk.json`, ch.chunk), i * 120));
+  capMsg(`saving ${splitChunks.length} phrase chunk(s)…`, false);
 }
 
 // ---- drawing ----
@@ -303,7 +394,8 @@ function bind() {
     els.varOut.textContent = (els.variation.value / 100).toFixed(2); arrange();
   });
   els.mode.addEventListener('change', arrange);
-  els.track.addEventListener('change', arrange);
+  // Phrases are track-specific: a new track invalidates the current split.
+  els.track.addEventListener('change', () => { resetSplit(); arrange(); });
   els.file.addEventListener('change', (e) => {
     const f = e.target.files && e.target.files[0];
     if (f) loadFile(f);
@@ -313,6 +405,13 @@ function bind() {
   els.stop.addEventListener('click', stop);
   els.capDetect.addEventListener('click', detectBoundaries);
   els.capDownload.addEventListener('click', downloadChunk);
+  els.capSplit.addEventListener('click', splitIntoPhrases);
+  els.splitPrev.addEventListener('click', () => stepPhrase(-1));
+  els.splitNext.addEventListener('click', () => stepPhrase(1));
+  els.splitPlay.addEventListener('click', () => { renderPhrase(); play(); });
+  els.splitStop.addEventListener('click', stop);
+  els.splitDownload.addEventListener('click', downloadPhrase);
+  els.splitDownloadAll.addEventListener('click', downloadAllPhrases);
   window.addEventListener('resize', () => draw());
 }
 

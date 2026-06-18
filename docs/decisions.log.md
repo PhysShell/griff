@@ -1229,3 +1229,25 @@ Architectural decisions go to [`adr/`](adr/) instead.
   determinism is unaffected (zip never consumes randomness on the read
   path), the lean MIDI-only wasm path still exists behind
   `default-features = false`, and ADR-0024's egui M2 plan is untouched.
+
+- 2026-06-18 — In the context of auto-split **#2b** (the web half of
+  feature #2, after the core+CLI #2a landed in PR #70), facing that the
+  browser capture tool only emitted **one chunk per whole track** while
+  `griff split` already produces **one corpus chunk per phrase**, we decided
+  to **add a single `#[wasm_bindgen] split_chunks_json` that mirrors the CLI
+  split in the browser**: it reuses core's now-public `slice::extract_bars`
+  + `split::bar_segments` and the existing web `build_chunk_meta_record`,
+  cutting the selected track at its detected phrase boundaries into one
+  `chunk.json` per sounding phrase — single-track contract, so phrases
+  silent on the detected track are dropped, never re-measured on another
+  track (the Codex P2 fix from PR #70) — with inclusive `bar_range` and
+  ids/titles suffixed `_p<N>`. The capture panel gains a phrase **pager**
+  (review), per-phrase **playback** (reusing the transport synth on each
+  phrase's rebased notes), and per-phrase / all-phrase download. Against
+  hoisting a shared `phrase_chunks` helper into core: the assembly reads
+  curate inputs that differ per front (CLI prompts vs JS string args), so
+  web mirrors the CLI exactly as `build_chunk_meta_record` already mirrors
+  `build_chunk_meta` — the *primitives* are shared via core, the *assembly*
+  is duplicated and kept in step (both fronts now test the track-consistency
+  rule). Accepted: `arrange` generation is untouched, and `web/dist` stays
+  gitignored (CI rebuilds it on deploy).

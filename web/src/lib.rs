@@ -20,6 +20,7 @@
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::ops::Range;
 
 use wasm_bindgen::prelude::*;
 
@@ -32,7 +33,8 @@ use griff_core::import::import_score_auto;
 use griff_core::score::{
     AtomEvent, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score, Track, Voice,
 };
-use griff_core::slice::TickRange;
+use griff_core::slice::{extract_bars, TickRange};
+use griff_core::split::bar_segments;
 
 use griff_core::boundary::{self, BoundaryConfig};
 use griff_core::corpus::{
@@ -643,6 +645,165 @@ fn boundaries_to_json(score: &Score, track_index: usize) -> String {
     json
 }
 
+// ── auto-split capture (#2b): one chunk.json per detected phrase ──────────────
+//
+// Mirrors the CLI's `griff split` (cmd_split/phrase_chunks/chunks_for_segments):
+// cut the selected track at its phrase boundaries, slice each segment into a
+// standalone score, and measure + stamp it as its own ChunkMeta. The browser
+// paginates the chunks for review and plays each in turn (#2b).
+
+/// Builds the split envelope `{"error":null,"chunks":[…]}` for explicit bar
+/// `segments` of `score`'s `track_index`. Each surviving segment is sliced with
+/// [`extract_bars`] and measured on that *same* detected track: a segment silent
+/// there is a phrase rest and is dropped, never re-measured on another track
+/// (`griff split` is single-track). Survivors renumber from 0; each entry
+/// carries `bar_lo`/`bar_hi` (inclusive `[start, end-1]`, like
+/// [`griff_core::corpus::SourceRef`]), its primary-voice `notes` for playback,
+/// and a download-ready pretty `chunk` (`chunk.json` text).
+#[allow(clippy::too_many_arguments)]
+fn split_segments_to_json(
+    score: &Score,
+    track_index: usize,
+    segments: &[Range<usize>],
+    id: &str,
+    title: &str,
+    filename: &str,
+    tuning: &str,
+    cohort: u32,
+    tags_idx: &str,
+    quality_idx: &str,
+    reviewer: i32,
+    rights_status: u32,
+    acquisition: u32,
+    redistributable: bool,
+    notes: &str,
+    created_at: &str,
+    updated_at: &str,
+) -> String {
+    // Slice each segment; keep only those where the detected track sounds.
+    let kept: Vec<(usize, usize, Score)> = segments
+        .iter()
+        .filter_map(|seg| {
+            let sub = extract_bars(score, seg.clone());
+            match sub.tracks.get(track_index) {
+                Some(t) if note_count(t) > 0 => Some((seg.start, seg.end, sub)),
+                _ => None,
+            }
+        })
+        .collect();
+
+    let mut json = String::from("{\"error\":null,\"chunks\":[");
+    for (phrase, (start, end, sub)) in kept.iter().enumerate() {
+        let pid = format!("{id}_p{phrase}");
+        let ptitle = format!("{title} (phrase {phrase})");
+        let mut meta = match build_chunk_meta_record(
+            sub,
+            track_index,
+            &pid,
+            &ptitle,
+            filename,
+            tuning,
+            cohort,
+            tags_idx,
+            quality_idx,
+            reviewer,
+            rights_status,
+            acquisition,
+            redistributable,
+            notes,
+            created_at,
+            updated_at,
+        ) {
+            Ok(m) => m,
+            // Unreachable for a kept (in-range, sounding) track, but surface it
+            // as an envelope rather than panicking in the browser.
+            Err(e) => return format!("{{\"error\":\"{}\",\"chunks\":[]}}", json_escape(&e)),
+        };
+        let bar_lo = u32::try_from(*start).unwrap_or(0);
+        let bar_hi = u32::try_from(end.saturating_sub(1)).unwrap_or(0);
+        meta.source.bar_range = Some((bar_lo, bar_hi));
+
+        let pretty = serde_json::to_string_pretty(&meta)
+            .unwrap_or_else(|e| format!("{{\"error\":\"serialize: {e}\"}}"));
+
+        if phrase > 0 {
+            json.push(',');
+        }
+        let _ = write!(
+            json,
+            "{{\"id\":\"{}\",\"title\":\"{}\",\"bar_lo\":{bar_lo},\"bar_hi\":{bar_hi},\"notes\":",
+            json_escape(&pid),
+            json_escape(&ptitle),
+        );
+        // `kept` guarantees the track is present and note-bearing.
+        if let Some(part) = sub.tracks.get(track_index) {
+            push_notes(&mut json, part);
+        } else {
+            json.push_str("[]");
+        }
+        let _ = write!(json, ",\"chunk\":\"{}\"}}", json_escape(&pretty));
+    }
+    json.push_str("]}");
+    json
+}
+
+/// Splits `track_index` of `score` at its detected phrase boundaries into one
+/// chunk per sounding phrase (mirrors the CLI's `phrase_chunks`). An out-of-range
+/// track or a bar-less score yields a `{"error":…,"chunks":[]}` envelope.
+#[allow(clippy::too_many_arguments)]
+fn split_to_json(
+    score: &Score,
+    track_index: usize,
+    id: &str,
+    title: &str,
+    filename: &str,
+    tuning: &str,
+    cohort: u32,
+    tags_idx: &str,
+    quality_idx: &str,
+    reviewer: i32,
+    rights_status: u32,
+    acquisition: u32,
+    redistributable: bool,
+    notes: &str,
+    created_at: &str,
+    updated_at: &str,
+) -> String {
+    if track_index >= score.tracks.len() {
+        return format!(
+            "{{\"error\":\"track {track_index} out of range (score has {} tracks)\",\"chunks\":[]}}",
+            score.tracks.len()
+        );
+    }
+    let cuts: Vec<u32> = detect_boundaries(score, track_index)
+        .iter()
+        .map(|b| b.start_tick)
+        .collect();
+    let segments = bar_segments(&score.master_bars, &cuts);
+    if segments.is_empty() {
+        return "{\"error\":\"score has no bars to split\",\"chunks\":[]}".to_owned();
+    }
+    split_segments_to_json(
+        score,
+        track_index,
+        &segments,
+        id,
+        title,
+        filename,
+        tuning,
+        cohort,
+        tags_idx,
+        quality_idx,
+        reviewer,
+        rights_status,
+        acquisition,
+        redistributable,
+        notes,
+        created_at,
+        updated_at,
+    )
+}
+
 /// Returns the swancore tag palette — the wire names of
 /// `SwancoreTag::all_variants()` in order — as a JSON array, so the capture UI's
 /// tag indices line up with what [`build_chunk_json`] parses.
@@ -703,6 +864,55 @@ pub fn build_chunk_json(
             updated_at,
         ),
         None => "{\"error\":\"no score loaded\"}".to_owned(),
+    })
+}
+
+/// Splits `track` of the loaded score into one schema-v7 `chunk.json` per
+/// detected phrase (#2b), so the capture UI can paginate the phrases for review
+/// and play each in turn. Returns
+/// `{"error":…|null,"chunks":[{id,title,bar_lo,bar_hi,notes,chunk}…]}`, where
+/// each `chunk` is a download-ready `chunk.json`. The capture inputs mirror
+/// [`build_chunk_json`] and are inherited by every phrase (ids/titles suffixed
+/// `_p<N>` / `(phrase <N>)`).
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn split_chunks_json(
+    track: u32,
+    id: &str,
+    title: &str,
+    filename: &str,
+    tuning: &str,
+    cohort: u32,
+    tags: &str,
+    quality: &str,
+    reviewer: i32,
+    rights_status: u32,
+    acquisition: u32,
+    redistributable: bool,
+    notes: &str,
+    created_at: &str,
+    updated_at: &str,
+) -> String {
+    LOADED.with(|l| match l.borrow().as_ref() {
+        Some(score) => split_to_json(
+            score,
+            track as usize,
+            id,
+            title,
+            filename,
+            tuning,
+            cohort,
+            tags,
+            quality,
+            reviewer,
+            rights_status,
+            acquisition,
+            redistributable,
+            notes,
+            created_at,
+            updated_at,
+        ),
+        None => "{\"error\":\"no score loaded\",\"chunks\":[]}".to_owned(),
     })
 }
 
@@ -1067,6 +1277,248 @@ mod tests {
                 && n.chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')),
             "snake_case palette: {names:?}"
+        );
+    }
+
+    // ── auto-split capture (#2b): one chunk.json per detected phrase ───────────
+
+    use super::{split_segments_to_json, split_to_json};
+    use griff_core::corpus::ChunkMeta;
+    use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::score::{
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, Track, Voice,
+    };
+    use griff_core::slice::TickRange;
+    use serde_json::Value;
+    use std::ops::Range;
+
+    fn quarter(start: u32, pitch: u8) -> AtomEvent {
+        AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(start),
+            duration: Ticks(480),
+            pitch: Pitch::new(pitch).expect("pitch"),
+            velocity: Velocity::new(90).expect("velocity"),
+            marks: NoteMarks::empty(),
+            position: None,
+        })
+    }
+
+    /// A voice `id` holding `atoms` (one event group each).
+    fn voice_of(id: u8, atoms: Vec<AtomEvent>) -> Voice {
+        Voice {
+            id,
+            event_groups: atoms
+                .into_iter()
+                .map(|a| EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![a],
+                    technique_spans: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// A track over explicit `voices`.
+    fn track_voices(voices: Vec<Voice>) -> Track {
+        Track {
+            name: None,
+            channel: 0,
+            voices,
+            tuning: Tuning::standard_e(),
+        }
+    }
+
+    /// A single primary-voice track holding `atoms`.
+    fn track_notes(atoms: Vec<AtomEvent>) -> Track {
+        track_voices(vec![voice_of(0, atoms)])
+    }
+
+    /// Four contiguous 4/4 bars (ticks 0..7680 at 480 PPQN) over `tracks`.
+    fn four_bar_score(tracks: Vec<Track>) -> Score {
+        let master_bars = (0..4)
+            .map(|i| {
+                let start = u32::try_from(i).unwrap_or(0) * 1920;
+                MasterBar {
+                    index: i,
+                    tick_range: TickRange::new(Ticks(start), Ticks(start + 1920)).expect("ordered"),
+                    time_signature: TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    },
+                    tempo: Tempo::new(120.0).expect("bpm"),
+                    repeat: RepeatMarker::default(),
+                }
+            })
+            .collect();
+        Score {
+            ticks_per_quarter: 480,
+            master_bars,
+            tracks,
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    /// Splits explicit `segments` with fixed capture inputs; parses the envelope.
+    fn split_segs(score: &Score, track: usize, segments: &[Range<usize>]) -> Value {
+        let json = split_segments_to_json(
+            score,
+            track,
+            segments,
+            "dgd",
+            "Riff",
+            "riff.gp5",
+            "standard_e",
+            0,
+            "",
+            "",
+            -1,
+            3,
+            0,
+            false,
+            "",
+            "2026-06-18T00:00:00Z",
+            "2026-06-18T00:00:00Z",
+        );
+        serde_json::from_str(&json).expect("split envelope is valid JSON")
+    }
+
+    /// The embedded pretty `chunk` of entry `i`, parsed back into a `ChunkMeta`.
+    fn chunk_meta(env: &Value, i: usize) -> ChunkMeta {
+        let text = env["chunks"][i]["chunk"]
+            .as_str()
+            .expect("chunk json string");
+        serde_json::from_str(text).expect("chunk is a valid ChunkMeta")
+    }
+
+    #[test]
+    fn split_segments_renumber_sounding_phrases_with_inclusive_bar_range() {
+        // One track sounding in every bar: both segments survive, renumbered.
+        let score = four_bar_score(vec![track_notes(vec![
+            quarter(0, 60),
+            quarter(1920, 62),
+            quarter(3840, 64),
+            quarter(5760, 65),
+        ])]);
+        let env = split_segs(&score, 0, &[0..2, 2..4]);
+        assert!(env["error"].is_null(), "{env}");
+        let chunks = env["chunks"].as_array().expect("array");
+        assert_eq!(chunks.len(), 2, "one chunk per sounding segment");
+
+        assert_eq!(chunks[0]["id"], "dgd_p0");
+        assert_eq!(chunks[0]["bar_lo"], 0);
+        assert_eq!(chunks[0]["bar_hi"], 1);
+        assert!(
+            !chunks[0]["notes"].as_array().expect("notes").is_empty(),
+            "phrase carries its notes for playback"
+        );
+        assert_eq!(chunks[1]["id"], "dgd_p1");
+        assert_eq!(chunks[1]["bar_lo"], 2);
+        assert_eq!(chunks[1]["bar_hi"], 3);
+
+        // The embedded chunk is a real ChunkMeta carrying the inclusive range.
+        let m0 = chunk_meta(&env, 0);
+        assert_eq!(m0.id.0, "dgd_p0");
+        assert_eq!(m0.source.bar_range, Some((0, 1)));
+    }
+
+    #[test]
+    fn split_segments_drop_phrases_silent_on_the_detected_track() {
+        // Track 0 sounds only in bars 0–1; track 1 only in bars 2–3. Splitting
+        // track 0 keeps just its sounding phrase — the [2,4) segment is a rest on
+        // track 0 and is dropped, never re-measured on track 1 (single-track).
+        let score = four_bar_score(vec![
+            track_notes(vec![quarter(0, 60), quarter(1920, 62)]),
+            track_notes(vec![quarter(3840, 48), quarter(5760, 50)]),
+        ]);
+        let env = split_segs(&score, 0, &[0..2, 2..4]);
+        let chunks = env["chunks"].as_array().expect("array");
+        assert_eq!(chunks.len(), 1, "the track-0-silent [2,4) segment is dropped");
+        assert_eq!(chunks[0]["id"], "dgd_p0");
+        assert_eq!(chunks[0]["bar_lo"], 0);
+        assert_eq!(chunks[0]["bar_hi"], 1);
+    }
+
+    #[test]
+    fn split_to_json_errors_on_out_of_range_track() {
+        let json = split_to_json(
+            &sample_part_a(),
+            99,
+            "dgd",
+            "Riff",
+            "riff.mid",
+            "standard_e",
+            0,
+            "",
+            "",
+            -1,
+            3,
+            0,
+            false,
+            "",
+            "t",
+            "t",
+        );
+        let env: Value = serde_json::from_str(&json).expect("valid json");
+        assert!(
+            env["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("out of range"),
+            "{env}"
+        );
+        assert!(env["chunks"].as_array().expect("array").is_empty());
+    }
+
+    #[test]
+    fn split_to_json_splits_the_sample_into_sounding_phrases() {
+        let json = split_to_json(
+            &sample_part_a(),
+            0,
+            "dgd",
+            "Riff",
+            "riff.mid",
+            "standard_e",
+            0,
+            "",
+            "",
+            -1,
+            3,
+            0,
+            false,
+            "",
+            "2026-06-18T00:00:00Z",
+            "2026-06-18T00:00:00Z",
+        );
+        let env: Value = serde_json::from_str(&json).expect("valid json");
+        assert!(env["error"].is_null(), "{env}");
+        let chunks = env["chunks"].as_array().expect("array");
+        assert!(!chunks.is_empty(), "at least one phrase chunk");
+        assert_eq!(chunks[0]["id"], "dgd_p0");
+        // Every emitted chunk is a manifest-readable ChunkMeta.
+        for i in 0..chunks.len() {
+            let _ = chunk_meta(&env, i);
+        }
+    }
+
+    #[test]
+    fn split_drops_a_track_sounding_only_in_a_secondary_voice() {
+        // The whole analysis stack — phrase-boundary detection, structure /
+        // gesture / complexity, and playback — reads voice 0 (the primary
+        // voice). A track whose notes live only in a secondary voice is
+        // unmeasurable, so the split treats it as a rest and drops it, matching
+        // the CLI's `primary_voice_note_count` contract. Scanning all voices
+        // here would cut phrases on voice 0 yet keep/measure them on voice 1.
+        let score = four_bar_score(vec![track_voices(vec![
+            voice_of(0, Vec::new()),
+            voice_of(1, vec![quarter(0, 60), quarter(1920, 62)]),
+        ])]);
+        let env = split_segs(&score, 0, &[0..2, 2..4]);
+        assert!(env["error"].is_null(), "{env}");
+        assert!(
+            env["chunks"].as_array().expect("array").is_empty(),
+            "a secondary-voice-only track is dropped (voice-0 analysis convention)"
         );
     }
 }

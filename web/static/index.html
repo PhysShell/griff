@@ -153,6 +153,31 @@
       </div>
       <output id="capBounds" class="hint" role="status" aria-live="polite"></output>
       <p id="capStatus" class="status muted small" role="status" aria-live="polite" aria-atomic="true"></p>
+
+      <div class="transport">
+        <button id="capSplit" type="button">✂ Split into phrases</button>
+      </div>
+      <p class="hint">
+        One <code>chunk.json</code> per detected phrase (like <code>griff split</code>),
+        cut from the selected track. Page through them, ▶ each, and download.
+      </p>
+
+      <section id="splitView" class="splitview" hidden aria-label="phrase chunks">
+        <div class="transport pager">
+          <button id="splitPrev" type="button">◀ Prev</button>
+          <output id="splitPos" class="hint">phrase 1 / 1</output>
+          <button id="splitNext" type="button">Next ▶</button>
+        </div>
+        <output id="splitInfo" class="hint" role="status" aria-live="polite"></output>
+        <div class="transport">
+          <button id="splitPlay" type="button">▶ Play phrase</button>
+          <button id="splitStop" type="button">⏹ Stop</button>
+        </div>
+        <div class="transport">
+          <button id="splitDownload" type="button" class="primary">⬇ this phrase</button>
+          <button id="splitDownloadAll" type="button">⬇ all phrases</button>
+        </div>
+      </section>
     </section>
   </main>
   <script type="module" src="./app.js"></script>

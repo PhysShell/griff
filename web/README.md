@@ -19,6 +19,11 @@ with live controls for **mode**, **seed**, **register offset**, and **pitch
 spread** (the ADR-0023 `VariationControl`, audible on the grid-locked modes).
 Deterministic: the same controls always produce the same result.
 
+It also **captures corpus chunks** from a loaded tab (ADR-0026): annotate a track
+with rights + metadata and download a `chunk.json`, or **auto-split** the track
+into one `chunk.json` per detected phrase — the browser twin of `griff split`
+(#2b) — and page through the phrases to review, play, and download each.
+
 ## Build & run locally
 
 ```sh
@@ -45,12 +50,18 @@ Two `#[wasm_bindgen]` functions, called from the generated ES module
 | --- | --- | --- |
 | `arrange` | `(mode, seed, offset, variation, track) -> String` | arrange over part A (`track<0` = built-in sample, `track>=0` = the loaded score's track) |
 | `load_score` | `(bytes: &[u8]) -> String` | parse an uploaded MIDI or Guitar Pro file, stash the score, return a track summary |
+| `tag_palette_json` | `() -> String` | the swancore tag names in wire order, so the capture UI's indices line up |
+| `detect_boundaries_json` | `(track) -> String` | preview a track's S4 phrase boundaries |
+| `build_chunk_json` | `(track, …meta) -> String` | capture a whole track as one schema-v7 `chunk.json` (ADR-0026) |
+| `split_chunks_json` | `(track, …meta) -> String` | split a track into one `chunk.json` per detected phrase (#2b) |
 
 `mode`: 0 `rhythm_lock`, 1 `register_contrast`, 2 `call_response`,
 3 `support_layer`, 4 `octave_double`, 5 `counter_melody`.
 
 Arrange JSON: `{ppqn, tempo, realized_spread, error, tracks:[{name, role, notes:[{p,s,d,v}]}]}`.
 Load summary JSON: `{error, ppqn, tempo, bars, tracks:[{i, name, notes}]}`.
+Split JSON: `{error, chunks:[{id, title, bar_lo, bar_hi, notes:[{p,s,d,v}], chunk}]}` — each
+`chunk` is a download-ready `chunk.json` (a serialized `corpus::ChunkMeta`).
 
 ## Deploy
 
@@ -62,6 +73,7 @@ Load summary JSON: `{error, ppqn, tempo, bars, tracks:[{i, name, notes}]}`.
 
 - Audio is a placeholder WebAudio synth (sawtooth + envelope, A left / B right).
   A real SoundFont (guitar tone) is a follow-up.
-- You can load your own **MIDI** or **Guitar Pro** (`.gp3/.gp4/.gp5/.gpx`) file and
-  arrange over any of its tracks. Drag-drop and in-browser corpus curation /
-  download are follow-ups.
+- You can load your own **MIDI** or **Guitar Pro** (`.gp3/.gp4/.gp5/.gpx`) file,
+  arrange over any track, and curate corpus chunks from it — capture a whole
+  track or **auto-split it into per-phrase chunks** (#2b), reviewing and playing
+  each before download. Drag-drop is a follow-up.
