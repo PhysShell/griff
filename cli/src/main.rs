@@ -21,7 +21,7 @@ use griff_core::{
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::TickRange,
-    structure, unfold,
+    structure, technique, unfold,
 };
 
 /// griff — guitar riff engine.
@@ -918,6 +918,11 @@ fn build_chunk_meta(
     let gesture = track_index.and_then(|idx| gesture::measure_gesture(score, idx).ok());
     let complexity = track_index.and_then(|idx| structure::measure_complexity(score, idx).ok());
     let boundaries = track_index.map_or_else(Vec::new, |idx| detect_boundaries(score, idx));
+    // Auto-derive techniques from the track's notation (ADR-0018): the tags
+    // merge with the curator's choices, the free-form list fills `techniques`.
+    let derived = track_index
+        .map(|idx| technique::derive_techniques(score, idx))
+        .unwrap_or_default();
 
     let now = "2026-05-20T00:00:00Z".to_owned();
     ChunkMeta {
@@ -932,9 +937,9 @@ fn build_chunk_meta(
         ticks_per_quarter: score.ticks_per_quarter,
         time_signature,
         tuning: inputs.tuning.clone(),
-        tags: inputs.tags.clone(),
+        tags: technique::merge_tags(&inputs.tags, &derived.tags),
         boundaries,
-        techniques: Vec::new(),
+        techniques: derived.names,
         quality_flags: inputs.quality_flags.clone(),
         reviewer: inputs.reviewer,
         structure,
@@ -1384,6 +1389,77 @@ mod tests {
             source_meta: None,
             loss: LossReport::new(),
         }
+    }
+
+    #[test]
+    fn build_chunk_meta_auto_fills_techniques_and_merges_tags() {
+        use super::{build_chunk_meta, CurateInputs};
+        use griff_core::corpus::{
+            Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort, SwancoreTag,
+        };
+        use griff_core::event::{NoteMark, SpanTechnique, TechniqueEvidence};
+        use griff_core::score::TechniqueSpan;
+        use std::path::Path;
+
+        // Voice 0: one pinch-harmonic note under a hammer-on span.
+        let note = AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(0),
+            duration: Ticks(480),
+            pitch: Pitch::new(60).expect("pitch"),
+            velocity: Velocity::new(90).expect("velocity"),
+            marks: NoteMarks::empty().with(NoteMark::HarmonicPinch),
+            position: None,
+        });
+        let track = track_of(vec![Voice {
+            id: 0,
+            event_groups: vec![EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![note],
+                technique_spans: vec![TechniqueSpan {
+                    technique: SpanTechnique::HammerOn,
+                    tick_range: TickRange::new(Ticks(0), Ticks(480)).expect("range"),
+                    evidence: TechniqueEvidence::explicit(),
+                }],
+            }],
+        }]);
+        let score = one_bar_score(vec![track]);
+
+        let inputs = CurateInputs {
+            id: "dgd_001".to_owned(),
+            title: "Riff".to_owned(),
+            tuning: "standard_e".to_owned(),
+            style_cohort: StyleCohort::Core,
+            tags: vec![SwancoreTag::Intro], // the curator picked one tag by hand
+            quality_flags: vec![QualityFlag::Clean],
+            reviewer: None,
+            rights: RightsInfo {
+                rights_status: RightsStatus::CopyrightedComposition,
+                acquisition: Acquisition::CommunityTabSite,
+                redistributable: false,
+                notes: String::new(),
+            },
+        };
+        let meta = build_chunk_meta(
+            &score,
+            Path::new("riff.gp5"),
+            Some(0),
+            inputs.id.clone(),
+            inputs.title.clone(),
+            &inputs,
+            None,
+        );
+
+        // `techniques` is auto-filled from the notation…
+        assert!(meta.techniques.contains(&"hammer_on".to_owned()), "{:?}", meta.techniques);
+        assert!(
+            meta.techniques.contains(&"pinch_harmonic".to_owned()),
+            "{:?}",
+            meta.techniques
+        );
+        // …and the curator's hand-picked tag survives alongside the derived ones.
+        assert!(meta.tags.contains(&SwancoreTag::Intro), "{:?}", meta.tags);
+        assert!(meta.tags.contains(&SwancoreTag::HammerOn), "{:?}", meta.tags);
+        assert!(meta.tags.contains(&SwancoreTag::ArtificialHarmonic), "{:?}", meta.tags);
     }
 
     #[test]
