@@ -1,6 +1,7 @@
 use std::{
     fmt, fs,
     io::{self, Error as IoError, Write as IoWrite},
+    ops::Range,
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -20,8 +21,8 @@ use griff_core::{
     import::{self, ImportError},
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
-    slice::TickRange,
-    structure, technique, unfold,
+    slice::{self, TickRange},
+    split, structure, technique, unfold,
 };
 
 /// griff — guitar riff engine.
@@ -141,6 +142,20 @@ enum Command {
         ensemble: bool,
     },
 
+    /// Split a MIDI or Guitar Pro file into one corpus `ChunkMeta` per detected
+    /// phrase: each chunk is a standalone bar-range slice carrying its own
+    /// measurements and `bar_range` provenance. Chunks land at
+    /// `<stem>.p<N>.chunk.json`.
+    Split {
+        /// Path to the MIDI or Guitar Pro file to split.
+        #[arg(value_name = "FILE")]
+        path: PathBuf,
+        /// Output *stem* (default: `<file>`): phrase chunks land at
+        /// `<stem>.p<N>.chunk.json`.
+        #[arg(short, long, value_name = "OUTPUT")]
+        output: Option<PathBuf>,
+    },
+
     /// Build a corpus manifest from a directory of curated `*.chunk.json` /
     /// `*.group.json` records and print a coverage summary (count toward the
     /// S7 ~100-phrase gate, cohort mix, rights, and review status).
@@ -181,6 +196,7 @@ fn run() -> Result<(), CliError> {
             output,
             ensemble,
         } => cmd_curate(&path, output.as_deref(), ensemble),
+        Command::Split { path, output } => cmd_split(&path, output.as_deref()),
         Command::Manifest { dir, output } => cmd_manifest(&dir, output.as_deref()),
     }
 }
@@ -833,6 +849,112 @@ fn curate_ensemble(
     )
 }
 
+/// Phrase-split curation: one chunk per detected phrase, each a standalone
+/// bar-range slice carrying its own measurements and `bar_range` provenance.
+fn cmd_split(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
+    let data = fs::read(path)?;
+    let score = import::import_score_auto(&data)?;
+
+    print_score_summary(path, &score);
+    // Split always curates single-track chunks, never an ensemble.
+    let inputs = gather_curate_inputs(false)?;
+    curate_phrases(path, output, &score, &inputs)
+}
+
+/// Builds one [`ChunkMeta`] per detected phrase of the first note-bearing track:
+/// phrase boundaries cut the bars into segments, each segment is sliced into a
+/// standalone score, measured, and stamped with its source `bar_range` (the
+/// original bar indices it covers).
+fn phrase_chunks(
+    path: &Path,
+    score: &Score,
+    inputs: &CurateInputs,
+) -> Result<Vec<ChunkMeta>, CliError> {
+    let track = score
+        .tracks
+        .iter()
+        .position(|t| primary_voice_note_count(t) > 0)
+        .ok_or_else(|| {
+            CliError::Split("split needs a track with notes in its primary voice".to_owned())
+        })?;
+    let cuts: Vec<u32> = detect_boundaries(score, track)
+        .iter()
+        .map(|b| b.start_tick)
+        .collect();
+    let segments = split::bar_segments(&score.master_bars, &cuts);
+    if segments.is_empty() {
+        return Err(CliError::Split("score has no bars to split".to_owned()));
+    }
+
+    Ok(chunks_for_segments(path, score, inputs, track, &segments))
+}
+
+/// Builds one [`ChunkMeta`] per segment in which `track` sounds, renumbered
+/// from 0.
+///
+/// `track` is the part chosen for boundary detection; every chunk is cut *and*
+/// measured on that same part so its boundaries and measurements describe one
+/// voice (`griff split` is single-track). A segment where `track` is silent is
+/// a rest in the phrase: it is dropped rather than re-measured on a later part
+/// that happens to have notes there, or written as a measurement-less chunk.
+/// `extract_bars` preserves track indices, so `track` addresses the same part
+/// in each slice. The stored `bar_range` is inclusive `[first, last]` — the
+/// half-open end minus one — matching [`griff_core::corpus::SourceRef`].
+fn chunks_for_segments(
+    path: &Path,
+    score: &Score,
+    inputs: &CurateInputs,
+    track: usize,
+    segments: &[Range<usize>],
+) -> Vec<ChunkMeta> {
+    segments
+        .iter()
+        .filter_map(|seg| {
+            let sub = slice::extract_bars(score, seg.clone());
+            // Stay on the detected track: a segment silent there is a phrase
+            // rest, not a cue to measure a different part.
+            if primary_voice_note_count(sub.tracks.get(track)?) == 0 {
+                return None;
+            }
+            Some((seg.start, seg.end, sub))
+        })
+        .enumerate()
+        .map(|(phrase, (start, end, sub))| {
+            let id = format!("{}_p{phrase}", inputs.id);
+            let title = format!("{} (phrase {phrase})", inputs.title);
+            let mut meta = build_chunk_meta(&sub, path, Some(track), id, title, inputs, None);
+            let last = end.saturating_sub(1);
+            meta.source.bar_range =
+                Some((u32::try_from(start).unwrap_or(0), u32::try_from(last).unwrap_or(0)));
+            meta
+        })
+        .collect()
+}
+
+/// Splits `score` into phrase chunks and writes each to `<stem>.p<N>.chunk.json`.
+fn curate_phrases(
+    path: &Path,
+    output: Option<&Path>,
+    score: &Score,
+    inputs: &CurateInputs,
+) -> Result<(), CliError> {
+    let chunks = phrase_chunks(path, score, inputs)?;
+    let stem = output.map_or_else(|| path.with_extension(""), Path::to_path_buf);
+
+    for (phrase, meta) in chunks.iter().enumerate() {
+        let (lo, hi) = meta.source.bar_range.unwrap_or((0, 0));
+        println!("phrase {phrase} (bars {lo}..{hi}):");
+        print_measurements(meta);
+        let json = serde_json::to_string_pretty(meta).map_err(CliError::Json)?;
+        write_output(
+            &PathBuf::from(format!("{}.p{phrase}.chunk.json", stem.display())),
+            &json,
+        )?;
+    }
+    println!("split into {} phrase chunk(s)", chunks.len());
+    Ok(())
+}
+
 /// Measured pairwise relation axes over the group's parts, ordered by
 /// `(a, b)` part indices (axes read *b relative to a*).
 ///
@@ -1233,6 +1355,7 @@ enum CliError {
     Json(serde_json::Error),
     Argument(String),
     Ensemble(String),
+    Split(String),
     Generate(generate::GenerationError),
     Complement(complement::ComplementError),
 }
@@ -1246,6 +1369,7 @@ impl fmt::Display for CliError {
             Self::Json(e) => write!(f, "JSON error: {e}"),
             Self::Argument(msg) => write!(f, "argument error: {msg}"),
             Self::Ensemble(msg) => write!(f, "ensemble error: {msg}"),
+            Self::Split(msg) => write!(f, "split error: {msg}"),
             Self::Generate(e) => write!(f, "generation error: {e:?}"),
             Self::Complement(e) => write!(f, "complement error: {e:?}"),
         }
@@ -1479,6 +1603,152 @@ mod tests {
 
         let measurable = track_of(vec![voice_of(0, vec![quarter(0, 60)])]);
         assert_eq!(primary_voice_note_count(&measurable), 1);
+    }
+
+    /// One 4/4 bar with explicit bounds (no arithmetic in the fixture).
+    fn mbar(index: usize, start: u32, end: u32) -> MasterBar {
+        MasterBar {
+            index,
+            tick_range: TickRange::new(Ticks(start), Ticks(end)).expect("ordered"),
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            tempo: Tempo::new(120.0).expect("bpm"),
+            repeat: RepeatMarker::default(),
+        }
+    }
+
+    /// Four contiguous 4/4 bars spanning ticks 0..7680.
+    fn split_master_bars() -> Vec<MasterBar> {
+        vec![
+            mbar(0, 0, 1920),
+            mbar(1, 1920, 3840),
+            mbar(2, 3840, 5760),
+            mbar(3, 5760, 7680),
+        ]
+    }
+
+    /// Single-track curation inputs with id `dgd`.
+    fn split_inputs() -> super::CurateInputs {
+        use griff_core::corpus::{Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort};
+        super::CurateInputs {
+            id: "dgd".to_owned(),
+            title: "Riff".to_owned(),
+            tuning: "standard_e".to_owned(),
+            style_cohort: StyleCohort::Core,
+            tags: Vec::new(),
+            quality_flags: vec![QualityFlag::Clean],
+            reviewer: None,
+            rights: RightsInfo {
+                rights_status: RightsStatus::CopyrightedComposition,
+                acquisition: Acquisition::CommunityTabSite,
+                redistributable: false,
+                notes: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn phrase_chunks_tile_the_bars_with_inclusive_bar_range_and_ids() {
+        use super::phrase_chunks;
+        use std::path::Path;
+
+        // Four bars, a note on each downbeat.
+        let voice = voice_of(
+            0,
+            vec![quarter(0, 60), quarter(1920, 62), quarter(3840, 64), quarter(5760, 65)],
+        );
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: split_master_bars(),
+            tracks: vec![track_of(vec![voice])],
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        let chunks =
+            phrase_chunks(Path::new("riff.gp5"), &score, &split_inputs()).expect("splits");
+        assert!(!chunks.is_empty(), "at least one phrase chunk");
+
+        // Whatever the detector decides, the chunks tile the four bars with
+        // inclusive `[first, last]` ranges, each id suffixed by its phrase index.
+        let mut next = 0_u32;
+        for (i, chunk) in chunks.iter().enumerate() {
+            let (lo, hi) = chunk.source.bar_range.expect("bar_range set");
+            assert_eq!(lo, next, "first bar follows the previous chunk's last + 1");
+            assert!(hi >= lo, "inclusive last bar is at least the first");
+            assert_eq!(chunk.id.0, format!("dgd_p{i}"));
+            next = hi.saturating_add(1);
+        }
+        assert_eq!(next, 4, "inclusive ranges cover all four bars");
+    }
+
+    #[test]
+    fn chunks_for_segments_skips_silent_and_uses_inclusive_bar_range() {
+        use super::chunks_for_segments;
+        use std::path::Path;
+
+        // Notes only in bars 0–1; bars 2–3 are silent.
+        let voice = voice_of(0, vec![quarter(0, 60), quarter(1920, 62)]);
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: split_master_bars(),
+            tracks: vec![track_of(vec![voice])],
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        // A sounding [0,2) segment and a silent [2,4) one.
+        let chunks =
+            chunks_for_segments(Path::new("riff.gp5"), &score, &split_inputs(), 0, &[0..2, 2..4]);
+        assert_eq!(chunks.len(), 1, "the silent [2,4) segment is dropped");
+        assert_eq!(
+            chunks[0].source.bar_range,
+            Some((0, 1)),
+            "inclusive last bar is end-1, not the half-open end"
+        );
+        assert_eq!(chunks[0].id.0, "dgd_p0", "kept chunks renumber from 0");
+    }
+
+    #[test]
+    fn chunks_for_segments_stays_on_the_detected_track() {
+        use super::chunks_for_segments;
+        use std::path::Path;
+
+        // Track 0 — the boundary-detection track — sounds only in bars 0–1; a
+        // second track sounds only in bars 2–3. `griff split` cuts single-track
+        // chunks from the detected track, so the [2,4) segment, silent on that
+        // track, is a rest in this phrase and must be dropped rather than
+        // re-measured on the later track that happens to have notes there.
+        let detected = track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(1920, 62)])]);
+        let other = track_of(vec![voice_of(0, vec![quarter(3840, 48), quarter(5760, 50)])]);
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: split_master_bars(),
+            tracks: vec![detected, other],
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        let chunks = chunks_for_segments(
+            Path::new("riff.gp5"),
+            &score,
+            &split_inputs(),
+            0,
+            &[0..2, 2..4],
+        );
+        assert_eq!(
+            chunks.len(),
+            1,
+            "the [2,4) segment is silent on the detected track and is dropped, \
+             even though a later track has notes there"
+        );
+        assert_eq!(
+            chunks[0].source.bar_range,
+            Some((0, 1)),
+            "the kept chunk is the detected track's sounding bars 0–1"
+        );
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub mod score;
 pub mod scoring;
 pub mod similarity;
 pub mod slice;
+pub mod split;
 pub mod structure;
 pub mod technique;
 pub mod unfold;
