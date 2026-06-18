@@ -1304,24 +1304,34 @@ mod tests {
         })
     }
 
-    /// A single-voice track holding `atoms` (one event group each).
-    fn track_notes(atoms: Vec<AtomEvent>) -> Track {
+    /// A voice `id` holding `atoms` (one event group each).
+    fn voice_of(id: u8, atoms: Vec<AtomEvent>) -> Voice {
+        Voice {
+            id,
+            event_groups: atoms
+                .into_iter()
+                .map(|a| EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![a],
+                    technique_spans: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// A track over explicit `voices`.
+    fn track_voices(voices: Vec<Voice>) -> Track {
         Track {
             name: None,
             channel: 0,
-            voices: vec![Voice {
-                id: 0,
-                event_groups: atoms
-                    .into_iter()
-                    .map(|a| EventGroup {
-                        kind: EventGroupKind::Single,
-                        atoms: vec![a],
-                        technique_spans: Vec::new(),
-                    })
-                    .collect(),
-            }],
+            voices,
             tuning: Tuning::standard_e(),
         }
+    }
+
+    /// A single primary-voice track holding `atoms`.
+    fn track_notes(atoms: Vec<AtomEvent>) -> Track {
+        track_voices(vec![voice_of(0, atoms)])
     }
 
     /// Four contiguous 4/4 bars (ticks 0..7680 at 480 PPQN) over `tracks`.
@@ -1490,5 +1500,25 @@ mod tests {
         for i in 0..chunks.len() {
             let _ = chunk_meta(&env, i);
         }
+    }
+
+    #[test]
+    fn split_drops_a_track_sounding_only_in_a_secondary_voice() {
+        // The whole analysis stack — phrase-boundary detection, structure /
+        // gesture / complexity, and playback — reads voice 0 (the primary
+        // voice). A track whose notes live only in a secondary voice is
+        // unmeasurable, so the split treats it as a rest and drops it, matching
+        // the CLI's `primary_voice_note_count` contract. Scanning all voices
+        // here would cut phrases on voice 0 yet keep/measure them on voice 1.
+        let score = four_bar_score(vec![track_voices(vec![
+            voice_of(0, Vec::new()),
+            voice_of(1, vec![quarter(0, 60), quarter(1920, 62)]),
+        ])]);
+        let env = split_segs(&score, 0, &[0..2, 2..4]);
+        assert!(env["error"].is_null(), "{env}");
+        assert!(
+            env["chunks"].as_array().expect("array").is_empty(),
+            "a secondary-voice-only track is dropped (voice-0 analysis convention)"
+        );
     }
 }
