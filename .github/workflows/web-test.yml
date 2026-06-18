@@ -1,0 +1,26 @@
+# Runs the web front-end's JS unit tests (node:test) on PRs and on main.
+# The playground is static ES modules; its pure logic (e.g. the debug-log ring
+# buffer) is unit-tested here without a browser or the wasm build. Rust/WASM
+# building and the Pages deploy live in web.yml.
+name: web-test
+on:
+  pull_request:
+    paths:
+      - 'web/**'
+      - '.github/workflows/web-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/web-test.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run JS unit tests
+        working-directory: web
+        run: npm test
