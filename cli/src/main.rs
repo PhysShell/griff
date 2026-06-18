@@ -1,6 +1,7 @@
 use std::{
     fmt, fs,
     io::{self, Error as IoError, Write as IoWrite},
+    ops::Range,
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -855,6 +856,7 @@ fn cmd_split(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
     let score = import::import_score_auto(&data)?;
 
     print_score_summary(path, &score);
+    // Split always curates single-track chunks, never an ensemble.
     let inputs = gather_curate_inputs(false)?;
     curate_phrases(path, output, &score, &inputs)
 }
@@ -884,24 +886,42 @@ fn phrase_chunks(
         return Err(CliError::Split("score has no bars to split".to_owned()));
     }
 
-    Ok(segments
-        .into_iter()
-        .enumerate()
-        .map(|(phrase, seg)| {
-            let (start, end) = (seg.start, seg.end);
-            let sub = slice::extract_bars(score, seg);
+    Ok(chunks_for_segments(path, score, inputs, &segments))
+}
+
+/// Builds one [`ChunkMeta`] per non-silent segment, renumbered from 0.
+///
+/// A segment whose slice has no note-bearing track is dropped rather than
+/// written as a silent, measurement-less chunk. The stored `bar_range` is
+/// inclusive `[first, last]` — the half-open end minus one — matching
+/// [`griff_core::corpus::SourceRef`].
+fn chunks_for_segments(
+    path: &Path,
+    score: &Score,
+    inputs: &CurateInputs,
+    segments: &[Range<usize>],
+) -> Vec<ChunkMeta> {
+    segments
+        .iter()
+        .filter_map(|seg| {
+            let sub = slice::extract_bars(score, seg.clone());
             let measured = sub
                 .tracks
                 .iter()
-                .position(|t| primary_voice_note_count(t) > 0);
+                .position(|t| primary_voice_note_count(t) > 0)?;
+            Some((seg.start, seg.end, sub, measured))
+        })
+        .enumerate()
+        .map(|(phrase, (start, end, sub, measured))| {
             let id = format!("{}_p{phrase}", inputs.id);
             let title = format!("{} (phrase {phrase})", inputs.title);
-            let mut meta = build_chunk_meta(&sub, path, measured, id, title, inputs, None);
+            let mut meta = build_chunk_meta(&sub, path, Some(measured), id, title, inputs, None);
+            let last = end.saturating_sub(1);
             meta.source.bar_range =
-                Some((u32::try_from(start).unwrap_or(0), u32::try_from(end).unwrap_or(0)));
+                Some((u32::try_from(start).unwrap_or(0), u32::try_from(last).unwrap_or(0)));
             meta
         })
-        .collect())
+        .collect()
 }
 
 /// Splits `score` into phrase chunks and writes each to `<stem>.p<N>.chunk.json`.
