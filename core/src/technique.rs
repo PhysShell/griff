@@ -149,3 +149,19 @@ pub fn derive_techniques(score: &Score, track_index: usize) -> DerivedTechniques
     }
     DerivedTechniques { tags, names }
 }
+
+/// Unions curator-chosen tags with derived ones.
+///
+/// The chosen order is kept, then any derived tag not already present is
+/// appended — so auto-derivation *adds* technique tags without overriding or
+/// reordering the curator's choices. Stable and idempotent.
+#[must_use]
+pub fn merge_tags(chosen: &[SwancoreTag], derived: &[SwancoreTag]) -> Vec<SwancoreTag> {
+    let mut out = chosen.to_vec();
+    for &tag in derived {
+        if !out.contains(&tag) {
+            out.push(tag);
+        }
+    }
+    out
+}

@@ -20,7 +20,7 @@ use griff_core::score::{
     AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, Score, TechniqueSpan, Track, Voice,
 };
 use griff_core::slice::TickRange;
-use griff_core::technique::{derive_techniques, DerivedTechniques};
+use griff_core::technique::{derive_techniques, merge_tags, DerivedTechniques};
 
 /// A one-track score whose single note carries `marks` and whose group carries
 /// `spans` — the minimal shape `derive_techniques` scans.
@@ -107,6 +107,20 @@ fn empty_for_plain_notes_and_out_of_range_track() {
     let plain = score_with(&[], NoteMarks::empty());
     assert_eq!(derive_techniques(&plain, 0), DerivedTechniques::default());
     assert_eq!(derive_techniques(&plain, 9), DerivedTechniques::default());
+}
+
+#[test]
+fn merge_tags_keeps_chosen_order_and_appends_only_new_derived() {
+    let chosen = [SwancoreTag::Intro, SwancoreTag::HammerOn];
+    let derived = [SwancoreTag::HammerOn, SwancoreTag::PalmMute];
+    // HammerOn was already chosen → not duplicated; PalmMute is appended.
+    assert_eq!(
+        merge_tags(&chosen, &derived),
+        vec![SwancoreTag::Intro, SwancoreTag::HammerOn, SwancoreTag::PalmMute]
+    );
+    // Idempotent: merging the result again changes nothing.
+    let once = merge_tags(&chosen, &derived);
+    assert_eq!(merge_tags(&once, &derived), once);
 }
 
 #[test]
