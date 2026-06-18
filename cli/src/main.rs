@@ -886,7 +886,7 @@ fn phrase_chunks(
         return Err(CliError::Split("score has no bars to split".to_owned()));
     }
 
-    Ok(chunks_for_segments(path, score, inputs, &segments))
+    Ok(chunks_for_segments(path, score, inputs, track, &segments))
 }
 
 /// Builds one [`ChunkMeta`] per non-silent segment, renumbered from 0.
@@ -899,6 +899,7 @@ fn chunks_for_segments(
     path: &Path,
     score: &Score,
     inputs: &CurateInputs,
+    _track: usize,
     segments: &[Range<usize>],
 ) -> Vec<ChunkMeta> {
     segments
@@ -1694,7 +1695,7 @@ mod tests {
 
         // A sounding [0,2) segment and a silent [2,4) one.
         let chunks =
-            chunks_for_segments(Path::new("riff.gp5"), &score, &split_inputs(), &[0..2, 2..4]);
+            chunks_for_segments(Path::new("riff.gp5"), &score, &split_inputs(), 0, &[0..2, 2..4]);
         assert_eq!(chunks.len(), 1, "the silent [2,4) segment is dropped");
         assert_eq!(
             chunks[0].source.bar_range,
@@ -1702,6 +1703,46 @@ mod tests {
             "inclusive last bar is end-1, not the half-open end"
         );
         assert_eq!(chunks[0].id.0, "dgd_p0", "kept chunks renumber from 0");
+    }
+
+    #[test]
+    fn chunks_for_segments_stays_on_the_detected_track() {
+        use super::chunks_for_segments;
+        use std::path::Path;
+
+        // Track 0 — the boundary-detection track — sounds only in bars 0–1; a
+        // second track sounds only in bars 2–3. `griff split` cuts single-track
+        // chunks from the detected track, so the [2,4) segment, silent on that
+        // track, is a rest in this phrase and must be dropped rather than
+        // re-measured on the later track that happens to have notes there.
+        let detected = track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(1920, 62)])]);
+        let other = track_of(vec![voice_of(0, vec![quarter(3840, 48), quarter(5760, 50)])]);
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: split_master_bars(),
+            tracks: vec![detected, other],
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        let chunks = chunks_for_segments(
+            Path::new("riff.gp5"),
+            &score,
+            &split_inputs(),
+            0,
+            &[0..2, 2..4],
+        );
+        assert_eq!(
+            chunks.len(),
+            1,
+            "the [2,4) segment is silent on the detected track and is dropped, \
+             even though a later track has notes there"
+        );
+        assert_eq!(
+            chunks[0].source.bar_range,
+            Some((0, 1)),
+            "the kept chunk is the detected track's sounding bars 0–1"
+        );
     }
 
     #[test]
