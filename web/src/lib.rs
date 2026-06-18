@@ -39,7 +39,7 @@ use griff_core::corpus::{
     Acquisition, BoundaryEntry, ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, RightsInfo,
     RightsStatus, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
 };
-use griff_core::{gesture, structure};
+use griff_core::{gesture, structure, technique};
 
 const PPQN: u16 = 480;
 const BAR: u32 = 1920; // 4/4 at 480 PPQN
@@ -514,7 +514,11 @@ fn build_chunk_meta_record(
     } else {
         tuning.trim().to_owned()
     };
-    let tags = parse_indices(tags_idx, SwancoreTag::all_variants());
+    let chosen_tags = parse_indices(tags_idx, SwancoreTag::all_variants());
+    // Fold in techniques the notation already states (ADR-0018): merge their
+    // tags with the curator's choices, fill the free-form `techniques` list.
+    let derived = technique::derive_techniques(score, track_index);
+    let tags = technique::merge_tags(&chosen_tags, &derived.tags);
     let all_flags = [
         QualityFlag::Clean,
         QualityFlag::Lossy,
@@ -546,7 +550,7 @@ fn build_chunk_meta_record(
         tuning,
         tags,
         boundaries: detect_boundaries(score, track_index),
-        techniques: Vec::new(),
+        techniques: derived.names,
         quality_flags,
         reviewer: reviewer_from(reviewer),
         structure: structure::measure_structure(score, track_index).ok(),
@@ -908,6 +912,54 @@ mod tests {
         let json = serde_json::to_string_pretty(&meta).expect("serialize");
         let back: ChunkMeta = serde_json::from_str(&json).expect("griff manifest can read it");
         assert_eq!(back, meta);
+    }
+
+    #[test]
+    fn build_chunk_record_auto_fills_techniques_from_notation() {
+        use griff_core::corpus::SwancoreTag;
+        use griff_core::event::{NoteMark, SpanTechnique, TechniqueEvidence, Ticks};
+        use griff_core::score::{AtomEvent, TechniqueSpan};
+        use griff_core::slice::TickRange;
+
+        // Inject a hammer-on span + a pinch-harmonic note into the sample's voice 0.
+        let mut score = sample_part_a();
+        let group = score
+            .tracks
+            .first_mut()
+            .expect("track")
+            .voices
+            .first_mut()
+            .expect("voice")
+            .event_groups
+            .first_mut()
+            .expect("group");
+        group.technique_spans.push(TechniqueSpan {
+            technique: SpanTechnique::HammerOn,
+            tick_range: TickRange::new(Ticks(0), Ticks(240)).expect("range"),
+            evidence: TechniqueEvidence::explicit(),
+        });
+        if let AtomEvent::Note(n) = group.atoms.first_mut().expect("atom") {
+            n.marks.insert(NoteMark::HarmonicPinch);
+        }
+
+        // The curator hand-picks only "intro" (index 21); derivation adds the rest.
+        let meta = build_chunk_meta_record(
+            &score, 0, "dgd_001", "Riff", "riff.gp5", "standard_e", 0, "21", "", -1, 3, 0,
+            false, "", "t", "t",
+        )
+        .expect("record builds");
+
+        // `techniques` filled from notation (superset includes the pinch harmonic).
+        assert!(meta.techniques.contains(&"hammer_on".to_owned()), "{:?}", meta.techniques);
+        assert!(
+            meta.techniques.contains(&"pinch_harmonic".to_owned()),
+            "{:?}",
+            meta.techniques
+        );
+        // Curator's chosen tag survives; derived technique tags are merged in.
+        assert!(meta.tags.contains(&SwancoreTag::Intro), "chosen tag kept: {:?}", meta.tags);
+        assert!(meta.tags.contains(&SwancoreTag::HammerOn), "{:?}", meta.tags);
+        assert!(meta.tags.contains(&SwancoreTag::ArtificialHarmonic), "{:?}", meta.tags);
     }
 
     #[test]
