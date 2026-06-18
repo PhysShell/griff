@@ -6,6 +6,11 @@
 // `max`  — keep at most this many lines (oldest dropped) so the buffer is bounded.
 // `now`  — clock injection point; tests pass a fixed Date for deterministic stamps.
 export function createDebugLog({ max = 400, now = () => new Date() } = {}) {
+  // A non-positive max would make slice(-max) a no-op (slice(-0) === whole
+  // array), silently disabling the bound — reject it so the ring stays bounded.
+  if (!Number.isInteger(max) || max < 1) {
+    throw new RangeError('createDebugLog: `max` must be a positive integer');
+  }
   let lines = [];
 
   // One line: "HH:MM:SS  label {json}". `data` is optional and JSON-stringified;

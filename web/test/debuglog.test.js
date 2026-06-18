@@ -40,6 +40,11 @@ test('the buffer is bounded to max, dropping the oldest lines', () => {
   assert.deepEqual(log.lines().map((l) => l.split('  ')[1]), ['e2', 'e3', 'e4']);
 });
 
+test('rejects a non-positive max so the ring stays bounded', () => {
+  assert.throws(() => createDebugLog({ max: 0 }), RangeError);
+  assert.throws(() => createDebugLog({ max: -5 }), RangeError);
+});
+
 test('unserializable data is flagged, not thrown', () => {
   const log = createDebugLog({ now: at(0, 0, 0) });
   const circular = {};

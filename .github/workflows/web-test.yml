@@ -16,8 +16,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Least privilege: this job only checks out and runs tests, never writes.
+    permissions:
+      contents: read
     steps:
+      # persist-credentials: false — `npm test` runs PR-authored code, so don't
+      # leave the token in .git/config for it to read (zizmor: artipacked).
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
