@@ -108,3 +108,34 @@ fn empty_for_plain_notes_and_out_of_range_track() {
     assert_eq!(derive_techniques(&plain, 0), DerivedTechniques::default());
     assert_eq!(derive_techniques(&plain, 9), DerivedTechniques::default());
 }
+
+#[test]
+fn reads_the_primary_voice_only_like_other_measures() {
+    // A technique living only in a secondary voice (voice 1) is ignored:
+    // structure/gesture/boundaries all read voice 0, so derivation must agree.
+    let mut score = score_with(&[], NoteMarks::empty()); // voice 0: plain note
+    score.tracks[0].voices.push(Voice {
+        id: 1,
+        event_groups: vec![EventGroup {
+            kind: EventGroupKind::Single,
+            atoms: vec![AtomEvent::Note(AtomNote {
+                absolute_start: Ticks(0),
+                duration: Ticks(480),
+                pitch: Pitch(60),
+                velocity: Velocity(90),
+                marks: NoteMarks::empty().with(NoteMark::HarmonicPinch),
+                position: None,
+            })],
+            technique_spans: vec![TechniqueSpan {
+                technique: SpanTechnique::PalmMute,
+                tick_range: TickRange::new(Ticks(0), Ticks(480)).expect("ordered range"),
+                evidence: TechniqueEvidence::explicit(),
+            }],
+        }],
+    });
+    assert_eq!(
+        derive_techniques(&score, 0),
+        DerivedTechniques::default(),
+        "secondary-voice techniques are not derived"
+    );
+}
