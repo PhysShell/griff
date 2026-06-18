@@ -94,18 +94,20 @@
         </select>
       </label>
 
-      <label>Tags <span class="hint">tap to multi-select</span>
-        <select id="capTags" multiple size="6"></select>
-      </label>
+      <fieldset class="checks">
+        <legend>Tags <span class="hint">pick all that apply</span></legend>
+        <div id="capTags" class="checkgrid"></div>
+      </fieldset>
 
-      <label>Quality flags
-        <select id="capQuality" multiple size="4">
-          <option value="0" selected>clean</option>
-          <option value="1">lossy</option>
-          <option value="2">quantized</option>
-          <option value="3">flat_dynamics</option>
-        </select>
-      </label>
+      <fieldset class="checks">
+        <legend>Quality flags</legend>
+        <div id="capQuality" class="checkgrid">
+          <label><input type="checkbox" value="0" checked /> clean</label>
+          <label><input type="checkbox" value="1" /> lossy</label>
+          <label><input type="checkbox" value="2" /> quantized</label>
+          <label><input type="checkbox" value="3" /> flat_dynamics</label>
+        </div>
+      </fieldset>
 
       <label>Reviewer decision
         <select id="capReviewer">

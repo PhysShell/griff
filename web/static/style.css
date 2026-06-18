@@ -120,8 +120,36 @@ h2 { font-size: 1.05rem; margin: 0 0 0.1rem; }
   font-size: 1rem;
 }
 .capture textarea { resize: vertical; min-height: 2.4em; }
-.capture select[multiple] { padding: 6px; }
-.capture select[multiple] option { padding: 6px 4px; border-radius: 6px; }
+/* Checkbox groups (tags, quality flags) — clearer than <select multiple>,
+   which needs Ctrl/Cmd-click on desktop and wipes the picks on a plain click. */
+.capture .checks {
+  margin: 0;
+  min-inline-size: 0;
+  border: 1px solid #2a3146;
+  border-radius: 10px;
+  padding: 8px 12px 10px;
+}
+.capture .checks legend { padding: 0 6px; color: var(--muted); font-size: 0.9rem; }
+.checkgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 2px 12px;
+}
+.checkgrid label {
+  display: flex;
+  flex-flow: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  padding: 6px 2px;
+  cursor: pointer;
+}
+.checkgrid input[type="checkbox"] {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
 label.row { flex-flow: row; display: flex; align-items: center; gap: 10px; color: var(--ink); }
 label.row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent); }
 #capBounds { display: block; margin: 2px; min-height: 1em; }
