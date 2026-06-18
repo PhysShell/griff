@@ -124,9 +124,10 @@ fn merge_tags_keeps_chosen_order_and_appends_only_new_derived() {
 }
 
 #[test]
-fn reads_the_primary_voice_only_like_other_measures() {
-    // A technique living only in a secondary voice (voice 1) is ignored:
-    // structure/gesture/boundaries all read voice 0, so derivation must agree.
+fn derives_from_all_voices_like_structure_measures() {
+    // A technique in a secondary voice (voice 1) IS derived: structure and
+    // complexity (track_notes/technique_share) measure the track as a whole, so
+    // technique metadata must not omit it (Codex P2 on PR #69; cf. PR #38).
     let mut score = score_with(&[], NoteMarks::empty()); // voice 0: plain note
     score.tracks[0].voices.push(Voice {
         id: 1,
@@ -147,9 +148,13 @@ fn reads_the_primary_voice_only_like_other_measures() {
             }],
         }],
     });
-    assert_eq!(
-        derive_techniques(&score, 0),
-        DerivedTechniques::default(),
-        "secondary-voice techniques are not derived"
+    let d = derive_techniques(&score, 0);
+    assert!(d.tags.contains(&SwancoreTag::PalmMute), "secondary-voice span: {:?}", d.tags);
+    assert!(
+        d.tags.contains(&SwancoreTag::ArtificialHarmonic),
+        "secondary-voice mark: {:?}",
+        d.tags
     );
+    assert!(d.names.contains(&"palm_mute".to_owned()));
+    assert!(d.names.contains(&"pinch_harmonic".to_owned()));
 }

@@ -99,10 +99,11 @@ const fn mark_tag(m: NoteMark) -> Option<SwancoreTag> {
     }
 }
 
-/// Derives the techniques present in `track_index`'s primary voice.
+/// Derives the techniques present in `track_index`.
 ///
-/// Reads voice 0 only — the convention every other curation measure follows —
-/// so the derived techniques describe the same part the chunk measures. Empty
+/// Scans every voice, matching `track_notes`/`technique_share`, which measure a
+/// track as a whole (some importers split one track into several voices) — so
+/// the `techniques` metadata can't disagree with the technical metric. Empty
 /// when the index is out of range.
 #[must_use]
 pub fn derive_techniques(score: &Score, track_index: usize) -> DerivedTechniques {
@@ -110,11 +111,11 @@ pub fn derive_techniques(score: &Score, track_index: usize) -> DerivedTechniques
         return DerivedTechniques::default();
     };
 
-    // Voice 0 only — the convention structure/gesture/boundaries also follow,
-    // so a chunk's derived techniques describe the same part they measure.
+    // Every voice — like track_notes/technique_share, which measure a track as a
+    // whole (some importers split one track into several voices).
     let mut spans: BTreeSet<SpanTechnique> = BTreeSet::new();
     let mut marks: BTreeSet<NoteMark> = BTreeSet::new();
-    if let Some(voice) = track.voices.first() {
+    for voice in &track.voices {
         for group in &voice.event_groups {
             for span in &group.technique_spans {
                 spans.insert(span.technique);
