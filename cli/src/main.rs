@@ -889,34 +889,40 @@ fn phrase_chunks(
     Ok(chunks_for_segments(path, score, inputs, track, &segments))
 }
 
-/// Builds one [`ChunkMeta`] per non-silent segment, renumbered from 0.
+/// Builds one [`ChunkMeta`] per segment in which `track` sounds, renumbered
+/// from 0.
 ///
-/// A segment whose slice has no note-bearing track is dropped rather than
-/// written as a silent, measurement-less chunk. The stored `bar_range` is
-/// inclusive `[first, last]` — the half-open end minus one — matching
-/// [`griff_core::corpus::SourceRef`].
+/// `track` is the part chosen for boundary detection; every chunk is cut *and*
+/// measured on that same part so its boundaries and measurements describe one
+/// voice (`griff split` is single-track). A segment where `track` is silent is
+/// a rest in the phrase: it is dropped rather than re-measured on a later part
+/// that happens to have notes there, or written as a measurement-less chunk.
+/// `extract_bars` preserves track indices, so `track` addresses the same part
+/// in each slice. The stored `bar_range` is inclusive `[first, last]` — the
+/// half-open end minus one — matching [`griff_core::corpus::SourceRef`].
 fn chunks_for_segments(
     path: &Path,
     score: &Score,
     inputs: &CurateInputs,
-    _track: usize,
+    track: usize,
     segments: &[Range<usize>],
 ) -> Vec<ChunkMeta> {
     segments
         .iter()
         .filter_map(|seg| {
             let sub = slice::extract_bars(score, seg.clone());
-            let measured = sub
-                .tracks
-                .iter()
-                .position(|t| primary_voice_note_count(t) > 0)?;
-            Some((seg.start, seg.end, sub, measured))
+            // Stay on the detected track: a segment silent there is a phrase
+            // rest, not a cue to measure a different part.
+            if primary_voice_note_count(sub.tracks.get(track)?) == 0 {
+                return None;
+            }
+            Some((seg.start, seg.end, sub))
         })
         .enumerate()
-        .map(|(phrase, (start, end, sub, measured))| {
+        .map(|(phrase, (start, end, sub))| {
             let id = format!("{}_p{phrase}", inputs.id);
             let title = format!("{} (phrase {phrase})", inputs.title);
-            let mut meta = build_chunk_meta(&sub, path, Some(measured), id, title, inputs, None);
+            let mut meta = build_chunk_meta(&sub, path, Some(track), id, title, inputs, None);
             let last = end.saturating_sub(1);
             meta.source.bar_range =
                 Some((u32::try_from(start).unwrap_or(0), u32::try_from(last).unwrap_or(0)));
