@@ -33,7 +33,8 @@ use griff_core::import::import_score_auto;
 use griff_core::score::{
     AtomEvent, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score, Track, Voice,
 };
-use griff_core::slice::TickRange;
+use griff_core::slice::{extract_bars, TickRange};
+use griff_core::split::bar_segments;
 
 use griff_core::boundary::{self, BoundaryConfig};
 use griff_core::corpus::{
@@ -651,9 +652,15 @@ fn boundaries_to_json(score: &Score, track_index: usize) -> String {
 // standalone score, and measure + stamp it as its own ChunkMeta. The browser
 // paginates the chunks for review and plays each in turn (#2b).
 
-/// (stub — replaced in the green step.) Builds the split envelope for explicit
-/// bar `segments` of `score`'s `track_index`.
-#[allow(unused_variables, clippy::too_many_arguments)]
+/// Builds the split envelope `{"error":null,"chunks":[…]}` for explicit bar
+/// `segments` of `score`'s `track_index`. Each surviving segment is sliced with
+/// [`extract_bars`] and measured on that *same* detected track: a segment silent
+/// there is a phrase rest and is dropped, never re-measured on another track
+/// (`griff split` is single-track). Survivors renumber from 0; each entry
+/// carries `bar_lo`/`bar_hi` (inclusive `[start, end-1]`, like
+/// [`griff_core::corpus::SourceRef`]), its primary-voice `notes` for playback,
+/// and a download-ready pretty `chunk` (`chunk.json` text).
+#[allow(clippy::too_many_arguments)]
 fn split_segments_to_json(
     score: &Score,
     track_index: usize,
@@ -673,12 +680,77 @@ fn split_segments_to_json(
     created_at: &str,
     updated_at: &str,
 ) -> String {
-    String::from("{\"error\":null,\"chunks\":[]}")
+    // Slice each segment; keep only those where the detected track sounds.
+    let kept: Vec<(usize, usize, Score)> = segments
+        .iter()
+        .filter_map(|seg| {
+            let sub = extract_bars(score, seg.clone());
+            match sub.tracks.get(track_index) {
+                Some(t) if note_count(t) > 0 => Some((seg.start, seg.end, sub)),
+                _ => None,
+            }
+        })
+        .collect();
+
+    let mut json = String::from("{\"error\":null,\"chunks\":[");
+    for (phrase, (start, end, sub)) in kept.iter().enumerate() {
+        let pid = format!("{id}_p{phrase}");
+        let ptitle = format!("{title} (phrase {phrase})");
+        let mut meta = match build_chunk_meta_record(
+            sub,
+            track_index,
+            &pid,
+            &ptitle,
+            filename,
+            tuning,
+            cohort,
+            tags_idx,
+            quality_idx,
+            reviewer,
+            rights_status,
+            acquisition,
+            redistributable,
+            notes,
+            created_at,
+            updated_at,
+        ) {
+            Ok(m) => m,
+            // Unreachable for a kept (in-range, sounding) track, but surface it
+            // as an envelope rather than panicking in the browser.
+            Err(e) => return format!("{{\"error\":\"{}\",\"chunks\":[]}}", json_escape(&e)),
+        };
+        let bar_lo = u32::try_from(*start).unwrap_or(0);
+        let bar_hi = u32::try_from(end.saturating_sub(1)).unwrap_or(0);
+        meta.source.bar_range = Some((bar_lo, bar_hi));
+
+        let pretty = serde_json::to_string_pretty(&meta)
+            .unwrap_or_else(|e| format!("{{\"error\":\"serialize: {e}\"}}"));
+
+        if phrase > 0 {
+            json.push(',');
+        }
+        let _ = write!(
+            json,
+            "{{\"id\":\"{}\",\"title\":\"{}\",\"bar_lo\":{bar_lo},\"bar_hi\":{bar_hi},\"notes\":",
+            json_escape(&pid),
+            json_escape(&ptitle),
+        );
+        // `kept` guarantees the track is present and note-bearing.
+        if let Some(part) = sub.tracks.get(track_index) {
+            push_notes(&mut json, part);
+        } else {
+            json.push_str("[]");
+        }
+        let _ = write!(json, ",\"chunk\":\"{}\"}}", json_escape(&pretty));
+    }
+    json.push_str("]}");
+    json
 }
 
-/// (stub — replaced in the green step.) Splits `track_index` at its detected
-/// phrase boundaries into one chunk per sounding phrase.
-#[allow(unused_variables, clippy::too_many_arguments)]
+/// Splits `track_index` of `score` at its detected phrase boundaries into one
+/// chunk per sounding phrase (mirrors the CLI's `phrase_chunks`). An out-of-range
+/// track or a bar-less score yields a `{"error":…,"chunks":[]}` envelope.
+#[allow(clippy::too_many_arguments)]
 fn split_to_json(
     score: &Score,
     track_index: usize,
@@ -697,7 +769,39 @@ fn split_to_json(
     created_at: &str,
     updated_at: &str,
 ) -> String {
-    String::from("{\"error\":null,\"chunks\":[]}")
+    if track_index >= score.tracks.len() {
+        return format!(
+            "{{\"error\":\"track {track_index} out of range (score has {} tracks)\",\"chunks\":[]}}",
+            score.tracks.len()
+        );
+    }
+    let cuts: Vec<u32> = detect_boundaries(score, track_index)
+        .iter()
+        .map(|b| b.start_tick)
+        .collect();
+    let segments = bar_segments(&score.master_bars, &cuts);
+    if segments.is_empty() {
+        return "{\"error\":\"score has no bars to split\",\"chunks\":[]}".to_owned();
+    }
+    split_segments_to_json(
+        score,
+        track_index,
+        &segments,
+        id,
+        title,
+        filename,
+        tuning,
+        cohort,
+        tags_idx,
+        quality_idx,
+        reviewer,
+        rights_status,
+        acquisition,
+        redistributable,
+        notes,
+        created_at,
+        updated_at,
+    )
 }
 
 /// Returns the swancore tag palette — the wire names of
@@ -760,6 +864,55 @@ pub fn build_chunk_json(
             updated_at,
         ),
         None => "{\"error\":\"no score loaded\"}".to_owned(),
+    })
+}
+
+/// Splits `track` of the loaded score into one schema-v7 `chunk.json` per
+/// detected phrase (#2b), so the capture UI can paginate the phrases for review
+/// and play each in turn. Returns
+/// `{"error":…|null,"chunks":[{id,title,bar_lo,bar_hi,notes,chunk}…]}`, where
+/// each `chunk` is a download-ready `chunk.json`. The capture inputs mirror
+/// [`build_chunk_json`] and are inherited by every phrase (ids/titles suffixed
+/// `_p<N>` / `(phrase <N>)`).
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn split_chunks_json(
+    track: u32,
+    id: &str,
+    title: &str,
+    filename: &str,
+    tuning: &str,
+    cohort: u32,
+    tags: &str,
+    quality: &str,
+    reviewer: i32,
+    rights_status: u32,
+    acquisition: u32,
+    redistributable: bool,
+    notes: &str,
+    created_at: &str,
+    updated_at: &str,
+) -> String {
+    LOADED.with(|l| match l.borrow().as_ref() {
+        Some(score) => split_to_json(
+            score,
+            track as usize,
+            id,
+            title,
+            filename,
+            tuning,
+            cohort,
+            tags,
+            quality,
+            reviewer,
+            rights_status,
+            acquisition,
+            redistributable,
+            notes,
+            created_at,
+            updated_at,
+        ),
+        None => "{\"error\":\"no score loaded\",\"chunks\":[]}".to_owned(),
     })
 }
 
