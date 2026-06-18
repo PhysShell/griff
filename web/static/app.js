@@ -121,12 +121,17 @@ function populateTagPalette() {
   let names = [];
   try { names = JSON.parse(wasmTagPalette()); } catch (_) { /* leave empty */ }
   els.capTags.innerHTML = names
-    .map((n, i) => `<option value="${i}">${escapeHtml(n)}</option>`)
+    .map((n, i) =>
+      `<label><input type="checkbox" value="${i}" /> ${escapeHtml(n)}</label>`)
     .join('');
 }
 
-const selectedValues = (sel) =>
-  Array.from(sel.selectedOptions).map((o) => o.value).join(' ');
+// Space-separated indices of the ticked checkboxes in a .checkgrid group — the
+// format build_chunk_json/parse_indices expects (was <select multiple>, which
+// needed Ctrl/Cmd-click on desktop and a plain click wiped the whole picks).
+const selectedValues = (group) =>
+  Array.from(group.querySelectorAll('input[type="checkbox"]:checked'))
+    .map((c) => c.value).join(' ');
 
 function capMsg(text, isError) {
   els.capStatus.classList.toggle('error', !!isError);
