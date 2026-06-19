@@ -236,9 +236,10 @@ pub fn flag_phrase_duplicates(
                     #[allow(clippy::cast_precision_loss)]
                     let share = report.longest_match_notes as f64 / report.candidate_notes as f64;
                     match report.longest_match_reference {
-                        Some(of) if share >= min_quote_share => {
-                            Some(PhraseDuplicate { of, quote_share: share })
-                        }
+                        Some(of) if share >= min_quote_share => Some(PhraseDuplicate {
+                            of,
+                            quote_share: share,
+                        }),
                         _ => None,
                     }
                 }

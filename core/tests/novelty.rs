@@ -439,5 +439,8 @@ fn flag_phrase_duplicates_compares_the_detected_track_on_both_sides() {
     let flags = flag_phrase_duplicates(&phrases, 1, 0.8);
     let dup = flags[1].expect("the track-1 repeat is flagged despite a different track 0");
     assert_eq!(dup.of, 0);
-    assert!(dup.quote_share >= 0.99, "the track-1 line is a verbatim repeat");
+    assert!(
+        dup.quote_share >= 0.99,
+        "the track-1 line is a verbatim repeat"
+    );
 }

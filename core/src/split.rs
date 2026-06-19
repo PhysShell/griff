@@ -146,7 +146,10 @@ mod tests {
     fn cuts_snap_to_their_containing_bar() {
         // 3840 is bar 2's downbeat; 1920 is bar 1's, 5760 is bar 3's.
         assert_eq!(bar_segments(&bars(4), &[3840]), vec![0..2, 2..4]);
-        assert_eq!(bar_segments(&bars(4), &[1920, 5760]), vec![0..1, 1..3, 3..4]);
+        assert_eq!(
+            bar_segments(&bars(4), &[1920, 5760]),
+            vec![0..1, 1..3, 3..4]
+        );
     }
 
     #[test]

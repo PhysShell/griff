@@ -129,7 +129,10 @@ fn norm_bar(track: &Track, bar: &MasterBar) -> NormBar {
         .iter()
         .filter_map(|voice| {
             let notes = voice_notes_in_bar(voice, bar);
-            (!notes.is_empty()).then_some(NormVoice { id: voice.id, notes })
+            (!notes.is_empty()).then_some(NormVoice {
+                id: voice.id,
+                notes,
+            })
         })
         .collect();
     // Canonical order independent of `track.voices` import order (ADR-0020).
