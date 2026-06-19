@@ -32,7 +32,8 @@
 use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     novelty::{
-        measure_novelty, novelty_axes, novelty_weights_v1, NoveltyError, NOVELTY_AXIS_LABELS,
+        flag_phrase_duplicates, measure_novelty, novelty_axes, novelty_weights_v1, NoveltyError,
+        NOVELTY_AXIS_LABELS,
     },
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
@@ -390,4 +391,50 @@ fn fresh_material_outranks_a_copy() {
     let order = rank_indices(&scored);
     assert_eq!(order[0], 1, "the fresh candidate ranks first");
     assert_eq!(scored[1].provenance.policy_id, "novelty");
+}
+
+// ── phrase de-duplication (#76) ───────────────────────────────────────────────
+
+#[test]
+fn flag_phrase_duplicates_marks_a_later_repeat_as_a_duplicate_of_the_first() {
+    // Phrase 0 = the reference melody, 1 = fresh, 2 = a verbatim repeat of 0.
+    let phrases = vec![
+        build_score(480, vec![track_of(quarters(480, &REF_PITCHES))]),
+        fresh(),
+        build_score(480, vec![track_of(quarters(480, &REF_PITCHES))]),
+    ];
+    let flags = flag_phrase_duplicates(&phrases, 0, 0.8);
+
+    assert_eq!(flags.len(), 3);
+    assert!(flags[0].is_none(), "the first occurrence is canonical");
+    assert!(flags[1].is_none(), "fresh material is not a duplicate");
+    let dup = flags[2].expect("the repeat is flagged");
+    assert_eq!(dup.of, 0, "flagged as a duplicate of the first phrase");
+    assert!(dup.quote_share >= 0.99, "a verbatim repeat is ~100% quote");
+}
+
+#[test]
+fn flag_phrase_duplicates_leaves_distinct_phrases_unflagged() {
+    let phrases = vec![
+        build_score(480, vec![track_of(quarters(480, &REF_PITCHES))]),
+        fresh(),
+    ];
+    assert!(flag_phrase_duplicates(&phrases, 0, 0.8)
+        .iter()
+        .all(Option::is_none));
+}
+
+#[test]
+fn flag_phrase_duplicates_compares_the_detected_track_on_both_sides() {
+    // The detected track is index 1; index 0 is a decoy whose line would mislead
+    // the reference comparison if it were used. The track-1 melody repeats, so
+    // the later phrase must flag on track 1 — not on the decoy track 0.
+    let decoy = track_of(quarters(480, &[40, 41, 42, 43]));
+    let phrases = vec![
+        build_score(480, vec![decoy.clone(), track_of(quarters(480, &REF_PITCHES))]),
+        build_score(480, vec![decoy, track_of(quarters(480, &REF_PITCHES))]),
+    ];
+    let flags = flag_phrase_duplicates(&phrases, 1, 0.8);
+    let dup = flags[1].expect("the track-1 repeat is flagged despite a different track 0");
+    assert_eq!(dup.of, 0);
 }
