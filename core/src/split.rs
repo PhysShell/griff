@@ -93,9 +93,8 @@ pub fn cap_segment_bars(segments: &[Range<usize>], max_bars: usize) -> Vec<Range
 /// Curation drops these just as it drops fully-silent segments — a phrase with
 /// no notes is trivial on both counts.
 #[must_use]
-pub fn is_trivial_phrase(bars: usize, notes: usize) -> bool {
-    let _ = (bars, notes);
-    unimplemented!("is_trivial_phrase: drop short/sparse phrases (#76)")
+pub const fn is_trivial_phrase(bars: usize, notes: usize) -> bool {
+    bars < MIN_PHRASE_BARS || notes < MIN_PHRASE_NOTES
 }
 
 /// Index of the bar whose half-open tick range contains `tick`.

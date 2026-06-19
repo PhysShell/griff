@@ -916,8 +916,10 @@ fn chunks_for_segments(
         .filter_map(|seg| {
             let sub = slice::extract_bars(score, seg.clone());
             // Stay on the detected track: a segment silent there is a phrase
-            // rest, not a cue to measure a different part.
-            if primary_voice_note_count(sub.tracks.get(track)?) == 0 {
+            // rest, not a cue to measure a different part. Trivial fragments
+            // (one-bar cuts, a lone note) are dropped the same way (#76).
+            let notes = primary_voice_note_count(sub.tracks.get(track)?);
+            if split::is_trivial_phrase(seg.end.saturating_sub(seg.start), notes) {
                 return None;
             }
             Some((seg.start, seg.end, sub))

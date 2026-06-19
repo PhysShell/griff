@@ -34,7 +34,7 @@ use griff_core::score::{
     AtomEvent, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score, Track, Voice,
 };
 use griff_core::slice::{extract_bars, TickRange};
-use griff_core::split::{bar_segments, cap_segment_bars, MAX_PHRASE_BARS};
+use griff_core::split::{bar_segments, cap_segment_bars, is_trivial_phrase, MAX_PHRASE_BARS};
 
 use griff_core::boundary::{self, BoundaryConfig};
 use griff_core::corpus::{
@@ -692,13 +692,15 @@ fn split_segments_to_json(
     created_at: &str,
     updated_at: &str,
 ) -> String {
-    // Slice each segment; keep only those where the detected track sounds.
+    // Slice each segment; drop phrase rests (silent on the detected track) and
+    // trivial fragments (one-bar cuts, a lone note) the same way (#76).
     let kept: Vec<(usize, usize, Score)> = segments
         .iter()
         .filter_map(|seg| {
             let sub = extract_bars(score, seg.clone());
+            let bars = seg.end.saturating_sub(seg.start);
             match sub.tracks.get(track_index) {
-                Some(t) if note_count(t) > 0 => Some((seg.start, seg.end, sub)),
+                Some(t) if !is_trivial_phrase(bars, note_count(t)) => Some((seg.start, seg.end, sub)),
                 _ => None,
             }
         })
