@@ -39,7 +39,12 @@ export function friendlyArrangeError(raw) {
 // slider value to the nearest valid one, keeping the user's direction, clamped to
 // the ±max slider range.
 export function snapOctaveOffset(value, max = 24) {
-  let oct = Math.round(Number(value) / 12) * 12;
-  if (oct === 0) oct = Number(value) < 0 ? -12 : 12;
-  return Math.max(-max, Math.min(max, oct));
+  const v = Number(value);
+  // Clamp within whole octaves only, so a non-octave `max` can't leak a
+  // non-octave result (e.g. max 18 must clamp to 12, not 18).
+  const octaveMax = Math.floor(Math.abs(Number(max)) / 12) * 12;
+  if (octaveMax === 0) return 0;
+  let oct = Math.round(v / 12) * 12;
+  if (oct === 0) oct = v < 0 ? -12 : 12;
+  return Math.max(-octaveMax, Math.min(octaveMax, oct));
 }

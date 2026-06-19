@@ -30,6 +30,7 @@ test('snapOctaveOffset clamps to the slider range', () => {
   assert.equal(snapOctaveOffset(18), 24);
   assert.equal(snapOctaveOffset(100), 24);
   assert.equal(snapOctaveOffset(-100), -24);
+  assert.equal(snapOctaveOffset(100, 18), 12); // a non-octave max clamps to whole octaves
 });
 
 test('mode metadata matches the UI ordering', () => {
