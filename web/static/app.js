@@ -13,6 +13,7 @@ import { createDebugLog } from './debuglog.js';
 import {
   MODE_NAMES, OCTAVE_DOUBLE, SAFE_FALLBACK_MODES, friendlyArrangeError, snapOctaveOffset,
 } from './modes.js';
+import { describeTuning } from './tuning.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -24,7 +25,8 @@ const els = {
   roll: $('roll'), status: $('status'),
   // capture panel (chunk.json, ADR-0026)
   capture: $('capture'),
-  capId: $('capId'), capTitle: $('capTitle'), capTuning: $('capTuning'),
+  capId: $('capId'), capTitle: $('capTitle'),
+  capTuning: $('capTuning'), capTuningHint: $('capTuningHint'),
   capCohort: $('capCohort'), capTags: $('capTags'), capQuality: $('capQuality'),
   capReviewer: $('capReviewer'), capRights: $('capRights'), capAcq: $('capAcq'),
   capRedist: $('capRedist'), capNotes: $('capNotes'),
@@ -51,6 +53,7 @@ let audio = null;    // AudioContext
 let voices = [];     // scheduled oscillators
 let playStartT = 0, playSpan = 0, raf = 0;
 let lastOffset = 0;  // last Register-offset value, used to skip the invalid 0 under octave_double
+let trackTunings = {};  // track index -> open-string MIDI numbers (from load_score)
 
 // ---- verbose debug log (on-page, copy-paste friendly) ----
 // The bounded, timestamped ring buffer lives in debuglog.js so its formatting
@@ -208,11 +211,14 @@ function loadFile(file) {
       capMsg('', false);
       resetSplit();
       els.capture.hidden = false;
+      trackTunings = {};
+      for (const t of summary.tracks) trackTunings[t.i] = t.tuning || [];
       dbg('loaded', {
         tracks: summary.tracks.length, bars: summary.bars,
-        perTrack: summary.tracks.map((t) => `${t.i}:${t.name}=${t.notes}n`),
+        perTrack: summary.tracks.map((t) => `${t.i}:${t.name}=${t.notes}n ${describeTuning(t.tuning).label}`),
       });
       populateTracks(summary);
+      applyDetectedTuning(+els.track.value);
       arrangePreferred();
     } catch (err) {
       els.status.classList.add('error');
@@ -227,13 +233,32 @@ function populateTracks(summary) {
   const opts = ['<option value="-1">built-in sample</option>'];
   let firstWithNotes = -1;
   for (const t of summary.tracks) {
-    opts.push(`<option value="${t.i}">${escapeHtml(t.name)} · ${t.notes} notes</option>`);
+    const tun = describeTuning(t.tuning).label;
+    const tunStr = tun && tun !== 'unknown' ? ` · ${tun}` : '';
+    opts.push(`<option value="${t.i}">${escapeHtml(`${t.name} · ${t.notes} notes${tunStr}`)}</option>`);
     if (firstWithNotes < 0 && t.notes > 0) firstWithNotes = t.i;
   }
   els.track.innerHTML = opts.join('');
   els.track.value = String(firstWithNotes >= 0 ? firstWithNotes : -1);
   els.status.textContent =
     `loaded ${summary.tracks.length} track(s) · ${summary.bars} bars — pick a track, then ▶`;
+}
+
+// Reflects the selected track's detected tuning: fills the chunk Tuning field
+// with the recognized slug and shows the friendly name + notes beside it, so
+// exports record the real tuning (e.g. drop_d) instead of the manual default.
+function applyDetectedTuning(trackIdx) {
+  const open = trackTunings[trackIdx];
+  if (!open || !open.length) {
+    // No detected tuning (built-in sample, or a MIDI file that carries none):
+    // fall back to the default so a previous track's slug can't linger.
+    els.capTuning.value = 'standard_e';
+    if (els.capTuningHint) els.capTuningHint.textContent = '';
+    return;
+  }
+  const t = describeTuning(open);
+  if (t.slug) els.capTuning.value = t.slug;
+  if (els.capTuningHint) els.capTuningHint.textContent = `detected: ${t.label} · ${t.notes}`;
 }
 
 // ---- chunk.json capture (ADR-0026) ----
@@ -578,6 +603,7 @@ function bind() {
   // Phrases are track-specific: a new track invalidates the current split.
   els.track.addEventListener('change', () => {
     resetSplit();
+    applyDetectedTuning(+els.track.value);
     dbg('track ->', { i: +els.track.value, name: els.track.options[els.track.selectedIndex]?.text || '' });
     arrange(true);
   });

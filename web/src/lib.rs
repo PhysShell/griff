@@ -340,7 +340,8 @@ pub fn load_score(bytes: &[u8]) -> String {
 }
 
 /// Imports `data`, stores the score on success, and returns a JSON summary
-/// `{error, ppqn, tempo, bars, tracks:[{i,name,notes}]}`.
+/// `{error, ppqn, tempo, bars, tracks:[{i,name,notes,tuning}]}`, where `tuning`
+/// is the track's open-string MIDI numbers, ascending (low→high; the UI names them).
 fn load_to_json(data: &[u8]) -> String {
     if let Some(reason) = reject_upload(data) {
         return format!("{{\"error\":\"{}\",\"tracks\":[]}}", json_escape(&reason));
@@ -360,11 +361,22 @@ fn load_to_json(data: &[u8]) -> String {
                     json.push(',');
                 }
                 let name = t.name.clone().unwrap_or_else(|| format!("track {i}"));
+                // open_strings() is string-1-first (highest, ADR-0018); sort
+                // ascending so the UI always names a canonical low→high tuning,
+                // regardless of how the source ordered its strings.
+                let mut open: Vec<u8> = t.tuning.open_strings().iter().map(|p| p.0).collect();
+                open.sort_unstable();
+                let tuning = open
+                    .iter()
+                    .map(|m| m.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
                 let _ = write!(
                     json,
-                    "{{\"i\":{i},\"name\":\"{}\",\"notes\":{}}}",
+                    "{{\"i\":{i},\"name\":\"{}\",\"notes\":{},\"tuning\":[{}]}}",
                     json_escape(&name),
-                    note_count(t)
+                    note_count(t),
+                    tuning
                 );
             }
             json.push_str("]}");
@@ -1026,6 +1038,24 @@ mod tests {
         let summary = load_to_json(&bytes);
         assert!(summary.contains("\"error\":null"), "import: {summary:.160}");
         assert!(summary.contains("\"tracks\":["), "summary lists tracks");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&summary).expect("summary is valid JSON");
+        let tracks = parsed["tracks"].as_array().expect("tracks array");
+        assert!(
+            tracks.iter().all(|t| t["tuning"].as_array().is_some()),
+            "every track carries a tuning array: {summary:.200}"
+        );
+        let first: Vec<u64> = tracks[0]["tuning"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_u64().expect("midi number"))
+            .collect();
+        assert_eq!(
+            first,
+            vec![40, 45, 50, 55, 59, 64],
+            "open strings ascending low→high (standard E)"
+        );
 
         let imported = griff_core::import::import_score_auto(&bytes).expect("reimport");
         let j = arrange_to_json(
