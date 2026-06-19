@@ -1262,3 +1262,23 @@ Architectural decisions go to [`adr/`](adr/) instead.
   optional-field pattern, not a tag counter — accepting that a pinned pre-tag
   build hard-rejects a chunk carrying a newer tag (a curation-tooling concern,
   since griff's reader and writer ship together).
+
+- 2026-06-19 — In the context of auto-deriving the chord-quality tags
+  (`maj7`/`min7`/`sus2`/`add9`/`power_chord`, #75's next taxonomy ask after
+  `let_ring`), facing that Guitar Pro records only notes — never chord labels —
+  and that these tags were curator-only despite the voicing being spelled out in
+  the tab, we decided for a presence-only `harmony::derive_harmony` that matches
+  each chord group's pitch-class set against exact root-relative templates (power
+  chord = a bare perfect-fifth dyad; maj7/min7/sus2/add9 = fixed interval sets,
+  tried from every chord tone so inversions tag their quality), mirroring
+  `technique::derive_techniques`. Prior art: pitch-class-set / chord-template
+  matching is the standard MIR approach, reimplemented natively (no dependency).
+  Against a confidence-thresholded recogniser — it would forfeit the "pure
+  function of the score, no thresholds" property (SPEC §6) the technique deriver
+  set — and against reusing `complement::estimate_harmony`, which answers "what
+  key?" (Krumhansl–Kessler key-fit), not "what voicing?". We defer `slash_chord`:
+  its common case is a plain triad over a non-root bass (e.g. G/B), which the
+  seventh/sus/add templates cannot express and which needs its own bass-vs-root
+  pass. Accepting that extended/altered chords and arpeggiated or cross-voice
+  voicings go unclassified in this first cut (under-tagging, never mis-tagging),
+  and that slash chords carry no tag until that follow-up lands.
