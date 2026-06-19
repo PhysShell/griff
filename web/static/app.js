@@ -249,7 +249,13 @@ function populateTracks(summary) {
 // exports record the real tuning (e.g. drop_d) instead of the manual default.
 function applyDetectedTuning(trackIdx) {
   const open = trackTunings[trackIdx];
-  if (!open || !open.length) { if (els.capTuningHint) els.capTuningHint.textContent = ''; return; }
+  if (!open || !open.length) {
+    // No detected tuning (built-in sample, or a MIDI file that carries none):
+    // fall back to the default so a previous track's slug can't linger.
+    els.capTuning.value = 'standard_e';
+    if (els.capTuningHint) els.capTuningHint.textContent = '';
+    return;
+  }
   const t = describeTuning(open);
   if (t.slug) els.capTuning.value = t.slug;
   if (els.capTuningHint) els.capTuningHint.textContent = `detected: ${t.label} · ${t.notes}`;
