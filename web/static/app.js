@@ -429,7 +429,10 @@ function renderPhrase() {
   els.splitInfo.textContent = cmp
     ? `A=phrase ${splitIdx + 1} (${tracks[0].notes.length}n, blue) vs `
       + `B=phrase ${compareIdx + 1} (${tracks[1].notes.length}n, amber)`
-    : `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes`;
+    : `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes`
+      + (ch.duplicate_of != null
+        ? ` · ≈ phrase ${ch.duplicate_of + 1} (${Math.round(ch.duplicate_share * 100)}% quote)`
+        : '');
   renderPhraseTags(tags);
   els.splitPrev.disabled = splitIdx === 0;
   els.splitNext.disabled = splitIdx === splitChunks.length - 1;

@@ -30,7 +30,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::score::{AtomEvent, Score, Track};
+use crate::score::{AtomEvent, LossReport, Score, Track};
 use crate::scoring::{Axes, Axis, WeightPolicy};
 
 const AXIS_QUOTE_NOVELTY: &str = "quote_novelty";
@@ -183,6 +183,83 @@ pub fn novelty_axes(report: &NoveltyReport) -> Axes {
 #[must_use]
 pub fn novelty_weights_v1() -> WeightPolicy {
     WeightPolicy::uniform("novelty", 1, &NOVELTY_AXIS_LABELS)
+}
+
+/// Default minimum verbatim-quote share for flagging a phrase as a near-
+/// duplicate of an earlier one (#76).
+///
+/// A chorus/verse repeat quotes almost all of an earlier phrase; a distinct
+/// phrase shares at most a short motif, so a high bar keeps false positives low.
+pub const PHRASE_DUPLICATE_SHARE: f64 = 0.8;
+
+/// A phrase flagged as a near-duplicate of an earlier one (#76).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhraseDuplicate {
+    /// Index, within the phrase list, of the earlier phrase it most closely quotes.
+    pub of: usize,
+    /// Share of this phrase's melodic line covered by that verbatim quote, in
+    /// `[0, 1]` — `1.0` is an exact (possibly transposed) repeat.
+    pub quote_share: f64,
+}
+
+/// Flags each phrase that near-duplicates an *earlier* one in `phrases` (#76).
+///
+/// For phrase *i*, compares its `track_index` line against phrases `0..i` with
+/// [`measure_novelty`] (transposition- and resolution-aware); when the longest
+/// verbatim quote covers at least `min_quote_share` of phrase *i*'s notes, it is
+/// flagged a near-duplicate of the earlier phrase that quote comes from. The
+/// first occurrence of a repeated phrase is canonical (never flagged); only
+/// later repeats are. Returns one entry per phrase (`None` = distinct enough).
+///
+/// Both sides are reduced to `track_index` first, so a reference resolves to the
+/// same musical line even when an earlier track also sounds in that phrase.
+/// Curation surfaces the flag; whether to drop the repeat stays the curator's
+/// call — the guard measures, the caller decides (ADR-0017 spirit).
+#[must_use]
+pub fn flag_phrase_duplicates(
+    phrases: &[Score],
+    track_index: usize,
+    min_quote_share: f64,
+) -> Vec<Option<PhraseDuplicate>> {
+    let lines: Vec<Score> = phrases
+        .iter()
+        .map(|p| single_track_line(p, track_index))
+        .collect();
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, candidate)| {
+            let earlier = lines.get(..i).unwrap_or(&[]);
+            match measure_novelty(candidate, 0, earlier) {
+                Ok(report) if report.candidate_notes > 0 => {
+                    // Reason: note counts are tiny relative to f64 mantissa precision.
+                    #[allow(clippy::cast_precision_loss)]
+                    let share = report.longest_match_notes as f64 / report.candidate_notes as f64;
+                    match report.longest_match_reference {
+                        Some(of) if share >= min_quote_share => {
+                            Some(PhraseDuplicate { of, quote_share: share })
+                        }
+                        _ => None,
+                    }
+                }
+                // Out-of-range / empty track, or no quote: not a flagged duplicate.
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// A copy of `score` keeping only `track_index` as its sole track, so a novelty
+/// comparison reads that one line on both the candidate and the references
+/// (master bars are irrelevant to the transition representation).
+fn single_track_line(score: &Score, track_index: usize) -> Score {
+    Score {
+        ticks_per_quarter: score.ticks_per_quarter,
+        master_bars: Vec::new(),
+        tracks: score.tracks.get(track_index).cloned().into_iter().collect(),
+        source_meta: None,
+        loss: LossReport::new(),
+    }
 }
 
 /// `(total − taken) / total`, or `1.0` when there is no total.

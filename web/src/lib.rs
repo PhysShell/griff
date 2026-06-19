@@ -30,6 +30,7 @@ use griff_core::complement::{
 use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
 use griff_core::generate::GenerationSeed;
 use griff_core::import::import_score_auto;
+use griff_core::novelty::{flag_phrase_duplicates, PHRASE_DUPLICATE_SHARE};
 use griff_core::score::{
     AtomEvent, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score, Track, Voice,
 };
@@ -706,6 +707,10 @@ fn split_segments_to_json(
         })
         .collect();
 
+    // Flag near-duplicate phrases (later repeats of an earlier one) for review (#76).
+    let phrase_scores: Vec<Score> = kept.iter().map(|(_, _, sub)| sub.clone()).collect();
+    let dups = flag_phrase_duplicates(&phrase_scores, track_index, PHRASE_DUPLICATE_SHARE);
+
     let mut json = String::from("{\"error\":null,\"chunks\":[");
     for (phrase, (start, end, sub)) in kept.iter().enumerate() {
         let pid = format!("{id}_p{phrase}");
@@ -754,6 +759,18 @@ fn split_segments_to_json(
             push_notes(&mut json, part);
         } else {
             json.push_str("[]");
+        }
+        // Near-duplicate flag (#76): which earlier phrase this one quotes and by
+        // how much, or null when it is distinct.
+        match dups.get(phrase).and_then(|d| d.as_ref()) {
+            Some(d) => {
+                let _ = write!(
+                    json,
+                    ",\"duplicate_of\":{},\"duplicate_share\":{:.2}",
+                    d.of, d.quote_share
+                );
+            }
+            None => json.push_str(",\"duplicate_of\":null,\"duplicate_share\":null"),
         }
         let _ = write!(json, ",\"chunk\":\"{}\"}}", json_escape(&pretty));
     }
