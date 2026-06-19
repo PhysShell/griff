@@ -174,8 +174,5 @@ fn derives_from_every_voice() {
         id: 1,
         event_groups: vec![chord_group(&[40, 47])],
     });
-    assert_eq!(
-        derive_harmony(&score, 0),
-        vec![SwancoreTag::PowerChord]
-    );
+    assert_eq!(derive_harmony(&score, 0), vec![SwancoreTag::PowerChord]);
 }
