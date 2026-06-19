@@ -147,6 +147,8 @@ pub enum SpanTechnique {
     PullOff,
     /// Vibrato.
     Vibrato,
+    /// Let ring — the note is left to sustain into following beats.
+    LetRing,
 }
 
 /// Where a technique came from — import-side provenance (ADR-0018; the

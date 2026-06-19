@@ -225,6 +225,7 @@ const fn span_name(technique: SpanTechnique) -> &'static str {
         SpanTechnique::HammerOn => "hammer_on",
         SpanTechnique::PullOff => "pull_off",
         SpanTechnique::Vibrato => "vibrato",
+        SpanTechnique::LetRing => "let_ring",
     }
 }
 

@@ -106,6 +106,8 @@ pub enum SwancoreTag {
     Bend,
     Vibrato,
     PalmMute,
+    /// Let ring — notes left to sustain into following beats.
+    LetRing,
     NaturalHarmonic,
     ArtificialHarmonic,
     // ── rhythm ─────────────────────────────────────────────────────────────
@@ -144,6 +146,7 @@ impl SwancoreTag {
             Self::Bend,
             Self::Vibrato,
             Self::PalmMute,
+            Self::LetRing,
             Self::NaturalHarmonic,
             Self::ArtificialHarmonic,
             Self::Syncopated,

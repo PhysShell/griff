@@ -597,6 +597,9 @@ fn map_gp_note_marks(
     if effect.vibrato {
         push_span(SpanTechnique::Vibrato);
     }
+    if effect.let_ring {
+        push_span(SpanTechnique::LetRing);
+    }
 
     let mut marks = NoteMarks::empty();
     if effect.accentuated_note || effect.heavy_accentuated_note {
