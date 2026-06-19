@@ -8,9 +8,13 @@
 // Lowercase slug of a filename's stem: drop the extension, map runs of
 // non-alphanumerics to '_', trim. A name with no ASCII-alphanumerics slugs to
 // '' (then the guard simply has no opinion).
+// Lowercase slug of an arbitrary string: runs of non-alphanumerics → '_', trimmed.
+function slugify(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
 export function slugFromFilename(name) {
-  const stem = String(name || '').replace(/\.[^.]+$/, '');
-  return stem.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return slugify(String(name || '').replace(/\.[^.]+$/, ''));
 }
 
 // A sensible default chunk id for a freshly loaded file: its slug.
@@ -27,18 +31,22 @@ export function chunkIdInitials(slug) {
     .join('');
 }
 
-// The id's name part, dropping a trailing version number (_001 / _p3).
-function idStem(id) {
-  return String(id || '').trim().toLowerCase().replace(/_p?\d+$/, '');
+// Whether `candidate` lines up with `slug` directly or via initials either way
+// (so "dgd" ↔ "dance_gavin_dance" both pass).
+function relatesTo(candidate, slug) {
+  return candidate === slug
+    || chunkIdInitials(candidate) === slug
+    || candidate === chunkIdInitials(slug);
 }
 
-// Whether `id` plausibly belongs to `filename`: an exact stem match, or one
-// being the other's initials (so "dgd" ↔ "dance_gavin_dance" both pass). An
-// empty id or an unrecognised file means "no opinion" (true) — the guard only
-// flags a clear mismatch, never a blank or an abbreviation.
+// Whether `id` plausibly belongs to `filename`. Compares the id as-is *and*
+// without a trailing version number, so a versioned id (dgd_001 ↔ dgd.gpx) and a
+// numerically-named file (song_2 ↔ "Song 2.mid") both pass; only a genuinely
+// foreign id is flagged. An empty id or an unrecognised file means "no opinion".
 export function idMatchesFile(id, filename) {
   const slug = slugFromFilename(filename);
-  const stem = idStem(id);
-  if (!stem || !slug) return true;
-  return stem === slug || chunkIdInitials(stem) === slug || stem === chunkIdInitials(slug);
+  const full = slugify(id);
+  if (!full || !slug) return true;
+  const stem = full.replace(/_p?\d+$/, '');
+  return relatesTo(full, slug) || relatesTo(stem, slug);
 }

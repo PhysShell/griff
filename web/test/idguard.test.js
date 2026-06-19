@@ -39,3 +39,11 @@ test('idMatchesFile flags a stale id left over from another song', () => {
   assert.equal(idMatchesFile('speeddemon_001', 'dgd.gpx'), false);
   assert.equal(idMatchesFile('speeddemon_001', 'Dance Gavin Dance.gpx'), false);
 });
+
+test('a numerically-named file never warns against its own default id (#77)', () => {
+  // Regression: the stem must be matched as-is too, or "Song 2.mid" → "song_2"
+  // would fail its own guard once _2 is stripped.
+  assert.ok(idMatchesFile(defaultChunkId('Song 2.mid'), 'Song 2.mid')); // song_2
+  assert.ok(idMatchesFile('riff_2026', 'riff_2026.gpx'));
+  assert.ok(idMatchesFile('dgd_001', 'dgd.gpx')); // a versioned id still matches
+});
