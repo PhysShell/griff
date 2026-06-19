@@ -1,0 +1,63 @@
+{
+  "id": "dgd_001_p1",
+  "title": "speeddemon (phrase 1)",
+  "source": {
+    "filename": "speeddemon.mid",
+    "format": "midi",
+    "bar_range": [
+      16,
+      16
+    ]
+  },
+  "tempo_bpm": 147.0000955500621,
+  "ticks_per_quarter": 480,
+  "time_signature": [
+    4,
+    4
+  ],
+  "tuning": "standard_e",
+  "tags": [],
+  "boundaries": [],
+  "techniques": [],
+  "quality_flags": [
+    "clean"
+  ],
+  "reviewer": null,
+  "structure": {
+    "bar_count": 1,
+    "detected_pattern_period_bars": null,
+    "detected_pattern_period_ticks": null,
+    "repeatability_score": 0.0,
+    "variation_score": 1.0,
+    "loopability_score": 0.5208333333333333,
+    "structural_complexity": 1.0
+  },
+  "gesture": {
+    "note_count": 10,
+    "burst_count": 1,
+    "mean_burst_notes": 10.0,
+    "max_burst_notes": 10,
+    "rest_count": 0,
+    "mean_rest_quarters": 0.0,
+    "rest_on_grid_share": 1.0,
+    "modal_landing_share": 1.0,
+    "mean_final_lengthening": 0.5
+  },
+  "complexity": {
+    "rhythmic": 0.125,
+    "pitch": 0.0,
+    "technical": 0.0,
+    "harmonic": 0.0,
+    "playability": 0.0,
+    "structural": 1.0
+  },
+  "style_cohort": "core",
+  "rights": {
+    "rights_status": "copyrighted_composition",
+    "acquisition": "community_tab_site",
+    "redistributable": false,
+    "notes": ""
+  },
+  "created_at": "2026-06-19T06:22:05.380Z",
+  "updated_at": "2026-06-19T06:22:05.380Z"
+}

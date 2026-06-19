@@ -1,0 +1,63 @@
+{
+  "id": "dgd_001_p2",
+  "title": "speeddemon (phrase 2)",
+  "source": {
+    "filename": "speeddemon.mid",
+    "format": "midi",
+    "bar_range": [
+      17,
+      19
+    ]
+  },
+  "tempo_bpm": 147.0000955500621,
+  "ticks_per_quarter": 480,
+  "time_signature": [
+    4,
+    4
+  ],
+  "tuning": "standard_e",
+  "tags": [],
+  "boundaries": [],
+  "techniques": [],
+  "quality_flags": [
+    "clean"
+  ],
+  "reviewer": null,
+  "structure": {
+    "bar_count": 3,
+    "detected_pattern_period_bars": 1,
+    "detected_pattern_period_ticks": 1920,
+    "repeatability_score": 0.5,
+    "variation_score": 0.5,
+    "loopability_score": 0.5,
+    "structural_complexity": 0.6666666666666666
+  },
+  "gesture": {
+    "note_count": 18,
+    "burst_count": 1,
+    "mean_burst_notes": 18.0,
+    "max_burst_notes": 18,
+    "rest_count": 0,
+    "mean_rest_quarters": 0.0,
+    "rest_on_grid_share": 1.0,
+    "modal_landing_share": 0.0,
+    "mean_final_lengthening": 0.375
+  },
+  "complexity": {
+    "rhythmic": 0.0625,
+    "pitch": 0.5,
+    "technical": 0.0,
+    "harmonic": 0.0,
+    "playability": 1.0,
+    "structural": 0.6666666666666666
+  },
+  "style_cohort": "core",
+  "rights": {
+    "rights_status": "copyrighted_composition",
+    "acquisition": "community_tab_site",
+    "redistributable": false,
+    "notes": ""
+  },
+  "created_at": "2026-06-19T06:22:05.380Z",
+  "updated_at": "2026-06-19T06:22:05.380Z"
+}
