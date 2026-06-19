@@ -426,15 +426,18 @@ fn flag_phrase_duplicates_leaves_distinct_phrases_unflagged() {
 
 #[test]
 fn flag_phrase_duplicates_compares_the_detected_track_on_both_sides() {
-    // The detected track is index 1; index 0 is a decoy whose line would mislead
-    // the reference comparison if it were used. The track-1 melody repeats, so
-    // the later phrase must flag on track 1 — not on the decoy track 0.
-    let decoy = track_of(quarters(480, &[40, 41, 42, 43]));
+    // The detected track is index 1; track 0 is a *different* decoy in each
+    // phrase, so comparing track 0 by mistake would not flag — only the repeated
+    // track-1 melody should. This guards the single-track reduction: a wrong-track
+    // comparison sees mismatched decoys and fails to flag.
+    let decoy_a = track_of(quarters(480, &[40, 41, 42, 43]));
+    let decoy_b = track_of(quarters(480, &[40, 45, 41, 47]));
     let phrases = vec![
-        build_score(480, vec![decoy.clone(), track_of(quarters(480, &REF_PITCHES))]),
-        build_score(480, vec![decoy, track_of(quarters(480, &REF_PITCHES))]),
+        build_score(480, vec![decoy_a, track_of(quarters(480, &REF_PITCHES))]),
+        build_score(480, vec![decoy_b, track_of(quarters(480, &REF_PITCHES))]),
     ];
     let flags = flag_phrase_duplicates(&phrases, 1, 0.8);
     let dup = flags[1].expect("the track-1 repeat is flagged despite a different track 0");
     assert_eq!(dup.of, 0);
+    assert!(dup.quote_share >= 0.99, "the track-1 line is a verbatim repeat");
 }
