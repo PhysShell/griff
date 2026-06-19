@@ -15,6 +15,7 @@ import {
 } from './modes.js';
 import { describeTuning } from './tuning.js';
 import { compareTracks, phraseOptions } from './pager.js';
+import { defaultChunkId, idMatchesFile } from './idguard.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -26,7 +27,7 @@ const els = {
   roll: $('roll'), status: $('status'),
   // capture panel (chunk.json, ADR-0026)
   capture: $('capture'),
-  capId: $('capId'), capTitle: $('capTitle'),
+  capId: $('capId'), capIdWarn: $('capIdWarn'), capTitle: $('capTitle'),
   capTuning: $('capTuning'), capTuningHint: $('capTuningHint'),
   capCohort: $('capCohort'), capTags: $('capTags'), capQuality: $('capQuality'),
   capReviewer: $('capReviewer'), capRights: $('capRights'), capAcq: $('capAcq'),
@@ -49,6 +50,7 @@ const PPQN_FALLBACK = 480;
 const MAX_UPLOAD_BYTES = 16 * 1024 * 1024; // mirror the Rust-side upload guard
 let current = null;  // last arrange() result (parsed JSON)
 let fileName = '';   // name of the uploaded file (recorded as the chunk's source)
+let autoCapId = '';  // chunk id last auto-filled from the filename; '' = none (#77)
 let splitChunks = []; // phrase chunks from the last split (#2b)
 let splitIdx = 0;     // currently-viewed phrase
 let compareIdx = -1;  // phrase overlaid for comparison, -1 = none (#78)
@@ -210,6 +212,13 @@ function loadFile(file) {
       // A new source = a fresh capture context: retitle and clear stale
       // boundary/status text so we never carry the previous file's metadata.
       els.capTitle.value = file.name.replace(/\.[^.]+$/, '');
+      // Default the chunk id from the filename, but keep a custom one (#77).
+      const defId = defaultChunkId(file.name);
+      if (!els.capId.value.trim() || els.capId.value.trim() === autoCapId) {
+        els.capId.value = defId;
+        autoCapId = defId;
+      }
+      updateIdWarn();
       els.capBounds.textContent = '';
       capMsg('', false);
       resetSplit();
@@ -230,6 +239,19 @@ function loadFile(file) {
     }
   };
   reader.readAsArrayBuffer(file);
+}
+
+// Warns when the chunk id looks like it belongs to a different song than the
+// loaded file, so a stale id can't silently overwrite another song's chunks (#77).
+function updateIdWarn() {
+  if (!els.capIdWarn) return;
+  const id = els.capId.value.trim();
+  const mismatch = id !== '' && fileName !== '' && !idMatchesFile(id, fileName);
+  els.capIdWarn.hidden = !mismatch;
+  if (mismatch) {
+    els.capIdWarn.textContent =
+      `⚠ id "${id}" doesn't look like it's from "${fileName}" — chunks may collide with another song's`;
+  }
 }
 
 function populateTracks(summary) {
@@ -640,6 +662,7 @@ function bind() {
   els.splitNext.addEventListener('click', () => stepPhrase(1));
   els.splitJump.addEventListener('change', () => { splitIdx = +els.splitJump.value; renderPhrase(); });
   els.splitCompare.addEventListener('change', () => { compareIdx = +els.splitCompare.value; renderPhrase(); });
+  els.capId.addEventListener('input', updateIdWarn);
   els.splitPlay.addEventListener('click', () => { renderPhrase(); play(); });
   els.splitStop.addEventListener('click', stop);
   els.splitDownload.addEventListener('click', downloadPhrase);

@@ -47,6 +47,8 @@ label {
 }
 label output { color: var(--ink); font-weight: 600; }
 .hint { color: var(--muted); font-size: 0.72rem; }
+.warn { display: block; color: #f3c969; font-size: 0.8rem; margin: -2px 2px 4px; }
+.warn[hidden] { display: none; }
 
 select, input[type="range"] {
   width: 100%;
