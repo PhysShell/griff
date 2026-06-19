@@ -17,7 +17,7 @@ use griff_core::{
         SourceRef, StyleCohort, SwancoreTag, SCHEMA_VERSION,
     },
     event::{NoteMarks, NotePosition, Pitch, TechniqueSource, Ticks},
-    generate, gesture,
+    generate, gesture, harmony,
     import::{self, ImportError},
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
@@ -1051,6 +1051,11 @@ fn build_chunk_meta(
     let derived = track_index
         .map(|idx| technique::derive_techniques(score, idx))
         .unwrap_or_default();
+    // Auto-derive chord-quality tags from the same notation (#75); they merge
+    // additively too, like the technique tags.
+    let derived_harmony = track_index
+        .map(|idx| harmony::derive_harmony(score, idx))
+        .unwrap_or_default();
 
     let now = "2026-05-20T00:00:00Z".to_owned();
     ChunkMeta {
@@ -1065,7 +1070,12 @@ fn build_chunk_meta(
         ticks_per_quarter: score.ticks_per_quarter,
         time_signature,
         tuning: inputs.tuning.clone(),
-        tags: technique::merge_tags(&inputs.tags, &derived.tags),
+        tags: {
+            // Additive: curator choices first, then derived technique tags, then
+            // derived chord-quality tags (#75) — none overrides the others.
+            let with_techniques = technique::merge_tags(&inputs.tags, &derived.tags);
+            technique::merge_tags(&with_techniques, &derived_harmony)
+        },
         boundaries,
         techniques: derived.names,
         quality_flags: inputs.quality_flags.clone(),
