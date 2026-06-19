@@ -166,9 +166,13 @@
       <section id="splitView" class="splitview" hidden aria-label="phrase chunks">
         <div class="transport pager">
           <button id="splitPrev" type="button">◀ Prev</button>
-          <output id="splitPos" class="hint">phrase 1 / 1</output>
+          <select id="splitJump" class="pagerjump" aria-label="jump to phrase"></select>
           <button id="splitNext" type="button">Next ▶</button>
         </div>
+        <label>Compare with
+          <span class="hint">overlay a second phrase — blue = current, amber = compare</span>
+          <select id="splitCompare" aria-label="compare with phrase"></select>
+        </label>
         <output id="splitInfo" class="hint" role="status" aria-live="polite"></output>
         <div id="splitTags" class="checkgrid tagsread" aria-label="detected tags for this phrase"></div>
         <div class="transport">
