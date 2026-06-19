@@ -34,7 +34,7 @@ use griff_core::score::{
     AtomEvent, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score, Track, Voice,
 };
 use griff_core::slice::{extract_bars, TickRange};
-use griff_core::split::bar_segments;
+use griff_core::split::{bar_segments, cap_segment_bars, MAX_PHRASE_BARS};
 
 use griff_core::boundary::{self, BoundaryConfig};
 use griff_core::corpus::{
@@ -791,7 +791,8 @@ fn split_to_json(
         .iter()
         .map(|b| b.start_tick)
         .collect();
-    let segments = bar_segments(&score.master_bars, &cuts);
+    // Cap over-long phrases so curation never sees a 30-bar blob (#76).
+    let segments = cap_segment_bars(&bar_segments(&score.master_bars, &cuts), MAX_PHRASE_BARS);
     if segments.is_empty() {
         return "{\"error\":\"score has no bars to split\",\"chunks\":[]}".to_owned();
     }

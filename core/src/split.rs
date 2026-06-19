@@ -10,11 +10,12 @@ use std::ops::Range;
 
 use crate::score::MasterBar;
 
-/// Default upper bound, in bars, on a single phrase segment. Segments longer
-/// than this are subdivided by [`cap_segment_bars`] so curation never faces a
-/// 30-bar blob spanning several rhythmic patterns (#76). Deliberately generous:
-/// it splits only clearly over-long phrases, leaving ordinary 4–16-bar ones
-/// whole. A sensible default, not a tuned constant — revisit as the corpus grows.
+/// Default upper bound, in bars, on a single phrase segment.
+///
+/// Segments longer than this are subdivided by [`cap_segment_bars`] so curation
+/// never faces a 30-bar blob spanning several rhythmic patterns (#76).
+/// Deliberately generous: it splits only clearly over-long phrases, leaving
+/// ordinary 4–16-bar ones whole — a sensible default, not a tuned constant.
 pub const MAX_PHRASE_BARS: usize = 16;
 
 /// Partitions `master_bars` into contiguous bar ranges cut at `cut_ticks`.
@@ -56,8 +57,24 @@ pub fn bar_segments(master_bars: &[MasterBar], cut_ticks: &[u32]) -> Vec<Range<u
 /// (#76) instead of one blob. The trailing sub-range carries the remainder.
 #[must_use]
 pub fn cap_segment_bars(segments: &[Range<usize>], max_bars: usize) -> Vec<Range<usize>> {
-    let _ = (segments, max_bars);
-    unimplemented!("cap_segment_bars: subdivide over-long segments (#76)")
+    if max_bars == 0 {
+        return segments.to_vec();
+    }
+    let mut out: Vec<Range<usize>> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        let mut start = seg.start;
+        // Emit full cap-sized blocks while more than a cap remains, so the final
+        // piece is the leftover (1..=max_bars bars), never an empty range.
+        while seg.end.saturating_sub(start) > max_bars {
+            let next = start.saturating_add(max_bars);
+            out.push(start..next);
+            start = next;
+        }
+        if start < seg.end {
+            out.push(start..seg.end);
+        }
+    }
+    out
 }
 
 /// Index of the bar whose half-open tick range contains `tick`.
@@ -69,7 +86,11 @@ fn bar_containing(master_bars: &[MasterBar], tick: u32) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::arithmetic_side_effects)]
+    #![allow(
+        clippy::expect_used,
+        clippy::arithmetic_side_effects,
+        clippy::single_range_in_vec_init
+    )]
 
     use super::{bar_segments, cap_segment_bars};
     use crate::event::{Tempo, Ticks, TimeSignature};
