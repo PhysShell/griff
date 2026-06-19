@@ -881,7 +881,11 @@ fn phrase_chunks(
         .iter()
         .map(|b| b.start_tick)
         .collect();
-    let segments = split::bar_segments(&score.master_bars, &cuts);
+    // Cap over-long phrases so curation never sees a 30-bar blob (#76).
+    let segments = split::cap_segment_bars(
+        &split::bar_segments(&score.master_bars, &cuts),
+        split::MAX_PHRASE_BARS,
+    );
     if segments.is_empty() {
         return Err(CliError::Split("score has no bars to split".to_owned()));
     }
