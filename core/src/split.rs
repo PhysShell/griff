@@ -10,6 +10,13 @@ use std::ops::Range;
 
 use crate::score::MasterBar;
 
+/// Default upper bound, in bars, on a single phrase segment. Segments longer
+/// than this are subdivided by [`cap_segment_bars`] so curation never faces a
+/// 30-bar blob spanning several rhythmic patterns (#76). Deliberately generous:
+/// it splits only clearly over-long phrases, leaving ordinary 4–16-bar ones
+/// whole. A sensible default, not a tuned constant — revisit as the corpus grows.
+pub const MAX_PHRASE_BARS: usize = 16;
+
 /// Partitions `master_bars` into contiguous bar ranges cut at `cut_ticks`.
 ///
 /// Each cut tick is snapped to the bar that contains it; a cut at bar 0 (or the
@@ -40,6 +47,19 @@ pub fn bar_segments(master_bars: &[MasterBar], cut_ticks: &[u32]) -> Vec<Range<u
         .collect()
 }
 
+/// Subdivides any segment spanning more than `max_bars` bars into consecutive
+/// sub-ranges of at most `max_bars` bars each, leaving shorter segments intact.
+///
+/// `max_bars == 0` disables the cap. Like [`bar_segments`] the result is sorted,
+/// non-overlapping, and covers exactly the input bars: it only adds cuts, so a
+/// phrase the detector left over-long becomes several measurable sub-phrases
+/// (#76) instead of one blob. The trailing sub-range carries the remainder.
+#[must_use]
+pub fn cap_segment_bars(segments: &[Range<usize>], max_bars: usize) -> Vec<Range<usize>> {
+    let _ = (segments, max_bars);
+    unimplemented!("cap_segment_bars: subdivide over-long segments (#76)")
+}
+
 /// Index of the bar whose half-open tick range contains `tick`.
 fn bar_containing(master_bars: &[MasterBar], tick: u32) -> Option<usize> {
     master_bars
@@ -51,7 +71,7 @@ fn bar_containing(master_bars: &[MasterBar], tick: u32) -> Option<usize> {
 mod tests {
     #![allow(clippy::expect_used, clippy::arithmetic_side_effects)]
 
-    use super::bar_segments;
+    use super::{bar_segments, cap_segment_bars};
     use crate::event::{Tempo, Ticks, TimeSignature};
     use crate::score::{MasterBar, RepeatMarker};
     use crate::slice::TickRange;
@@ -98,5 +118,34 @@ mod tests {
     #[test]
     fn no_bars_yield_no_segments() {
         assert!(bar_segments(&[], &[1920]).is_empty());
+    }
+
+    #[test]
+    fn cap_zero_leaves_segments_unchanged() {
+        assert_eq!(cap_segment_bars(&[0..30], 0), vec![0..30]);
+        assert_eq!(cap_segment_bars(&[0..4, 4..9], 0), vec![0..4, 4..9]);
+    }
+
+    #[test]
+    fn segments_within_the_cap_are_kept_whole() {
+        assert_eq!(cap_segment_bars(&[0..16], 16), vec![0..16]); // == cap
+        assert_eq!(cap_segment_bars(&[0..5], 16), vec![0..5]); // < cap
+    }
+
+    #[test]
+    fn over_long_segments_split_into_cap_blocks_plus_remainder() {
+        assert_eq!(cap_segment_bars(&[0..30], 16), vec![0..16, 16..30]);
+        // Exact multiple → even blocks, no stray empty range.
+        assert_eq!(cap_segment_bars(&[0..32], 16), vec![0..16, 16..32]);
+        // A non-zero offset is preserved as the sub-ranges advance.
+        assert_eq!(cap_segment_bars(&[4..40], 16), vec![4..20, 20..36, 36..40]);
+    }
+
+    #[test]
+    fn caps_each_segment_independently() {
+        assert_eq!(
+            cap_segment_bars(&[0..4, 4..40], 16),
+            vec![0..4, 4..20, 20..36, 36..40]
+        );
     }
 }
