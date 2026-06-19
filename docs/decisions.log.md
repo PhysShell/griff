@@ -1251,3 +1251,14 @@ Architectural decisions go to [`adr/`](adr/) instead.
   is duplicated and kept in step (both fronts now test the track-consistency
   rule). Accepted: `arrange` generation is untouched, and `web/dist` stays
   gitignored (CI rebuilds it on deploy).
+
+- 2026-06-19 — In the context of auto-deriving the `let_ring` tag (and the rest
+  of #75's tag taxonomy to come), facing Codex's point that a new serialized
+  `SwancoreTag` value is unreadable by older `SCHEMA_VERSION = 7` tooling (serde
+  rejects unknown enum variants), we decided for keeping the version at 7 and
+  growing the tag taxonomy additively, and against bumping per tag or once for
+  the whole #75 expansion, to keep `SCHEMA_VERSION` meaning what v1–v7 set it to
+  mean — structural `ChunkMeta` field additions under the forward-compatible
+  optional-field pattern, not a tag counter — accepting that a pinned pre-tag
+  build hard-rejects a chunk carrying a newer tag (a curation-tooling concern,
+  since griff's reader and writer ship together).

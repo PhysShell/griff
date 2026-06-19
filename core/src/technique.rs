@@ -35,7 +35,7 @@ pub struct DerivedTechniques {
 }
 
 /// Spanning techniques in canonical (declaration) order.
-const SPANS: [SpanTechnique; 7] = [
+const SPANS: [SpanTechnique; 8] = [
     SpanTechnique::Slide,
     SpanTechnique::Bend,
     SpanTechnique::Legato,
@@ -43,6 +43,7 @@ const SPANS: [SpanTechnique; 7] = [
     SpanTechnique::HammerOn,
     SpanTechnique::PullOff,
     SpanTechnique::Vibrato,
+    SpanTechnique::LetRing,
 ];
 
 /// `lower_snake_case` name for a spanning technique.
@@ -55,6 +56,7 @@ const fn span_name(t: SpanTechnique) -> &'static str {
         SpanTechnique::HammerOn => "hammer_on",
         SpanTechnique::PullOff => "pull_off",
         SpanTechnique::Vibrato => "vibrato",
+        SpanTechnique::LetRing => "let_ring",
     }
 }
 
@@ -68,6 +70,7 @@ const fn span_tag(t: SpanTechnique) -> Option<SwancoreTag> {
         SpanTechnique::HammerOn => Some(SwancoreTag::HammerOn),
         SpanTechnique::PullOff => Some(SwancoreTag::PullOff),
         SpanTechnique::Vibrato => Some(SwancoreTag::Vibrato),
+        SpanTechnique::LetRing => Some(SwancoreTag::LetRing),
         SpanTechnique::Legato => None,
     }
 }

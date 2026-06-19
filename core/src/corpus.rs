@@ -36,6 +36,13 @@ use crate::structure::{ComplexityProfile, StructureMetrics};
 ///   `rights` key) keep loading and re-serialize losslessly. Rights status is
 ///   not derivable from content, so it is captured at curation time and cannot
 ///   be backfilled.
+///
+/// Tag taxonomy is intentionally *not* versioned here: [`SwancoreTag`] grows
+/// additively (e.g. `let_ring`, #75) and `SCHEMA_VERSION` tracks structural
+/// `ChunkMeta` changes (the optional-field, forward-compatible pattern above),
+/// not the tag set — a new tag only breaks readers that hard-reject unknown
+/// variants, a curation-tooling concern, not a corpus-structure one
+/// (decisions 2026-06-19).
 pub const SCHEMA_VERSION: u32 = 7;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
@@ -106,6 +113,8 @@ pub enum SwancoreTag {
     Bend,
     Vibrato,
     PalmMute,
+    /// Let ring — notes left to sustain into following beats.
+    LetRing,
     NaturalHarmonic,
     ArtificialHarmonic,
     // ── rhythm ─────────────────────────────────────────────────────────────
@@ -144,6 +153,7 @@ impl SwancoreTag {
             Self::Bend,
             Self::Vibrato,
             Self::PalmMute,
+            Self::LetRing,
             Self::NaturalHarmonic,
             Self::ArtificialHarmonic,
             Self::Syncopated,
