@@ -170,7 +170,7 @@ label.row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(
 }
 .splitview .transport { margin-bottom: 0; }
 .pager { align-items: center; }
-.pager output {
+.pager output, .pager .pagerjump {
   flex: 1;
   text-align: center;
   color: var(--ink);

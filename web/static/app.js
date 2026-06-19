@@ -14,6 +14,7 @@ import {
   MODE_NAMES, OCTAVE_DOUBLE, SAFE_FALLBACK_MODES, friendlyArrangeError, snapOctaveOffset,
 } from './modes.js';
 import { describeTuning } from './tuning.js';
+import { compareTracks, phraseOptions } from './pager.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -35,7 +36,8 @@ const els = {
   // auto-split phrase pager (#2b)
   capSplit: $('capSplit'), splitView: $('splitView'),
   splitPrev: $('splitPrev'), splitNext: $('splitNext'),
-  splitPos: $('splitPos'), splitInfo: $('splitInfo'), splitTags: $('splitTags'),
+  splitJump: $('splitJump'), splitCompare: $('splitCompare'),
+  splitInfo: $('splitInfo'), splitTags: $('splitTags'),
   splitPlay: $('splitPlay'), splitStop: $('splitStop'),
   splitDownload: $('splitDownload'), splitDownloadEach: $('splitDownloadEach'),
   splitDownloadAll: $('splitDownloadAll'),
@@ -49,6 +51,7 @@ let current = null;  // last arrange() result (parsed JSON)
 let fileName = '';   // name of the uploaded file (recorded as the chunk's source)
 let splitChunks = []; // phrase chunks from the last split (#2b)
 let splitIdx = 0;     // currently-viewed phrase
+let compareIdx = -1;  // phrase overlaid for comparison, -1 = none (#78)
 let audio = null;    // AudioContext
 let voices = [];     // scheduled oscillators
 let playStartT = 0, playSpan = 0, raf = 0;
@@ -351,7 +354,7 @@ function saveBlob(name, text) {
 // Reuses the capture form's metadata for every phrase; the engine suffixes ids
 // (_p<N>) and titles ((phrase <N>)) and drops phrases silent on the track.
 function resetSplit() {
-  splitChunks = []; splitIdx = 0;
+  splitChunks = []; splitIdx = 0; compareIdx = -1;
   if (els.splitView) els.splitView.hidden = true;
 }
 
@@ -393,8 +396,18 @@ function splitIntoPhrases() {
     tags: phraseTags,
   });
   els.splitView.hidden = false;
+  compareIdx = -1;
+  populatePagerSelects();
   capMsg(`split into ${splitChunks.length} phrase chunk(s) — page through and ▶`, false);
   renderPhrase();
+}
+
+// Fills the jump + compare dropdowns from the current split (1-based labels).
+function populatePagerSelects() {
+  const opts = phraseOptions(splitChunks.length)
+    .map((o) => `<option value="${o.value}">${o.label}</option>`).join('');
+  if (els.splitJump) els.splitJump.innerHTML = opts;
+  if (els.splitCompare) els.splitCompare.innerHTML = `<option value="-1">— none —</option>${opts}`;
 }
 
 // Draws the current phrase into the shared roll and reuses the transport synth
@@ -406,14 +419,17 @@ function renderPhrase() {
   let ppqn = PPQN_FALLBACK, tempo = 120, tags = [];
   try { const m = JSON.parse(ch.chunk); ppqn = m.ticks_per_quarter || ppqn; tempo = m.tempo_bpm || tempo; tags = m.tags || []; }
   catch (_) { /* fall back to defaults */ }
-  current = {
-    ppqn, tempo, error: null, realized_spread: 0,
-    tracks: [{ name: ch.title, role: 'a', notes: ch.notes || [] }],
-  };
+  // Optionally overlay a second phrase for comparison (see pager.js): current as
+  // A (blue), the compared phrase as B (amber) — draw()/play() split by role.
+  const tracks = compareTracks(splitChunks, splitIdx, compareIdx);
+  current = { ppqn, tempo, error: null, realized_spread: 0, tracks };
   draw();
-  els.splitPos.textContent = `phrase ${splitIdx + 1} / ${splitChunks.length}`;
-  els.splitInfo.textContent =
-    `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes`;
+  if (els.splitJump) els.splitJump.value = String(splitIdx);
+  const cmp = tracks.length === 2;
+  els.splitInfo.textContent = cmp
+    ? `A=phrase ${splitIdx + 1} (${tracks[0].notes.length}n, blue) vs `
+      + `B=phrase ${compareIdx + 1} (${tracks[1].notes.length}n, amber)`
+    : `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes`;
   renderPhraseTags(tags);
   els.splitPrev.disabled = splitIdx === 0;
   els.splitNext.disabled = splitIdx === splitChunks.length - 1;
@@ -619,6 +635,8 @@ function bind() {
   els.capSplit.addEventListener('click', splitIntoPhrases);
   els.splitPrev.addEventListener('click', () => stepPhrase(-1));
   els.splitNext.addEventListener('click', () => stepPhrase(1));
+  els.splitJump.addEventListener('change', () => { splitIdx = +els.splitJump.value; renderPhrase(); });
+  els.splitCompare.addEventListener('change', () => { compareIdx = +els.splitCompare.value; renderPhrase(); });
   els.splitPlay.addEventListener('click', () => { renderPhrase(); play(); });
   els.splitStop.addEventListener('click', stop);
   els.splitDownload.addEventListener('click', downloadPhrase);
