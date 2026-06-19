@@ -169,14 +169,21 @@
           <button id="splitNext" type="button">Next ▶</button>
         </div>
         <output id="splitInfo" class="hint" role="status" aria-live="polite"></output>
+        <div id="splitTags" class="checkgrid tagsread" aria-label="detected tags for this phrase"></div>
         <div class="transport">
           <button id="splitPlay" type="button">▶ Play phrase</button>
           <button id="splitStop" type="button">⏹ Stop</button>
         </div>
         <div class="transport">
           <button id="splitDownload" type="button" class="primary">⬇ this phrase</button>
-          <button id="splitDownloadAll" type="button">⬇ all phrases</button>
+          <button id="splitDownloadEach" type="button">⬇ each phrase</button>
+          <button id="splitDownloadAll" type="button">⬇ all (one JSON)</button>
         </div>
+        <p class="hint">
+          <strong>each phrase</strong> → one <code>.chunk.json</code> per phrase for
+          <code>griff manifest</code>; <strong>all (one JSON)</strong> → a single
+          <code>.chunks.json</code> array for sharing/review.
+        </p>
       </section>
     </section>
 

@@ -30,9 +30,10 @@ const els = {
   // auto-split phrase pager (#2b)
   capSplit: $('capSplit'), splitView: $('splitView'),
   splitPrev: $('splitPrev'), splitNext: $('splitNext'),
-  splitPos: $('splitPos'), splitInfo: $('splitInfo'),
+  splitPos: $('splitPos'), splitInfo: $('splitInfo'), splitTags: $('splitTags'),
   splitPlay: $('splitPlay'), splitStop: $('splitStop'),
-  splitDownload: $('splitDownload'), splitDownloadAll: $('splitDownloadAll'),
+  splitDownload: $('splitDownload'), splitDownloadEach: $('splitDownloadEach'),
+  splitDownloadAll: $('splitDownloadAll'),
   // verbose on-page debug log
   debugLog: $('debugLog'), dbgCopy: $('dbgCopy'), dbgClear: $('dbgClear'),
 };
@@ -349,9 +350,22 @@ function renderPhrase() {
   draw();
   els.splitPos.textContent = `phrase ${splitIdx + 1} / ${splitChunks.length}`;
   els.splitInfo.textContent =
-    `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes · ${tags.length} tag(s)`;
+    `${ch.id} · bars ${ch.bar_lo}–${ch.bar_hi} · ${(ch.notes || []).length} notes`;
+  renderPhraseTags(tags);
   els.splitPrev.disabled = splitIdx === 0;
   els.splitNext.disabled = splitIdx === splitChunks.length - 1;
+}
+
+// Shows the phrase's resolved tags (chosen + notation-derived techniques) as
+// ticked, read-only boxes, so detected techniques like slide/hammer_on are
+// visible per phrase. Read-only on purpose: these reflect the phrase and do not
+// feed the next split (that's the capture form's Tags above).
+function renderPhraseTags(tags) {
+  if (!els.splitTags) return;
+  els.splitTags.innerHTML = tags.length
+    ? tags.map((t) =>
+        `<label class="on"><input type="checkbox" checked disabled /> ${escapeHtml(t)}</label>`).join('')
+    : '<span class="muted small">no tags detected</span>';
 }
 
 function stepPhrase(d) {
@@ -367,12 +381,27 @@ function downloadPhrase() {
   capMsg(`saved ${ch.id}.chunk.json · bars ${ch.bar_lo}–${ch.bar_hi}`, false);
 }
 
-function downloadAllPhrases() {
+// Saves one manifest-ready <id>_p<N>.chunk.json per phrase — what `griff manifest`
+// ingests (it collects individual .chunk.json files, one ChunkMeta each).
+// Staggered so the browser does not coalesce the rapid downloads.
+function downloadEachPhrase() {
   if (splitChunks.length === 0) { capMsg('split into phrases first', true); return; }
-  // Stagger the saves so the browser does not coalesce the rapid clicks.
   splitChunks.forEach((ch, i) =>
     setTimeout(() => saveBlob(`${ch.id}.chunk.json`, ch.chunk), i * 120));
-  capMsg(`saving ${splitChunks.length} phrase chunk(s)…`, false);
+  capMsg(`saving ${splitChunks.length} .chunk.json file(s) — for griff manifest`, false);
+}
+
+// Bundles every phrase chunk into a single JSON array — one file for sharing or
+// review instead of N. NOTE: `griff manifest` reads individual .chunk.json files,
+// not this array, so use "each phrase" for the corpus pipeline (#77).
+function downloadBundle() {
+  if (splitChunks.length === 0) { capMsg('split into phrases first', true); return; }
+  const base = els.capId.value.trim() || (splitChunks[0].id || 'phrases').replace(/_p\d+$/, '');
+  const chunks = splitChunks.map((ch) => {
+    try { return JSON.parse(ch.chunk); } catch (_) { return { id: ch.id, error: 'unparseable chunk' }; }
+  });
+  saveBlob(`${base}.chunks.json`, JSON.stringify(chunks, null, 2));
+  capMsg(`saved ${base}.chunks.json · ${chunks.length} phrase(s) in one file — for sharing/review`, false);
 }
 
 // ---- drawing ----
@@ -520,7 +549,8 @@ function bind() {
   els.splitPlay.addEventListener('click', () => { renderPhrase(); play(); });
   els.splitStop.addEventListener('click', stop);
   els.splitDownload.addEventListener('click', downloadPhrase);
-  els.splitDownloadAll.addEventListener('click', downloadAllPhrases);
+  els.splitDownloadEach.addEventListener('click', downloadEachPhrase);
+  els.splitDownloadAll.addEventListener('click', downloadBundle);
   els.dbgCopy.addEventListener('click', copyDebug);
   els.dbgClear.addEventListener('click', clearDebug);
   window.addEventListener('resize', () => draw());
