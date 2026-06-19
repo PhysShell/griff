@@ -32,7 +32,8 @@ const els = {
   splitPrev: $('splitPrev'), splitNext: $('splitNext'),
   splitPos: $('splitPos'), splitInfo: $('splitInfo'), splitTags: $('splitTags'),
   splitPlay: $('splitPlay'), splitStop: $('splitStop'),
-  splitDownload: $('splitDownload'), splitDownloadAll: $('splitDownloadAll'),
+  splitDownload: $('splitDownload'), splitDownloadEach: $('splitDownloadEach'),
+  splitDownloadAll: $('splitDownloadAll'),
   // verbose on-page debug log
   debugLog: $('debugLog'), dbgCopy: $('dbgCopy'), dbgClear: $('dbgClear'),
 };
@@ -380,16 +381,27 @@ function downloadPhrase() {
   capMsg(`saved ${ch.id}.chunk.json · bars ${ch.bar_lo}–${ch.bar_hi}`, false);
 }
 
-// Bundles every phrase chunk into a single JSON array, so the whole split saves
-// as ONE file instead of N — dragging per-phrase files around is the pain here.
-function downloadAllPhrases() {
+// Saves one manifest-ready <id>_p<N>.chunk.json per phrase — what `griff manifest`
+// ingests (it collects individual .chunk.json files, one ChunkMeta each).
+// Staggered so the browser does not coalesce the rapid downloads.
+function downloadEachPhrase() {
+  if (splitChunks.length === 0) { capMsg('split into phrases first', true); return; }
+  splitChunks.forEach((ch, i) =>
+    setTimeout(() => saveBlob(`${ch.id}.chunk.json`, ch.chunk), i * 120));
+  capMsg(`saving ${splitChunks.length} .chunk.json file(s) — for griff manifest`, false);
+}
+
+// Bundles every phrase chunk into a single JSON array — one file for sharing or
+// review instead of N. NOTE: `griff manifest` reads individual .chunk.json files,
+// not this array, so use "each phrase" for the corpus pipeline (#77).
+function downloadBundle() {
   if (splitChunks.length === 0) { capMsg('split into phrases first', true); return; }
   const base = els.capId.value.trim() || (splitChunks[0].id || 'phrases').replace(/_p\d+$/, '');
   const chunks = splitChunks.map((ch) => {
     try { return JSON.parse(ch.chunk); } catch (_) { return { id: ch.id, error: 'unparseable chunk' }; }
   });
   saveBlob(`${base}.chunks.json`, JSON.stringify(chunks, null, 2));
-  capMsg(`saved ${base}.chunks.json · ${chunks.length} phrase chunk(s) in one file`, false);
+  capMsg(`saved ${base}.chunks.json · ${chunks.length} phrase(s) in one file — for sharing/review`, false);
 }
 
 // ---- drawing ----
@@ -537,7 +549,8 @@ function bind() {
   els.splitPlay.addEventListener('click', () => { renderPhrase(); play(); });
   els.splitStop.addEventListener('click', stop);
   els.splitDownload.addEventListener('click', downloadPhrase);
-  els.splitDownloadAll.addEventListener('click', downloadAllPhrases);
+  els.splitDownloadEach.addEventListener('click', downloadEachPhrase);
+  els.splitDownloadAll.addEventListener('click', downloadBundle);
   els.dbgCopy.addEventListener('click', copyDebug);
   els.dbgClear.addEventListener('click', clearDebug);
   window.addEventListener('resize', () => draw());
