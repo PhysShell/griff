@@ -17,6 +17,7 @@ pub mod generate;
 pub mod gesture;
 #[cfg(feature = "gp")]
 pub mod gp;
+pub mod harmony;
 pub mod import;
 pub mod midi;
 pub mod novelty;
