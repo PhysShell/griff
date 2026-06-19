@@ -10,6 +10,9 @@ import init, {
   tag_palette_json as wasmTagPalette,
 } from './griff_web.js';
 import { createDebugLog } from './debuglog.js';
+import {
+  MODE_NAMES, OCTAVE_DOUBLE, SAFE_FALLBACK_MODES, friendlyArrangeError, snapOctaveOffset,
+} from './modes.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -49,8 +52,6 @@ let voices = [];     // scheduled oscillators
 let playStartT = 0, playSpan = 0, raf = 0;
 
 // ---- verbose debug log (on-page, copy-paste friendly) ----
-const MODE_NAMES = ['rhythm_lock', 'register_contrast', 'call_response',
-  'support_layer', 'octave_double', 'counter_melody'];
 // The bounded, timestamped ring buffer lives in debuglog.js so its formatting
 // logic is unit-tested (web/test/debuglog.test.js); here we just mirror it into
 // the <pre> on every write and keep it scrolled to the newest line.
@@ -124,13 +125,48 @@ function showStatus() {
   const b = current.tracks.find((t) => t.role === 'b');
   els.status.classList.toggle('error', !!current.error);
   if (current.error) {
-    els.status.textContent =
-      `error: ${current.error} — try another offset/mode (A still shown)`;
+    els.status.textContent = friendlyArrangeError(current.error) + ' — Part A still shown.';
     return;
   }
   els.status.textContent =
     `A: ${a ? a.notes.length : 0} notes · B: ${b ? b.notes.length : 0} notes` +
     ` · realized spread ${Number(current.realized_spread).toFixed(2)}`;
+}
+
+// octave_double only accepts whole-octave Register offsets, so when it's picked
+// step the slider in octaves and snap to a valid value (see modes.js); other
+// modes use the default 1-semitone step.
+function applyModeConstraints() {
+  const octave = +els.mode.value === OCTAVE_DOUBLE;
+  els.offset.step = octave ? '12' : '1';
+  if (octave) {
+    els.offset.value = String(snapOctaveOffset(+els.offset.value));
+    els.offsetOut.textContent = els.offset.value;
+  }
+}
+
+// Arranges a freshly loaded score with the selected mode, but if that mode can't
+// apply (e.g. counter_melody on a meter-changing song) falls back to an
+// always-valid mode so the first view is a result, not an error. Explicit user
+// actions keep their mode and get the friendly error instead.
+function arrangePreferred() {
+  arrange(true);
+  if (!current || !current.error) return;
+  const chosen = +els.mode.value;
+  for (const m of SAFE_FALLBACK_MODES) {
+    if (m === chosen) continue;
+    els.mode.value = String(m);
+    applyModeConstraints();
+    arrange(true);
+    if (current && !current.error) {
+      dbg('mode auto-switched',
+        { from: MODE_NAMES[chosen] || chosen, to: MODE_NAMES[m], why: 'selected mode could not apply to this score' });
+      return;
+    }
+  }
+  els.mode.value = String(chosen); // none applied: restore the choice + its message
+  applyModeConstraints();
+  arrange(true);
 }
 
 // ---- file loading (MIDI or Guitar Pro; see ADR-0025) ----
@@ -175,7 +211,7 @@ function loadFile(file) {
         perTrack: summary.tracks.map((t) => `${t.i}:${t.name}=${t.notes}n`),
       });
       populateTracks(summary);
-      arrange(true);
+      arrangePreferred();
     } catch (err) {
       els.status.classList.add('error');
       els.status.textContent = 'load failed: ' + err;
@@ -527,7 +563,7 @@ function bind() {
   els.variation.addEventListener('input', () => {
     els.varOut.textContent = (els.variation.value / 100).toFixed(2); arrange();
   });
-  els.mode.addEventListener('change', () => arrange(true));
+  els.mode.addEventListener('change', () => { applyModeConstraints(); arrange(true); });
   // Phrases are track-specific: a new track invalidates the current split.
   els.track.addEventListener('change', () => {
     resetSplit();
@@ -560,7 +596,8 @@ init().then(() => {
   bind();
   populateTagPalette();
   dbg('engine ready');
-  arrange(true);
+  applyModeConstraints();
+  arrangePreferred();
   els.status.textContent = 'ready — load a tab or drag a slider, then ▶ Play';
 }).catch((err) => {
   els.status.classList.add('error');
