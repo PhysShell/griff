@@ -18,6 +18,14 @@ use crate::score::MasterBar;
 /// ordinary 4–16-bar ones whole — a sensible default, not a tuned constant.
 pub const MAX_PHRASE_BARS: usize = 16;
 
+/// Minimum bars a kept phrase must span; shorter segments are dropped as trivial
+/// (#76) — a stray one-bar cut is not a phrase worth curating.
+pub const MIN_PHRASE_BARS: usize = 2;
+
+/// Minimum notes a kept phrase must carry; sparser segments are dropped as
+/// trivial (#76) — a lone note over silence is not a phrase.
+pub const MIN_PHRASE_NOTES: usize = 2;
+
 /// Partitions `master_bars` into contiguous bar ranges cut at `cut_ticks`.
 ///
 /// Each cut tick is snapped to the bar that contains it; a cut at bar 0 (or the
@@ -77,6 +85,18 @@ pub fn cap_segment_bars(segments: &[Range<usize>], max_bars: usize) -> Vec<Range
     out
 }
 
+/// Whether a phrase segment is too trivial to keep for curation (#76).
+///
+/// Trivial means spanning fewer than [`MIN_PHRASE_BARS`] bars (a stray one-bar
+/// cut — what catches a lone chord stab or two alternating notes) or carrying
+/// fewer than [`MIN_PHRASE_NOTES`] notes (a single note over an empty span).
+/// Curation drops these just as it drops fully-silent segments — a phrase with
+/// no notes is trivial on both counts.
+#[must_use]
+pub const fn is_trivial_phrase(bars: usize, notes: usize) -> bool {
+    bars < MIN_PHRASE_BARS || notes < MIN_PHRASE_NOTES
+}
+
 /// Index of the bar whose half-open tick range contains `tick`.
 fn bar_containing(master_bars: &[MasterBar], tick: u32) -> Option<usize> {
     master_bars
@@ -92,7 +112,7 @@ mod tests {
         clippy::single_range_in_vec_init
     )]
 
-    use super::{bar_segments, cap_segment_bars};
+    use super::{bar_segments, cap_segment_bars, is_trivial_phrase};
     use crate::event::{Tempo, Ticks, TimeSignature};
     use crate::score::{MasterBar, RepeatMarker};
     use crate::slice::TickRange;
@@ -168,5 +188,22 @@ mod tests {
             cap_segment_bars(&[0..4, 4..40], 16),
             vec![0..4, 4..20, 20..36, 36..40]
         );
+    }
+
+    #[test]
+    fn trivial_phrases_are_short_or_sparse() {
+        // Dropped: too few bars (a stray one-bar cut), even when note-rich.
+        assert!(is_trivial_phrase(1, 50));
+        // Dropped: too few notes (a lone note over an otherwise empty span).
+        assert!(is_trivial_phrase(8, 1));
+        // Dropped: fully silent is trivial on both counts.
+        assert!(is_trivial_phrase(4, 0));
+    }
+
+    #[test]
+    fn substantial_phrases_are_kept() {
+        // Kept: meets both thresholds (>= 2 bars and >= 2 notes) at the boundary.
+        assert!(!is_trivial_phrase(2, 2));
+        assert!(!is_trivial_phrase(9, 47));
     }
 }
