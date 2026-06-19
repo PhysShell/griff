@@ -50,6 +50,7 @@ let splitIdx = 0;     // currently-viewed phrase
 let audio = null;    // AudioContext
 let voices = [];     // scheduled oscillators
 let playStartT = 0, playSpan = 0, raf = 0;
+let lastOffset = 0;  // last Register-offset value, used to skip the invalid 0 under octave_double
 
 // ---- verbose debug log (on-page, copy-paste friendly) ----
 // The bounded, timestamped ring buffer lives in debuglog.js so its formatting
@@ -143,6 +144,7 @@ function applyModeConstraints() {
     els.offset.value = String(snapOctaveOffset(+els.offset.value));
     els.offsetOut.textContent = els.offset.value;
   }
+  lastOffset = +els.offset.value;
 }
 
 // Arranges a freshly loaded score with the selected mode, but if that mode can't
@@ -559,7 +561,16 @@ function stop() {
 // ---- wiring ----
 function bind() {
   els.seed.addEventListener('input', () => { els.seedOut.textContent = els.seed.value; arrange(); });
-  els.offset.addEventListener('input', () => { els.offsetOut.textContent = els.offset.value; arrange(); });
+  els.offset.addEventListener('input', () => {
+    // octave_double rejects 0; if the drag lands on the center, skip past it in
+    // the direction of travel so the slider never sends an invalid offset.
+    if (+els.mode.value === OCTAVE_DOUBLE && +els.offset.value === 0) {
+      els.offset.value = String(lastOffset > 0 ? -12 : 12);
+    }
+    lastOffset = +els.offset.value;
+    els.offsetOut.textContent = els.offset.value;
+    arrange();
+  });
   els.variation.addEventListener('input', () => {
     els.varOut.textContent = (els.variation.value / 100).toFixed(2); arrange();
   });
