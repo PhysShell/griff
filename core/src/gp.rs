@@ -1091,6 +1091,21 @@ mod tests {
     }
 
     #[test]
+    fn gp_let_ring_emits_explicit_span() {
+        // let-ring is a per-note sustain technique GP records (#75); it must
+        // surface as a LetRing TechniqueSpan so derivation/curation can see it.
+        let effect = GpNoteEffect {
+            let_ring: true,
+            ..GpNoteEffect::default()
+        };
+        let mut spans = Vec::new();
+        let _ = map_gp_note_marks(&effect, Ticks(0), Ticks(480), &mut spans);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].technique, SpanTechnique::LetRing);
+        assert_eq!(spans[0].evidence, TechniqueEvidence::explicit());
+    }
+
+    #[test]
     fn dead_note_imports_as_dead_marked_note() {
         // A muted "X" note (NoteType::Dead) still carries a real (string, fret):
         // it must import as a positioned note bearing NoteMark::DeadNote, not be
