@@ -402,6 +402,11 @@ fn append_beat(
     let mut atoms: Vec<AtomEvent> = Vec::new();
     let mut technique_spans: Vec<TechniqueSpan> = Vec::new();
     let mut continued = false;
+    // Tapping is a GP *beat* effect (BeatEffects::slap_effect), so it applies to
+    // every note in the beat — like the dead-note flag below, it's resolved here
+    // rather than in map_gp_note_marks, which only sees per-note effects. Slapping
+    // and popping (bass techniques) have no griff mark and are left unmapped.
+    let tapped = matches!(beat.effect.slap_effect, guitarpro::SlapEffect::Tapping);
 
     for note in &beat.notes {
         match note.kind {
@@ -420,6 +425,9 @@ fn append_beat(
                 // A dead ("X") note keeps its (string, fret) but is a muted hit.
                 if matches!(note.kind, guitarpro::NoteType::Dead) {
                     marks.insert(NoteMark::DeadNote);
+                }
+                if tapped {
+                    marks.insert(NoteMark::Tap);
                 }
                 let atom_index = atoms.len();
                 atoms.push(AtomEvent::Note(AtomNote {
