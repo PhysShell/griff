@@ -20,6 +20,7 @@ use griff_core::{
     generate, gesture, harmony,
     import::{self, ImportError},
     midi::{self, MidiError},
+    novelty,
     score::{AtomEvent, Score, Track, Voice},
     slice::{self, TickRange},
     split, structure, syncopation, technique, unfold,
@@ -861,15 +862,24 @@ fn cmd_split(path: &Path, output: Option<&Path>) -> Result<(), CliError> {
     curate_phrases(path, output, &score, &inputs)
 }
 
-/// Builds one [`ChunkMeta`] per detected phrase of the first note-bearing track:
-/// phrase boundaries cut the bars into segments, each segment is sliced into a
-/// standalone score, measured, and stamped with its source `bar_range` (the
-/// original bar indices it covers).
+/// A phrase chunk paired with, for curation review, whether it near-duplicates
+/// an earlier phrase (#76); `None` when it is distinct enough.
+#[derive(Debug)]
+struct PhraseChunk {
+    meta: ChunkMeta,
+    duplicate: Option<novelty::PhraseDuplicate>,
+}
+
+/// Builds one [`PhraseChunk`] per detected phrase of the first note-bearing
+/// track: phrase boundaries cut the bars into segments, each segment is sliced
+/// into a standalone score, measured, and stamped with its source `bar_range`
+/// (the original bar indices it covers). Later phrases that near-duplicate an
+/// earlier one are flagged for curator review (#76).
 fn phrase_chunks(
     path: &Path,
     score: &Score,
     inputs: &CurateInputs,
-) -> Result<Vec<ChunkMeta>, CliError> {
+) -> Result<Vec<PhraseChunk>, CliError> {
     let track = score
         .tracks
         .iter()
@@ -893,7 +903,7 @@ fn phrase_chunks(
     Ok(chunks_for_segments(path, score, inputs, track, &segments))
 }
 
-/// Builds one [`ChunkMeta`] per segment in which `track` sounds, renumbered
+/// Builds one [`PhraseChunk`] per segment in which `track` sounds, renumbered
 /// from 0.
 ///
 /// `track` is the part chosen for boundary detection; every chunk is cut *and*
@@ -904,14 +914,19 @@ fn phrase_chunks(
 /// `extract_bars` preserves track indices, so `track` addresses the same part
 /// in each slice. The stored `bar_range` is inclusive `[first, last]` — the
 /// half-open end minus one — matching [`griff_core::corpus::SourceRef`].
+///
+/// Each kept phrase is then checked against the earlier kept ones: a later phrase
+/// whose melodic line verbatim-quotes an earlier one (transposition-aware,
+/// [`novelty::flag_phrase_duplicates`]) carries a `duplicate` flag for curator
+/// review (#76) — parity with the web split path.
 fn chunks_for_segments(
     path: &Path,
     score: &Score,
     inputs: &CurateInputs,
     track: usize,
     segments: &[Range<usize>],
-) -> Vec<ChunkMeta> {
-    segments
+) -> Vec<PhraseChunk> {
+    let kept: Vec<(usize, usize, Score)> = segments
         .iter()
         .filter_map(|seg| {
             let sub = slice::extract_bars(score, seg.clone());
@@ -924,6 +939,14 @@ fn chunks_for_segments(
             }
             Some((seg.start, seg.end, sub))
         })
+        .collect();
+
+    // Flag near-duplicate phrases (a later repeat of an earlier one) for review.
+    let phrase_scores: Vec<Score> = kept.iter().map(|(_, _, sub)| sub.clone()).collect();
+    let duplicates =
+        novelty::flag_phrase_duplicates(&phrase_scores, track, novelty::PHRASE_DUPLICATE_SHARE);
+
+    kept.into_iter()
         .enumerate()
         .map(|(phrase, (start, end, sub))| {
             let id = format!("{}_p{phrase}", inputs.id);
@@ -934,7 +957,8 @@ fn chunks_for_segments(
                 u32::try_from(start).unwrap_or(0),
                 u32::try_from(last).unwrap_or(0),
             ));
-            meta
+            let duplicate = duplicates.get(phrase).copied().flatten();
+            PhraseChunk { meta, duplicate }
         })
         .collect()
 }
@@ -949,17 +973,32 @@ fn curate_phrases(
     let chunks = phrase_chunks(path, score, inputs)?;
     let stem = output.map_or_else(|| path.with_extension(""), Path::to_path_buf);
 
-    for (phrase, meta) in chunks.iter().enumerate() {
-        let (lo, hi) = meta.source.bar_range.unwrap_or((0, 0));
+    let mut flagged = 0_usize;
+    for (phrase, chunk) in chunks.iter().enumerate() {
+        let (lo, hi) = chunk.meta.source.bar_range.unwrap_or((0, 0));
         println!("phrase {phrase} (bars {lo}..{hi}):");
-        print_measurements(meta);
-        let json = serde_json::to_string_pretty(meta).map_err(CliError::Json)?;
+        if let Some(dup) = chunk.duplicate {
+            flagged = flagged.saturating_add(1);
+            println!(
+                "  near-duplicate of phrase {} (quote {:.2}) — consider dropping",
+                dup.of, dup.quote_share
+            );
+        }
+        print_measurements(&chunk.meta);
+        let json = serde_json::to_string_pretty(&chunk.meta).map_err(CliError::Json)?;
         write_output(
             &PathBuf::from(format!("{}.p{phrase}.chunk.json", stem.display())),
             &json,
         )?;
     }
-    println!("split into {} phrase chunk(s)", chunks.len());
+    if flagged > 0 {
+        println!(
+            "split into {} phrase chunk(s); {flagged} near-duplicate(s) flagged for review",
+            chunks.len()
+        );
+    } else {
+        println!("split into {} phrase chunk(s)", chunks.len());
+    }
     Ok(())
 }
 
@@ -1761,10 +1800,10 @@ mod tests {
         // inclusive `[first, last]` ranges, each id suffixed by its phrase index.
         let mut next = 0_u32;
         for (i, chunk) in chunks.iter().enumerate() {
-            let (lo, hi) = chunk.source.bar_range.expect("bar_range set");
+            let (lo, hi) = chunk.meta.source.bar_range.expect("bar_range set");
             assert_eq!(lo, next, "first bar follows the previous chunk's last + 1");
             assert!(hi >= lo, "inclusive last bar is at least the first");
-            assert_eq!(chunk.id.0, format!("dgd_p{i}"));
+            assert_eq!(chunk.meta.id.0, format!("dgd_p{i}"));
             next = hi.saturating_add(1);
         }
         assert_eq!(next, 4, "inclusive ranges cover all four bars");
@@ -1795,11 +1834,11 @@ mod tests {
         );
         assert_eq!(chunks.len(), 1, "the silent [2,4) segment is dropped");
         assert_eq!(
-            chunks[0].source.bar_range,
+            chunks[0].meta.source.bar_range,
             Some((0, 1)),
             "inclusive last bar is end-1, not the half-open end"
         );
-        assert_eq!(chunks[0].id.0, "dgd_p0", "kept chunks renumber from 0");
+        assert_eq!(chunks[0].meta.id.0, "dgd_p0", "kept chunks renumber from 0");
     }
 
     #[test]
@@ -1839,10 +1878,84 @@ mod tests {
              even though a later track has notes there"
         );
         assert_eq!(
-            chunks[0].source.bar_range,
+            chunks[0].meta.source.bar_range,
             Some((0, 1)),
             "the kept chunk is the detected track's sounding bars 0–1"
         );
+    }
+
+    /// A 480-PPQN 4/4 score of `phrases`, each phrase eight quarter notes spanning
+    /// two bars (phrase `i` covers bars `2i`, `2i+1`).
+    fn phrase_score(phrases: &[&[u8]]) -> Score {
+        let bar_count = phrases.len().saturating_mul(2);
+        let master_bars = (0..bar_count)
+            .map(|i| {
+                let start = u32::try_from(i).unwrap_or(0).saturating_mul(1920);
+                MasterBar {
+                    index: i,
+                    tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
+                        .expect("ordered"),
+                    time_signature: TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    },
+                    tempo: Tempo::new(120.0).expect("120 BPM"),
+                    repeat: RepeatMarker::default(),
+                }
+            })
+            .collect();
+        let mut atoms = Vec::new();
+        for (pi, phrase) in phrases.iter().enumerate() {
+            let phrase_start = u32::try_from(pi).unwrap_or(0).saturating_mul(3840);
+            for (qi, &pitch) in phrase.iter().enumerate() {
+                let onset =
+                    phrase_start.saturating_add(u32::try_from(qi).unwrap_or(0).saturating_mul(480));
+                atoms.push(quarter(onset, pitch));
+            }
+        }
+        Score {
+            ticks_per_quarter: 480,
+            master_bars,
+            tracks: vec![track_of(vec![voice_of(0, atoms)])],
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    #[test]
+    fn chunks_for_segments_flags_near_duplicate_phrases() {
+        use super::chunks_for_segments;
+        use std::path::Path;
+
+        // Phrase 0 (bars 0–1) and phrase 2 (bars 4–5) are identical; phrase 1
+        // (bars 2–3) is a different contour. `measure_novelty` is transposition-
+        // aware, so phrase 1 must differ in *intervals*, not just pitch level.
+        let stepwise: &[u8] = &[60, 62, 64, 65, 67, 65, 64, 62];
+        let arpeggio: &[u8] = &[60, 64, 67, 72, 71, 67, 64, 60];
+        let score = phrase_score(&[stepwise, arpeggio, stepwise]);
+
+        let chunks = chunks_for_segments(
+            Path::new("riff.gp5"),
+            &score,
+            &split_inputs(),
+            0,
+            &[0..2, 2..4, 4..6],
+        );
+
+        assert_eq!(chunks.len(), 3, "three non-trivial phrases");
+        assert!(
+            chunks[0].duplicate.is_none(),
+            "the first occurrence is canonical"
+        );
+        assert!(
+            chunks[1].duplicate.is_none(),
+            "a distinct contour is not flagged"
+        );
+        let dup = chunks[2]
+            .duplicate
+            .expect("phrase 2 near-duplicates phrase 0");
+        assert_eq!(dup.of, 0);
+        assert!(dup.quote_share >= 0.8, "share {}", dup.quote_share);
     }
 
     #[test]
