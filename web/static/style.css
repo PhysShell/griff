@@ -180,6 +180,14 @@ label.row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(
   font-size: 0.9rem;
 }
 #splitInfo { display: block; text-align: center; min-height: 1em; }
+#splitStats {
+  display: block;
+  text-align: center;
+  min-height: 1em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+  color: var(--a);
+}
 button:disabled { opacity: 0.4; cursor: default; }
 
 /* ---- debug log (verbose on-page engine trace) ---- */

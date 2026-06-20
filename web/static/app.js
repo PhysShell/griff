@@ -15,6 +15,7 @@ import {
 } from './modes.js';
 import { describeTuning } from './tuning.js';
 import { compareTracks, phraseOptions } from './pager.js';
+import { phraseStats, formatStats } from './phrasestats.js';
 import { defaultChunkId, idMatchesFile } from './idguard.js';
 
 const $ = (id) => document.getElementById(id);
@@ -38,7 +39,7 @@ const els = {
   capSplit: $('capSplit'), splitView: $('splitView'),
   splitPrev: $('splitPrev'), splitNext: $('splitNext'),
   splitJump: $('splitJump'), splitCompare: $('splitCompare'),
-  splitInfo: $('splitInfo'), splitTags: $('splitTags'),
+  splitInfo: $('splitInfo'), splitStats: $('splitStats'), splitTags: $('splitTags'),
   splitDownload: $('splitDownload'), splitDownloadEach: $('splitDownloadEach'),
   splitDownloadAll: $('splitDownloadAll'),
   // verbose on-page debug log
@@ -454,6 +455,11 @@ function renderPhrase() {
       + (ch.duplicate_of != null
         ? ` · ≈ phrase ${ch.duplicate_of + 1} (${Math.round(ch.duplicate_share * 100)}% quote)`
         : '');
+  // Per-phrase fact-sheet (#75): register · density · dynamics of the shown
+  // phrase, computed from its notes — a transferable fingerprint, not a label.
+  if (els.splitStats) {
+    els.splitStats.textContent = formatStats(phraseStats(ch.notes || [], ch.bar_hi - ch.bar_lo + 1));
+  }
   renderPhraseTags(tags);
   els.splitPrev.disabled = splitIdx === 0;
   els.splitNext.disabled = splitIdx === splitChunks.length - 1;
