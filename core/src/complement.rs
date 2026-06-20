@@ -591,9 +591,9 @@ fn rotated_correlation(histogram: &[f64; 12], profile: &[f64; 12], tonic: u8) ->
     for (x, y) in histogram.iter().zip(rotated.iter()) {
         let dx = x - mean_x;
         let dy = y - mean_y;
-        numerator += dx * dy;
-        var_x += dx * dx;
-        var_y += dy * dy;
+        numerator = dx.mul_add(dy, numerator);
+        var_x = dx.mul_add(dx, var_x);
+        var_y = dy.mul_add(dy, var_y);
     }
     let denominator = (var_x * var_y).sqrt();
     if denominator > 0.0 {
