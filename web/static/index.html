@@ -72,6 +72,30 @@
       to WASM; audio is a placeholder synth (a real SoundFont comes later).
     </p>
 
+    <section id="splitView" class="splitview" hidden aria-label="phrase chunks">
+      <div class="transport pager">
+        <button id="splitPrev" type="button">◀ Prev</button>
+        <select id="splitJump" class="pagerjump" aria-label="jump to phrase"></select>
+        <button id="splitNext" type="button">Next ▶</button>
+      </div>
+      <label>Compare with
+        <span class="hint">overlay a second phrase — blue = current, amber = compare</span>
+        <select id="splitCompare" aria-label="compare with phrase"></select>
+      </label>
+      <output id="splitInfo" class="hint" role="status" aria-live="polite"></output>
+      <div id="splitTags" class="checkgrid tagsread" aria-label="detected tags for this phrase"></div>
+      <div class="transport">
+        <button id="splitDownload" type="button" class="primary">⬇ this phrase</button>
+        <button id="splitDownloadEach" type="button">⬇ each phrase</button>
+        <button id="splitDownloadAll" type="button">⬇ all (one JSON)</button>
+      </div>
+      <p class="hint">
+        <strong>each phrase</strong> → one <code>.chunk.json</code> per phrase for
+        <code>griff manifest</code>; <strong>all (one JSON)</strong> → a single
+        <code>.chunks.json</code> array for sharing/review.
+      </p>
+    </section>
+
     <section class="controls capture" id="capture" hidden>
       <h2>Capture <span class="muted">· chunk.json</span></h2>
       <p class="hint">
@@ -161,36 +185,9 @@
       </div>
       <p class="hint">
         One <code>chunk.json</code> per detected phrase (like <code>griff split</code>),
-        cut from the selected track. Page through them, ▶ each, and download.
+        cut from the selected track — page, play, and download them from the phrase
+        panel that appears under the roll.
       </p>
-
-      <section id="splitView" class="splitview" hidden aria-label="phrase chunks">
-        <div class="transport pager">
-          <button id="splitPrev" type="button">◀ Prev</button>
-          <select id="splitJump" class="pagerjump" aria-label="jump to phrase"></select>
-          <button id="splitNext" type="button">Next ▶</button>
-        </div>
-        <label>Compare with
-          <span class="hint">overlay a second phrase — blue = current, amber = compare</span>
-          <select id="splitCompare" aria-label="compare with phrase"></select>
-        </label>
-        <output id="splitInfo" class="hint" role="status" aria-live="polite"></output>
-        <div id="splitTags" class="checkgrid tagsread" aria-label="detected tags for this phrase"></div>
-        <div class="transport">
-          <button id="splitPlay" type="button">▶ Play phrase</button>
-          <button id="splitStop" type="button">⏹ Stop</button>
-        </div>
-        <div class="transport">
-          <button id="splitDownload" type="button" class="primary">⬇ this phrase</button>
-          <button id="splitDownloadEach" type="button">⬇ each phrase</button>
-          <button id="splitDownloadAll" type="button">⬇ all (one JSON)</button>
-        </div>
-        <p class="hint">
-          <strong>each phrase</strong> → one <code>.chunk.json</code> per phrase for
-          <code>griff manifest</code>; <strong>all (one JSON)</strong> → a single
-          <code>.chunks.json</code> array for sharing/review.
-        </p>
-      </section>
     </section>
 
     <details id="debugPanel" class="debug" open>

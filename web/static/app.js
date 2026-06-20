@@ -39,7 +39,6 @@ const els = {
   splitPrev: $('splitPrev'), splitNext: $('splitNext'),
   splitJump: $('splitJump'), splitCompare: $('splitCompare'),
   splitInfo: $('splitInfo'), splitTags: $('splitTags'),
-  splitPlay: $('splitPlay'), splitStop: $('splitStop'),
   splitDownload: $('splitDownload'), splitDownloadEach: $('splitDownloadEach'),
   splitDownloadAll: $('splitDownloadAll'),
   // verbose on-page debug log
@@ -663,8 +662,6 @@ function bind() {
   els.splitJump.addEventListener('change', () => { splitIdx = +els.splitJump.value; renderPhrase(); });
   els.splitCompare.addEventListener('change', () => { compareIdx = +els.splitCompare.value; renderPhrase(); });
   els.capId.addEventListener('input', updateIdWarn);
-  els.splitPlay.addEventListener('click', () => { renderPhrase(); play(); });
-  els.splitStop.addEventListener('click', stop);
   els.splitDownload.addEventListener('click', downloadPhrase);
   els.splitDownloadEach.addEventListener('click', downloadEachPhrase);
   els.splitDownloadAll.addEventListener('click', downloadBundle);
