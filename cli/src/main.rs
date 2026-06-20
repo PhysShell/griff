@@ -1845,6 +1845,80 @@ mod tests {
         );
     }
 
+    /// A 480-PPQN 4/4 score of `phrases`, each phrase eight quarter notes spanning
+    /// two bars (phrase `i` covers bars `2i`, `2i+1`).
+    fn phrase_score(phrases: &[&[u8]]) -> Score {
+        let bar_count = phrases.len().saturating_mul(2);
+        let master_bars = (0..bar_count)
+            .map(|i| {
+                let start = u32::try_from(i).unwrap_or(0).saturating_mul(1920);
+                MasterBar {
+                    index: i,
+                    tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
+                        .expect("ordered"),
+                    time_signature: TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    },
+                    tempo: Tempo::new(120.0).expect("120 BPM"),
+                    repeat: RepeatMarker::default(),
+                }
+            })
+            .collect();
+        let mut atoms = Vec::new();
+        for (pi, phrase) in phrases.iter().enumerate() {
+            let phrase_start = u32::try_from(pi).unwrap_or(0).saturating_mul(3840);
+            for (qi, &pitch) in phrase.iter().enumerate() {
+                let onset =
+                    phrase_start.saturating_add(u32::try_from(qi).unwrap_or(0).saturating_mul(480));
+                atoms.push(quarter(onset, pitch));
+            }
+        }
+        Score {
+            ticks_per_quarter: 480,
+            master_bars,
+            tracks: vec![track_of(vec![voice_of(0, atoms)])],
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    #[test]
+    fn chunks_for_segments_flags_near_duplicate_phrases() {
+        use super::chunks_for_segments;
+        use std::path::Path;
+
+        // Phrase 0 (bars 0–1) and phrase 2 (bars 4–5) are identical; phrase 1
+        // (bars 2–3) is a different contour. `measure_novelty` is transposition-
+        // aware, so phrase 1 must differ in *intervals*, not just pitch level.
+        let stepwise: &[u8] = &[60, 62, 64, 65, 67, 65, 64, 62];
+        let arpeggio: &[u8] = &[60, 64, 67, 72, 71, 67, 64, 60];
+        let score = phrase_score(&[stepwise, arpeggio, stepwise]);
+
+        let chunks = chunks_for_segments(
+            Path::new("riff.gp5"),
+            &score,
+            &split_inputs(),
+            0,
+            &[0..2, 2..4, 4..6],
+        );
+
+        assert_eq!(chunks.len(), 3, "three non-trivial phrases");
+        assert!(
+            chunks[0].duplicate.is_none(),
+            "the first occurrence is canonical"
+        );
+        assert!(
+            chunks[1].duplicate.is_none(),
+            "a distinct contour is not flagged"
+        );
+        let dup = chunks[2]
+            .duplicate
+            .expect("phrase 2 near-duplicates phrase 0");
+        assert_eq!(dup.of, 0);
+        assert!(dup.quote_share >= 0.8, "share {}", dup.quote_share);
+    }
+
     #[test]
     fn group_relations_measure_all_pairs() {
         let score = one_bar_score(vec![
