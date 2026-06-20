@@ -184,6 +184,11 @@ fn detect_gp_version(data: &[u8]) -> Option<u8> {
 
 // ── Song → Score conversion ───────────────────────────────────────────────────
 
+/// Converts a parsed Guitar Pro song into griff's canonical [`Score`] model.
+///
+/// The conversion builds the master timeline from measure headers, carries
+/// tempos across bars that omit them, folds repeat markers into master bars, and
+/// delegates per-track event extraction while collecting import losses.
 fn gp_song_to_score(song: &guitarpro::Song) -> Score {
     let mut loss = LossReport::new();
 
@@ -228,6 +233,11 @@ fn gp_song_to_score(song: &guitarpro::Song) -> Score {
 
 // ── master bar construction ───────────────────────────────────────────────────
 
+/// Builds canonical master bars from pre-normalised meter, start, tempo, and
+/// repeat arrays.
+///
+/// Missing entries fall back to safe defaults so malformed or partially parsed
+/// GP files still produce a structurally valid score where possible.
 fn build_gp_master_bars(
     meters: &[(u8, u8)],
     starts: &[u32],
@@ -264,6 +274,11 @@ fn build_gp_master_bars(
 
 // ── track construction ────────────────────────────────────────────────────────
 
+/// Converts one Guitar Pro track into a canonical [`Track`].
+///
+/// Track-level metadata such as the MIDI channel and tuning is preserved, while
+/// each populated GP voice is converted independently against the shared master
+/// timeline starts.
 fn build_gp_track(
     gp_track: &guitarpro::Track,
     song: &guitarpro::Song,
@@ -312,6 +327,11 @@ fn gp_tuning(strings: &[(i8, i8)]) -> Tuning {
 
 // ── voice construction ────────────────────────────────────────────────────────
 
+/// Converts a single Guitar Pro voice into a canonical [`Voice`].
+///
+/// Beats are positioned by accumulating their durations from each measure's
+/// master-timeline start, and tied notes are resolved against per-string held
+/// note state.
 fn build_gp_voice(
     gp_track: &guitarpro::Track,
     voice_idx: usize,
@@ -379,6 +399,11 @@ struct StringCtx<'a> {
     zero_indexed: bool,
 }
 
+/// Appends the canonical event representation for one Guitar Pro beat.
+///
+/// Normal and dead notes become note atoms, tied notes extend previously held
+/// notes, unsupported note kinds are recorded as losses, and empty/rest beats
+/// become rest groups.
 fn append_beat(
     beat: &guitarpro::Beat,
     beat_start: u32,
@@ -507,6 +532,7 @@ fn extend_tie(
     false
 }
 
+/// Creates a single-atom rest group spanning `duration` ticks from `start`.
 fn rest_group(start: Ticks, duration: Ticks) -> EventGroup {
     EventGroup {
         kind: EventGroupKind::Single,

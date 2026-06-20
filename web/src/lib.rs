@@ -42,7 +42,7 @@ use griff_core::corpus::{
     Acquisition, BoundaryEntry, ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, RightsInfo,
     RightsStatus, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
 };
-use griff_core::{gesture, harmony, structure, technique};
+use griff_core::{gesture, harmony, structure, syncopation, technique};
 
 const PPQN: u16 = 480;
 const BAR: u32 = 1920; // 4/4 at 480 PPQN
@@ -534,10 +534,12 @@ fn build_chunk_meta_record(
     // tags with the curator's choices, fill the free-form `techniques` list.
     let derived = technique::derive_techniques(score, track_index);
     let derived_harmony = harmony::derive_harmony(score, track_index);
+    let derived_syncopated = syncopation::derive_syncopated(score, track_index);
     let technique_tags = technique::merge_tags(&chosen_tags, &derived.tags);
-    // Chord-quality tags (#75) merge additively too, keeping this capture front
-    // in step with the CLI `build_chunk_meta`.
-    let tags = technique::merge_tags(&technique_tags, &derived_harmony);
+    // Chord-quality + syncopation tags (#75) merge additively too, keeping this
+    // capture front in step with the CLI `build_chunk_meta`.
+    let with_harmony = technique::merge_tags(&technique_tags, &derived_harmony);
+    let tags = technique::merge_tags(&with_harmony, &derived_syncopated);
     let all_flags = [
         QualityFlag::Clean,
         QualityFlag::Lossy,
@@ -1267,6 +1269,52 @@ mod tests {
 
         // The chord voicing the tab states is auto-tagged, mirroring the CLI front.
         assert!(meta.tags.contains(&SwancoreTag::PowerChord), "{:?}", meta.tags);
+    }
+
+    #[test]
+    fn build_chunk_record_auto_fills_syncopated_from_displaced_onsets() {
+        use griff_core::corpus::SwancoreTag;
+        use griff_core::event::{NoteMarks, Pitch, Ticks, Velocity};
+        use griff_core::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind};
+
+        // Replace voice 0 with a displaced pattern: in every bar the "and of 2"
+        // (720) and "and of 3" (1200) anticipate beats 3 and 4, which carry no
+        // onset — 2 of 4 beats displaced per bar, so the track reads syncopated.
+        let mut score = sample_part_a();
+        let note = |onset: u32| EventGroup {
+            kind: EventGroupKind::Single,
+            atoms: vec![AtomEvent::Note(AtomNote {
+                absolute_start: Ticks(onset),
+                duration: Ticks(120),
+                pitch: Pitch(60),
+                velocity: Velocity(90),
+                marks: NoteMarks::empty(),
+                position: None,
+            })],
+            technique_spans: Vec::new(),
+        };
+        let voice = score
+            .tracks
+            .first_mut()
+            .expect("track")
+            .voices
+            .first_mut()
+            .expect("voice");
+        voice.event_groups = (0..4_u32)
+            .flat_map(|bar| {
+                let start = bar * 1920;
+                [note(start), note(start + 720), note(start + 1200)]
+            })
+            .collect();
+
+        let meta = build_chunk_meta_record(
+            &score, 0, "dgd_001", "Riff", "riff.gp5", "standard_e", 0, "", "", -1, 3, 0, false,
+            "", "t", "t",
+        )
+        .expect("record builds");
+
+        // The displaced phrasing the tab states is auto-tagged, mirroring the CLI.
+        assert!(meta.tags.contains(&SwancoreTag::Syncopated), "{:?}", meta.tags);
     }
 
     #[test]

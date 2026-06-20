@@ -1282,3 +1282,24 @@ Architectural decisions go to [`adr/`](adr/) instead.
   pass. Accepting that extended/altered chords and arpeggiated or cross-voice
   voicings go unclassified in this first cut (under-tagging, never mis-tagging),
   and that slash chords carry no tag until that follow-up lands.
+
+- 2026-06-20 — In the context of auto-deriving the `syncopated` rhythm tag (#75's
+  last derive-style ask after chord-quality), facing that syncopation is a matter
+  of degree — so, unlike the threshold-free technique/harmony derivers, it cannot
+  be purely presence-based — we decided for a **displacement** metric: a beat is
+  displaced when the off-beat eighth-note "and" just before it is struck while the
+  beat tick itself is not (anticipation / sustain-over), and a track tags
+  `Syncopated` once the displaced-beat share meets the documented constant
+  `SYNCOPATION_THRESHOLD = 0.25` (the maintainer's balanced calibration). Prior
+  art: the displacement/anticipation idea is the Longuet-Higgins & Lee syncopation
+  notion, simplified to a two-level (beat / eighth-"and") grid and reimplemented
+  natively. Against a raw off-beat-onset ratio — steady eighth/sixteenth runs are
+  ~50–75% off-beat yet not syncopated, so that would over-tag; the displacement
+  metric scores them zero because every beat is still struck. The fixed threshold
+  keeps it deterministic (SPEC §6) and is recorded here as a deliberate departure
+  from the threshold-free derivers. We derive the rhythm tag `Syncopated`, not the
+  style tag `SyncopatedRiff` (a passage-dominance call left to curation). Accepting
+  that accent-based syncopation, compound meters (the numerator is treated as the
+  beat count), finer-than-eighth and triplet grids, and bars whose beat is not an
+  even tick count go unmeasured in this first cut (under-tagging, never
+  mis-tagging).

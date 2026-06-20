@@ -22,7 +22,7 @@ use griff_core::{
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::{self, TickRange},
-    split, structure, technique, unfold,
+    split, structure, syncopation, technique, unfold,
 };
 
 /// griff — guitar riff engine.
@@ -1058,6 +1058,11 @@ fn build_chunk_meta(
     let derived_harmony = track_index
         .map(|idx| harmony::derive_harmony(score, idx))
         .unwrap_or_default();
+    // Auto-derive the syncopated rhythm tag from onset placement (#75); merged
+    // additively as well.
+    let derived_syncopated = track_index
+        .map(|idx| syncopation::derive_syncopated(score, idx))
+        .unwrap_or_default();
 
     let now = "2026-05-20T00:00:00Z".to_owned();
     ChunkMeta {
@@ -1073,10 +1078,11 @@ fn build_chunk_meta(
         time_signature,
         tuning: inputs.tuning.clone(),
         tags: {
-            // Additive: curator choices first, then derived technique tags, then
-            // derived chord-quality tags (#75) — none overrides the others.
+            // Additive: curator choices first, then derived technique, chord-
+            // quality (#75), and syncopation (#75) tags — none overrides another.
             let with_techniques = technique::merge_tags(&inputs.tags, &derived.tags);
-            technique::merge_tags(&with_techniques, &derived_harmony)
+            let with_harmony = technique::merge_tags(&with_techniques, &derived_harmony);
+            technique::merge_tags(&with_harmony, &derived_syncopated)
         },
         boundaries,
         techniques: derived.names,
@@ -1612,6 +1618,52 @@ mod tests {
         assert!(
             meta.tags.contains(&SwancoreTag::ArtificialHarmonic),
             "{:?}",
+            meta.tags
+        );
+    }
+
+    #[test]
+    fn build_chunk_meta_auto_fills_syncopated_from_displaced_onsets() {
+        use super::{build_chunk_meta, CurateInputs};
+        use griff_core::corpus::{
+            Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort, SwancoreTag,
+        };
+        use std::path::Path;
+
+        // Beat 1 struck and the "and of 2" (720) anticipates beat 3 (960, unstruck):
+        // 1 of 4 beats displaced = 0.25, the inclusive threshold. Guards the CLI
+        // merge seam against parity drift versus the web front.
+        let track = track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(720, 60)])]);
+        let score = one_bar_score(vec![track]);
+
+        let inputs = CurateInputs {
+            id: "dgd_001".to_owned(),
+            title: "Riff".to_owned(),
+            tuning: "standard_e".to_owned(),
+            style_cohort: StyleCohort::Core,
+            tags: Vec::new(),
+            quality_flags: vec![QualityFlag::Clean],
+            reviewer: None,
+            rights: RightsInfo {
+                rights_status: RightsStatus::CopyrightedComposition,
+                acquisition: Acquisition::CommunityTabSite,
+                redistributable: false,
+                notes: String::new(),
+            },
+        };
+        let meta = build_chunk_meta(
+            &score,
+            Path::new("riff.gp5"),
+            Some(0),
+            inputs.id.clone(),
+            inputs.title.clone(),
+            &inputs,
+            None,
+        );
+
+        assert!(
+            meta.tags.contains(&SwancoreTag::Syncopated),
+            "syncopated tag should be auto-derived: {:?}",
             meta.tags
         );
     }
