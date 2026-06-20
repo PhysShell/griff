@@ -22,7 +22,7 @@ use griff_core::{
     midi::{self, MidiError},
     score::{AtomEvent, Score, Track, Voice},
     slice::{self, TickRange},
-    split, structure, technique, unfold,
+    split, structure, syncopation, technique, unfold,
 };
 
 /// griff — guitar riff engine.
@@ -1058,6 +1058,11 @@ fn build_chunk_meta(
     let derived_harmony = track_index
         .map(|idx| harmony::derive_harmony(score, idx))
         .unwrap_or_default();
+    // Auto-derive the syncopated rhythm tag from onset placement (#75); merged
+    // additively as well.
+    let derived_syncopated = track_index
+        .map(|idx| syncopation::derive_syncopated(score, idx))
+        .unwrap_or_default();
 
     let now = "2026-05-20T00:00:00Z".to_owned();
     ChunkMeta {
@@ -1073,10 +1078,11 @@ fn build_chunk_meta(
         time_signature,
         tuning: inputs.tuning.clone(),
         tags: {
-            // Additive: curator choices first, then derived technique tags, then
-            // derived chord-quality tags (#75) — none overrides the others.
+            // Additive: curator choices first, then derived technique, chord-
+            // quality (#75), and syncopation (#75) tags — none overrides another.
             let with_techniques = technique::merge_tags(&inputs.tags, &derived.tags);
-            technique::merge_tags(&with_techniques, &derived_harmony)
+            let with_harmony = technique::merge_tags(&with_techniques, &derived_harmony);
+            technique::merge_tags(&with_harmony, &derived_syncopated)
         },
         boundaries,
         techniques: derived.names,
