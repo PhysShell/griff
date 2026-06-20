@@ -42,7 +42,7 @@ use griff_core::corpus::{
     Acquisition, BoundaryEntry, ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, RightsInfo,
     RightsStatus, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
 };
-use griff_core::{gesture, structure, technique};
+use griff_core::{gesture, harmony, structure, technique};
 
 const PPQN: u16 = 480;
 const BAR: u32 = 1920; // 4/4 at 480 PPQN
@@ -533,7 +533,11 @@ fn build_chunk_meta_record(
     // Fold in techniques the notation already states (ADR-0018): merge their
     // tags with the curator's choices, fill the free-form `techniques` list.
     let derived = technique::derive_techniques(score, track_index);
-    let tags = technique::merge_tags(&chosen_tags, &derived.tags);
+    let derived_harmony = harmony::derive_harmony(score, track_index);
+    let technique_tags = technique::merge_tags(&chosen_tags, &derived.tags);
+    // Chord-quality tags (#75) merge additively too, keeping this capture front
+    // in step with the CLI `build_chunk_meta`.
+    let tags = technique::merge_tags(&technique_tags, &derived_harmony);
     let all_flags = [
         QualityFlag::Clean,
         QualityFlag::Lossy,
@@ -1202,9 +1206,10 @@ mod tests {
             n.marks.insert(NoteMark::HarmonicPinch);
         }
 
-        // The curator hand-picks only "intro" (index 21); derivation adds the rest.
+        // The curator hand-picks only "intro" (index 22 in `all_variants()` after
+        // LetRing shifted the structure tags, #87); derivation adds the rest.
         let meta = build_chunk_meta_record(
-            &score, 0, "dgd_001", "Riff", "riff.gp5", "standard_e", 0, "21", "", -1, 3, 0,
+            &score, 0, "dgd_001", "Riff", "riff.gp5", "standard_e", 0, "22", "", -1, 3, 0,
             false, "", "t", "t",
         )
         .expect("record builds");
@@ -1220,6 +1225,48 @@ mod tests {
         assert!(meta.tags.contains(&SwancoreTag::Intro), "chosen tag kept: {:?}", meta.tags);
         assert!(meta.tags.contains(&SwancoreTag::HammerOn), "{:?}", meta.tags);
         assert!(meta.tags.contains(&SwancoreTag::ArtificialHarmonic), "{:?}", meta.tags);
+    }
+
+    #[test]
+    fn build_chunk_record_auto_fills_harmony_tags_from_chords() {
+        use griff_core::corpus::SwancoreTag;
+        use griff_core::event::{NoteMarks, Pitch, Ticks, Velocity};
+        use griff_core::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind};
+
+        // Inject a bare-fifth power chord (E2 + B2) as a Chord group in voice 0.
+        let mut score = sample_part_a();
+        let chord = |p: u8| {
+            AtomEvent::Note(AtomNote {
+                absolute_start: Ticks(0),
+                duration: Ticks(240),
+                pitch: Pitch(p),
+                velocity: Velocity(90),
+                marks: NoteMarks::empty(),
+                position: None,
+            })
+        };
+        score
+            .tracks
+            .first_mut()
+            .expect("track")
+            .voices
+            .first_mut()
+            .expect("voice")
+            .event_groups
+            .push(EventGroup {
+                kind: EventGroupKind::Chord,
+                atoms: vec![chord(40), chord(47)],
+                technique_spans: Vec::new(),
+            });
+
+        let meta = build_chunk_meta_record(
+            &score, 0, "dgd_001", "Riff", "riff.gp5", "standard_e", 0, "", "", -1, 3, 0, false,
+            "", "t", "t",
+        )
+        .expect("record builds");
+
+        // The chord voicing the tab states is auto-tagged, mirroring the CLI front.
+        assert!(meta.tags.contains(&SwancoreTag::PowerChord), "{:?}", meta.tags);
     }
 
     #[test]
