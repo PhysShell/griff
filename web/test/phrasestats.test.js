@@ -59,7 +59,7 @@ test('formatStats renders a compact one-liner', () => {
   ];
   assert.equal(
     formatStats(phraseStats(notes, 2)),
-    'E2–A4 · 17 st · 1 note/bar · vel 64–120',
+    'E2–A3 · 17 st · 1 note/bar · vel 64–120', // MIDI 57 = A3 (A4 = 69)
   );
 });
 
