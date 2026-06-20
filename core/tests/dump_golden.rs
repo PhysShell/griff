@@ -40,7 +40,10 @@ fn sample_score() -> Score {
         pitch: pitch(64),
         velocity: Velocity::new(80).expect("valid velocity"),
         marks: NoteMarks::empty().with(NoteMark::Accent),
-        position: Some(NotePosition::explicit(FretboardPosition { string: 1, fret: 0 })),
+        position: Some(NotePosition::explicit(FretboardPosition {
+            string: 1,
+            fret: 0,
+        })),
     });
     let plain = AtomEvent::Note(AtomNote {
         absolute_start: Ticks(480),

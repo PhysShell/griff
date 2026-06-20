@@ -51,7 +51,12 @@ fn bar(index: usize, start: u32) -> MasterBar {
 
 /// Four bars, one note on each downbeat (pitch 60 + bar index).
 fn four_bar_score() -> Score {
-    let notes = [note(0, 60), note(BAR, 61), note(2 * BAR, 62), note(3 * BAR, 63)];
+    let notes = [
+        note(0, 60),
+        note(BAR, 61),
+        note(2 * BAR, 62),
+        note(3 * BAR, 63),
+    ];
     Score {
         ticks_per_quarter: 480,
         master_bars: vec![bar(0, 0), bar(1, BAR), bar(2, 2 * BAR), bar(3, 3 * BAR)],
@@ -77,8 +82,7 @@ fn four_bar_score() -> Score {
 }
 
 fn onsets(score: &Score) -> Vec<(u32, u8)> {
-    score.tracks[0]
-        .voices[0]
+    score.tracks[0].voices[0]
         .event_groups
         .iter()
         .flat_map(|g| &g.atoms)
@@ -117,5 +121,8 @@ fn empty_range_yields_no_bars_and_out_of_range_end_clamps() {
     // End past the last bar clamps to what exists (all four bars here).
     let all = extract_bars(&four_bar_score(), 0..9);
     assert_eq!(all.master_bars.len(), 4);
-    assert_eq!(onsets(&all), vec![(0, 60), (BAR, 61), (2 * BAR, 62), (3 * BAR, 63)]);
+    assert_eq!(
+        onsets(&all),
+        vec![(0, 60), (BAR, 61), (2 * BAR, 62), (3 * BAR, 63)]
+    );
 }

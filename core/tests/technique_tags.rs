@@ -83,11 +83,26 @@ fn maps_spans_and_marks_to_direct_tags_and_a_superset_name_list() {
     assert!(d.tags.contains(&SwancoreTag::ArtificialHarmonic));
     // Legato and accent have no dedicated SwancoreTag — they must NOT be tagged…
     assert!(!d.tags.contains(&SwancoreTag::NaturalHarmonic));
-    assert_eq!(d.tags.len(), 3, "only the directly-taggable techniques: {:?}", d.tags);
+    assert_eq!(
+        d.tags.len(),
+        3,
+        "only the directly-taggable techniques: {:?}",
+        d.tags
+    );
 
     // …but the free-form name list is the superset and records them anyway.
-    for name in ["hammer_on", "palm_mute", "legato", "pinch_harmonic", "accent"] {
-        assert!(d.names.contains(&name.to_owned()), "names missing {name}: {:?}", d.names);
+    for name in [
+        "hammer_on",
+        "palm_mute",
+        "legato",
+        "pinch_harmonic",
+        "accent",
+    ] {
+        assert!(
+            d.names.contains(&name.to_owned()),
+            "names missing {name}: {:?}",
+            d.names
+        );
     }
 }
 
@@ -95,7 +110,10 @@ fn maps_spans_and_marks_to_direct_tags_and_a_superset_name_list() {
 fn let_ring_span_derives_the_let_ring_tag_and_name() {
     // let-ring is newly parsed from GP (#75): a LetRing span must auto-derive
     // both the dedicated SwancoreTag::LetRing and the "let_ring" name.
-    let d = derive_techniques(&score_with(&[SpanTechnique::LetRing], NoteMarks::empty()), 0);
+    let d = derive_techniques(
+        &score_with(&[SpanTechnique::LetRing], NoteMarks::empty()),
+        0,
+    );
     assert_eq!(d.tags, vec![SwancoreTag::LetRing]);
     assert_eq!(d.names, vec!["let_ring".to_owned()]);
 }
@@ -103,7 +121,10 @@ fn let_ring_span_derives_the_let_ring_tag_and_name() {
 #[test]
 fn presence_only_so_repeats_dedupe_and_output_is_deterministic() {
     // The same technique across groups/notes is "present", counted once.
-    let score = score_with(&[SpanTechnique::Slide, SpanTechnique::Slide], NoteMarks::empty());
+    let score = score_with(
+        &[SpanTechnique::Slide, SpanTechnique::Slide],
+        NoteMarks::empty(),
+    );
     let a = derive_techniques(&score, 0);
     let b = derive_techniques(&score, 0);
     assert_eq!(a, b, "pure function of the score (SPEC §6)");
@@ -125,7 +146,11 @@ fn merge_tags_keeps_chosen_order_and_appends_only_new_derived() {
     // HammerOn was already chosen → not duplicated; PalmMute is appended.
     assert_eq!(
         merge_tags(&chosen, &derived),
-        vec![SwancoreTag::Intro, SwancoreTag::HammerOn, SwancoreTag::PalmMute]
+        vec![
+            SwancoreTag::Intro,
+            SwancoreTag::HammerOn,
+            SwancoreTag::PalmMute
+        ]
     );
     // Idempotent: merging the result again changes nothing.
     let once = merge_tags(&chosen, &derived);
@@ -158,7 +183,11 @@ fn derives_from_all_voices_like_structure_measures() {
         }],
     });
     let d = derive_techniques(&score, 0);
-    assert!(d.tags.contains(&SwancoreTag::PalmMute), "secondary-voice span: {:?}", d.tags);
+    assert!(
+        d.tags.contains(&SwancoreTag::PalmMute),
+        "secondary-voice span: {:?}",
+        d.tags
+    );
     assert!(
         d.tags.contains(&SwancoreTag::ArtificialHarmonic),
         "secondary-voice mark: {:?}",

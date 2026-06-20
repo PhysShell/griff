@@ -930,8 +930,10 @@ fn chunks_for_segments(
             let title = format!("{} (phrase {phrase})", inputs.title);
             let mut meta = build_chunk_meta(&sub, path, Some(track), id, title, inputs, None);
             let last = end.saturating_sub(1);
-            meta.source.bar_range =
-                Some((u32::try_from(start).unwrap_or(0), u32::try_from(last).unwrap_or(0)));
+            meta.source.bar_range = Some((
+                u32::try_from(start).unwrap_or(0),
+                u32::try_from(last).unwrap_or(0),
+            ));
             meta
         })
         .collect()
@@ -1580,7 +1582,11 @@ mod tests {
         );
 
         // `techniques` is auto-filled from the notation…
-        assert!(meta.techniques.contains(&"hammer_on".to_owned()), "{:?}", meta.techniques);
+        assert!(
+            meta.techniques.contains(&"hammer_on".to_owned()),
+            "{:?}",
+            meta.techniques
+        );
         assert!(
             meta.techniques.contains(&"pinch_harmonic".to_owned()),
             "{:?}",
@@ -1588,8 +1594,16 @@ mod tests {
         );
         // …and the curator's hand-picked tag survives alongside the derived ones.
         assert!(meta.tags.contains(&SwancoreTag::Intro), "{:?}", meta.tags);
-        assert!(meta.tags.contains(&SwancoreTag::HammerOn), "{:?}", meta.tags);
-        assert!(meta.tags.contains(&SwancoreTag::ArtificialHarmonic), "{:?}", meta.tags);
+        assert!(
+            meta.tags.contains(&SwancoreTag::HammerOn),
+            "{:?}",
+            meta.tags
+        );
+        assert!(
+            meta.tags.contains(&SwancoreTag::ArtificialHarmonic),
+            "{:?}",
+            meta.tags
+        );
     }
 
     #[test]
@@ -1663,7 +1677,12 @@ mod tests {
         // Four bars, a note on each downbeat.
         let voice = voice_of(
             0,
-            vec![quarter(0, 60), quarter(1920, 62), quarter(3840, 64), quarter(5760, 65)],
+            vec![
+                quarter(0, 60),
+                quarter(1920, 62),
+                quarter(3840, 64),
+                quarter(5760, 65),
+            ],
         );
         let score = Score {
             ticks_per_quarter: 480,
@@ -1673,8 +1692,7 @@ mod tests {
             loss: LossReport::new(),
         };
 
-        let chunks =
-            phrase_chunks(Path::new("riff.gp5"), &score, &split_inputs()).expect("splits");
+        let chunks = phrase_chunks(Path::new("riff.gp5"), &score, &split_inputs()).expect("splits");
         assert!(!chunks.is_empty(), "at least one phrase chunk");
 
         // Whatever the detector decides, the chunks tile the four bars with
@@ -1706,8 +1724,13 @@ mod tests {
         };
 
         // A sounding [0,2) segment and a silent [2,4) one.
-        let chunks =
-            chunks_for_segments(Path::new("riff.gp5"), &score, &split_inputs(), 0, &[0..2, 2..4]);
+        let chunks = chunks_for_segments(
+            Path::new("riff.gp5"),
+            &score,
+            &split_inputs(),
+            0,
+            &[0..2, 2..4],
+        );
         assert_eq!(chunks.len(), 1, "the silent [2,4) segment is dropped");
         assert_eq!(
             chunks[0].source.bar_range,
@@ -1728,7 +1751,10 @@ mod tests {
         // track, is a rest in this phrase and must be dropped rather than
         // re-measured on the later track that happens to have notes there.
         let detected = track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(1920, 62)])]);
-        let other = track_of(vec![voice_of(0, vec![quarter(3840, 48), quarter(5760, 50)])]);
+        let other = track_of(vec![voice_of(
+            0,
+            vec![quarter(3840, 48), quarter(5760, 50)],
+        )]);
         let score = Score {
             ticks_per_quarter: 480,
             master_bars: split_master_bars(),
