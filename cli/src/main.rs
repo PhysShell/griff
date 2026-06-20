@@ -1623,6 +1623,52 @@ mod tests {
     }
 
     #[test]
+    fn build_chunk_meta_auto_fills_syncopated_from_displaced_onsets() {
+        use super::{build_chunk_meta, CurateInputs};
+        use griff_core::corpus::{
+            Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort, SwancoreTag,
+        };
+        use std::path::Path;
+
+        // Beat 1 struck and the "and of 2" (720) anticipates beat 3 (960, unstruck):
+        // 1 of 4 beats displaced = 0.25, the inclusive threshold. Guards the CLI
+        // merge seam against parity drift versus the web front.
+        let track = track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(720, 60)])]);
+        let score = one_bar_score(vec![track]);
+
+        let inputs = CurateInputs {
+            id: "dgd_001".to_owned(),
+            title: "Riff".to_owned(),
+            tuning: "standard_e".to_owned(),
+            style_cohort: StyleCohort::Core,
+            tags: Vec::new(),
+            quality_flags: vec![QualityFlag::Clean],
+            reviewer: None,
+            rights: RightsInfo {
+                rights_status: RightsStatus::CopyrightedComposition,
+                acquisition: Acquisition::CommunityTabSite,
+                redistributable: false,
+                notes: String::new(),
+            },
+        };
+        let meta = build_chunk_meta(
+            &score,
+            Path::new("riff.gp5"),
+            Some(0),
+            inputs.id.clone(),
+            inputs.title.clone(),
+            &inputs,
+            None,
+        );
+
+        assert!(
+            meta.tags.contains(&SwancoreTag::Syncopated),
+            "syncopated tag should be auto-derived: {:?}",
+            meta.tags
+        );
+    }
+
+    #[test]
     fn primary_voice_note_count_ignores_secondary_voices() {
         // Notes only in voice 1: every analysis module reads voice 0, so the
         // curate selection predicate must agree and skip this track.
