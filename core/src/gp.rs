@@ -402,6 +402,11 @@ fn append_beat(
     let mut atoms: Vec<AtomEvent> = Vec::new();
     let mut technique_spans: Vec<TechniqueSpan> = Vec::new();
     let mut continued = false;
+    // Tapping is a GP *beat* effect (BeatEffects::slap_effect), so it applies to
+    // every note in the beat — like the dead-note flag below, it's resolved here
+    // rather than in map_gp_note_marks, which only sees per-note effects. Slapping
+    // and popping (bass techniques) have no griff mark and are left unmapped.
+    let tapped = matches!(beat.effect.slap_effect, guitarpro::SlapEffect::Tapping);
 
     for note in &beat.notes {
         match note.kind {
@@ -420,6 +425,9 @@ fn append_beat(
                 // A dead ("X") note keeps its (string, fret) but is a muted hit.
                 if matches!(note.kind, guitarpro::NoteType::Dead) {
                     marks.insert(NoteMark::DeadNote);
+                }
+                if tapped {
+                    marks.insert(NoteMark::Tap);
                 }
                 let atom_index = atoms.len();
                 atoms.push(AtomEvent::Note(AtomNote {
@@ -1153,6 +1161,50 @@ mod tests {
             note.position.map(|p| p.position),
             Some(FretboardPosition { string: 3, fret: 5 })
         );
+    }
+
+    #[test]
+    fn tapping_beat_marks_every_note_as_tapped() {
+        // Two-hand tapping is a GP *beat* effect (slap_effect = Tapping, #75), so
+        // every note struck in the beat must import bearing NoteMark::Tap.
+        let strings = vec![(1_i8, 64_i8), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        let mut beat = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                value: 7, // fret 7
+                string: 3,
+                kind: guitarpro::NoteType::Normal,
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+        beat.effect.slap_effect = guitarpro::SlapEffect::Tapping;
+
+        let mut groups: Vec<EventGroup> = Vec::new();
+        let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut loss = LossReport::new();
+        let mut acc = VoiceAccum {
+            groups: &mut groups,
+            held: &mut held,
+            loss: &mut loss,
+        };
+        append_beat(
+            &beat,
+            0,
+            480,
+            StringCtx {
+                strings: &strings,
+                zero_indexed: false,
+            },
+            &mut acc,
+        );
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].atoms.len(), 1);
+        let AtomEvent::Note(note) = &groups[0].atoms[0] else {
+            panic!("a tapped note must import as a Note, not a Rest");
+        };
+        assert!(note.marks.contains(NoteMark::Tap));
     }
 
     #[test]
