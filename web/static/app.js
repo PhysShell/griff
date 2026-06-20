@@ -652,7 +652,14 @@ function bind() {
     if (f) loadFile(f);
   });
   els.gen.addEventListener('click', () => arrange(true));
-  els.play.addEventListener('click', play);
+  els.play.addEventListener('click', () => {
+    // In split mode the shared `current` may have been overwritten by an arrange
+    // control (Generate / mode / seed / …); re-sync to the displayed phrase first
+    // — the removed Play-phrase button did this — so the global Play auditions
+    // what the panel shows, not a stale arrangement (#78).
+    if (splitChunks.length && !els.splitView.hidden) renderPhrase();
+    play();
+  });
   els.stop.addEventListener('click', stop);
   els.capDetect.addEventListener('click', detectBoundaries);
   els.capDownload.addEventListener('click', downloadChunk);
