@@ -39,7 +39,6 @@ const els = {
   splitPrev: $('splitPrev'), splitNext: $('splitNext'),
   splitJump: $('splitJump'), splitCompare: $('splitCompare'),
   splitInfo: $('splitInfo'), splitTags: $('splitTags'),
-  splitPlay: $('splitPlay'), splitStop: $('splitStop'),
   splitDownload: $('splitDownload'), splitDownloadEach: $('splitDownloadEach'),
   splitDownloadAll: $('splitDownloadAll'),
   // verbose on-page debug log
@@ -653,7 +652,14 @@ function bind() {
     if (f) loadFile(f);
   });
   els.gen.addEventListener('click', () => arrange(true));
-  els.play.addEventListener('click', play);
+  els.play.addEventListener('click', () => {
+    // In split mode the shared `current` may have been overwritten by an arrange
+    // control (Generate / mode / seed / …); re-sync to the displayed phrase first
+    // — the removed Play-phrase button did this — so the global Play auditions
+    // what the panel shows, not a stale arrangement (#78).
+    if (splitChunks.length && !els.splitView.hidden) renderPhrase();
+    play();
+  });
   els.stop.addEventListener('click', stop);
   els.capDetect.addEventListener('click', detectBoundaries);
   els.capDownload.addEventListener('click', downloadChunk);
@@ -663,8 +669,6 @@ function bind() {
   els.splitJump.addEventListener('change', () => { splitIdx = +els.splitJump.value; renderPhrase(); });
   els.splitCompare.addEventListener('change', () => { compareIdx = +els.splitCompare.value; renderPhrase(); });
   els.capId.addEventListener('input', updateIdWarn);
-  els.splitPlay.addEventListener('click', () => { renderPhrase(); play(); });
-  els.splitStop.addEventListener('click', stop);
   els.splitDownload.addEventListener('click', downloadPhrase);
   els.splitDownloadEach.addEventListener('click', downloadEachPhrase);
   els.splitDownloadAll.addEventListener('click', downloadBundle);
