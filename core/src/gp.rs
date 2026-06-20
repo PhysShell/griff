@@ -1156,6 +1156,50 @@ mod tests {
     }
 
     #[test]
+    fn tapping_beat_marks_every_note_as_tapped() {
+        // Two-hand tapping is a GP *beat* effect (slap_effect = Tapping, #75), so
+        // every note struck in the beat must import bearing NoteMark::Tap.
+        let strings = vec![(1_i8, 64_i8), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        let mut beat = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                value: 7, // fret 7
+                string: 3,
+                kind: guitarpro::NoteType::Normal,
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+        beat.effect.slap_effect = guitarpro::SlapEffect::Tapping;
+
+        let mut groups: Vec<EventGroup> = Vec::new();
+        let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut loss = LossReport::new();
+        let mut acc = VoiceAccum {
+            groups: &mut groups,
+            held: &mut held,
+            loss: &mut loss,
+        };
+        append_beat(
+            &beat,
+            0,
+            480,
+            StringCtx {
+                strings: &strings,
+                zero_indexed: false,
+            },
+            &mut acc,
+        );
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].atoms.len(), 1);
+        let AtomEvent::Note(note) = &groups[0].atoms[0] else {
+            panic!("a tapped note must import as a Note, not a Rest");
+        };
+        assert!(note.marks.contains(NoteMark::Tap));
+    }
+
+    #[test]
     fn tied_note_extends_previous_note_duration() {
         // A tie (NoteType::Tie) continues the previous note on the same string:
         // it must extend that note's duration, not drop the held time nor emit a
