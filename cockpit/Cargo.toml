@@ -1,0 +1,23 @@
+[package]
+name         = "griff-cockpit"
+description  = "egui cockpit for griff: a native + web Scene renderer over griff-ui-core (ADR-0027)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[[bin]]
+name = "griff-cockpit"
+path = "src/main.rs"
+
+[dependencies]
+griff-core    = { path = "../core" }
+griff-ui-core = { path = "../ui-core" }
+eframe        = "0.34"
+
+[lints]
+workspace = true

@@ -1,0 +1,340 @@
+//! egui cockpit for griff — the renderer side of ADR-0027, Slice 1.
+//!
+//! Paints the shared [`griff_ui_core`] `Scene` (the same placed grid the
+//! `ratatui` preview draws) into an `eframe`/`egui` window, and maps raw egui
+//! input back to the core's semantic [`Intent`]s. Per ADR-0016 this first egui
+//! slice renders the existing `Scene` and nothing else: all layout and
+//! interaction logic stays in `griff-ui-core`; this crate only maps placed
+//! cells to pixels and key presses to intents.
+
+// Pixel layout is bounded arithmetic (cell sizes × small grid counts) plus
+// float→cell casts; every value is clamped to the panel and the grid, so the
+// overflow/precision/cast lints carry no signal here (the `render` rasteriser
+// allows the same set).
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::arithmetic_side_effects,
+    // Pixel coordinates: a fused multiply-add buys precision/perf that screen
+    // layout has no use for, at the cost of legibility.
+    clippy::suboptimal_flops
+)]
+
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
+
+use griff_core::classify::BarClass;
+use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
+use griff_ui_core::{Analysis, Intent, PianoRollView, Step, ViewContext, Viewport};
+
+/// Pixel width of one grid cell.
+const CELL_W: f32 = 9.0;
+/// Pixel height of one grid cell (also the section-band row height).
+const CELL_H: f32 = 16.0;
+
+// ── palette (mirrors preview/design/index.html) ─────────────────────────────
+const BG_BLACK_ROW: Color32 = Color32::from_rgb(0x20, 0x20, 0x24);
+const STROKE: Color32 = Color32::from_rgb(0x46, 0x46, 0x4d);
+const GRID_BAR: Color32 = Color32::from_rgb(0x45, 0x45, 0x4e);
+const BOUNDARY: Color32 = Color32::from_rgb(0xff, 0x5d, 0x6c);
+const PLAYHEAD: Color32 = Color32::from_rgb(0xff, 0xcf, 0x4d);
+const PANEL: Color32 = Color32::from_rgb(0x24, 0x24, 0x27);
+const LABEL_DIM: Color32 = Color32::from_rgb(0x9a, 0x9a, 0xa2);
+const LABEL_FAINT: Color32 = Color32::from_rgb(0x6e, 0x6e, 0x76);
+
+/// Colour for a bar classification (section marks and the section band).
+const fn class_color(class: BarClass) -> Color32 {
+    match class {
+        BarClass::Riff => Color32::from_rgb(0x16, 0x68, 0xdc),
+        BarClass::Breakdown => Color32::from_rgb(0xcf, 0x13, 0x22),
+        BarClass::Solo => Color32::from_rgb(0xd4, 0x88, 0x06),
+        BarClass::Clean => Color32::from_rgb(0x38, 0x9e, 0x0d),
+        BarClass::Unknown => Color32::from_rgb(0x6e, 0x6e, 0x76),
+    }
+}
+
+/// Note-lane colour, cycled by lane index (six lanes, then it wraps).
+const fn lane_color(lane: u16) -> Color32 {
+    match lane % 6 {
+        0 => Color32::from_rgb(0xff, 0x7a, 0x45),
+        1 => Color32::from_rgb(0x36, 0xcf, 0xc9),
+        2 => Color32::from_rgb(0x92, 0x54, 0xde),
+        3 => Color32::from_rgb(0x40, 0x96, 0xff),
+        4 => Color32::from_rgb(0x73, 0xd1, 0x3d),
+        _ => Color32::from_rgb(0xf7, 0x59, 0xab),
+    }
+}
+
+/// The fill colour for a placed cell, or `None` to leave the panel background
+/// showing (text-only or truly empty cells).
+fn role_color(role: CellRole, shade: bool) -> Option<Color32> {
+    match role {
+        CellRole::Empty => shade.then_some(BG_BLACK_ROW),
+        CellRole::Separator => Some(STROKE),
+        CellRole::GridLine => Some(GRID_BAR),
+        CellRole::SectionMark(class) => Some(class_color(class)),
+        CellRole::BoundaryMark => Some(BOUNDARY),
+        CellRole::Note(lane) => Some(lane_color(lane)),
+        CellRole::Playhead => Some(PLAYHEAD),
+        CellRole::PitchLabel => None,
+        CellRole::BandFill { class, selected } => {
+            let base = class_color(class);
+            Some(if selected {
+                base
+            } else {
+                base.gamma_multiply(0.55)
+            })
+        }
+        CellRole::BandHeader => Some(PANEL),
+    }
+}
+
+/// The glyph colour for a textual cell, or `None` when the cell draws as a
+/// solid block (no glyph).
+const fn glyph_color(role: CellRole) -> Option<Color32> {
+    match role {
+        CellRole::PitchLabel => Some(LABEL_DIM),
+        CellRole::BandHeader => Some(LABEL_FAINT),
+        _ => None,
+    }
+}
+
+/// Maps an egui key to the core's semantic [`Intent`], for the navigation and
+/// playback subset this slice exposes (curation intents arrive with the dock).
+const fn key_to_intent(key: Key) -> Option<Intent> {
+    Some(match key {
+        Key::Space => Intent::TogglePlay,
+        Key::ArrowLeft => Intent::ScrollLeft,
+        Key::ArrowRight => Intent::ScrollRight,
+        Key::ArrowUp => Intent::PitchUp,
+        Key::ArrowDown => Intent::PitchDown,
+        Key::Plus | Key::Equals => Intent::ZoomIn,
+        Key::Minus => Intent::ZoomOut,
+        Key::OpenBracket => Intent::PrevSection,
+        Key::CloseBracket => Intent::NextSection,
+        Key::Home | Key::Num0 => Intent::Home,
+        Key::I => Intent::ToggleInspector,
+        Key::Q | Key::Escape => Intent::Quit,
+        _ => return None,
+    })
+}
+
+/// Builds the [`ViewContext`] for a view + analysis, mirroring the preview
+/// front-end (the context is shell-side and identical across renderers).
+fn build_context(view: &PianoRollView, analysis: &Analysis) -> ViewContext {
+    ViewContext {
+        tick_start: view.tick_start,
+        tick_end: view.tick_end,
+        ppq: view.ppq,
+        tempo_bpm: view.tempo_bpm,
+        section_starts: analysis.sections.iter().map(|s| s.tick_start).collect(),
+        tag_count: 0,
+        initial_tags: 0,
+        has_record: false,
+        can_merge: false,
+        bar_ticks: match view.bar_lines.as_slice() {
+            [first, second, ..] => second.saturating_sub(*first),
+            _ => 0,
+        },
+        grid_end: view.bar_lines.last().copied().unwrap_or(0),
+    }
+}
+
+/// The egui cockpit application: a `Scene` renderer over the shared core.
+#[derive(Debug)]
+pub struct CockpitApp {
+    view: PianoRollView,
+    analysis: Analysis,
+    title: String,
+    vp: Viewport,
+    ctx: ViewContext,
+    fitted: bool,
+}
+
+impl CockpitApp {
+    /// Builds the app from a view and its analysis; `title` labels the window.
+    #[must_use]
+    pub fn new(view: PianoRollView, analysis: Analysis, title: String) -> Self {
+        let ctx = build_context(&view, &analysis);
+        let vp = Viewport::new(&ctx, view.high_pitch);
+        Self {
+            view,
+            analysis,
+            title,
+            vp,
+            ctx,
+            fitted: false,
+        }
+    }
+
+    /// The source label shown in the window title.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Drains the frame's key presses into the reducer; returns whether the
+    /// user asked to quit.
+    fn handle_input(&mut self, ctx: &egui::Context) -> bool {
+        let intents: Vec<Intent> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key {
+                        key, pressed: true, ..
+                    } => key_to_intent(*key),
+                    _ => None,
+                })
+                .collect()
+        });
+        let mut quit = false;
+        for intent in intents {
+            if matches!(self.vp.apply(intent, &self.ctx), Step::Quit) {
+                quit = true;
+            }
+        }
+        quit
+    }
+
+    /// Resolves and paints the scene into `ui`.
+    fn paint(&mut self, ui: &egui::Ui) {
+        let rect = ui.max_rect();
+        let origin = rect.min;
+        let cols = (rect.width() / CELL_W) as u16;
+        let total_rows = (rect.height() / CELL_H) as u16;
+        let rows = total_rows.saturating_sub(1); // the band takes the top row
+
+        if !self.fitted && cols > GUTTER {
+            self.vp.fit(u32::from(cols.saturating_sub(GUTTER)), &self.ctx);
+            self.fitted = true;
+        }
+        if self.vp.playing {
+            self.vp.autoscroll(u32::from(cols.saturating_sub(GUTTER)));
+        }
+
+        let scene = resolve(&self.view, &self.analysis, &self.vp, GridSize { cols, rows });
+        let painter = ui.painter();
+        for col in 0..scene.cols {
+            if let Some(cell) = scene.band_cell(col) {
+                paint_cell(painter, origin, col, 0, *cell);
+            }
+        }
+        for row in 0..scene.rows {
+            for col in 0..scene.cols {
+                if let Some(cell) = scene.plane_cell(row, col) {
+                    paint_cell(painter, origin, col, row.saturating_add(1), *cell);
+                }
+            }
+        }
+    }
+}
+
+/// Paints one placed cell at grid position (`col`, `vis_row`).
+fn paint_cell(painter: &egui::Painter, origin: egui::Pos2, col: u16, vis_row: u16, cell: SceneCell) {
+    let x = origin.x + f32::from(col) * CELL_W;
+    let y = origin.y + f32::from(vis_row) * CELL_H;
+    let rect = Rect::from_min_size(egui::pos2(x, y), egui::vec2(CELL_W, CELL_H));
+    if let Some(bg) = role_color(cell.role, cell.shade) {
+        painter.rect_filled(rect, CornerRadius::ZERO, bg);
+    }
+    if cell.glyph != ' ' {
+        if let Some(fg) = glyph_color(cell.role) {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                cell.glyph,
+                FontId::monospace(CELL_H * 0.8),
+                fg,
+            );
+        }
+    }
+}
+
+impl eframe::App for CockpitApp {
+    // eframe's default `update` wraps this in a central panel; we draw the
+    // resolved scene straight into the provided `ui`.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let egui_ctx = ui.ctx().clone();
+        if self.handle_input(&egui_ctx) {
+            egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if self.vp.playing {
+            let dt = f64::from(egui_ctx.input(|i| i.stable_dt)).min(0.1);
+            self.vp.advance_playback(dt, &self.ctx);
+            egui_ctx.request_repaint();
+        }
+        self.paint(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_bar_class_has_a_distinct_colour() {
+        let classes = [
+            BarClass::Riff,
+            BarClass::Breakdown,
+            BarClass::Solo,
+            BarClass::Clean,
+            BarClass::Unknown,
+        ];
+        for (i, a) in classes.iter().enumerate() {
+            for b in classes.iter().skip(i + 1) {
+                assert_ne!(class_color(*a), class_color(*b), "{a:?}/{b:?} share a colour");
+            }
+        }
+    }
+
+    #[test]
+    fn lane_colour_cycles_and_never_panics() {
+        assert_eq!(lane_color(0), lane_color(6), "the six-lane palette wraps");
+        assert_ne!(lane_color(0), lane_color(1));
+        let _ = lane_color(u16::MAX); // index math stays in range
+    }
+
+    #[test]
+    fn notes_fill_but_text_labels_do_not() {
+        assert!(role_color(CellRole::Note(0), false).is_some());
+        assert!(role_color(CellRole::Playhead, false).is_some());
+        assert!(
+            role_color(CellRole::PitchLabel, false).is_none(),
+            "labels draw as text, not a filled block"
+        );
+        assert_eq!(role_color(CellRole::Empty, false), None);
+        assert_eq!(
+            role_color(CellRole::Empty, true),
+            Some(BG_BLACK_ROW),
+            "black-key rows shade"
+        );
+    }
+
+    #[test]
+    fn selected_band_differs_from_unselected() {
+        let sel = role_color(
+            CellRole::BandFill {
+                class: BarClass::Riff,
+                selected: true,
+            },
+            false,
+        );
+        let unsel = role_color(
+            CellRole::BandFill {
+                class: BarClass::Riff,
+                selected: false,
+            },
+            false,
+        );
+        assert_ne!(sel, unsel);
+    }
+
+    #[test]
+    fn navigation_keys_map_to_intents() {
+        assert_eq!(key_to_intent(Key::Space), Some(Intent::TogglePlay));
+        assert_eq!(key_to_intent(Key::ArrowRight), Some(Intent::ScrollRight));
+        assert_eq!(key_to_intent(Key::CloseBracket), Some(Intent::NextSection));
+        assert_eq!(key_to_intent(Key::Q), Some(Intent::Quit));
+        assert_eq!(key_to_intent(Key::F1), None, "unmapped keys are inert");
+    }
+}
