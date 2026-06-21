@@ -23,6 +23,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 griff-core    = { path = "../core" }
 griff-ui-core = { path = "../ui-core" }
+# Serializes the captured `corpus::ChunkMeta` to chunk.json (ADR-0026), so the
+# cockpit's output matches what `griff manifest` reads.
+serde_json    = { workspace = true }
 
 # Native desktop keeps eframe's defaults (winit + glow), exactly as Slice 1
 # shipped; the web target picks a leaner, glow-only eframe below.

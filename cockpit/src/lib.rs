@@ -30,9 +30,11 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
 use griff_core::classify::BarClass;
 use griff_core::import::import_score_auto;
+use griff_core::score::Score;
 use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
 use griff_ui_core::{
-    analyze, build_view, Analysis, Intent, PianoRollView, Step, ViewContext, Viewport,
+    analyze, build_chunk, build_view, Analysis, CaptureInputs, Intent, PianoRollView, Step,
+    ViewContext, Viewport,
 };
 
 /// Pixel width of one grid cell.
@@ -157,6 +159,9 @@ pub struct CockpitApp {
     vp: Viewport,
     ctx: ViewContext,
     fitted: bool,
+    /// The imported score behind the view, kept for capture (ADR-0026); `None`
+    /// for views built directly (tests) or before the first load.
+    score: Option<Score>,
 }
 
 impl CockpitApp {
@@ -172,6 +177,7 @@ impl CockpitApp {
             vp,
             ctx,
             fitted: false,
+            score: None,
         }
     }
 
@@ -199,8 +205,21 @@ impl CockpitApp {
         self.ctx = ctx;
         self.vp = vp;
         self.title = source;
+        self.score = Some(score);
         self.fitted = false;
         Ok(())
+    }
+
+    /// Captures the focused track of the loaded score as a `chunk.json` string
+    /// (ADR-0026), through the shared [`griff_ui_core::capture::build_chunk`] —
+    /// byte-compatible with what `griff manifest` reads.
+    ///
+    /// # Errors
+    /// Returns a message if no score is loaded yet, or if measuring fails.
+    pub fn capture_json(&self, inputs: &CaptureInputs<'_>) -> Result<String, String> {
+        let score = self.score.as_ref().ok_or_else(|| "no score loaded".to_owned())?;
+        let chunk = build_chunk(score, self.analysis.focus_track, inputs)?;
+        serde_json::to_string_pretty(&chunk).map_err(|err| err.to_string())
     }
 
     /// Drains the frame's key presses into the reducer; returns whether the
@@ -813,6 +832,27 @@ mod tests {
             .expect_err("garbage must not import");
         assert!(err.contains("junk.mid"), "the error names the bad source: {err}");
         assert_eq!(app.view.lanes.len(), kept, "a failed load leaves the current score intact");
+    }
+
+    #[test]
+    fn capture_json_builds_a_chunk_only_after_a_load() {
+        let mut app = demo_app(); // built via `new` → no score behind it yet
+        app.capture_json(&CaptureInputs::default())
+            .expect_err("capture needs a loaded score");
+
+        app.load("demo.mid".to_owned(), include_bytes!("../assets/demo.mid"))
+            .expect("loads the demo");
+        let inputs = CaptureInputs {
+            id: "demo_001",
+            title: "Demo",
+            redistributable: true,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            ..CaptureInputs::default()
+        };
+        let json = app.capture_json(&inputs).expect("captures a chunk");
+        assert!(json.contains("demo_001"), "the chunk carries its id");
+        assert!(json.contains("\"rights\""), "rights are recorded");
     }
 
     mod fuzz {

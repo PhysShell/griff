@@ -1796,6 +1796,7 @@ dependencies = [
  "griff-core",
  "griff-ui-core",
  "proptest",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
