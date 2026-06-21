@@ -24,12 +24,14 @@
 //! `ratatui` cell-snapshot is a human-readable witness of the same scene.
 
 pub mod analysis;
+pub mod capture;
 pub mod curation;
 pub mod scene;
 pub mod view;
 pub mod viewport;
 
 pub use analysis::{analyze, Analysis, Section};
+pub use capture::{build_chunk, detect_boundaries, CaptureInputs};
 pub use scene::{resolve, CellRole, GridSize, Scene, SceneCell};
 pub use view::{build_view, Lane, NoteRect, PianoRollView};
 pub use viewport::{Intent, Step, ViewContext, Viewport};
