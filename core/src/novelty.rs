@@ -30,6 +30,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::score::{AtomEvent, LossReport, Score, Track};
 use crate::scoring::{Axes, Axis, WeightPolicy};
 
@@ -193,7 +195,7 @@ pub fn novelty_weights_v1() -> WeightPolicy {
 pub const PHRASE_DUPLICATE_SHARE: f64 = 0.8;
 
 /// A phrase flagged as a near-duplicate of an earlier one (#76).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PhraseDuplicate {
     /// Index, within the phrase list, of the earlier phrase it most closely quotes.
     pub of: usize,

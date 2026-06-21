@@ -144,6 +144,7 @@ fn chunk(
         structure,
         gesture,
         complexity,
+        duplicate: None,
         style_cohort: None,
         ensemble: None,
         rights: None,

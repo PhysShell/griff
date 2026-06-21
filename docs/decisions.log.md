@@ -1303,3 +1303,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   beat count), finer-than-eighth and triplet grids, and bars whose beat is not an
   even tick count go unmeasured in this first cut (under-tagging, never
   mis-tagging).
+
+- 2026-06-21 — In the context of persisting curation signals to the corpus,
+  facing that the split's near-duplicate flag (#76) lived only in the live
+  UI/CLI and the split envelope — so a downloaded `chunk.json` or a built
+  manifest lost which phrases are repeats — we decided for an optional
+  `ChunkMeta.duplicate` (`Option<PhraseDuplicate>`) under the established
+  additive pattern (serde `default` + `skip_serializing_if`), bumping
+  `SCHEMA_VERSION` to 8, and against leaving it envelope-only or storing the
+  referenced chunk's full id, to achieve a corpus that keeps the repeat
+  relationship for dedup/curation, accepting that `duplicate.of` is an index
+  within the same split run (it pairs with the `_p<N>` id suffix) and is
+  meaningful only alongside its sibling phrases. Unlike the #75 tag additions —
+  data within an existing field, deliberately *not* versioned — this is a
+  structural `ChunkMeta` field, so it bumps the schema like v2–v7 before it.

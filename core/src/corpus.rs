@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::complement::AxisScores;
 use crate::gesture::GestureStats;
+use crate::novelty::PhraseDuplicate;
 use crate::structure::{ComplexityProfile, StructureMetrics};
 
 /// Current corpus schema version.
@@ -36,6 +37,11 @@ use crate::structure::{ComplexityProfile, StructureMetrics};
 ///   `rights` key) keep loading and re-serialize losslessly. Rights status is
 ///   not derivable from content, so it is captured at curation time and cannot
 ///   be backfilled.
+/// - v8 — persisted near-duplicate link (#76): `ChunkMeta` gains optional
+///   [`PhraseDuplicate`] under the same pattern; pre-v8 records (no `duplicate`
+///   key) keep loading and re-serialize losslessly. It records which earlier
+///   split phrase a later one repeats — a curation signal previously surfaced
+///   only in the UI/CLI and dropped on download.
 ///
 /// Tag taxonomy is intentionally *not* versioned here: [`SwancoreTag`] grows
 /// additively (e.g. `let_ring`, #75) and `SCHEMA_VERSION` tracks structural
@@ -43,7 +49,7 @@ use crate::structure::{ComplexityProfile, StructureMetrics};
 /// not the tag set — a new tag only breaks readers that hard-reject unknown
 /// variants, a curation-tooling concern, not a corpus-structure one
 /// (decisions 2026-06-19).
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
 
@@ -354,6 +360,14 @@ pub struct ChunkMeta {
     /// as `null` — when unmeasured, so pre-v6 files round-trip byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub complexity: Option<ComplexityProfile>,
+    /// Near-duplicate link (schema v8, #76): the earlier split phrase this one
+    /// verbatim-quotes (transposition-aware) and by how much, or absent when the
+    /// phrase is distinct or was captured outside a split. `of` indexes the
+    /// phrase within the same split run — it pairs with the `_p<N>` id suffix.
+    /// Skipped — not written as `null` — when absent, so pre-v8 files round-trip
+    /// byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<PhraseDuplicate>,
     /// Style cohort (schema v4). Absent in pre-v4 records — unlabeled; the
     /// key is skipped when unset, so older files round-trip byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -281,13 +281,16 @@ fn ticks_per_bar(meta: &ChunkMeta) -> u32 {
         .unwrap_or(0)
 }
 
-/// Resets what a changed extent invalidates: the reviewer decision and the
-/// whole-extent measurements (structure, gesture, complexity).
+/// Resets what a changed extent invalidates: the reviewer decision, the
+/// whole-extent measurements (structure, gesture, complexity), and the
+/// near-duplicate link (its `of` indexes the original split's siblings, so it
+/// is meaningless once the extent is re-cut).
 const fn fresh_extent(mut meta: ChunkMeta) -> ChunkMeta {
     meta.reviewer = None;
     meta.structure = None;
     meta.gesture = None;
     meta.complexity = None;
+    meta.duplicate = None;
     meta
 }
 
