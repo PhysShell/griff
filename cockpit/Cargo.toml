@@ -45,8 +45,12 @@ wasm-bindgen         = "=0.2.125"
 wasm-bindgen-futures = "0.4"
 js-sys               = "0.3"
 web-sys              = { version = "0.3", features = [
-    "Blob", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Url", "Window",
-    "console",
+    "Blob", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Navigator",
+    "Url", "Window", "console",
+    # OPFS corpus persistence (ADR-0027 §3); the writable stream needs
+    # `--cfg=web_sys_unstable_apis` (set in build-web.sh).
+    "StorageManager", "FileSystemDirectoryHandle", "FileSystemFileHandle",
+    "FileSystemWritableFileStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions",
 ] }
 getrandom            = { version = "0.4", features = ["wasm_js"] }
 

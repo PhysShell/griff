@@ -71,3 +71,42 @@ test('Capture downloads a chunk.json for the loaded score', async () => {
   assert.deepEqual(errors, [], `capture must not error:\n${errors.join('\n')}`);
   await page.close();
 });
+
+test('Capture persists the chunk to the OPFS corpus', async () => {
+  const { page, errors } = await bootPage(browser, baseURL);
+  // Start from a clean corpus so we verify *this* capture wrote the file.
+  await page.evaluate(async () => {
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry('corpus', { recursive: true });
+    } catch (_) {
+      /* no corpus yet */
+    }
+  });
+
+  await page.setInputFiles('#file', multiTrack);
+  await page.waitForTimeout(1200);
+  await Promise.all([page.waitForEvent('download'), page.click('#capture')]);
+
+  // The OPFS write is async (fire-and-forget); poll the corpus tree for the file.
+  let content = null;
+  for (let i = 0; i < 30 && !content; i += 1) {
+    content = await page.evaluate(async () => {
+      try {
+        const root = await navigator.storage.getDirectory();
+        const corpus = await root.getDirectoryHandle('corpus');
+        const fh = await corpus.getFileHandle('multi_track.chunk.json');
+        return await (await fh.getFile()).text();
+      } catch (_) {
+        return null;
+      }
+    });
+    if (!content) await page.waitForTimeout(200);
+  }
+  assert.ok(content, 'corpus/multi_track.chunk.json should appear in OPFS');
+  const chunk = JSON.parse(content);
+  assert.equal(chunk.id, 'multi_track', 'the OPFS corpus holds the captured chunk');
+  assert.ok(chunk.rights, 'with its rights recorded');
+  assert.deepEqual(errors, [], `OPFS persist must not error:\n${errors.join('\n')}`);
+  await page.close();
+});

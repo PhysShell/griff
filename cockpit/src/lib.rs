@@ -294,7 +294,8 @@ fn now_rfc3339() -> String {
 /// working directory on native.
 #[cfg(target_arch = "wasm32")]
 fn save_chunk(filename: &str, json: &str) -> Result<(), String> {
-    web::download(filename, json)
+    web::persist(filename, json); // accumulate the OPFS corpus
+    web::download(filename, json) // and export a copy
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -540,6 +541,7 @@ pub mod web {
 
     use eframe::egui;
     use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::{spawn_local, JsFuture};
     use web_sys::console;
 
     use griff_core::import::import_score_auto;
@@ -627,6 +629,49 @@ pub mod web {
         Ok(())
     }
 
+    /// Writes `contents` to `corpus/<filename>` in the Origin Private File
+    /// System — the browser corpus is the same `chunk.json` bytes the CLI reads.
+    // The OPFS handles aren't `Send`, but wasm is single-threaded and the future
+    // is driven by `spawn_local`, which never requires `Send`.
+    #[allow(clippy::future_not_send)]
+    async fn opfs_save(filename: String, contents: String) -> Result<(), JsValue> {
+        use wasm_bindgen::JsCast as _;
+        let storage = web_sys::window()
+            .ok_or_else(|| JsValue::from_str("no window"))?
+            .navigator()
+            .storage();
+        let root = JsFuture::from(storage.get_directory())
+            .await?
+            .dyn_into::<web_sys::FileSystemDirectoryHandle>()?;
+        let dir_opts = web_sys::FileSystemGetDirectoryOptions::new();
+        dir_opts.set_create(true);
+        let corpus = JsFuture::from(root.get_directory_handle_with_options("corpus", &dir_opts))
+            .await?
+            .dyn_into::<web_sys::FileSystemDirectoryHandle>()?;
+        let file_opts = web_sys::FileSystemGetFileOptions::new();
+        file_opts.set_create(true);
+        let file = JsFuture::from(corpus.get_file_handle_with_options(&filename, &file_opts))
+            .await?
+            .dyn_into::<web_sys::FileSystemFileHandle>()?;
+        let writable = JsFuture::from(file.create_writable())
+            .await?
+            .dyn_into::<web_sys::FileSystemWritableFileStream>()?;
+        JsFuture::from(writable.write_with_str(&contents)?).await?;
+        JsFuture::from(writable.close()).await?;
+        Ok(())
+    }
+
+    /// Persists a chunk to the OPFS `corpus/` tree (async, fire-and-forget),
+    /// mirroring the CLI corpus layout (ADR-0027 §3).
+    pub(crate) fn persist(filename: &str, contents: &str) {
+        let (filename, contents) = (filename.to_owned(), contents.to_owned());
+        spawn_local(async move {
+            if let Err(err) = opfs_save(filename, contents).await {
+                console::error_1(&err);
+            }
+        });
+    }
+
     /// Builds the cockpit over the baked demo score.
     fn demo_app() -> CockpitApp {
         let score = import_score_auto(DEMO_SCORE).expect("the baked demo score must import");
@@ -640,7 +685,7 @@ pub mod web {
     pub fn start(canvas: web_sys::HtmlCanvasElement) {
         let app = demo_app();
         let options = eframe::WebOptions::default();
-        wasm_bindgen_futures::spawn_local(async move {
+        spawn_local(async move {
             eframe::WebRunner::new()
                 .start(
                     canvas,

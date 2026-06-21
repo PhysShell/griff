@@ -16,9 +16,10 @@ root="$(cd "$here/.." && pwd)"
 out="$here/dist"
 
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-# getrandom's wasm_js backend (Web Crypto) needs this cfg alongside the feature;
-# the GP reader's `zip` subtree pulls getrandom (ADR-0025 §3).
-export RUSTFLAGS="${RUSTFLAGS:-} --cfg getrandom_backend=\"wasm_js\""
+# getrandom's wasm_js backend (Web Crypto) needs this cfg alongside the feature
+# (the GP reader's `zip` subtree pulls getrandom, ADR-0025 §3); the OPFS writable
+# stream (ADR-0027 §3) needs web-sys's `web_sys_unstable_apis`.
+export RUSTFLAGS="${RUSTFLAGS:-} --cfg getrandom_backend=\"wasm_js\" --cfg=web_sys_unstable_apis"
 # Build only the library: its `cdylib` emits the .wasm (the native bin is N/A on
 # web). The cockpit lives in the root workspace, so build from there.
 ( cd "$root" && cargo build --release --lib -p griff-cockpit --target wasm32-unknown-unknown )

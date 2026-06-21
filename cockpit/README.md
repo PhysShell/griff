@@ -36,9 +36,11 @@ The web front boots on a baked demo score, with a toolbar over the canvas:
 **Open** hands a picked MIDI/Guitar Pro file to the wasm `load_score` export (the
 cockpit re-imports it through the shared parser and repaints), and **Capture**
 builds a `chunk.json` for the focused track — through the shared
-`griff_ui_core::capture::build_chunk`, byte-compatible with `griff manifest` —
-and downloads it (ADR-0027 Slices 3a–3b). The `i` key opens the capture panel to
-edit the curator inputs (id / title / rights / tags…) first.
+`griff_ui_core::capture::build_chunk`, byte-compatible with `griff manifest`.
+It **persists** the chunk to the browser's OPFS corpus
+(`corpus/<id>.chunk.json` — the same bytes the CLI reads, ADR-0027 §3) and
+downloads an export copy (ADR-0027 Slices 3–4). The `i` key opens the capture
+panel to edit the curator inputs (id / title / rights / tags…) first.
 
 ## Web tests
 
@@ -53,7 +55,8 @@ playhead advances, `Space` again holds still, `←`/`→` scroll, `↑` shifts p
 inert; that **loading** a picked file repaints the chosen score (a multi-track
 file even brings in lane colours the demo never shows); and that **capture**
 works — toggling the inspector shows the panel, and Capture downloads a real
-`chunk.json` for the loaded score. This is the pixel-truth `egui_kittest` can't
+`chunk.json` for the loaded score *and* persists it to the OPFS corpus. This is
+the pixel-truth `egui_kittest` can't
 give headlessly (it rasterises through native wgpu, which finds no adapter in
 CI); a browser ships its own software GL.
 
