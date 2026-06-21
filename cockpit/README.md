@@ -39,8 +39,11 @@ builds a `chunk.json` for the focused track — through the shared
 `griff_ui_core::capture::build_chunk`, byte-compatible with `griff manifest`.
 It **persists** the chunk to the browser's OPFS corpus
 (`corpus/<id>.chunk.json` — the same bytes the CLI reads, ADR-0027 §3) and
-downloads an export copy (ADR-0027 Slices 3–4). The `i` key opens the capture
-panel to edit the curator inputs (id / title / rights / tags…) first.
+downloads an export copy. **Manifest** then folds the whole OPFS corpus into a
+`manifest.json` in-wasm through the shared `griff_ui_core::corpus` (the in-wasm
+`griff manifest`), so a phone-built corpus drops straight into the CLI
+(ADR-0027 Slices 3–4). The `i` key opens the capture panel to edit the curator
+inputs (id / title / rights / tags…) first.
 
 ## Web tests
 

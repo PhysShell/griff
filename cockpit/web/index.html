@@ -13,8 +13,8 @@
         position: absolute; inset: 0; display: grid; place-items: center;
         color: #9a9aa2; font: 14px system-ui, sans-serif;
       }
-      /* A small toolbar over the canvas: open a file (phone file picker) and
-         capture the focused track as chunk.json. Both call the wasm exports. */
+      /* A small toolbar over the canvas: open a file, capture the focused track
+         to the OPFS corpus, and fold the corpus into a manifest. */
       #bar { position: absolute; z-index: 1; top: 8px; left: 8px; display: flex; gap: 6px; }
       #bar > * {
         padding: 4px 10px; border: 0; border-radius: 6px; cursor: pointer; user-select: none;
@@ -28,13 +28,45 @@
       <label id="open" title="open a MIDI or Guitar Pro file">📂 Open<input
           id="file" type="file" accept=".mid,.gp3,.gp4,.gp5,.gpx" hidden /></label>
       <button id="capture" title="capture the focused track as chunk.json">⤓ Capture</button>
+      <button id="manifest" title="fold the OPFS corpus into a manifest.json">📦 Manifest</button>
     </div>
     <canvas id="cockpit"></canvas>
     <script type="module">
       // `wasm-bindgen --target web` emits griff_cockpit.js (the loader) and the
       // wasm; boot the egui app on the canvas and wire the toolbar to the wasm
-      // exports (ADR-0027 Slices 2–3).
-      import init, { start, load_score, request_capture } from "./griff_cockpit.js";
+      // exports (ADR-0027 Slices 2–4).
+      import init, { start, load_score, request_capture, build_manifest_json }
+        from "./griff_cockpit.js";
+
+      function download(name, text) {
+        const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      // Read every chunk.json from the OPFS corpus and fold it, in-wasm, into a
+      // manifest (the schema lives in Rust; JS just gathers the bytes).
+      async function buildManifest() {
+        const texts = [];
+        try {
+          const root = await navigator.storage.getDirectory();
+          const corpus = await root.getDirectoryHandle("corpus");
+          for await (const [name, handle] of corpus.entries()) {
+            if (name.endsWith(".chunk.json")) texts.push(await (await handle.getFile()).text());
+          }
+        } catch (_) {
+          /* no corpus yet */
+        }
+        try {
+          download("manifest.json", build_manifest_json(texts));
+        } catch (err) {
+          console.error("manifest failed:", err);
+        }
+      }
+
       init()
         .then(() => {
           document.getElementById("loading").remove();
@@ -44,6 +76,7 @@
             if (file) load_score(file.name, new Uint8Array(await file.arrayBuffer()));
           });
           document.getElementById("capture").addEventListener("click", () => request_capture());
+          document.getElementById("manifest").addEventListener("click", buildManifest);
         })
         .catch((err) => {
           document.getElementById("loading").textContent =

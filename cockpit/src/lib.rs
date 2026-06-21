@@ -545,7 +545,7 @@ pub mod web {
     use web_sys::console;
 
     use griff_core::import::import_score_auto;
-    use griff_ui_core::{analyze, build_view};
+    use griff_ui_core::{analyze, build_view, manifest_from_jsons};
 
     use crate::CockpitApp;
 
@@ -590,6 +590,21 @@ pub mod web {
     pub fn request_capture() {
         CAPTURE.with(|flag| flag.set(true));
         wake();
+    }
+
+    /// Folds `chunk.json` strings — the page reads them from the OPFS corpus —
+    /// into a `manifest.json` through the shared core (the in-wasm `griff
+    /// manifest`, ADR-0027 §3).
+    ///
+    /// # Errors
+    /// Returns a message (thrown to JS) if any string is not a valid chunk.
+    // wasm-bindgen marshals `Vec<String>` across the JS boundary by value; we
+    // only borrow it to fold.
+    #[allow(clippy::needless_pass_by_value)]
+    #[wasm_bindgen]
+    pub fn build_manifest_json(jsons: Vec<String>) -> Result<String, String> {
+        let manifest = manifest_from_jsons(&jsons)?;
+        serde_json::to_string_pretty(&manifest).map_err(|err| err.to_string())
     }
 
     /// Applies a pending file and/or capture request. Called by the app at the

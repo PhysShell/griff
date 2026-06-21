@@ -110,3 +110,47 @@ test('Capture persists the chunk to the OPFS corpus', async () => {
   assert.deepEqual(errors, [], `OPFS persist must not error:\n${errors.join('\n')}`);
   await page.close();
 });
+
+test('Manifest folds the OPFS corpus into a CorpusManifest', async () => {
+  const { page, errors } = await bootPage(browser, baseURL);
+  await page.evaluate(async () => {
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry('corpus', { recursive: true });
+    } catch (_) {
+      /* no corpus yet */
+    }
+  });
+
+  await page.setInputFiles('#file', multiTrack);
+  await page.waitForTimeout(1200);
+  await Promise.all([page.waitForEvent('download'), page.click('#capture')]);
+  // wait for the async OPFS persist to land before folding
+  for (let i = 0; i < 30; i += 1) {
+    const ready = await page.evaluate(async () => {
+      try {
+        const corpus = await (await navigator.storage.getDirectory()).getDirectoryHandle('corpus');
+        await corpus.getFileHandle('multi_track.chunk.json');
+        return true;
+      } catch (_) {
+        return false;
+      }
+    });
+    if (ready) break;
+    await page.waitForTimeout(200);
+  }
+
+  const [manifestDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.click('#manifest'),
+  ]);
+  assert.equal(manifestDownload.suggestedFilename(), 'manifest.json');
+  const manifest = JSON.parse(await readFile(await manifestDownload.path(), 'utf8'));
+  assert.equal(manifest.schema_version, 8, 'a schema-v8 manifest');
+  assert.ok(
+    manifest.chunks.some((c) => c.id === 'multi_track'),
+    'the captured chunk is folded into the manifest',
+  );
+  assert.deepEqual(errors, [], `manifest must not error:\n${errors.join('\n')}`);
+  await page.close();
+});
