@@ -108,27 +108,27 @@ Delivered incrementally; each slice is a PR. The boundary work lands before the
 renderer, and the renderer before its web target, so every step is shippable and
 testable against the existing headless `Scene`/reducer suite.
 
-- **S0 — extract `griff-ui-core`.** Move the four core layers + `curation` out of
+- **Slice 0 — extract `griff-ui-core`.** Move the four core layers + `curation` out of
   `preview`; switch the `ratatui` front onto the crate. Pure refactor, zero
   behaviour change; pays off immediately by removing the latent
   `render.rs`/`tui.rs` duplication ADR-0016 flagged.
-- **S1 — egui renders the `Scene` (native).** Paint `SceneCell`s by `CellRole`,
+- **Slice 1 — egui renders the `Scene` (native).** Paint `SceneCell`s by `CellRole`,
   map raw input → `Intent` through `Viewport::apply`, drive playback via
   `advance_playback` / `autoscroll`. Renderer #2 proven against the shared core;
   anything it lacks is a signal to extend the core, not the frontend.
-- **S2 — egui → wasm.** ADR-0025 toolchain; the canonical web front paints a
+- **Slice 2 — egui → wasm.** ADR-0025 toolchain; the canonical web front paints a
   loaded score.
-- **S3 — load + capture in egui.** File pick → `import_score_auto`; the ADR-0026
+- **Slice 3 — load + capture in egui.** File pick → `import_score_auto`; the ADR-0026
   `detect_boundaries` / `build_chunk` flow as panels producing `ChunkMeta`.
   *(JS-retirement gate, part 1.)*
-- **S4 — OPFS persistence.** A `chunk.json` tree plus the in-wasm `manifest` fold
+- **Slice 4 — OPFS persistence.** A `chunk.json` tree plus the in-wasm `manifest` fold
   (`CorpusManifest`). *(JS-retirement gate, part 2 → delete the JS front.)*
-- **S5 — corpus dock.** Browse and filter (class / tag / rights / cohort), a
+- **Slice 5 — corpus dock.** Browse and filter (class / tag / rights / cohort), a
   corpus-aggregate dashboard, and dedup across the corpus
   (`ChunkMeta.duplicate`). The "rule the corpus from the web" surface.
-- **S6 — curation actions.** Wire `curation` split / merge / rename / retag /
+- **Slice 6 — curation actions.** Wire `curation` split / merge / rename / retag /
   approve / reject over the OPFS store, realising the `preview/design` inspector.
-- **S7 — onward.** `similarity::find_similar_chunks` ("find like this"); S7 graph
+- **Slice 7 — onward.** `similarity::find_similar_chunks` ("find like this"); S7 graph
   recombination once the corpus is large enough to motivate it.
 
 ## Consequences
