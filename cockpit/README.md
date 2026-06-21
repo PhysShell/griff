@@ -40,12 +40,14 @@ path end-to-end; interactive file loading and capture arrive in Slice 3.
 Headless-browser tests (`web-test/`) serve the built `dist/` and boot the real
 eframe app in Chromium — WebGL via SwiftShader, no GPU. They assert it **paints**
 the cockpit (a non-blank canvas, the signature note / band / playhead fill
-colours, and that it survives a resize) and that **interaction** works
-end-to-end: `Space` animates playback and the playhead advances, `Space` again
-holds still, `←`/`→` scroll, `]` jumps a section, `=` zooms, and an unmapped key
-is inert. This is the pixel-truth `egui_kittest` can't give headlessly (it
+colours, a resize re-fit, and a coarse block-average match to the committed
+`cockpit-reference.png` — deterministic because the font is baked into the wasm)
+and that **interaction** works end-to-end: `Space` animates playback and the
+playhead advances, `Space` again holds still, `←`/`→` scroll, `↑` shifts pitch,
+`]` jumps a section, `=` zooms, `Home` resets the view, and an unmapped key is
+inert. This is the pixel-truth `egui_kittest` can't give headlessly (it
 rasterises through native wgpu, which finds no adapter in CI); a browser ships
-its own software GL. `web-test/cockpit-reference.png` is the expected first frame.
+its own software GL.
 
 ```sh
 ./cockpit/build-web.sh                       # produce cockpit/dist first

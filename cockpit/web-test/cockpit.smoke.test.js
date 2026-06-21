@@ -8,12 +8,14 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdir, writeFile, access } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, access } from 'node:fs/promises';
 
 import { chromium } from 'playwright';
 
 import { startServer } from './serve.js';
-import { LAUNCH_ARGS, SIGNATURE, bootPage, canvasShot, decode, analyze } from './helpers.js';
+import {
+  LAUNCH_ARGS, SIGNATURE, bootPage, canvasShot, decode, analyze, coarseMatch,
+} from './helpers.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, '..', 'dist');
@@ -78,5 +80,19 @@ test('the cockpit re-fits and keeps painting after a resize', async () => {
   const { nonBg, total } = analyze(decode(await canvasShot(page)));
   assert.ok(nonBg / total > 0.05, 'the cockpit should still paint after shrinking the viewport');
   assert.deepEqual(errors, [], `resize must not error:\n${errors.join('\n')}`);
+  await page.close();
+});
+
+test('the first frame matches the committed reference', async () => {
+  // The default-view render is deterministic (the font is baked into the wasm
+  // and SwiftShader is software), so a coarse block-average compare locks the
+  // layout against cockpit-reference.png without flaking on AA noise.
+  const { page, errors } = await bootPage(browser, baseURL);
+  const live = decode(await canvasShot(page));
+  const reference = decode(await readFile(join(here, 'cockpit-reference.png')));
+  const match = coarseMatch(reference, live);
+  console.log(`reference block match ${(100 * match).toFixed(1)}%`);
+  assert.ok(match > 0.95, `the render drifted from cockpit-reference.png — ${(100 * match).toFixed(1)}% of blocks match`);
+  assert.deepEqual(errors, [], `reference run must not error:\n${errors.join('\n')}`);
   await page.close();
 });

@@ -621,4 +621,96 @@ mod tests {
             });
         }
     }
+
+    #[test]
+    fn paint_survives_a_dense_grid_of_panel_sizes() {
+        let mut app = two_section_app();
+        let ctx = egui::Context::default();
+        // Odd strides hit a wide spread of column/row counts, including the
+        // gutter-boundary and single-row cases, not just round numbers.
+        for w in (0..1600).step_by(113) {
+            for h in (0..1200).step_by(97) {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(w as f32, h as f32),
+                    )),
+                    ..Default::default()
+                };
+                #[allow(deprecated)]
+                let _frame = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn lane_colour_is_periodic_and_six_valued_for_every_index() {
+        use std::collections::HashSet;
+        let palette: HashSet<(u8, u8, u8)> = (0u16..6)
+            .map(|lane| {
+                let c = lane_color(lane);
+                (c.r(), c.g(), c.b())
+            })
+            .collect();
+        assert_eq!(palette.len(), 6, "the six lanes are distinct");
+        for lane in 0u16..=u16::MAX {
+            assert_eq!(lane_color(lane), lane_color(lane % 6), "lane {lane} follows the mod-6 palette");
+            let c = lane_color(lane);
+            assert!(palette.contains(&(c.r(), c.g(), c.b())), "lane {lane} is one of the six colours");
+        }
+    }
+
+    #[test]
+    fn multiple_lanes_paint_in_distinct_lane_colours() {
+        use std::collections::HashSet;
+        use griff_ui_core::{Lane, NoteRect, Section};
+        let view = PianoRollView {
+            ppq: 480,
+            tick_start: 0,
+            tick_end: 1920,
+            low_pitch: 52,
+            high_pitch: 72,
+            bar_lines: vec![0, 1920],
+            lanes: vec![
+                Lane { name: "lead".to_owned(), notes: vec![NoteRect { onset: 0, end: 480, pitch: 60 }] },
+                Lane {
+                    name: "harmony".to_owned(),
+                    notes: vec![NoteRect { onset: 0, end: 480, pitch: 67 }],
+                },
+            ],
+            tempo_bpm: 120.0,
+            bar_count: 1,
+        };
+        let analysis = Analysis {
+            focus_track: 0,
+            sections: vec![Section {
+                class: BarClass::Riff,
+                bar_start: 0,
+                bar_end: 1,
+                tick_start: 0,
+                tick_end: 1920,
+            }],
+            metrics: None,
+            complexity: None,
+            boundaries: vec![],
+        };
+        let app = CockpitApp::new(view, analysis, "multi".to_owned());
+        let scene = resolve(&app.view, &app.analysis, &app.vp, GridSize { cols: 60, rows: 24 });
+
+        let lane_colours: HashSet<(u8, u8, u8)> = scene
+            .plane
+            .iter()
+            .filter_map(|cell| match cell.role {
+                CellRole::Note(_) => role_color(cell.role, cell.shade).map(|c| (c.r(), c.g(), c.b())),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lane_colours.len() >= 2,
+            "two tracks should paint in ≥2 distinct lane colours, saw {}",
+            lane_colours.len()
+        );
+    }
 }

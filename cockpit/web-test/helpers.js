@@ -88,3 +88,49 @@ export function frameDiff(a, b, tol = 24) {
   }
   return changed / (n / 4);
 }
+
+/** Average [r,g,b] over a gx×gy block grid — a downscale for coarse compares. */
+export function blockAverages(img, gx = 64, gy = 32) {
+  const { width, height, data } = img;
+  const blocks = [];
+  for (let by = 0; by < gy; by += 1) {
+    const y0 = Math.floor((by * height) / gy);
+    const y1 = Math.floor(((by + 1) * height) / gy);
+    for (let bx = 0; bx < gx; bx += 1) {
+      const x0 = Math.floor((bx * width) / gx);
+      const x1 = Math.floor(((bx + 1) * width) / gx);
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let n = 0;
+      for (let y = y0; y < y1; y += 1) {
+        for (let x = x0; x < x1; x += 1) {
+          const i = (y * width + x) * 4;
+          r += data[i];
+          g += data[i + 1];
+          b += data[i + 2];
+          n += 1;
+        }
+      }
+      blocks.push(n ? [r / n, g / n, b / n] : [0, 0, 0]);
+    }
+  }
+  return blocks;
+}
+
+/** Fraction of downscaled blocks whose average colour matches within `tol`. */
+export function coarseMatch(a, b, tol = 26) {
+  const A = blockAverages(a);
+  const B = blockAverages(b);
+  let ok = 0;
+  for (let i = 0; i < A.length; i += 1) {
+    if (
+      Math.abs(A[i][0] - B[i][0]) <= tol &&
+      Math.abs(A[i][1] - B[i][1]) <= tol &&
+      Math.abs(A[i][2] - B[i][2]) <= tol
+    ) {
+      ok += 1;
+    }
+  }
+  return ok / A.length;
+}

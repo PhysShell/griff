@@ -84,6 +84,23 @@ async function changesFrame(name, key, { times = 1, minDiff = 0.01 } = {}) {
 test('ArrowRight scrolls the view', () => changesFrame('scroll', 'ArrowRight', { times: 4 }));
 test('] jumps to the next section', () => changesFrame('next-section', 'BracketRight'));
 test('= zooms in', () => changesFrame('zoom-in', 'Equal', { times: 2 }));
+test('ArrowUp shifts the pitch view', () => changesFrame('pitch', 'ArrowUp', { times: 5 }));
+
+test('Home returns the view to the start after scrolling', async () => {
+  const { page, errors } = await bootPage(browser, baseURL);
+  const initial = await shot(page);
+  for (let i = 0; i < 4; i += 1) await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(400);
+  assert.ok(frameDiff(initial, await shot(page)) > 0.01, 'scrolling should change the frame first');
+
+  await page.keyboard.press('Home');
+  await page.waitForTimeout(400);
+  const back = frameDiff(initial, await shot(page));
+  console.log(`Home returned within ${(100 * back).toFixed(2)}%`);
+  assert.ok(back < 0.01, `Home should return to the start, diff was ${(100 * back).toFixed(2)}%`);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
 
 test('an unmapped key leaves the frame unchanged', async () => {
   const { page, errors } = await bootPage(browser, baseURL);
