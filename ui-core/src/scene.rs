@@ -27,8 +27,7 @@
 use griff_core::classify::BarClass;
 
 use crate::analysis::Analysis;
-use crate::render::pitch_name;
-use crate::view::PianoRollView;
+use crate::view::{pitch_name, PianoRollView};
 use crate::viewport::Viewport;
 
 /// Left gutter width inside the roll: 4 columns of pitch label + 1 separator.

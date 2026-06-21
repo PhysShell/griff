@@ -15,7 +15,7 @@
     clippy::cast_sign_loss
 )]
 
-use crate::view::PianoRollView;
+use crate::view::{pitch_name, PianoRollView};
 
 /// Width of the left gutter: 4 columns of pitch label plus a separator column.
 const GUTTER: usize = 5;
@@ -28,21 +28,6 @@ const BARLINE: char = '┆';
 
 /// Gutter / plane separator column.
 const SEPARATOR: char = '│';
-
-/// Note names for a 12-tone octave, index = pitch % 12.
-const NOTE_NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
-
-/// Human-readable note name for a MIDI pitch, e.g. `60 -> "C4"` (middle C).
-pub fn pitch_name(pitch: u8) -> String {
-    let name = NOTE_NAMES
-        .get(usize::from(pitch % 12))
-        .copied()
-        .unwrap_or("?");
-    let octave = i32::from(pitch / 12) - 1;
-    format!("{name}{octave}")
-}
 
 /// The glyph used for a given lane index.
 pub fn lane_glyph(lane_index: usize) -> char {
@@ -274,12 +259,5 @@ mod tests {
     fn zero_height_yields_no_rows() {
         let view = view_with(vec![], 48, 72);
         assert!(render_frame(&view, 40, 0).is_empty());
-    }
-
-    #[test]
-    fn pitch_name_uses_middle_c_octave_4() {
-        assert_eq!(pitch_name(60), "C4");
-        assert_eq!(pitch_name(69), "A4");
-        assert_eq!(pitch_name(0), "C-1");
     }
 }

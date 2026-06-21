@@ -1,7 +1,7 @@
 //! Red → green tests for the curation persistence seam (S8): a viewport
 //! decision lands in the chunk record's `reviewer` field, everything else
-//! byte-identical. References `griff_preview::curation`, which does not
-//! exist yet, so the suite fails to compile until the green step.
+//! byte-identical. Exercises `griff_ui_core::curation` (the renderer-agnostic
+//! curation seam, ADR-0016).
 
 #![allow(
     clippy::expect_used,
@@ -16,8 +16,8 @@
 use griff_core::corpus::{
     ChunkId, ChunkMeta, QualityFlag, ReviewerDecision, SourceFormat, SourceRef, SwancoreTag,
 };
-use griff_preview::curation::{decide_record, CurationError};
-use griff_preview::viewport::CurationDecision;
+use griff_ui_core::curation::{decide_record, CurationError};
+use griff_ui_core::viewport::CurationDecision;
 
 fn record() -> ChunkMeta {
     ChunkMeta {
@@ -96,7 +96,7 @@ fn malformed_json_is_a_typed_error() {
 
 #[test]
 fn summarize_record_surfaces_title_reviewer_and_tags() {
-    use griff_preview::curation::summarize_record;
+    use griff_ui_core::curation::summarize_record;
 
     let mut meta = record();
     meta.reviewer = Some(ReviewerDecision::Accepted);
@@ -115,7 +115,7 @@ fn summarize_record_surfaces_title_reviewer_and_tags() {
 
 #[test]
 fn summarize_record_handles_an_unreviewed_record() {
-    use griff_preview::curation::summarize_record;
+    use griff_ui_core::curation::summarize_record;
 
     let json = serde_json::to_string(&record()).expect("serialize");
     let summary = summarize_record(&json).expect("summary ok");
@@ -124,7 +124,7 @@ fn summarize_record_handles_an_unreviewed_record() {
 
 #[test]
 fn garbage_summary_input_fails() {
-    use griff_preview::curation::summarize_record;
+    use griff_ui_core::curation::summarize_record;
 
     assert_eq!(
         summarize_record("not json").unwrap_err(),
@@ -139,7 +139,7 @@ fn garbage_summary_input_fails() {
 
 #[test]
 fn tag_palette_covers_every_schema_variant() {
-    use griff_preview::curation::tag_palette;
+    use griff_ui_core::curation::tag_palette;
 
     let palette = tag_palette();
     assert_eq!(
@@ -157,7 +157,7 @@ fn tag_palette_covers_every_schema_variant() {
 
 #[test]
 fn set_tags_rewrites_only_the_tags() {
-    use griff_preview::curation::set_tags;
+    use griff_ui_core::curation::set_tags;
 
     let json = serde_json::to_string(&record()).expect("serialize");
     let updated =
@@ -171,7 +171,7 @@ fn set_tags_rewrites_only_the_tags() {
 
 #[test]
 fn set_tags_rejects_an_unknown_name() {
-    use griff_preview::curation::set_tags;
+    use griff_ui_core::curation::set_tags;
 
     let json = serde_json::to_string(&record()).expect("serialize");
     assert_eq!(
@@ -182,7 +182,7 @@ fn set_tags_rejects_an_unknown_name() {
 
 #[test]
 fn set_tags_on_garbage_input_fails() {
-    use griff_preview::curation::set_tags;
+    use griff_ui_core::curation::set_tags;
 
     assert_eq!(
         set_tags("not json", &[]).unwrap_err(),
@@ -197,7 +197,7 @@ fn set_tags_on_garbage_input_fails() {
 
 #[test]
 fn rename_record_rewrites_only_the_title() {
-    use griff_preview::curation::rename_record;
+    use griff_ui_core::curation::rename_record;
 
     let json = serde_json::to_string(&record()).expect("serialize");
     let updated = rename_record(&json, "Verse riff, take 2").expect("update ok");
@@ -210,7 +210,7 @@ fn rename_record_rewrites_only_the_title() {
 
 #[test]
 fn rename_record_trims_and_rejects_an_empty_title() {
-    use griff_preview::curation::rename_record;
+    use griff_ui_core::curation::rename_record;
 
     let json = serde_json::to_string(&record()).expect("serialize");
     let updated = rename_record(&json, "  padded  ").expect("update ok");
@@ -226,7 +226,7 @@ fn rename_record_trims_and_rejects_an_empty_title() {
 
 #[test]
 fn rename_record_on_garbage_input_fails() {
-    use griff_preview::curation::rename_record;
+    use griff_ui_core::curation::rename_record;
 
     assert_eq!(
         rename_record("not json", "x").unwrap_err(),
@@ -254,7 +254,7 @@ const BAR: u32 = 3840;
 
 #[test]
 fn split_record_partitions_the_bar_range() {
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
     let (a, b) = split_record(&json, 2, 2).expect("split ok");
@@ -278,7 +278,7 @@ fn split_record_partitions_the_bar_range() {
 #[test]
 fn split_record_partitions_boundaries_at_the_split_tick() {
     use griff_core::corpus::BoundaryEntry;
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let mut meta = record_with_range(0, 4);
     meta.boundaries = vec![
@@ -324,7 +324,7 @@ fn split_record_partitions_boundaries_at_the_split_tick() {
 #[test]
 fn split_record_resets_review_and_measured_metrics() {
     use griff_core::structure::ComplexityProfile;
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let mut meta = record_with_range(0, 4);
     meta.reviewer = Some(ReviewerDecision::Accepted);
@@ -354,7 +354,7 @@ fn split_record_resets_review_and_measured_metrics() {
 #[test]
 fn split_record_clears_the_ensemble_link() {
     use griff_core::corpus::EnsembleRef;
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let mut meta = record_with_range(0, 4);
     meta.ensemble = Some(EnsembleRef {
@@ -381,7 +381,7 @@ fn split_record_clears_the_ensemble_link() {
 #[test]
 fn split_record_clears_the_near_duplicate_link() {
     use griff_core::novelty::PhraseDuplicate;
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let mut meta = record_with_range(0, 4);
     meta.duplicate = Some(PhraseDuplicate {
@@ -401,7 +401,7 @@ fn split_record_clears_the_near_duplicate_link() {
 
 #[test]
 fn split_record_rejects_an_out_of_range_point() {
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let json = serde_json::to_string(&record_with_range(2, 6)).expect("serialize");
     for at_bar in [0, 1, 2, 7] {
@@ -420,7 +420,7 @@ fn split_record_rejects_an_out_of_range_point() {
 
 #[test]
 fn split_record_requires_a_bar_range() {
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let mut meta = record();
     meta.source.bar_range = None;
@@ -433,7 +433,7 @@ fn split_record_requires_a_bar_range() {
 
 #[test]
 fn split_record_on_garbage_input_fails() {
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     assert_eq!(
         split_record("not json", 1, 2).unwrap_err(),
@@ -444,7 +444,7 @@ fn split_record_on_garbage_input_fails() {
 #[test]
 fn merge_records_joins_adjacent_same_source_records() {
     use griff_core::corpus::BoundaryEntry;
-    use griff_preview::curation::merge_records;
+    use griff_ui_core::curation::merge_records;
 
     let mut first = record_with_range(0, 1);
     first.boundaries = vec![BoundaryEntry {
@@ -485,7 +485,7 @@ fn merge_records_joins_adjacent_same_source_records() {
 
 #[test]
 fn merge_records_rejects_non_adjacent_ranges() {
-    use griff_preview::curation::merge_records;
+    use griff_ui_core::curation::merge_records;
 
     let a = serde_json::to_string(&record_with_range(0, 1)).expect("serialize");
     let gap = serde_json::to_string(&record_with_range(3, 4)).expect("serialize");
@@ -503,7 +503,7 @@ fn merge_records_rejects_non_adjacent_ranges() {
 
 #[test]
 fn merge_records_rejects_a_source_or_timing_mismatch() {
-    use griff_preview::curation::merge_records;
+    use griff_ui_core::curation::merge_records;
 
     let a = serde_json::to_string(&record_with_range(0, 1)).expect("serialize");
 
@@ -528,7 +528,7 @@ fn merge_records_rejects_a_source_or_timing_mismatch() {
 
 #[test]
 fn merge_records_requires_both_bar_ranges() {
-    use griff_preview::curation::merge_records;
+    use griff_ui_core::curation::merge_records;
 
     let a = serde_json::to_string(&record_with_range(0, 1)).expect("serialize");
     let mut unranged = record();
@@ -543,7 +543,7 @@ fn merge_records_requires_both_bar_ranges() {
 #[test]
 fn merge_records_keeps_a_shared_cohort_and_drops_a_disagreement() {
     use griff_core::corpus::StyleCohort;
-    use griff_preview::curation::merge_records;
+    use griff_ui_core::curation::merge_records;
 
     let mut first = record_with_range(0, 1);
     first.style_cohort = Some(StyleCohort::Core);
@@ -568,7 +568,7 @@ fn merge_records_keeps_a_shared_cohort_and_drops_a_disagreement() {
 
 #[test]
 fn merge_records_on_garbage_input_fails() {
-    use griff_preview::curation::merge_records;
+    use griff_ui_core::curation::merge_records;
 
     let a = serde_json::to_string(&record_with_range(0, 1)).expect("serialize");
     assert_eq!(
@@ -590,7 +590,7 @@ fn merge_records_on_garbage_input_fails() {
 
 #[test]
 fn split_record_at_tick_floors_to_the_containing_bar() {
-    use griff_preview::curation::split_record_at_tick;
+    use griff_ui_core::curation::split_record_at_tick;
 
     let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
     let (a, b) = split_record_at_tick(&json, 2 * BAR + 100, 2).expect("split ok");
@@ -610,7 +610,7 @@ fn split_record_at_tick_floors_to_the_containing_bar() {
 
 #[test]
 fn split_record_at_a_tick_inside_the_first_bar_is_out_of_range() {
-    use griff_preview::curation::split_record_at_tick;
+    use griff_ui_core::curation::split_record_at_tick;
 
     let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
     assert_eq!(
@@ -630,7 +630,7 @@ fn split_record_at_a_tick_inside_the_first_bar_is_out_of_range() {
 
 #[test]
 fn split_record_derives_the_second_id_from_the_slot() {
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
     let (a, b) = split_record(&json, 2, 5).expect("split ok");
@@ -649,7 +649,7 @@ fn split_record_derives_the_second_id_from_the_slot() {
 
 #[test]
 fn split_record_refuses_a_slot_that_collides_with_the_first_half() {
-    use griff_preview::curation::split_record;
+    use griff_ui_core::curation::split_record;
 
     let json = serde_json::to_string(&record_with_range(0, 4)).expect("serialize");
     for slot in [0, 1] {

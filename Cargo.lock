@@ -631,7 +631,15 @@ name = "griff-preview"
 version = "0.1.0"
 dependencies = [
  "griff-core",
+ "griff-ui-core",
  "ratatui",
+]
+
+[[package]]
+name = "griff-ui-core"
+version = "0.1.0"
+dependencies = [
+ "griff-core",
  "serde_json",
 ]
 

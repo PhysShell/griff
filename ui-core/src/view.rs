@@ -5,6 +5,29 @@ use std::iter::once;
 
 use griff_core::score::{AtomEvent, Score};
 
+/// Note names for a 12-tone octave, index = pitch % 12.
+const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+
+/// Human-readable note name for a MIDI pitch, e.g. `60 -> "C4"` (middle C).
+///
+/// Part of the view-model, below the renderer boundary: the `scene` placement
+/// layer and every renderer label pitches identically, so the helper is shared
+/// here rather than duplicated per renderer (ADR-0016).
+// `pitch` is a `u8`, so `/ 12` and `% 12` are bounded and the `- 1` octave
+// shift cannot underflow an `i32`; the arithmetic-side-effects lint carries no
+// signal (it was allowed file-wide in `render`, this helper's prior home).
+#[allow(clippy::arithmetic_side_effects)]
+pub fn pitch_name(pitch: u8) -> String {
+    let name = NOTE_NAMES
+        .get(usize::from(pitch % 12))
+        .copied()
+        .unwrap_or("?");
+    let octave = i32::from(pitch / 12) - 1;
+    format!("{name}{octave}")
+}
+
 /// One note laid out on the pitch × tick plane. The tick range is half-open
 /// `[onset, end)` and always non-empty (`end > onset`), so a zero-duration note
 /// still occupies one tick of width.
@@ -136,6 +159,13 @@ mod tests {
         Score, Track, Voice,
     };
     use griff_core::slice::TickRange;
+
+    #[test]
+    fn pitch_name_uses_middle_c_octave_4() {
+        assert_eq!(pitch_name(60), "C4");
+        assert_eq!(pitch_name(69), "A4");
+        assert_eq!(pitch_name(0), "C-1");
+    }
 
     const PPQN: u16 = 480;
     const BAR: u32 = 1920;
