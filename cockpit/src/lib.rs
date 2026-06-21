@@ -29,8 +29,11 @@
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
 use griff_core::classify::BarClass;
+use griff_core::import::import_score_auto;
 use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
-use griff_ui_core::{Analysis, Intent, PianoRollView, Step, ViewContext, Viewport};
+use griff_ui_core::{
+    analyze, build_view, Analysis, Intent, PianoRollView, Step, ViewContext, Viewport,
+};
 
 /// Pixel width of one grid cell.
 const CELL_W: f32 = 9.0;
@@ -178,6 +181,28 @@ impl CockpitApp {
         &self.title
     }
 
+    /// Replaces the displayed score by importing `bytes` through the shared
+    /// importer (the same parser as the CLI — GP and MIDI alike). `source`
+    /// labels the new score; the viewport re-fits to it on the next paint.
+    ///
+    /// # Errors
+    /// Returns a message if `bytes` are not an importable MIDI/Guitar Pro file.
+    pub fn load(&mut self, source: String, bytes: &[u8]) -> Result<(), String> {
+        let score =
+            import_score_auto(bytes).map_err(|err| format!("cannot import {source}: {err}"))?;
+        let view = build_view(&score);
+        let analysis = analyze(&score);
+        let ctx = build_context(&view, &analysis);
+        let vp = Viewport::new(&ctx, view.high_pitch);
+        self.view = view;
+        self.analysis = analysis;
+        self.ctx = ctx;
+        self.vp = vp;
+        self.title = source;
+        self.fitted = false;
+        Ok(())
+    }
+
     /// Drains the frame's key presses into the reducer; returns whether the
     /// user asked to quit.
     fn handle_input(&mut self, ctx: &egui::Context) -> bool {
@@ -259,6 +284,9 @@ impl eframe::App for CockpitApp {
     // eframe's default `update` wraps this in a central panel; we draw the
     // resolved scene straight into the provided `ui`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Apply a file the page handed us via `web::load_score`, if any.
+        #[cfg(target_arch = "wasm32")]
+        web::drain_inbox(self);
         let egui_ctx = ui.ctx().clone();
         if self.handle_input(&egui_ctx) {
             egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -285,7 +313,11 @@ impl eframe::App for CockpitApp {
 // `WebGL` init is unrecoverable — surfacing the panic is the intended UX.
 #[allow(clippy::expect_used)]
 pub mod web {
+    use std::cell::RefCell;
+
+    use eframe::egui;
     use wasm_bindgen::prelude::*;
+    use web_sys::console;
 
     use griff_core::import::import_score_auto;
     use griff_ui_core::{analyze, build_view};
@@ -293,8 +325,43 @@ pub mod web {
     use crate::CockpitApp;
 
     /// A tiny MIDI baked into the app so the web front paints a real,
-    /// importer-parsed score on first load — no file pick yet (that is Slice 3).
+    /// importer-parsed score on first load, before the user opens their own.
     const DEMO_SCORE: &[u8] = include_bytes!("../assets/demo.mid");
+
+    /// A picked file waiting to load: its display name and raw bytes.
+    type PendingFile = Option<(String, Vec<u8>)>;
+
+    // A one-slot inbox: the page drops a picked file here and the app drains it
+    // on the next frame. wasm is single-threaded, so a thread-local needs no lock.
+    thread_local! {
+        static INBOX: RefCell<PendingFile> = const { RefCell::new(None) };
+        // The running app's egui context, stashed at start so `load_score` can
+        // wake the reactive web runner to drain a freshly-picked file.
+        static CTX: RefCell<Option<egui::Context>> = const { RefCell::new(None) };
+    }
+
+    /// Hands a picked file (name + bytes) to the running cockpit; the page calls
+    /// this from its file-input change handler. Wakes the runner so the app
+    /// drains and loads it on the next frame.
+    #[wasm_bindgen]
+    pub fn load_score(name: String, bytes: Vec<u8>) {
+        INBOX.with(|inbox| *inbox.borrow_mut() = Some((name, bytes)));
+        CTX.with(|cell| {
+            if let Some(ctx) = cell.borrow().as_ref() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// Applies a pending file, if any. Called by the app at the top of each frame.
+    pub(crate) fn drain_inbox(app: &mut CockpitApp) {
+        let pending = INBOX.with(|inbox| inbox.borrow_mut().take());
+        if let Some((name, bytes)) = pending {
+            if let Err(err) = app.load(name, &bytes) {
+                console::error_1(&err.into());
+            }
+        }
+    }
 
     /// Builds the cockpit over the baked demo score.
     fn demo_app() -> CockpitApp {
@@ -311,7 +378,14 @@ pub mod web {
         let options = eframe::WebOptions::default();
         wasm_bindgen_futures::spawn_local(async move {
             eframe::WebRunner::new()
-                .start(canvas, options, Box::new(|_cc| Ok(Box::new(app))))
+                .start(
+                    canvas,
+                    options,
+                    Box::new(|cc| {
+                        CTX.with(|cell| *cell.borrow_mut() = Some(cc.egui_ctx.clone()));
+                        Ok(Box::new(app))
+                    }),
+                )
                 .await
                 .expect("failed to start the cockpit web runner");
         });
@@ -320,9 +394,9 @@ pub mod web {
 
 #[cfg(test)]
 mod tests {
-    // Tests build views from known-good fixtures, `expect` on them, and index
-    // fixed in-range arrays.
-    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+    // Tests build views from known-good fixtures, `expect`/`unwrap` on them,
+    // panic on impossible cases, and index fixed in-range arrays.
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
     use super::*;
     use eframe::egui;
@@ -713,6 +787,32 @@ mod tests {
             "two tracks should paint in ≥2 distinct lane colours, saw {}",
             lane_colours.len()
         );
+    }
+
+    #[test]
+    fn load_swaps_the_displayed_score() {
+        let mut app = demo_app();
+        let demo_title = app.title().to_owned();
+        app.load("multi.mid".to_owned(), include_bytes!("../assets/multi_track.mid"))
+            .expect("multi_track.mid imports");
+        assert_eq!(app.title(), "multi.mid", "the title follows the loaded source");
+        assert_ne!(app.title(), demo_title, "the source changed");
+        assert!(
+            app.view.lanes.len() >= 2,
+            "the multi-track file loads its several tracks, got {}",
+            app.view.lanes.len()
+        );
+    }
+
+    #[test]
+    fn load_rejects_unparseable_bytes_and_keeps_the_score() {
+        let mut app = demo_app();
+        let kept = app.view.lanes.len();
+        let err = app
+            .load("junk.mid".to_owned(), b"definitely not a score")
+            .expect_err("garbage must not import");
+        assert!(err.contains("junk.mid"), "the error names the bad source: {err}");
+        assert_eq!(app.view.lanes.len(), kept, "a failed load leaves the current score intact");
     }
 
     mod fuzz {

@@ -167,3 +167,12 @@ export function diffImage(ref, live, tol = 26, gx = 64, gy = 32) {
   }
   return PNG.sync.write(out);
 }
+
+/** Count pixels near `color` (within `tol`) — for colours outside SIGNATURE. */
+export function countColor(img, color, tol = 12) {
+  let n = 0;
+  for (let i = 0; i < img.data.length; i += 4) {
+    if (near([img.data[i], img.data[i + 1], img.data[i + 2]], color, tol)) n += 1;
+  }
+  return n;
+}
