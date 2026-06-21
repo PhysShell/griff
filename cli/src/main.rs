@@ -958,6 +958,9 @@ fn chunks_for_segments(
                 u32::try_from(last).unwrap_or(0),
             ));
             let duplicate = duplicates.get(phrase).copied().flatten();
+            // Persist the link onto the record too (#76, schema v8), so a
+            // downloaded chunk / manifest keeps it, not just the CLI print.
+            meta.duplicate = duplicate;
             PhraseChunk { meta, duplicate }
         })
         .collect()
@@ -1130,6 +1133,7 @@ fn build_chunk_meta(
         structure,
         gesture,
         complexity,
+        duplicate: None,
         style_cohort: Some(inputs.style_cohort),
         ensemble,
         rights: Some(inputs.rights.clone()),

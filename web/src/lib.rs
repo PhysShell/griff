@@ -577,6 +577,7 @@ fn build_chunk_meta_record(
         structure: structure::measure_structure(score, track_index).ok(),
         gesture: gesture::measure_gesture(score, track_index).ok(),
         complexity: structure::measure_complexity(score, track_index).ok(),
+        duplicate: None,
         style_cohort: Some(cohort_from(cohort)),
         ensemble: None,
         rights: Some(RightsInfo {
@@ -747,6 +748,9 @@ fn split_segments_to_json(
         let bar_lo = u32::try_from(*start).unwrap_or(0);
         let bar_hi = u32::try_from(end.saturating_sub(1)).unwrap_or(0);
         meta.source.bar_range = Some((bar_lo, bar_hi));
+        // Persist the near-duplicate link onto the record too (#76, schema v8),
+        // so a downloaded chunk keeps it — not just the envelope below.
+        meta.duplicate = dups.get(phrase).copied().flatten();
 
         let pretty = serde_json::to_string_pretty(&meta)
             .unwrap_or_else(|e| format!("{{\"error\":\"serialize: {e}\"}}"));

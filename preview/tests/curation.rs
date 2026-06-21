@@ -40,6 +40,7 @@ fn record() -> ChunkMeta {
         structure: None,
         gesture: None,
         complexity: None,
+        duplicate: None,
         style_cohort: None,
         ensemble: None,
         rights: None,

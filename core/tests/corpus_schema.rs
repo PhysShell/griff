@@ -14,6 +14,7 @@ use griff_core::corpus::{
     StyleCohort, SwancoreTag, SCHEMA_VERSION,
 };
 use griff_core::gesture::GestureStats;
+use griff_core::novelty::PhraseDuplicate;
 use griff_core::structure::{ComplexityProfile, StructureMetrics};
 use proptest::{collection::vec as prop_vec, option::of as prop_opt, prelude::*};
 
@@ -85,6 +86,7 @@ fn minimal_chunk() -> ChunkMeta {
         structure: None,
         gesture: None,
         complexity: None,
+        duplicate: None,
         style_cohort: None,
         ensemble: None,
         rights: None,
@@ -93,22 +95,18 @@ fn minimal_chunk() -> ChunkMeta {
     }
 }
 
-// ── schema v7: rights + provenance (decisions 2026-06-12) ─────────────────────
-
-#[test]
-fn schema_version_is_7() {
-    assert_eq!(
-        SCHEMA_VERSION, 7,
-        "the rights record bumps the corpus schema"
-    );
-}
-
 // ── schema v8: near-duplicate link (#76) ──────────────────────────────────────
 
 #[test]
-fn chunk_meta_persists_and_skips_the_near_duplicate_link() {
-    use griff_core::novelty::PhraseDuplicate;
+fn schema_version_is_8() {
+    assert_eq!(
+        SCHEMA_VERSION, 8,
+        "the persisted near-duplicate link bumps the corpus schema"
+    );
+}
 
+#[test]
+fn chunk_meta_persists_and_skips_the_near_duplicate_link() {
     // Absent by default → the key is skipped (not written as null), so pre-v8
     // records round-trip byte-identically.
     let plain_json = serde_json::to_string(&minimal_chunk()).expect("serialize");
@@ -127,8 +125,13 @@ fn chunk_meta_persists_and_skips_the_near_duplicate_link() {
     assert!(json.contains("\"duplicate\""), "{json}");
     assert!(json.contains("\"of\":1"), "{json}");
     let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(back, flagged, "the near-duplicate link round-trips losslessly");
+    assert_eq!(
+        back, flagged,
+        "the near-duplicate link round-trips losslessly"
+    );
 }
+
+// ── schema v7: rights + provenance (decisions 2026-06-12) ─────────────────────
 
 /// A representative rights record (the common scraped-community-tab case).
 fn sample_rights() -> RightsInfo {
@@ -759,6 +762,24 @@ fn arb_rights() -> impl Strategy<Value = Option<RightsInfo>> {
     prop_opt(info)
 }
 
+/// Strategy: an optional near-duplicate link with a dyadic quote share, so the
+/// JSON round-trip stays byte-identical (#76, schema v8).
+fn arb_duplicate() -> impl Strategy<Value = Option<PhraseDuplicate>> {
+    prop_opt(
+        (
+            0_usize..16,
+            prop_oneof![
+                Just(0.0_f64),
+                Just(0.5),
+                Just(0.75),
+                Just(0.9375),
+                Just(1.0)
+            ],
+        )
+            .prop_map(|(of, quote_share)| PhraseDuplicate { of, quote_share }),
+    )
+}
+
 proptest! {
     #[test]
     fn prop_chunk_meta_json_roundtrip(
@@ -780,6 +801,7 @@ proptest! {
         style_cohort in arb_cohort(),
         ensemble in arb_ensemble(),
         rights in arb_rights(),
+        duplicate in arb_duplicate(),
     ) {
         let meta = ChunkMeta {
             id: ChunkId(id),
@@ -801,6 +823,7 @@ proptest! {
             structure,
             gesture,
             complexity,
+            duplicate,
             style_cohort,
             ensemble,
             rights,
