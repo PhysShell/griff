@@ -134,3 +134,36 @@ export function coarseMatch(a, b, tol = 26) {
   }
   return ok / A.length;
 }
+
+/** A copy of `live` with the blocks that drift from `ref` tinted red — a visual
+ *  diff for the CI artifact, so a regression shows *where* it moved. */
+export function diffImage(ref, live, tol = 26, gx = 64, gy = 32) {
+  const { width, height } = live;
+  const out = new PNG({ width, height });
+  live.data.copy(out.data);
+  const A = blockAverages(ref, gx, gy);
+  const B = blockAverages(live, gx, gy);
+  for (let by = 0; by < gy; by += 1) {
+    for (let bx = 0; bx < gx; bx += 1) {
+      const k = by * gx + bx;
+      const drift =
+        Math.abs(A[k][0] - B[k][0]) > tol ||
+        Math.abs(A[k][1] - B[k][1]) > tol ||
+        Math.abs(A[k][2] - B[k][2]) > tol;
+      if (!drift) continue;
+      const x0 = Math.floor((bx * width) / gx);
+      const x1 = Math.floor(((bx + 1) * width) / gx);
+      const y0 = Math.floor((by * height) / gy);
+      const y1 = Math.floor(((by + 1) * height) / gy);
+      for (let y = y0; y < y1; y += 1) {
+        for (let x = x0; x < x1; x += 1) {
+          const i = (y * width + x) * 4;
+          out.data[i] = Math.min(255, out.data[i] + 130);
+          out.data[i + 1] = Math.floor(out.data[i + 1] * 0.35);
+          out.data[i + 2] = Math.floor(out.data[i + 2] * 0.35);
+        }
+      }
+    }
+  }
+  return PNG.sync.write(out);
+}

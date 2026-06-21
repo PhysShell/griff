@@ -71,10 +71,10 @@ jobs:
         working-directory: cockpit/web-test
         run: npm test
 
-      - name: Upload the rendered frame
+      - name: Upload the rendered frame + reference diff
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cockpit-render
-          path: cockpit/web-test/output/cockpit.png
+          path: cockpit/web-test/output/
           if-no-files-found: ignore

@@ -43,5 +43,9 @@ wasm-bindgen-futures = "0.4"
 web-sys              = { version = "0.3", features = ["HtmlCanvasElement"] }
 getrandom            = { version = "0.4", features = ["wasm_js"] }
 
+[dev-dependencies]
+# Property-based fuzzing of the input -> reduce -> resolve -> paint loop.
+proptest = { workspace = true }
+
 [lints]
 workspace = true

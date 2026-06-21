@@ -320,8 +320,9 @@ pub mod web {
 
 #[cfg(test)]
 mod tests {
-    // Tests build views from known-good fixtures and may `expect` on them.
-    #![allow(clippy::expect_used)]
+    // Tests build views from known-good fixtures, `expect` on them, and index
+    // fixed in-range arrays.
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
 
     use super::*;
     use eframe::egui;
@@ -712,5 +713,58 @@ mod tests {
             "two tracks should paint in ≥2 distinct lane colours, saw {}",
             lane_colours.len()
         );
+    }
+
+    mod fuzz {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(96))]
+
+            /// Any sequence of key presses leaves the cockpit paintable and in
+            /// range: the input -> reduce -> resolve -> paint loop never panics
+            /// or desyncs, whatever the user mashes.
+            #[test]
+            fn arbitrary_key_sequences_keep_the_cockpit_sound(
+                picks in prop::collection::vec(0usize..15, 0..24),
+            ) {
+                // Ten mapped keys plus five unmapped ones, so the fuzz mixes
+                // real intents with inert noise.
+                let palette = [
+                    Key::Space, Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown,
+                    Key::Plus, Key::Minus, Key::OpenBracket, Key::CloseBracket, Key::Home,
+                    Key::I, Key::A, Key::Tab, Key::F1, Key::Enter,
+                ];
+                let mut app = two_section_app();
+                for p in picks {
+                    press(&mut app, palette[p % palette.len()]);
+                }
+
+                let sections = app.ctx.section_starts.len();
+                prop_assert!(
+                    sections == 0 || app.vp.sel_section < sections,
+                    "selection {} escaped the {} sections",
+                    app.vp.sel_section,
+                    sections
+                );
+
+                let scene = resolve(&app.view, &app.analysis, &app.vp, GridSize { cols: 100, rows: 30 });
+                prop_assert_eq!(scene.plane.len(), 100 * 30, "the plane stays cols×rows");
+
+                let ctx = egui::Context::default();
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(900.0, 420.0),
+                    )),
+                    ..Default::default()
+                };
+                #[allow(deprecated)]
+                let _frame = ctx.run(input, |c| {
+                    egui::CentralPanel::default().show(c, |ui| app.paint(ui));
+                });
+            }
+        }
     }
 }

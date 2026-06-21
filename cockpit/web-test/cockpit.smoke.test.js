@@ -14,7 +14,7 @@ import { chromium } from 'playwright';
 
 import { startServer } from './serve.js';
 import {
-  LAUNCH_ARGS, SIGNATURE, bootPage, canvasShot, decode, analyze, coarseMatch,
+  LAUNCH_ARGS, SIGNATURE, bootPage, canvasShot, decode, analyze, coarseMatch, diffImage,
 } from './helpers.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -91,6 +91,8 @@ test('the first frame matches the committed reference', async () => {
   const live = decode(await canvasShot(page));
   const reference = decode(await readFile(join(here, 'cockpit-reference.png')));
   const match = coarseMatch(reference, live);
+  // Always write the diff (blank on a match) so CI's artifact shows any drift.
+  await writeFile(join(outDir, 'cockpit-diff.png'), diffImage(reference, live));
   console.log(`reference block match ${(100 * match).toFixed(1)}%`);
   assert.ok(match > 0.95, `the render drifted from cockpit-reference.png — ${(100 * match).toFixed(1)}% of blocks match`);
   assert.deepEqual(errors, [], `reference run must not error:\n${errors.join('\n')}`);
