@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the egui cockpit into cockpit/dist/ as a static wasm web app — the
-# canonical M2 web front (ADR-0027 Slice 2). Same toolchain as web/build.sh
-# (ADR-0025): cargo build for wasm32 with getrandom's wasm_js backend, then
+# canonical web front (ADR-0027). The ADR-0025 toolchain: cargo build for wasm32
+# with getrandom's wasm_js backend (and web-sys's unstable OPFS apis), then
 # `wasm-bindgen --target web` to emit the ES module + wasm into a static dir.
 #
 #   ./cockpit/build-web.sh                          # release build → cockpit/dist

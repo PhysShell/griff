@@ -1330,3 +1330,11 @@ Architectural decisions go to [`adr/`](adr/) instead.
   active/passive split of marks/spans is left for when the corpus motivates it).
   `let_ring` still surfaces as a `SwancoreTag`/technique; only the difficulty
   axis stops counting it.
+
+- 2026-06-21 — In the context of the egui cockpit reaching load + capture + OPFS
+  manifest parity with the M1 playground (ADR-0027 Slices 3–4), facing ADR-0027
+  decision 6's JS-retirement gate, we decided for deleting the `web/` playground
+  and repointing the GitHub Pages deploy to the cockpit (`cockpit-pages.yml`),
+  and against keeping the playground around, to achieve a single canonical web
+  front, accepting the loss of the in-browser `arrange`/generation and
+  phrase-split demos (the engine's generation stays in the CLI).
