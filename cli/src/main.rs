@@ -1956,6 +1956,13 @@ mod tests {
             .expect("phrase 2 near-duplicates phrase 0");
         assert_eq!(dup.of, 0);
         assert!(dup.quote_share >= 0.8, "share {}", dup.quote_share);
+        // The link is also mirrored onto the persisted record (#76, schema v8),
+        // so a downloaded chunk / manifest keeps it — not just the CLI print.
+        assert_eq!(
+            chunks[2].meta.duplicate, chunks[2].duplicate,
+            "the duplicate link is persisted on the ChunkMeta"
+        );
+        assert!(chunks[0].meta.duplicate.is_none());
     }
 
     #[test]

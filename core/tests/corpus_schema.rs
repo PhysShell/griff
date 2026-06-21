@@ -103,6 +103,33 @@ fn schema_version_is_7() {
     );
 }
 
+// ── schema v8: near-duplicate link (#76) ──────────────────────────────────────
+
+#[test]
+fn chunk_meta_persists_and_skips_the_near_duplicate_link() {
+    use griff_core::novelty::PhraseDuplicate;
+
+    // Absent by default → the key is skipped (not written as null), so pre-v8
+    // records round-trip byte-identically.
+    let plain_json = serde_json::to_string(&minimal_chunk()).expect("serialize");
+    assert!(
+        !plain_json.contains("duplicate"),
+        "an unset duplicate link is skipped, not null: {plain_json}"
+    );
+
+    // Present → a nested object that round-trips losslessly.
+    let mut flagged = minimal_chunk();
+    flagged.duplicate = Some(PhraseDuplicate {
+        of: 1,
+        quote_share: 0.9375,
+    });
+    let json = serde_json::to_string(&flagged).expect("serialize");
+    assert!(json.contains("\"duplicate\""), "{json}");
+    assert!(json.contains("\"of\":1"), "{json}");
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, flagged, "the near-duplicate link round-trips losslessly");
+}
+
 /// A representative rights record (the common scraped-community-tab case).
 fn sample_rights() -> RightsInfo {
     RightsInfo {
