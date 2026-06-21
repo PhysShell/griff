@@ -372,6 +372,33 @@ fn split_record_clears_the_ensemble_link() {
     }
 }
 
+// TDD red phase (Codex P2, PR #96): a near-duplicate link's `of` indexes the
+// original split's sibling phrases; once an extent is split (or merged) the
+// halves take new ids and bar ranges, so that pointer goes stale. The split
+// must clear it alongside the other extent-invalidated metadata. Fails until
+// `fresh_extent` resets it.
+
+#[test]
+fn split_record_clears_the_near_duplicate_link() {
+    use griff_core::novelty::PhraseDuplicate;
+    use griff_preview::curation::split_record;
+
+    let mut meta = record_with_range(0, 4);
+    meta.duplicate = Some(PhraseDuplicate {
+        of: 1,
+        quote_share: 0.95,
+    });
+    let json = serde_json::to_string(&meta).expect("serialize");
+    let (a, b) = split_record(&json, 2, 2).expect("split ok");
+    for half in [a, b] {
+        let half: ChunkMeta = serde_json::from_str(&half).expect("parses");
+        assert_eq!(
+            half.duplicate, None,
+            "a stale sibling pointer cannot survive a split"
+        );
+    }
+}
+
 #[test]
 fn split_record_rejects_an_out_of_range_point() {
     use griff_preview::curation::split_record;
