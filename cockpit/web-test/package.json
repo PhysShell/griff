@@ -1,0 +1,14 @@
+{
+  "name": "griff-cockpit-web-test",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless-browser smoke test for the griff-cockpit wasm build (ADR-0027 Slice 2).",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "playwright": "1.56.1",
+    "pngjs": "^7.0.0"
+  }
+}

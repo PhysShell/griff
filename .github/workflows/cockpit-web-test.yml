@@ -1,0 +1,80 @@
+# Builds the egui cockpit to wasm (ADR-0027 Slice 2) and smoke-tests it in a
+# headless browser: the real eframe/egui app must boot and paint the demo score
+# (WebGL via SwiftShader — no GPU on the runner). Mirrors web.yml's wasm build
+# and web-test.yml's node runner. The pure-Rust Scene/reducer suite stays in
+# `cargo test`; this is the one check that the *web* render actually works.
+name: cockpit-web-test
+on:
+  pull_request:
+    paths:
+      - 'cockpit/**'
+      - 'core/**'
+      - 'ui-core/**'
+      - '.github/workflows/cockpit-web-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'cockpit/**'
+      - 'core/**'
+      - 'ui-core/**'
+      - '.github/workflows/cockpit-web-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      # persist-credentials: false — later steps build and run PR-authored code
+      # (build scripts, the wasm, browser JS), so don't leave the token in
+      # .git/config for them to read (zizmor: artipacked).
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cockpit-wasm-${{ hashFiles('cockpit/Cargo.toml', 'core/Cargo.toml', 'ui-core/Cargo.toml', 'Cargo.lock') }}
+      # build-web.sh needs wasm-bindgen-cli matching the crate version pinned in
+      # cockpit/Cargo.toml; cache the built binary across runs (as web.yml does).
+      - name: Cache wasm-bindgen-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-${{ hashFiles('cockpit/Cargo.toml') }}
+      - name: Install wasm-bindgen-cli
+        run: |
+          if command -v wasm-bindgen >/dev/null; then echo "cached: $(wasm-bindgen --version)"; exit 0; fi
+          ver=$(grep -m1 -E '^wasm-bindgen[[:space:]]*=' cockpit/Cargo.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          cargo install wasm-bindgen-cli --version "$ver" --locked
+      - name: Build cockpit wasm → cockpit/dist
+        run: ./cockpit/build-web.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install JS deps
+        working-directory: cockpit/web-test
+        run: npm ci
+      - name: Install Chromium
+        working-directory: cockpit/web-test
+        run: npx playwright install --with-deps chromium chromium-headless-shell
+      - name: Smoke-test the wasm cockpit
+        working-directory: cockpit/web-test
+        run: npm test
+
+      - name: Upload the rendered frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cockpit-render
+          path: cockpit/web-test/output/cockpit.png
+          if-no-files-found: ignore

@@ -34,3 +34,22 @@ cargo install wasm-bindgen-cli --version <pinned> --locked
 
 Slice 2 paints a built-in demo score (`assets/demo.mid`) to prove the web render
 path end-to-end; interactive file loading and capture arrive in Slice 3.
+
+## Web smoke test
+
+A headless-browser test (`web-test/`) serves the built `dist/` and boots it in
+Chromium — WebGL via SwiftShader, no GPU — then asserts the real eframe app
+paints the cockpit: a non-blank canvas plus the signature note / band / playhead
+fill colours. This is the pixel-truth `egui_kittest` can't give headlessly (it
+rasterises through native wgpu, which finds no adapter in CI); a browser ships
+its own software GL. `web-test/cockpit-reference.png` is the expected frame.
+
+```sh
+./cockpit/build-web.sh                       # produce cockpit/dist first
+cd cockpit/web-test
+npm ci && npx playwright install chromium chromium-headless-shell
+npm test
+```
+
+CI runs build + smoke test on every `cockpit/`, `core/`, or `ui-core/` change
+(`.github/workflows/cockpit-web-test.yml`).
