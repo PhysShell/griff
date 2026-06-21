@@ -337,4 +337,63 @@ mod tests {
         assert_eq!(key_to_intent(Key::Q), Some(Intent::Quit));
         assert_eq!(key_to_intent(Key::F1), None, "unmapped keys are inert");
     }
+
+    #[test]
+    #[allow(deprecated)] // egui 0.34 flags CentralPanel::show; it still drives a CPU frame.
+    fn paints_a_resolved_scene_headlessly() {
+        use eframe::egui;
+        use griff_ui_core::{Lane, NoteRect, Section};
+
+        let view = PianoRollView {
+            ppq: 480,
+            tick_start: 0,
+            tick_end: 3840,
+            low_pitch: 52,
+            high_pitch: 64,
+            bar_lines: vec![0, 1920, 3840],
+            lanes: vec![Lane {
+                name: "lead".to_owned(),
+                notes: vec![
+                    NoteRect { onset: 0, end: 480, pitch: 60 },
+                    NoteRect { onset: 960, end: 1440, pitch: 64 },
+                ],
+            }],
+            tempo_bpm: 120.0,
+            bar_count: 2,
+        };
+        let analysis = Analysis {
+            focus_track: 0,
+            sections: vec![Section {
+                class: BarClass::Riff,
+                bar_start: 0,
+                bar_end: 2,
+                tick_start: 0,
+                tick_end: 3840,
+            }],
+            metrics: None,
+            complexity: None,
+            boundaries: vec![],
+        };
+        let mut app = CockpitApp::new(view, analysis, "headless".to_owned());
+
+        // One egui frame on the CPU — no window, no GPU: the paint pass
+        // tessellates the resolved scene into draw shapes.
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(800.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+        });
+
+        assert!(
+            output.shapes.len() > 50,
+            "expected the cockpit to paint the scene's cells, got {} shapes",
+            output.shapes.len()
+        );
+    }
 }
