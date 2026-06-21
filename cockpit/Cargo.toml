@@ -43,7 +43,11 @@ eframe = { version = "0.34", default-features = false, features = ["default_font
 # mirroring `web/Cargo.toml`'s pin (ADR-0025 §4).
 wasm-bindgen         = "=0.2.125"
 wasm-bindgen-futures = "0.4"
-web-sys              = { version = "0.3", features = ["HtmlCanvasElement", "console"] }
+js-sys               = "0.3"
+web-sys              = { version = "0.3", features = [
+    "Blob", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Url", "Window",
+    "console",
+] }
 getrandom            = { version = "0.4", features = ["wasm_js"] }
 
 [dev-dependencies]

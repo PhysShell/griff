@@ -32,10 +32,13 @@ python3 -m http.server -d cockpit/dist 8080       # open http://localhost:8080
 cargo install wasm-bindgen-cli --version <pinned> --locked
 ```
 
-The web front boots on a baked demo score, with an **Open** button (the `📂`
-overlay) that hands a picked MIDI/Guitar Pro file to the wasm `load_score`
-export; the cockpit re-imports it through the shared parser and repaints
-(ADR-0027 Slice 3a). The chunk-capture flow follows in Slice 3b.
+The web front boots on a baked demo score, with a toolbar over the canvas:
+**Open** hands a picked MIDI/Guitar Pro file to the wasm `load_score` export (the
+cockpit re-imports it through the shared parser and repaints), and **Capture**
+builds a `chunk.json` for the focused track — through the shared
+`griff_ui_core::capture::build_chunk`, byte-compatible with `griff manifest` —
+and downloads it (ADR-0027 Slices 3a–3b). The `i` key opens the capture panel to
+edit the curator inputs (id / title / rights / tags…) first.
 
 ## Web tests
 
@@ -47,10 +50,12 @@ colours, a resize re-fit, and a coarse block-average match to the committed
 and that **interaction** works end-to-end: `Space` animates playback and the
 playhead advances, `Space` again holds still, `←`/`→` scroll, `↑` shifts pitch,
 `]` jumps a section, `=` zooms, `Home` resets the view, and an unmapped key is
-inert — and that **loading** a picked file repaints the chosen score (a
-multi-track file even brings in lane colours the demo never shows). This is the
-pixel-truth `egui_kittest` can't give headlessly (it rasterises through native
-wgpu, which finds no adapter in CI); a browser ships its own software GL.
+inert; that **loading** a picked file repaints the chosen score (a multi-track
+file even brings in lane colours the demo never shows); and that **capture**
+works — toggling the inspector shows the panel, and Capture downloads a real
+`chunk.json` for the loaded score. This is the pixel-truth `egui_kittest` can't
+give headlessly (it rasterises through native wgpu, which finds no adapter in
+CI); a browser ships its own software GL.
 
 ```sh
 ./cockpit/build-web.sh                       # produce cockpit/dist first

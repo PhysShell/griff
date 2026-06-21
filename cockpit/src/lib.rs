@@ -150,6 +150,159 @@ fn build_context(view: &PianoRollView, analysis: &Analysis) -> ViewContext {
     }
 }
 
+// ── capture panel (ADR-0026) ────────────────────────────────────────────────
+
+/// Rights-status options (code, label) in the CLI's prompt order.
+const RIGHTS: &[(u32, &str)] = &[
+    (0, "public domain"),
+    (1, "CC-BY"),
+    (2, "CC-BY-SA"),
+    (3, "copyrighted"),
+    (4, "unknown"),
+];
+/// Acquisition options (code, label) in the CLI's prompt order.
+const ACQUISITION: &[(u32, &str)] = &[
+    (0, "community tab"),
+    (1, "purchased"),
+    (2, "self-transcribed"),
+    (3, "OMR scan"),
+    (4, "artist-provided"),
+];
+/// Style-cohort options (code, label).
+const COHORT: &[(u32, &str)] = &[(0, "core"), (1, "adjacent")];
+
+/// A labelled single-line text field row.
+fn text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(egui::TextEdit::singleline(value).desired_width(210.0));
+    });
+}
+
+/// A labelled [`egui::ComboBox`] selecting a `u32` code from `(code, label)`s.
+fn combo(ui: &mut egui::Ui, label: &str, value: &mut u32, options: &[(u32, &str)]) {
+    let current = options.iter().find(|opt| opt.0 == *value).map_or("", |opt| opt.1);
+    egui::ComboBox::from_label(label)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for opt in options {
+                ui.selectable_value(value, opt.0, opt.1);
+            }
+        });
+}
+
+/// Editable capture-form state (ADR-0026): the curator-supplied inputs the
+/// panel edits before building a `chunk.json`.
+///
+/// Mirrors [`CaptureInputs`] with owned fields, plus a transient status line.
+#[derive(Debug)]
+struct CaptureForm {
+    id: String,
+    title: String,
+    filename: String,
+    tuning: String,
+    tags_idx: String,
+    notes: String,
+    cohort: u32,
+    rights_status: u32,
+    acquisition: u32,
+    redistributable: bool,
+    status: Option<String>,
+}
+
+impl Default for CaptureForm {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            title: String::new(),
+            filename: String::new(),
+            tuning: String::new(),
+            tags_idx: String::new(),
+            notes: String::new(),
+            cohort: 0,             // core
+            rights_status: 3,      // copyrighted — the safe default until stated
+            acquisition: 0,        // community tab
+            redistributable: false,
+            status: None,
+        }
+    }
+}
+
+impl CaptureForm {
+    /// Borrows the form as [`CaptureInputs`], stamping `created`/`updated`.
+    /// Quality and reviewer keep their `build_chunk` defaults (`[Clean]` / none).
+    fn inputs<'a>(&'a self, created: &'a str, updated: &'a str) -> CaptureInputs<'a> {
+        CaptureInputs {
+            id: &self.id,
+            title: &self.title,
+            filename: &self.filename,
+            tuning: &self.tuning,
+            cohort: self.cohort,
+            tags_idx: &self.tags_idx,
+            quality_idx: "",
+            reviewer: -1,
+            rights_status: self.rights_status,
+            acquisition: self.acquisition,
+            redistributable: self.redistributable,
+            notes: &self.notes,
+            created_at: created,
+            updated_at: updated,
+        }
+    }
+
+    /// Seeds id/title/filename from a loaded source name (a slug of the stem).
+    fn seed_from(&mut self, source: &str) {
+        let stem = source.rsplit('/').next().unwrap_or(source);
+        let base = stem.rsplit_once('.').map_or(stem, |(name, _)| name);
+        let slug: String = base
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .collect();
+        slug.trim_matches('_').clone_into(&mut self.id);
+        base.clone_into(&mut self.title);
+        stem.clone_into(&mut self.filename);
+        self.status = None;
+    }
+}
+
+/// The current time as an RFC3339 timestamp (`created_at`/`updated_at`).
+#[cfg(target_arch = "wasm32")]
+fn now_rfc3339() -> String {
+    js_sys::Date::new_0().to_iso_string().as_string().unwrap_or_default()
+}
+
+/// The current time as an RFC3339 timestamp, from the system clock (no `chrono`:
+/// Howard Hinnant's civil-from-days over the Unix epoch).
+#[cfg(not(target_arch = "wasm32"))]
+fn now_rfc3339() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let (hh, mm, ss) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
+    let z = i64::try_from(secs / 86_400).unwrap_or(0) + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+/// Saves a captured `chunk.json`: a browser download on web, a file in the
+/// working directory on native.
+#[cfg(target_arch = "wasm32")]
+fn save_chunk(filename: &str, json: &str) -> Result<(), String> {
+    web::download(filename, json)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_chunk(filename: &str, json: &str) -> Result<(), String> {
+    use std::fs;
+    fs::write(filename, json).map_err(|err| err.to_string())
+}
+
 /// The egui cockpit application: a `Scene` renderer over the shared core.
 #[derive(Debug)]
 pub struct CockpitApp {
@@ -162,6 +315,8 @@ pub struct CockpitApp {
     /// The imported score behind the view, kept for capture (ADR-0026); `None`
     /// for views built directly (tests) or before the first load.
     score: Option<Score>,
+    /// The capture-panel form state (shown when the inspector is toggled).
+    form: CaptureForm,
 }
 
 impl CockpitApp {
@@ -169,7 +324,8 @@ impl CockpitApp {
     #[must_use]
     pub fn new(view: PianoRollView, analysis: Analysis, title: String) -> Self {
         let ctx = build_context(&view, &analysis);
-        let vp = Viewport::new(&ctx, view.high_pitch);
+        let mut vp = Viewport::new(&ctx, view.high_pitch);
+        vp.show_inspector = false; // the capture panel starts hidden (the `i` key shows it)
         Self {
             view,
             analysis,
@@ -178,6 +334,7 @@ impl CockpitApp {
             ctx,
             fitted: false,
             score: None,
+            form: CaptureForm::default(),
         }
     }
 
@@ -199,11 +356,13 @@ impl CockpitApp {
         let view = build_view(&score);
         let analysis = analyze(&score);
         let ctx = build_context(&view, &analysis);
-        let vp = Viewport::new(&ctx, view.high_pitch);
+        let mut vp = Viewport::new(&ctx, view.high_pitch);
+        vp.show_inspector = false;
         self.view = view;
         self.analysis = analysis;
         self.ctx = ctx;
         self.vp = vp;
+        self.form.seed_from(&source);
         self.title = source;
         self.score = Some(score);
         self.fitted = false;
@@ -220,6 +379,48 @@ impl CockpitApp {
         let score = self.score.as_ref().ok_or_else(|| "no score loaded".to_owned())?;
         let chunk = build_chunk(score, self.analysis.focus_track, inputs)?;
         serde_json::to_string_pretty(&chunk).map_err(|err| err.to_string())
+    }
+
+    /// Builds and saves a `chunk.json` for the focused track from the form,
+    /// recording the outcome in the form's status line.
+    fn do_capture(&mut self) {
+        let now = now_rfc3339();
+        let result = self.capture_json(&self.form.inputs(&now, &now)).and_then(|json| {
+            let id = self.form.id.trim();
+            let stem = if id.is_empty() { "chunk" } else { id };
+            let filename = format!("{stem}.chunk.json");
+            save_chunk(&filename, &json).map(|()| filename)
+        });
+        self.form.status = Some(match result {
+            Ok(filename) => format!("saved {filename}"),
+            Err(err) => format!("capture failed: {err}"),
+        });
+    }
+
+    /// The capture panel (ADR-0026): a floating form editing the curator inputs,
+    /// with a button that builds a `chunk.json` for the focused track. Shown
+    /// when the inspector is toggled (the `i` key).
+    fn capture_panel(&mut self, ctx: &egui::Context) {
+        egui::Window::new("capture · chunk.json")
+            .default_width(320.0)
+            .show(ctx, |ui| {
+                text_field(ui, "id", &mut self.form.id);
+                text_field(ui, "title", &mut self.form.title);
+                text_field(ui, "file", &mut self.form.filename);
+                text_field(ui, "tuning", &mut self.form.tuning);
+                text_field(ui, "tags", &mut self.form.tags_idx);
+                text_field(ui, "notes", &mut self.form.notes);
+                combo(ui, "rights", &mut self.form.rights_status, RIGHTS);
+                combo(ui, "acquired", &mut self.form.acquisition, ACQUISITION);
+                combo(ui, "cohort", &mut self.form.cohort, COHORT);
+                ui.checkbox(&mut self.form.redistributable, "redistributable");
+                if ui.button("⬇ capture chunk.json").clicked() {
+                    self.do_capture();
+                }
+                if let Some(status) = &self.form.status {
+                    ui.label(status);
+                }
+            });
     }
 
     /// Drains the frame's key presses into the reducer; returns whether the
@@ -303,9 +504,9 @@ impl eframe::App for CockpitApp {
     // eframe's default `update` wraps this in a central panel; we draw the
     // resolved scene straight into the provided `ui`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Apply a file the page handed us via `web::load_score`, if any.
+        // Apply a file or capture request the page handed us, if any.
         #[cfg(target_arch = "wasm32")]
-        web::drain_inbox(self);
+        web::drain(self);
         let egui_ctx = ui.ctx().clone();
         if self.handle_input(&egui_ctx) {
             egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -316,6 +517,9 @@ impl eframe::App for CockpitApp {
             egui_ctx.request_repaint();
         }
         self.paint(ui);
+        if self.vp.show_inspector {
+            self.capture_panel(&egui_ctx);
+        }
     }
 }
 
@@ -332,7 +536,7 @@ impl eframe::App for CockpitApp {
 // `WebGL` init is unrecoverable — surfacing the panic is the intended UX.
 #[allow(clippy::expect_used)]
 pub mod web {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     use eframe::egui;
     use wasm_bindgen::prelude::*;
@@ -354,17 +558,15 @@ pub mod web {
     // on the next frame. wasm is single-threaded, so a thread-local needs no lock.
     thread_local! {
         static INBOX: RefCell<PendingFile> = const { RefCell::new(None) };
-        // The running app's egui context, stashed at start so `load_score` can
-        // wake the reactive web runner to drain a freshly-picked file.
+        /// Set by `request_capture`; drained into a `do_capture` next frame.
+        static CAPTURE: Cell<bool> = const { Cell::new(false) };
+        // The running app's egui context, stashed at start so the inbox/capture
+        // requests can wake the reactive web runner.
         static CTX: RefCell<Option<egui::Context>> = const { RefCell::new(None) };
     }
 
-    /// Hands a picked file (name + bytes) to the running cockpit; the page calls
-    /// this from its file-input change handler. Wakes the runner so the app
-    /// drains and loads it on the next frame.
-    #[wasm_bindgen]
-    pub fn load_score(name: String, bytes: Vec<u8>) {
-        INBOX.with(|inbox| *inbox.borrow_mut() = Some((name, bytes)));
+    /// Wakes the reactive web runner so the app drains pending requests.
+    fn wake() {
         CTX.with(|cell| {
             if let Some(ctx) = cell.borrow().as_ref() {
                 ctx.request_repaint();
@@ -372,14 +574,57 @@ pub mod web {
         });
     }
 
-    /// Applies a pending file, if any. Called by the app at the top of each frame.
-    pub(crate) fn drain_inbox(app: &mut CockpitApp) {
+    /// Hands a picked file (name + bytes) to the running cockpit; the page calls
+    /// this from its file-input change handler. The score loads on the next frame.
+    #[wasm_bindgen]
+    pub fn load_score(name: String, bytes: Vec<u8>) {
+        INBOX.with(|inbox| *inbox.borrow_mut() = Some((name, bytes)));
+        wake();
+    }
+
+    /// Requests a capture of the focused track; the app builds and downloads its
+    /// `chunk.json` on the next frame. The page can wire this to a button.
+    #[wasm_bindgen]
+    pub fn request_capture() {
+        CAPTURE.with(|flag| flag.set(true));
+        wake();
+    }
+
+    /// Applies a pending file and/or capture request. Called by the app at the
+    /// top of each frame.
+    pub(crate) fn drain(app: &mut CockpitApp) {
         let pending = INBOX.with(|inbox| inbox.borrow_mut().take());
         if let Some((name, bytes)) = pending {
             if let Err(err) = app.load(name, &bytes) {
                 console::error_1(&err.into());
             }
         }
+        if CAPTURE.with(Cell::take) {
+            app.do_capture();
+        }
+    }
+
+    /// Triggers a browser download of `contents` as `filename` (a transient
+    /// object-URL anchor click).
+    ///
+    /// # Errors
+    /// Returns a message if the DOM/Blob/URL plumbing is unavailable.
+    pub(crate) fn download(filename: &str, contents: &str) -> Result<(), String> {
+        use wasm_bindgen::JsCast as _;
+        let document = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+        let parts = js_sys::Array::of1(&JsValue::from_str(contents));
+        let blob = web_sys::Blob::new_with_str_sequence(&parts).map_err(|_| "blob".to_owned())?;
+        let url =
+            web_sys::Url::create_object_url_with_blob(&blob).map_err(|_| "object url".to_owned())?;
+        let anchor = document
+            .create_element("a")
+            .and_then(|el| el.dyn_into::<web_sys::HtmlAnchorElement>().map_err(Into::into))
+            .map_err(|_| "anchor".to_owned())?;
+        anchor.set_href(&url);
+        anchor.set_download(filename);
+        anchor.click();
+        let _revoked = web_sys::Url::revoke_object_url(&url);
+        Ok(())
     }
 
     /// Builds the cockpit over the baked demo score.
@@ -853,6 +1098,20 @@ mod tests {
         let json = app.capture_json(&inputs).expect("captures a chunk");
         assert!(json.contains("demo_001"), "the chunk carries its id");
         assert!(json.contains("\"rights\""), "rights are recorded");
+    }
+
+    #[test]
+    fn loading_seeds_the_capture_form() {
+        let mut app = demo_app();
+        app.load("path/to/Cool Riff.mid".to_owned(), include_bytes!("../assets/demo.mid"))
+            .expect("loads");
+        assert_eq!(app.form.id, "cool_riff", "the id is a slug of the file stem");
+        assert_eq!(app.form.title, "Cool Riff");
+        assert_eq!(app.form.filename, "Cool Riff.mid");
+
+        let now = "2026-01-01T00:00:00Z";
+        let json = app.capture_json(&app.form.inputs(now, now)).expect("captures from the form");
+        assert!(json.contains("cool_riff"), "the captured chunk uses the form id");
     }
 
     mod fuzz {
