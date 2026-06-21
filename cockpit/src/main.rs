@@ -3,16 +3,20 @@
 //!
 //! Reads a MIDI or Guitar Pro file, imports it through the shared core
 //! importer, builds the renderer-agnostic view + analysis, and hands them to
-//! the egui [`CockpitApp`]. The web (wasm) entry point follows in Slice 2.
+//! the egui `CockpitApp`. The browser (wasm) entry point is
+//! `griff_cockpit::web::start` (see `lib.rs`, Slice 2).
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::ExitCode;
-use std::{env, fs};
 
-use griff_cockpit::CockpitApp;
-use griff_core::import::import_score_auto;
-use griff_ui_core::{analyze, build_view};
-
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
+    use std::{env, fs};
+
+    use griff_cockpit::CockpitApp;
+    use griff_core::import::import_score_auto;
+    use griff_ui_core::{analyze, build_view};
+
     let Some(path) = env::args().nth(1) else {
         eprintln!("usage: griff-cockpit <file.mid|.gp3|.gp4|.gp5|.gpx>");
         return ExitCode::FAILURE;
@@ -46,3 +50,10 @@ fn main() -> ExitCode {
         }
     }
 }
+
+// On wasm there is no native window or filesystem: the browser entry point is
+// `griff_cockpit::web::start` (lib.rs). This stub keeps the bin target compiling for
+// wasm32 so a plain `cargo build --target wasm32-unknown-unknown` over the whole
+// package stays clean (the web build itself uses `--lib`; see `build-web.sh`).
+#[cfg(target_arch = "wasm32")]
+fn main() {}

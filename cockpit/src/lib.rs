@@ -1,4 +1,4 @@
-//! egui cockpit for griff — the renderer side of ADR-0027, Slice 1.
+//! egui cockpit for griff — the renderer side of ADR-0027 (Slices 1–2).
 //!
 //! Paints the shared [`griff_ui_core`] `Scene` (the same placed grid the
 //! `ratatui` preview draws) into an `eframe`/`egui` window, and maps raw egui
@@ -6,6 +6,11 @@
 //! slice renders the existing `Scene` and nothing else: all layout and
 //! interaction logic stays in `griff-ui-core`; this crate only maps placed
 //! cells to pixels and key presses to intents.
+//!
+//! The same [`CockpitApp`] runs on two targets: a native `eframe` window (see
+//! `main.rs` / `run_native`) and the browser, where the wasm `start` entry
+//! boots it on an HTML canvas via eframe's `WebGL` runner (Slice 2). Both drive
+//! the identical resolve → paint and input → intent path.
 
 // Pixel layout is bounded arithmetic (cell sizes × small grid counts) plus
 // float→cell casts; every value is clamped to the panel and the grid, so the
@@ -267,8 +272,57 @@ impl eframe::App for CockpitApp {
     }
 }
 
+/// The browser (wasm) entry point — ADR-0027 Slice 2.
+///
+/// Mirrors `main.rs` for the web: imports a score through the shared
+/// [`griff_core::import::import_score_auto`] (the same parser as the CLI — GP
+/// and MIDI alike, ADR-0025), builds the renderer-agnostic view + analysis, and
+/// starts the [`CockpitApp`] on an HTML canvas via eframe's `WebGL` runner. Slice
+/// 2 paints a built-in demo score; interactive file loading is Slice 3.
+#[cfg(target_arch = "wasm32")]
+// The `expect`s inside are deliberate: the baked demo is validated on native by
+// the `the_baked_demo_score_imports_with_notes_and_sections` test, and a failed
+// `WebGL` init is unrecoverable — surfacing the panic is the intended UX.
+#[allow(clippy::expect_used)]
+pub mod web {
+    use wasm_bindgen::prelude::*;
+
+    use griff_core::import::import_score_auto;
+    use griff_ui_core::{analyze, build_view};
+
+    use crate::CockpitApp;
+
+    /// A tiny MIDI baked into the app so the web front paints a real,
+    /// importer-parsed score on first load — no file pick yet (that is Slice 3).
+    const DEMO_SCORE: &[u8] = include_bytes!("../assets/demo.mid");
+
+    /// Builds the cockpit over the baked demo score.
+    fn demo_app() -> CockpitApp {
+        let score = import_score_auto(DEMO_SCORE).expect("the baked demo score must import");
+        CockpitApp::new(build_view(&score), analyze(&score), "demo".to_owned())
+    }
+
+    /// Boots the cockpit on `canvas`. The page's ES module calls this after the
+    /// generated wasm initialises (`wasm-bindgen --target web`); eframe then
+    /// drives the frame loop through `requestAnimationFrame`.
+    #[wasm_bindgen]
+    pub fn start(canvas: web_sys::HtmlCanvasElement) {
+        let app = demo_app();
+        let options = eframe::WebOptions::default();
+        wasm_bindgen_futures::spawn_local(async move {
+            eframe::WebRunner::new()
+                .start(canvas, options, Box::new(|_cc| Ok(Box::new(app))))
+                .await
+                .expect("failed to start the cockpit web runner");
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    // Tests build views from known-good fixtures and may `expect` on them.
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]
@@ -394,6 +448,30 @@ mod tests {
             output.shapes.len() > 50,
             "expected the cockpit to paint the scene's cells, got {} shapes",
             output.shapes.len()
+        );
+    }
+
+    #[test]
+    fn the_baked_demo_score_imports_with_notes_and_sections() {
+        use griff_core::import::import_score_auto;
+        use griff_ui_core::{analyze, build_view};
+
+        // Exactly the bytes the wasm `start` bakes in (assets/demo.mid). Proving
+        // it imports and resolves here — headlessly, on native — means the
+        // browser demo (Slice 2) never trips its `expect`, and paints a real
+        // score (notes + a classified section band), not an empty grid.
+        let score = import_score_auto(include_bytes!("../assets/demo.mid"))
+            .expect("the baked demo score must import");
+        let view = build_view(&score);
+        let analysis = analyze(&score);
+
+        assert!(
+            view.lanes.iter().any(|lane| !lane.notes.is_empty()),
+            "the demo must carry notes for the web front to paint"
+        );
+        assert!(
+            !analysis.sections.is_empty(),
+            "the demo must analyse into sections for the classification band"
         );
     }
 }

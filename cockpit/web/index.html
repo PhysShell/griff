@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>griff · cockpit</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #1b1b1f; }
+      body { overflow: hidden; }
+      /* eframe's resize observer drives the framebuffer; CSS fills the viewport. */
+      canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+      #loading {
+        position: absolute; inset: 0; display: grid; place-items: center;
+        color: #9a9aa2; font: 14px system-ui, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading">loading the cockpit…</div>
+    <canvas id="cockpit"></canvas>
+    <script type="module">
+      // `wasm-bindgen --target web` emits griff_cockpit.js (the loader) and the
+      // wasm; boot the egui app on our canvas (ADR-0027 Slice 2).
+      import init, { start } from "./griff_cockpit.js";
+      init()
+        .then(() => {
+          document.getElementById("loading").remove();
+          start(document.getElementById("cockpit"));
+        })
+        .catch((err) => {
+          document.getElementById("loading").textContent =
+            "failed to load the cockpit — see the console";
+          console.error(err);
+        });
+    </script>
+  </body>
+</html>

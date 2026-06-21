@@ -14,10 +14,34 @@ categories.workspace   = true
 name = "griff-cockpit"
 path = "src/main.rs"
 
+# `cdylib` emits the `.wasm` for `wasm-bindgen --target web` (the M2 web front,
+# ADR-0027 Slice 2); `rlib` keeps the native bin and the unit tests linking the
+# crate. Mirrors `web/Cargo.toml`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 griff-core    = { path = "../core" }
 griff-ui-core = { path = "../ui-core" }
-eframe        = "0.34"
+
+# Native desktop keeps eframe's defaults (winit + glow), exactly as Slice 1
+# shipped; the web target picks a leaner, glow-only eframe below.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = "0.34"
+
+# Web (wasm32) — the canonical M2 front (ADR-0027 Slice 2). eframe paints via
+# WebGL (`glow` over `web-sys`): ADR-0027 §5's "web renderer", no wgpu, no Trunk.
+# The toolchain mirrors the ADR-0025 `web/` build — `wasm-bindgen --target web`
+# with a version-pinned CLI (see `build-web.sh`), plus getrandom's `wasm_js`
+# (Web Crypto) backend for the GP reader's `zip` subtree.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
+# Pinned exact: the `wasm-bindgen-cli` in `build-web.sh` must match this version,
+# mirroring `web/Cargo.toml`'s pin (ADR-0025 §4).
+wasm-bindgen         = "=0.2.125"
+wasm-bindgen-futures = "0.4"
+web-sys              = { version = "0.3", features = ["HtmlCanvasElement"] }
+getrandom            = { version = "0.4", features = ["wasm_js"] }
 
 [lints]
 workspace = true
