@@ -35,14 +35,17 @@ cargo install wasm-bindgen-cli --version <pinned> --locked
 Slice 2 paints a built-in demo score (`assets/demo.mid`) to prove the web render
 path end-to-end; interactive file loading and capture arrive in Slice 3.
 
-## Web smoke test
+## Web tests
 
-A headless-browser test (`web-test/`) serves the built `dist/` and boots it in
-Chromium — WebGL via SwiftShader, no GPU — then asserts the real eframe app
-paints the cockpit: a non-blank canvas plus the signature note / band / playhead
-fill colours. This is the pixel-truth `egui_kittest` can't give headlessly (it
+Headless-browser tests (`web-test/`) serve the built `dist/` and boot the real
+eframe app in Chromium — WebGL via SwiftShader, no GPU. They assert it **paints**
+the cockpit (a non-blank canvas, the signature note / band / playhead fill
+colours, and that it survives a resize) and that **interaction** works
+end-to-end: `Space` animates playback and the playhead advances, `Space` again
+holds still, `←`/`→` scroll, `]` jumps a section, `=` zooms, and an unmapped key
+is inert. This is the pixel-truth `egui_kittest` can't give headlessly (it
 rasterises through native wgpu, which finds no adapter in CI); a browser ships
-its own software GL. `web-test/cockpit-reference.png` is the expected frame.
+its own software GL. `web-test/cockpit-reference.png` is the expected first frame.
 
 ```sh
 ./cockpit/build-web.sh                       # produce cockpit/dist first

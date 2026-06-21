@@ -324,6 +324,7 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+    use eframe::egui;
 
     #[test]
     fn every_bar_class_has_a_distinct_colour() {
@@ -384,12 +385,34 @@ mod tests {
     }
 
     #[test]
-    fn navigation_keys_map_to_intents() {
-        assert_eq!(key_to_intent(Key::Space), Some(Intent::TogglePlay));
-        assert_eq!(key_to_intent(Key::ArrowRight), Some(Intent::ScrollRight));
-        assert_eq!(key_to_intent(Key::CloseBracket), Some(Intent::NextSection));
-        assert_eq!(key_to_intent(Key::Q), Some(Intent::Quit));
-        assert_eq!(key_to_intent(Key::F1), None, "unmapped keys are inert");
+    fn all_mapped_keys_resolve_to_their_intent() {
+        use Intent::{
+            Home, NextSection, PitchDown, PitchUp, PrevSection, Quit, ScrollLeft, ScrollRight,
+            ToggleInspector, TogglePlay, ZoomIn, ZoomOut,
+        };
+        let mapped = [
+            (Key::Space, TogglePlay),
+            (Key::ArrowLeft, ScrollLeft),
+            (Key::ArrowRight, ScrollRight),
+            (Key::ArrowUp, PitchUp),
+            (Key::ArrowDown, PitchDown),
+            (Key::Plus, ZoomIn),
+            (Key::Equals, ZoomIn),
+            (Key::Minus, ZoomOut),
+            (Key::OpenBracket, PrevSection),
+            (Key::CloseBracket, NextSection),
+            (Key::Home, Home),
+            (Key::Num0, Home),
+            (Key::I, ToggleInspector),
+            (Key::Q, Quit),
+            (Key::Escape, Quit),
+        ];
+        for (key, intent) in mapped {
+            assert_eq!(key_to_intent(key), Some(intent), "{key:?} should map to {intent:?}");
+        }
+        for key in [Key::F1, Key::A, Key::Tab, Key::Enter] {
+            assert_eq!(key_to_intent(key), None, "{key:?} should be inert");
+        }
     }
 
     #[test]
@@ -473,5 +496,129 @@ mod tests {
             !analysis.sections.is_empty(),
             "the demo must analyse into sections for the classification band"
         );
+    }
+
+    // ── input path: keys → intents → viewport (the cockpit's own wiring) ──────
+
+    fn key_event(key: Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }
+    }
+
+    /// Feeds one key press through a real egui frame into the app's input
+    /// handler (exactly the path `eframe::App::ui` drives); returns whether the
+    /// app asked to quit.
+    #[allow(deprecated)] // egui 0.34 flags `Context::run`; it still drives a CPU frame.
+    fn press(app: &mut CockpitApp, key: Key) -> bool {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput { events: vec![key_event(key)], ..Default::default() };
+        let mut quit = false;
+        let _frame = ctx.run(raw, |ctx| quit = app.handle_input(ctx));
+        quit
+    }
+
+    fn demo_app() -> CockpitApp {
+        use griff_core::import::import_score_auto;
+        use griff_ui_core::{analyze, build_view};
+        let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
+        CockpitApp::new(build_view(&score), analyze(&score), "demo".to_owned())
+    }
+
+    /// A hand-built view with two adjacent sections, so section navigation has
+    /// somewhere to move regardless of the demo's classification.
+    fn two_section_app() -> CockpitApp {
+        use griff_ui_core::{Lane, NoteRect, Section};
+        let view = PianoRollView {
+            ppq: 480,
+            tick_start: 0,
+            tick_end: 7680,
+            low_pitch: 52,
+            high_pitch: 64,
+            bar_lines: vec![0, 1920, 3840, 5760, 7680],
+            lanes: vec![Lane {
+                name: "lead".to_owned(),
+                notes: vec![
+                    NoteRect { onset: 0, end: 480, pitch: 60 },
+                    NoteRect { onset: 3840, end: 4320, pitch: 64 },
+                ],
+            }],
+            tempo_bpm: 120.0,
+            bar_count: 4,
+        };
+        let analysis = Analysis {
+            focus_track: 0,
+            sections: vec![
+                Section { class: BarClass::Riff, bar_start: 0, bar_end: 2, tick_start: 0, tick_end: 3840 },
+                Section {
+                    class: BarClass::Breakdown,
+                    bar_start: 2,
+                    bar_end: 4,
+                    tick_start: 3840,
+                    tick_end: 7680,
+                },
+            ],
+            metrics: None,
+            complexity: None,
+            boundaries: vec![],
+        };
+        CockpitApp::new(view, analysis, "two-section".to_owned())
+    }
+
+    #[test]
+    fn space_toggles_playback_through_the_input_path() {
+        let mut app = demo_app();
+        assert!(!app.vp.playing, "starts paused");
+        assert!(!press(&mut app, Key::Space), "play is not a quit");
+        assert!(app.vp.playing, "Space starts playback");
+        press(&mut app, Key::Space);
+        assert!(!app.vp.playing, "Space again pauses");
+    }
+
+    #[test]
+    fn the_inspector_key_toggles_the_inspector() {
+        let mut app = demo_app();
+        let before = app.vp.show_inspector;
+        press(&mut app, Key::I);
+        assert_eq!(app.vp.show_inspector, !before, "`i` toggles the inspector");
+    }
+
+    #[test]
+    fn quit_keys_request_a_quit() {
+        let mut app = demo_app();
+        assert!(press(&mut app, Key::Q), "`q` quits");
+        assert!(press(&mut app, Key::Escape), "Esc quits");
+    }
+
+    #[test]
+    fn section_keys_move_the_selection() {
+        let mut app = two_section_app();
+        assert_eq!(app.vp.sel_section, 0, "starts on the first section");
+        press(&mut app, Key::CloseBracket);
+        assert_eq!(app.vp.sel_section, 1, "`]` selects the next section");
+        press(&mut app, Key::OpenBracket);
+        assert_eq!(app.vp.sel_section, 0, "`[` selects the previous section");
+    }
+
+    #[test]
+    fn paint_never_panics_across_extreme_grid_sizes() {
+        let mut app = demo_app();
+        let ctx = egui::Context::default();
+        // Sub-gutter, tall-and-thin, and oversized panels all exercise the
+        // clamped pixel/grid arithmetic the crate-level lint allow vouches for.
+        for (w, h) in [(1.0, 1.0), (20.0, 8.0), (90.0, 30.0), (4000.0, 40.0), (200.0, 3000.0)] {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h))),
+                ..Default::default()
+            };
+            #[allow(deprecated)]
+            let _frame = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+            });
+        }
     }
 }
