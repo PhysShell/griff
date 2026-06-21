@@ -1317,3 +1317,16 @@ Architectural decisions go to [`adr/`](adr/) instead.
   meaningful only alongside its sibling phrases. Unlike the #75 tag additions —
   data within an existing field, deliberately *not* versioned — this is a
   structural `ChunkMeta` field, so it bumps the schema like v2–v7 before it.
+
+- 2026-06-21 — In the context of the `technical` complexity axis
+  (`structure::technique_share`, the share of a track's notes carrying a mark or
+  sitting in a technique span), facing a playtest finding that a held let-ring
+  drone reads a maximally-technical `1.0` (one `LetRing` span covers every note),
+  we decided for excluding `SpanTechnique::LetRing` spans from the axis, and
+  against weighting it down or treating all spans equally, to achieve a measure
+  that tracks *playing difficulty* — letting a note ring on is a sustain
+  instruction, not a demand — accepting that the call is a per-technique
+  active/passive judgement (only `let_ring` is reclassified here; a broader
+  active/passive split of marks/spans is left for when the corpus motivates it).
+  `let_ring` still surfaces as a `SwancoreTag`/technique; only the difficulty
+  axis stops counting it.

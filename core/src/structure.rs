@@ -49,7 +49,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::complement::estimate_harmony;
-use crate::event::{Pitch, Ticks, Tuning};
+use crate::event::{Pitch, SpanTechnique, Ticks, Tuning};
 use crate::fretboard::{measure_playability, FingeringWeights, STANDARD_MAX_FRET};
 use crate::generate::{
     bar_duration_ticks, generate, GenerationConstraints, GenerationError, GenerationSeed,
@@ -566,6 +566,11 @@ fn technique_share(track: &Track) -> f64 {
             .event_groups
             .iter()
             .flat_map(|g| &g.technique_spans)
+            // Let-ring is a sustain instruction, not a technical demand: a note
+            // that merely rings on is no harder to play, so it must not count
+            // toward the axis — a held let-ring drone otherwise reads as
+            // maximally technical (#75). It still surfaces as a tag/technique.
+            .filter(|s| !matches!(s.technique, SpanTechnique::LetRing))
             .collect();
         for atom in voice.event_groups.iter().flat_map(|g| &g.atoms) {
             if let AtomEvent::Note(n) = atom {

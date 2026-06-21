@@ -627,6 +627,26 @@ fn technical_axis_reads_marked_and_spanned_share() {
 }
 
 #[test]
+fn technical_axis_ignores_a_passive_let_ring_span() {
+    // A held let-ring drone — a LetRing span over every note. Letting a note
+    // ring on is a sustain instruction, not a technical demand, so it must not
+    // inflate the axis (it otherwise reads a maximally-technical 1.0). #75
+    let mut score = build_score(&[vec![40, 40, 40, 40]]);
+    score.tracks[0].voices[0].event_groups[0]
+        .technique_spans
+        .push(TechniqueSpan {
+            technique: SpanTechnique::LetRing,
+            tick_range: TickRange::new(Ticks(0), Ticks(4 * QUARTER)).expect("ordered"),
+            evidence: TechniqueEvidence::explicit(),
+        });
+    let c = measure_complexity(&score, 0).expect("measure");
+    assert_eq!(
+        c.technical, 0.0,
+        "let-ring is a sustain, not a technical demand"
+    );
+}
+
+#[test]
 fn harmonic_axis_reads_chromaticism() {
     // The C major scale plus a chromatic C#: scale fit 8/9, so the harmonic
     // complexity is 1/9 (the off-scale share of the estimated key).
