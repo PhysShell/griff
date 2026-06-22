@@ -531,7 +531,7 @@ fn track_labels(score: &Score) -> Vec<String> {
         .tracks
         .iter()
         .enumerate()
-        .map(|(i, track)| track.name.clone().unwrap_or_else(|| format!("track {i}")))
+        .map(|(i, track)| track.name.clone().unwrap_or_else(|| format!("track {}", i + 1)))
         .collect()
 }
 
@@ -585,7 +585,11 @@ impl CockpitApp {
         let Some(score) = self.score.as_ref() else {
             return;
         };
-        if track >= score.tracks.len() {
+        let n = score.tracks.len();
+        // An out-of-range track on a non-empty score is a no-op (keep the view).
+        // A track-less score (a valid MIDI with no note-bearing tracks) still
+        // gets its empty plane built below, so the load isn't silently dropped.
+        if track >= n && n != 0 {
             return;
         }
         let sub = single_track_score(score, track);
@@ -598,7 +602,7 @@ impl CockpitApp {
         self.analysis = analysis;
         self.ctx = ctx;
         self.vp = vp;
-        self.selected_track = track;
+        self.selected_track = track.min(n.saturating_sub(1));
         self.fitted = false;
     }
 
@@ -1616,18 +1620,28 @@ mod tests {
         // Loading focuses the auto-picked track: one lane shown, not all overlaid.
         assert_eq!(app.view.lanes.len(), 1);
 
-        // Switch tracks: the view follows and capture targets the chosen track.
+        // Capture must use the *selected* track: its JSON matches build_chunk at
+        // that index, and switching tracks changes the result.
         app.focus_on_track(0);
         assert_eq!(app.selected_track, 0);
         assert_eq!(app.view.lanes.len(), 1, "still a single lane after the switch");
         let inputs =
-            CaptureInputs { id: "track0", created_at: "t", updated_at: "t", ..Default::default() };
-        let json = app.capture_json(&inputs).expect("captures the selected track");
-        assert!(json.contains("track0"), "the captured chunk carries its id");
+            CaptureInputs { id: "t", created_at: "t", updated_at: "t", ..Default::default() };
+        let score = app.score.clone().expect("score loaded");
+        let expected0 =
+            serde_json::to_string_pretty(&build_chunk(&score, 0, &inputs).expect("track 0"))
+                .expect("json");
+        assert_eq!(app.capture_json(&inputs).expect("captures"), expected0, "targets track 0");
+
+        app.focus_on_track(1);
+        let expected1 =
+            serde_json::to_string_pretty(&build_chunk(&score, 1, &inputs).expect("track 1"))
+                .expect("json");
+        assert_eq!(app.capture_json(&inputs).expect("captures"), expected1, "targets track 1");
 
         // Out-of-range is a no-op, not a panic.
         app.focus_on_track(tracks + 9);
-        assert_eq!(app.selected_track, 0, "an out-of-range track is ignored");
+        assert_eq!(app.selected_track, 1, "an out-of-range track is ignored");
     }
 
     #[test]
