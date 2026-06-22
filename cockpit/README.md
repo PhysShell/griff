@@ -47,8 +47,11 @@ downloads an export copy. **Manifest** then folds the whole OPFS corpus into a
 **dock** — browse and filter the captured chunks by class/tag, rights status, and
 cohort, with an aggregate dashboard (totals, redistributable / near-duplicate /
 rights-unset counts, top tags) over the shared `griff_ui_core::dock` (ADR-0027
-Slice 5; the `c` key toggles it). The `i` key opens the capture panel to edit the
-curator inputs (id / title / rights / tags…) first.
+Slice 5; the `c` key toggles it). Selecting a chunk opens the **curation
+inspector** — approve / reject, rename, and retag — each edit applied through the
+shared `griff_ui_core::curation` ops and persisted back to its OPFS `chunk.json`
+(ADR-0027 Slice 6). The `i` key opens the capture panel to edit the curator
+inputs (id / title / rights / tags…) first.
 
 ## Web tests
 

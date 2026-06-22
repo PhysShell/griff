@@ -1349,3 +1349,13 @@ Architectural decisions go to [`adr/`](adr/) instead.
   cross-corpus similarity — that is Slice 7's `find_similar_chunks`. Accepting
   that the dock reads the OPFS corpus through the page (the `load_corpus` export,
   mirroring the manifest fold), not a Rust OPFS directory walk.
+
+- 2026-06-22 — In the context of curation actions (ADR-0027 Slice 6), facing the
+  six listed ops, we decided for wiring `decide` / `rename` / `retag` — the
+  per-chunk edits — into a dock inspector that routes through the shared
+  `griff-ui-core::curation` JSON→JSON ops and re-persists the chunk to its OPFS
+  file, and against reimplementing the edits in the renderer (ADR-0016). Split /
+  merge are deferred: they need `source.bar_range`, which capture-built chunks
+  leave `None`, so they apply to CLI-split corpora, not phone captures — a later
+  slice. Accepting that `decide` only reaches `Accepted`/`Rejected` (the UI
+  `CurationDecision` has no `NeedsReview`), and that each retag toggle persists.
