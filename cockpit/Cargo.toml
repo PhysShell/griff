@@ -51,6 +51,11 @@ web-sys              = { version = "0.3", features = [
     # `--cfg=web_sys_unstable_apis` (set in build-web.sh).
     "StorageManager", "FileSystemDirectoryHandle", "FileSystemFileHandle",
     "FileSystemWritableFileStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions",
+    # WebAudio playback — the placeholder oscillator synth ADR-0024 §4 calls for,
+    # synthesised in-wasm (no JS): one sawtooth note (osc -> gain -> destination)
+    # per note the playhead crosses. The native playback seam stays silent for now.
+    "AudioContext", "BaseAudioContext", "AudioNode", "AudioParam", "AudioDestinationNode",
+    "GainNode", "OscillatorNode", "OscillatorType",
 ] }
 getrandom            = { version = "0.4", features = ["wasm_js"] }
 

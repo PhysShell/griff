@@ -40,6 +40,10 @@ use griff_ui_core::{
     CorpusStats, Intent, PianoRollView, Step, ViewContext, Viewport,
 };
 
+/// Playback audio — the WebAudio placeholder synth (ADR-0024 §4), behind a
+/// cfg-gated seam (silent on native).
+mod audio;
+
 /// Pixel width of one grid cell.
 const CELL_W: f32 = 9.0;
 /// Pixel height of one grid cell (also the section-band row height).
@@ -151,6 +155,45 @@ fn build_context(view: &PianoRollView, analysis: &Analysis) -> ViewContext {
         },
         grid_end: view.bar_lines.last().copied().unwrap_or(0),
     }
+}
+
+// ── playback audio (ADR-0024 §4 placeholder synth) ───────────────────────────
+
+/// A note to sound during playback: an oscillator frequency (Hz) and how long it
+/// rings (seconds). Built from the view's notes as the playhead crosses them,
+/// then handed to the platform backend ([`audio::sound`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Voice {
+    pub(crate) freq: f32,
+    pub(crate) secs: f32,
+}
+
+/// Equal-tempered frequency of a MIDI pitch (A4 = 69 = 440 Hz).
+fn pitch_hz(pitch: u8) -> f32 {
+    440.0 * 2.0_f32.powf((f32::from(pitch) - 69.0) / 12.0)
+}
+
+/// The view's notes whose onset falls in the half-open window `[from, to)` — the
+/// ones the playhead just crossed this frame — as audio voices, each note's ring
+/// timed from its tick span and the tempo in `ctx`. Empty unless `from < to`, so
+/// a still or rewound playhead sounds nothing (and the windows of successive
+/// frames tile the span without dropping or doubling a note).
+fn voices_crossed(view: &PianoRollView, ctx: &ViewContext, from: u32, to: u32) -> Vec<Voice> {
+    if to <= from {
+        return Vec::new();
+    }
+    // ticks/sec, exactly as `Viewport::advance_playback` advances the playhead.
+    let tps = f64::from(ctx.ppq) * ctx.tempo_bpm / 60.0;
+    let tps = if tps > 0.0 { tps } else { 1.0 };
+    view.lanes
+        .iter()
+        .flat_map(|lane| lane.notes.iter())
+        .filter(|note| note.onset >= from && note.onset < to)
+        .map(|note| {
+            let ticks = f64::from(note.end.saturating_sub(note.onset));
+            Voice { freq: pitch_hz(note.pitch), secs: (ticks / tps) as f32 }
+        })
+        .collect()
 }
 
 // ── capture panel (ADR-0026) ────────────────────────────────────────────────
@@ -912,7 +955,9 @@ impl CockpitApp {
             }
             let play = if self.vp.playing { "⏸ pause" } else { "▶ play" };
             if ui.button(play).on_hover_text("space").clicked() {
-                self.vp.playing = !self.vp.playing;
+                // The same intent the spacebar drives — so a click at the end of
+                // the score rewinds and replays, not just flips the flag.
+                self.vp.apply(Intent::TogglePlay, &self.ctx);
             }
             if ui
                 .button("⤓ capture")
@@ -973,7 +1018,10 @@ impl eframe::App for CockpitApp {
         }
         if self.vp.playing {
             let dt = f64::from(ctx.input(|i| i.stable_dt)).min(0.1);
+            let from = self.vp.play_tick;
             self.vp.advance_playback(dt, &self.ctx);
+            // Sound the notes the playhead just crossed (silent on native).
+            audio::sound(&voices_crossed(&self.view, &self.ctx, from, self.vp.play_tick));
             ctx.request_repaint();
         }
         let focus = egui::TopBottomPanel::top("toolbar")
@@ -1457,6 +1505,106 @@ mod tests {
         assert!(app.vp.playing, "Space starts playback");
         press(&mut app, Key::Space);
         assert!(!app.vp.playing, "Space again pauses");
+    }
+
+    // ── playback audio: which notes the WebAudio synth sounds (ADR-0024 §4) ────
+
+    #[test]
+    fn pitch_hz_is_equal_tempered_around_a440() {
+        assert!((pitch_hz(69) - 440.0).abs() < 0.01, "A4 = 440 Hz");
+        assert!((pitch_hz(81) - 880.0).abs() < 0.02, "an octave up doubles");
+        assert!((pitch_hz(57) - 220.0).abs() < 0.02, "an octave down halves");
+        assert!((pitch_hz(60) - 261.63).abs() < 0.1, "middle C ≈ 261.6 Hz");
+    }
+
+    /// A one-lane view with notes at ticks 0, 480, 960 — for the window tests.
+    fn three_note_view() -> PianoRollView {
+        use griff_ui_core::{Lane, NoteRect};
+        PianoRollView {
+            ppq: 480,
+            tick_start: 0,
+            tick_end: 1920,
+            low_pitch: 48,
+            high_pitch: 72,
+            bar_lines: vec![0, 960, 1920],
+            lanes: vec![Lane {
+                name: "lead".to_owned(),
+                notes: vec![
+                    NoteRect { onset: 0, end: 240, pitch: 60 },
+                    NoteRect { onset: 480, end: 720, pitch: 64 },
+                    NoteRect { onset: 960, end: 1440, pitch: 67 },
+                ],
+            }],
+            tempo_bpm: 120.0,
+            bar_count: 2,
+        }
+    }
+
+    fn empty_analysis() -> Analysis {
+        Analysis {
+            focus_track: 0,
+            sections: vec![],
+            metrics: None,
+            complexity: None,
+            boundaries: vec![],
+        }
+    }
+
+    #[test]
+    fn voices_crossed_takes_onsets_in_the_half_open_window() {
+        let view = three_note_view();
+        let ctx = build_context(&view, &empty_analysis());
+
+        // Start-inclusive: [0,480) takes the onset-0 note, not the one at 480.
+        let first = voices_crossed(&view, &ctx, 0, 480);
+        assert_eq!(first.len(), 1, "one onset in [0,480)");
+        assert!((first[0].freq - pitch_hz(60)).abs() < 0.01, "it is the C at tick 0");
+        // 240 ticks at 960 ticks/s rings for a quarter second.
+        assert!((first[0].secs - 0.25).abs() < 1e-4, "the ring is the note's span at tempo");
+
+        // End-exclusive, multi-hit: [480,1000) takes 480 and 960.
+        assert_eq!(voices_crossed(&view, &ctx, 480, 1000).len(), 2, "two onsets in [480,1000)");
+
+        // A still or rewound playhead sounds nothing.
+        assert!(voices_crossed(&view, &ctx, 700, 700).is_empty(), "empty window is silent");
+        assert!(voices_crossed(&view, &ctx, 1000, 200).is_empty(), "inverted window is silent");
+    }
+
+    #[test]
+    fn a_full_playthrough_sounds_every_note_exactly_once() {
+        // Drive the real playback clock frame by frame and collect what each
+        // window sounds: the half-open windows must tile the span, so every note
+        // sounds once — none dropped at a frame seam, none doubled.
+        let view = three_note_view();
+        let ctx = build_context(&view, &empty_analysis());
+        let mut vp = Viewport::new(&ctx, view.high_pitch);
+        vp.playing = true;
+        vp.play_tick = ctx.tick_start;
+
+        let mut sounded: Vec<f32> = Vec::new();
+        for _ in 0..100_000 {
+            if !vp.playing {
+                break;
+            }
+            let from = vp.play_tick;
+            vp.advance_playback(1.0 / 60.0, &ctx);
+            sounded.extend(voices_crossed(&view, &ctx, from, vp.play_tick).iter().map(|v| v.freq));
+        }
+        assert!(!vp.playing, "playback stops at the end of the span");
+
+        let mut want: Vec<f32> = view
+            .lanes
+            .iter()
+            .flat_map(|l| l.notes.iter())
+            .map(|n| pitch_hz(n.pitch))
+            .collect();
+        let cmp = |a: &f32, b: &f32| a.partial_cmp(b).expect("finite");
+        sounded.sort_by(cmp);
+        want.sort_by(cmp);
+        assert_eq!(sounded.len(), want.len(), "each note sounds exactly once");
+        for (got, exp) in sounded.iter().zip(&want) {
+            assert!((got - exp).abs() < 0.01, "sounded {got} Hz, expected {exp} Hz");
+        }
     }
 
     #[test]

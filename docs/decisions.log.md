@@ -1372,3 +1372,22 @@ Architectural decisions go to [`adr/`](adr/) instead.
   ergonomic gap. Accepting that the HTML toolbar (Open/Capture/Corpus/Manifest)
   stays for now — the Playwright suite drives those DOM buttons, and audio +
   visual phrase-slicing are the next ergonomic steps.
+
+- 2026-06-22 — In the context of the maintainer's "no sound" feedback (the egui
+  cockpit's playhead moved but the cockpit was silent), facing how to give
+  playback audio without JS, we decided to realise ADR-0024 §4's placeholder
+  oscillator synth in-wasm over WebAudio (`web-sys`): as the playhead crosses a
+  note, the app schedules a short plucked sawtooth (osc → gain → destination) for
+  the focused track, timing each ring from the note's tick span and the tempo.
+  The note selection is a pure `voices_crossed(view, ctx, from, to)` over the
+  frame's half-open `[from, to)` tick window — native-testable, and its successive
+  windows tile the span so every note sounds exactly once (no drop or double at a
+  frame seam). Audio is the per-target playback seam (ADR-0024 §4 / ADR-0027 §5):
+  a cfg-gated `audio::sound`, mirroring the storage seam's free-fn pattern
+  (`save_chunk` / `opfs_save`) rather than a runtime trait — WebAudio on web, a
+  silent no-op on native until a `cpal`/`midir` driver. The toolbar ▶ now drives
+  `Intent::TogglePlay` (like space), so a click at the end of the score rewinds
+  and replays. Against a runtime audio trait (overkill for one entry point) and
+  against the Web MIDI API (absent on iOS Safari). Accepting a placeholder timbre
+  (a license-checked SoundFont is the follow-up), web-only sound for now, and that
+  the first play is the gesture that unlocks the browser's `AudioContext`.

@@ -19,6 +19,8 @@ every track overlaid — the selector switches it, and capture targets it),
 play/pause, and toggles for the capture form and the corpus dock. The same keys
 still work: `space` play/pause, `←`/`→` scroll, `↑`/`↓` pitch, `+`/`−` zoom,
 `[`/`]` section, `Home` reset, `i` inspector, `c` corpus dock, `q`/`Esc` quit.
+Playback on web **sounds** the focused track (a WebAudio synth, below); native
+playback is silent for now (a `cpal`/`midir` driver is the per-target seam).
 
 ## Web (wasm) — ADR-0027 Slice 2
 
@@ -35,6 +37,12 @@ python3 -m http.server -d cockpit/dist 8080       # open http://localhost:8080
 ```sh
 cargo install wasm-bindgen-cli --version <pinned> --locked
 ```
+
+Pressing **▶ play** (or `space`) **sounds** the focused track: an in-wasm
+WebAudio synth schedules a short plucked sawtooth for each note the playhead
+crosses — no JS, no Web MIDI. This is the placeholder oscillator synth of
+ADR-0024 §4 (a license-checked SoundFont is the follow-up); the first play is the
+user gesture that unlocks the browser's `AudioContext`.
 
 The web front boots on a baked demo score, with a toolbar over the canvas:
 **Open** hands a picked MIDI/Guitar Pro file to the wasm `load_score` export (the
@@ -71,7 +79,10 @@ file even brings in lane colours the demo never shows); and that **capture**
 works — toggling the inspector shows the panel, and Capture downloads a real
 `chunk.json` for the loaded score *and* persists it to the OPFS corpus; and that
 the **corpus dock** opens over the roll when 📚 Corpus reads the persisted chunks
-back. This is the pixel-truth `egui_kittest` can't
+back; and that **playback sounds** — pressing `Space` boots a WebAudio
+`AudioContext` and schedules oscillators as the playhead crosses notes (spying
+the constructor, since headless Chromium has no speakers). This is the
+pixel-truth `egui_kittest` can't
 give headlessly (it rasterises through native wgpu, which finds no adapter in
 CI); a browser ships its own software GL.
 
