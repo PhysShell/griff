@@ -14,7 +14,8 @@ cargo run -p griff-cockpit -- path/to/score.mid     # or .gp3/.gp4/.gp5/.gpx
 
 Reads a MIDI or Guitar Pro file through the shared importer and opens the
 piano-roll window. Keys: `space` play/pause, `←`/`→` scroll, `↑`/`↓` pitch,
-`+`/`−` zoom, `[`/`]` section, `Home` reset, `i` inspector, `q`/`Esc` quit.
+`+`/`−` zoom, `[`/`]` section, `Home` reset, `i` inspector, `c` corpus dock,
+`q`/`Esc` quit.
 
 ## Web (wasm) — ADR-0027 Slice 2
 
@@ -42,8 +43,12 @@ It **persists** the chunk to the browser's OPFS corpus
 downloads an export copy. **Manifest** then folds the whole OPFS corpus into a
 `manifest.json` in-wasm through the shared `griff_ui_core::corpus` (the in-wasm
 `griff manifest`), so a phone-built corpus drops straight into the CLI
-(ADR-0027 Slices 3–4). The `i` key opens the capture panel to edit the curator
-inputs (id / title / rights / tags…) first.
+(ADR-0027 Slices 3–4). **Corpus** reads the OPFS tree back into an in-canvas
+**dock** — browse and filter the captured chunks by class/tag, rights status, and
+cohort, with an aggregate dashboard (totals, redistributable / near-duplicate /
+rights-unset counts, top tags) over the shared `griff_ui_core::dock` (ADR-0027
+Slice 5; the `c` key toggles it). The `i` key opens the capture panel to edit the
+curator inputs (id / title / rights / tags…) first.
 
 ## Web tests
 
@@ -58,8 +63,9 @@ playhead advances, `Space` again holds still, `←`/`→` scroll, `↑` shifts p
 inert; that **loading** a picked file repaints the chosen score (a multi-track
 file even brings in lane colours the demo never shows); and that **capture**
 works — toggling the inspector shows the panel, and Capture downloads a real
-`chunk.json` for the loaded score *and* persists it to the OPFS corpus. This is
-the pixel-truth `egui_kittest` can't
+`chunk.json` for the loaded score *and* persists it to the OPFS corpus; and that
+the **corpus dock** opens over the roll when 📚 Corpus reads the persisted chunks
+back. This is the pixel-truth `egui_kittest` can't
 give headlessly (it rasterises through native wgpu, which finds no adapter in
 CI); a browser ships its own software GL.
 

@@ -28,6 +28,7 @@
       <label id="open" title="open a MIDI or Guitar Pro file">📂 Open<input
           id="file" type="file" accept=".mid,.gp3,.gp4,.gp5,.gpx" hidden /></label>
       <button id="capture" title="capture the focused track as chunk.json">⤓ Capture</button>
+      <button id="corpus" title="browse the OPFS corpus in the dock">📚 Corpus</button>
       <button id="manifest" title="fold the OPFS corpus into a manifest.json">📦 Manifest</button>
     </div>
     <canvas id="cockpit"></canvas>
@@ -35,7 +36,7 @@
       // `wasm-bindgen --target web` emits griff_cockpit.js (the loader) and the
       // wasm; boot the egui app on the canvas and wire the toolbar to the wasm
       // exports (ADR-0027 Slices 2–4).
-      import init, { start, load_score, request_capture, build_manifest_json }
+      import init, { start, load_score, request_capture, build_manifest_json, load_corpus }
         from "./griff_cockpit.js";
 
       function download(name, text) {
@@ -47,9 +48,9 @@
         URL.revokeObjectURL(url);
       }
 
-      // Read every chunk.json from the OPFS corpus and fold it, in-wasm, into a
-      // manifest (the schema lives in Rust; JS just gathers the bytes).
-      async function buildManifest() {
+      // Gather every chunk.json's text from the OPFS corpus tree (the schema
+      // lives in Rust; JS just walks the directory and hands over the bytes).
+      async function readCorpus() {
         const texts = [];
         try {
           const root = await navigator.storage.getDirectory();
@@ -60,8 +61,18 @@
         } catch (_) {
           /* no corpus yet */
         }
+        return texts;
+      }
+
+      // Hand the corpus to the egui dock (ADR-0027 Slice 5) — browse/filter there.
+      async function openCorpus() {
+        load_corpus(await readCorpus());
+      }
+
+      // Fold the corpus, in-wasm, into a manifest and download it.
+      async function buildManifest() {
         try {
-          download("manifest.json", build_manifest_json(texts));
+          download("manifest.json", build_manifest_json(await readCorpus()));
         } catch (err) {
           console.error("manifest failed:", err);
         }
@@ -79,6 +90,7 @@
             if (file) load_score(file.name, new Uint8Array(await file.arrayBuffer()));
           });
           document.getElementById("capture").addEventListener("click", () => request_capture());
+          document.getElementById("corpus").addEventListener("click", openCorpus);
           document.getElementById("manifest").addEventListener("click", buildManifest);
         })
         .catch((err) => {

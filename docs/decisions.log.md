@@ -1338,3 +1338,14 @@ Architectural decisions go to [`adr/`](adr/) instead.
   and against keeping the playground around, to achieve a single canonical web
   front, accepting the loss of the in-browser `arrange`/generation and
   phrase-split demos (the engine's generation stays in the CLI).
+
+- 2026-06-22 — In the context of the corpus dock (ADR-0027 Slice 5), facing where
+  the browse/filter/aggregate logic should live, we decided for a pure
+  `griff-ui-core::dock` (a `CorpusFilter` over `&[ChunkMeta]` + a `CorpusStats`
+  aggregate), unit-tested headlessly, with the egui panel only drawing it, and
+  against hand-rolling the filtering inside the renderer, to keep the dock
+  semantics shared and divergence-proof (ADR-0016). Dedup is the *surfaced*
+  stored `ChunkMeta.duplicate` flag (count + filter + badge), not recomputed
+  cross-corpus similarity — that is Slice 7's `find_similar_chunks`. Accepting
+  that the dock reads the OPFS corpus through the page (the `load_corpus` export,
+  mirroring the manifest fold), not a Rust OPFS directory walk.

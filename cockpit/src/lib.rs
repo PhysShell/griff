@@ -29,12 +29,13 @@
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
 use griff_core::classify::BarClass;
+use griff_core::corpus::{ChunkMeta, RightsStatus, StyleCohort, SwancoreTag};
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
 use griff_ui_core::{
-    analyze, build_chunk, build_view, Analysis, CaptureInputs, Intent, PianoRollView, Step,
-    ViewContext, Viewport,
+    analyze, build_chunk, build_view, filter_chunks, Analysis, CaptureInputs, CorpusFilter,
+    CorpusStats, Intent, PianoRollView, Step, ViewContext, Viewport,
 };
 
 /// Pixel width of one grid cell.
@@ -170,6 +171,80 @@ const ACQUISITION: &[(u32, &str)] = &[
 ];
 /// Style-cohort options (code, label).
 const COHORT: &[(u32, &str)] = &[(0, "core"), (1, "adjacent")];
+
+// ── corpus dock (ADR-0027 Slice 5) ───────────────────────────────────────────
+
+/// Rights-status filter options for the dock (labels mirror the capture combo).
+const RIGHTS_STATUS: &[(RightsStatus, &str)] = &[
+    (RightsStatus::PublicDomain, "public domain"),
+    (RightsStatus::CcBy, "CC-BY"),
+    (RightsStatus::CcBySa, "CC-BY-SA"),
+    (RightsStatus::CopyrightedComposition, "copyrighted"),
+    (RightsStatus::Unknown, "unknown"),
+];
+/// Style-cohort filter options for the dock.
+const COHORTS: &[(StyleCohort, &str)] = &[
+    (StyleCohort::Core, "core"),
+    (StyleCohort::Adjacent, "adjacent"),
+];
+
+/// A combo selecting an optional filter facet; the "any" row clears it.
+fn opt_combo<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut Option<T>,
+    options: &[(T, &str)],
+) {
+    let current = value
+        .and_then(|v| options.iter().find(|(t, _)| *t == v).map(|&(_, l)| l))
+        .unwrap_or("any");
+    egui::ComboBox::from_label(label)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, None, "any");
+            for &(variant, lbl) in options {
+                ui.selectable_value(value, Some(variant), lbl);
+            }
+        });
+}
+
+/// The tag facet — every [`SwancoreTag`], or "any".
+fn tag_combo(ui: &mut egui::Ui, value: &mut Option<SwancoreTag>) {
+    let current = value.map_or_else(|| "any tag".to_owned(), |tag| format!("{tag:?}"));
+    egui::ComboBox::from_label("tag")
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, None, "any tag".to_owned());
+            for &tag in SwancoreTag::all_variants() {
+                ui.selectable_value(value, Some(tag), format!("{tag:?}"));
+            }
+        });
+}
+
+/// One row of the dock's chunk list: id, cohort, rights, and dup/redist marks.
+fn chunk_row(ui: &mut egui::Ui, chunk: &ChunkMeta) {
+    ui.horizontal(|ui| {
+        if chunk.duplicate.is_some() {
+            ui.label("≈").on_hover_text("near-duplicate");
+        }
+        ui.label(&chunk.id.0);
+        if let Some(cohort) = chunk.style_cohort {
+            ui.weak(format!("{cohort:?}"));
+        }
+        match &chunk.rights {
+            Some(rights) if rights.redistributable => {
+                ui.colored_label(Color32::from_rgb(0x73, 0xd1, 0x3d), "↗")
+                    .on_hover_text("redistributable");
+            }
+            Some(rights) => {
+                ui.weak(format!("{:?}", rights.rights_status));
+            }
+            None => {
+                ui.weak("rights?");
+            }
+        }
+    });
+}
 
 /// A labelled single-line text field row.
 fn text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
@@ -318,6 +393,13 @@ pub struct CockpitApp {
     score: Option<Score>,
     /// The capture-panel form state (shown when the inspector is toggled).
     form: CaptureForm,
+    /// The OPFS corpus loaded for the dock (ADR-0027 Slice 5); empty until the
+    /// page reads the `chunk.json` tree. The dock browses and aggregates these.
+    corpus: Vec<ChunkMeta>,
+    /// The corpus dock's active browse filter.
+    corpus_filter: CorpusFilter,
+    /// Whether the corpus dock window is shown (the `c` key toggles it).
+    show_dock: bool,
 }
 
 impl CockpitApp {
@@ -336,6 +418,9 @@ impl CockpitApp {
             fitted: false,
             score: None,
             form: CaptureForm::default(),
+            corpus: Vec::new(),
+            corpus_filter: CorpusFilter::default(),
+            show_dock: false,
         }
     }
 
@@ -445,6 +530,65 @@ impl CockpitApp {
             });
     }
 
+    /// Loads a corpus from serialized `chunk.json` strings — the OPFS tree on
+    /// web (ADR-0027 Slice 5) — into the dock and shows it. Unparseable entries
+    /// are skipped, so a partially-readable corpus still browses.
+    pub fn load_corpus(&mut self, jsons: &[String]) {
+        self.corpus = jsons
+            .iter()
+            .filter_map(|json| serde_json::from_str::<ChunkMeta>(json).ok())
+            .collect();
+        self.show_dock = true;
+    }
+
+    /// The corpus dock (ADR-0027 Slice 5): an aggregate dashboard, browse filters
+    /// (class/tag · rights · cohort · dedup), and the filtered chunk list over the
+    /// loaded `corpus`. On web the 📚 toolbar button fills it from OPFS; `c` toggles.
+    fn corpus_dock(&mut self, ctx: &egui::Context) {
+        egui::Window::new("corpus").default_width(360.0).show(ctx, |ui| {
+            let stats = CorpusStats::aggregate(&self.corpus);
+            if stats.total == 0 {
+                ui.label("no corpus loaded — capture chunks, then press 📚 Corpus");
+                return;
+            }
+            // ── dashboard ──
+            ui.label(format!(
+                "{} chunks · {} redistributable · {} near-dup · {} rights unset",
+                stats.total, stats.redistributable, stats.duplicates, stats.rights_unset,
+            ));
+            let tags = stats.present_tags();
+            if !tags.is_empty() {
+                let top: Vec<String> =
+                    tags.iter().take(4).map(|(tag, n)| format!("{tag:?}×{n}")).collect();
+                ui.weak(top.join("   "));
+            }
+            ui.separator();
+            // ── filters ──
+            ui.horizontal(|ui| {
+                ui.label("find");
+                ui.text_edit_singleline(&mut self.corpus_filter.query);
+            });
+            ui.horizontal(|ui| {
+                opt_combo(ui, "cohort", &mut self.corpus_filter.cohort, COHORTS);
+                opt_combo(ui, "rights", &mut self.corpus_filter.rights, RIGHTS_STATUS);
+            });
+            ui.horizontal(|ui| {
+                tag_combo(ui, &mut self.corpus_filter.tag);
+                ui.checkbox(&mut self.corpus_filter.redistributable_only, "redist only");
+                ui.checkbox(&mut self.corpus_filter.duplicates_only, "dups only");
+            });
+            ui.separator();
+            // ── filtered list ──
+            let kept = filter_chunks(&self.corpus, &self.corpus_filter);
+            ui.label(format!("{} / {} shown", kept.len(), stats.total));
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                for chunk in kept {
+                    chunk_row(ui, chunk);
+                }
+            });
+        });
+    }
+
     /// Drains the frame's key presses into the reducer; returns whether the
     /// user asked to quit.
     fn handle_input(&mut self, ctx: &egui::Context) -> bool {
@@ -453,6 +597,10 @@ impl CockpitApp {
         // playback, arrows scroll the roll, `i` closes the panel).
         if ctx.egui_wants_keyboard_input() {
             return false;
+        }
+        // `c` toggles the corpus dock — a shell concern, not a viewport `Intent`.
+        if ctx.input(|i| i.key_pressed(Key::C)) {
+            self.show_dock = !self.show_dock;
         }
         let intents: Vec<Intent> = ctx.input(|i| {
             i.events
@@ -548,6 +696,9 @@ impl eframe::App for CockpitApp {
         if self.vp.show_inspector {
             self.capture_panel(&egui_ctx);
         }
+        if self.show_dock {
+            self.corpus_dock(&egui_ctx);
+        }
     }
 }
 
@@ -589,6 +740,8 @@ pub mod web {
         static INBOX: RefCell<PendingFile> = const { RefCell::new(None) };
         /// Set by `request_capture`; drained into a `do_capture` next frame.
         static CAPTURE: Cell<bool> = const { Cell::new(false) };
+        /// Set by `load_corpus` (the page read the OPFS tree); drained into the dock.
+        static CORPUS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
         // The running app's egui context, stashed at start so the inbox/capture
         // requests can wake the reactive web runner.
         static CTX: RefCell<Option<egui::Context>> = const { RefCell::new(None) };
@@ -634,6 +787,15 @@ pub mod web {
         serde_json::to_string_pretty(&manifest).map_err(|err| err.to_string())
     }
 
+    /// Hands the OPFS corpus — every `chunk.json`'s text — to the dock (ADR-0027
+    /// Slice 5); the page reads the tree and calls this. The dock opens and lists
+    /// the chunks on the next frame.
+    #[wasm_bindgen]
+    pub fn load_corpus(jsons: Vec<String>) {
+        CORPUS.with(|cell| *cell.borrow_mut() = Some(jsons));
+        wake();
+    }
+
     /// Applies a pending file and/or capture request. Called by the app at the
     /// top of each frame.
     pub(crate) fn drain(app: &mut CockpitApp) {
@@ -645,6 +807,9 @@ pub mod web {
         }
         if CAPTURE.with(Cell::take) {
             app.do_capture();
+        }
+        if let Some(jsons) = CORPUS.with(|cell| cell.borrow_mut().take()) {
+            app.load_corpus(&jsons);
         }
     }
 
@@ -1204,6 +1369,30 @@ mod tests {
         let now = "2026-01-01T00:00:00Z";
         let json = app.capture_json(&app.form.inputs(now, now)).expect("captures from the form");
         assert!(json.contains("cool_riff"), "the captured chunk uses the form id");
+    }
+
+    #[test]
+    #[allow(deprecated)] // egui 0.34 flags `Context::run`; it still drives a CPU frame.
+    fn load_corpus_fills_and_renders_the_dock() {
+        use griff_core::import::import_score_auto;
+        use griff_ui_core::{build_chunk, CaptureInputs};
+        let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
+        let chunk_json = |id: &str| {
+            let inputs =
+                CaptureInputs { id, created_at: "t", updated_at: "t", ..CaptureInputs::default() };
+            serde_json::to_string(&build_chunk(&score, 0, &inputs).expect("builds")).expect("json")
+        };
+
+        let mut app = demo_app();
+        assert!(!app.show_dock, "the dock starts hidden");
+        app.load_corpus(&[chunk_json("riff_a"), chunk_json("riff_b"), "not json".to_owned()]);
+        assert_eq!(app.corpus.len(), 2, "valid chunks parse; the bad entry is skipped");
+        assert!(app.show_dock, "loading a corpus opens the dock");
+
+        // The dock draws a CPU frame without panicking, with a filter applied.
+        app.corpus_filter.query = "riff_a".to_owned();
+        let ctx = egui::Context::default();
+        let _frame = ctx.run(egui::RawInput::default(), |ctx| app.corpus_dock(ctx));
     }
 
     mod fuzz {
