@@ -13,9 +13,9 @@
         position: absolute; inset: 0; display: grid; place-items: center;
         color: #9a9aa2; font: 14px system-ui, sans-serif;
       }
-      /* A small toolbar over the canvas: open a file, capture the focused track
-         to the OPFS corpus, and fold the corpus into a manifest. */
-      #bar { position: absolute; z-index: 1; top: 8px; left: 8px; display: flex; gap: 6px; }
+      /* File / OPFS actions (open a file, capture, corpus, manifest), sitting
+         just below the egui toolbar (track selector + play) drawn in the canvas. */
+      #bar { position: absolute; z-index: 1; top: 44px; left: 8px; display: flex; gap: 6px; }
       #bar > * {
         padding: 4px 10px; border: 0; border-radius: 6px; cursor: pointer; user-select: none;
         background: #2a2a30cc; color: #d6d6dd; font: 15px system-ui, sans-serif;
