@@ -231,8 +231,8 @@ fn chunk_row(ui: &mut egui::Ui, chunk: &ChunkMeta, selected: bool) -> bool {
         let mark = match chunk.reviewer {
             Some(ReviewerDecision::Accepted) => "✓ ",
             Some(ReviewerDecision::Rejected) => "✗ ",
-            Some(ReviewerDecision::NeedsReview) => "? ",
-            None => "",
+            // No decision yet reads as "needs a look", like an explicit NeedsReview.
+            Some(ReviewerDecision::NeedsReview) | None => "? ",
         };
         let dup = if chunk.duplicate.is_some() { "≈ " } else { "" };
         let clicked = ui
@@ -660,18 +660,30 @@ impl CockpitApp {
         Ok(edited)
     }
 
-    /// Curates the selected chunk and persists it back to the corpus, recording
-    /// the outcome in the dock's status line.
-    fn apply_curation(&mut self, action: &CurationAction) {
-        let Some(id) = self.selected.clone() else {
-            return;
-        };
-        self.dock_status = Some(match self.curate(&id, action) {
+    /// Curates the chunk `id` and persists it back to the corpus, recording the
+    /// outcome in the dock's status line. On a (synchronous, native) persist
+    /// failure the in-memory edit is rolled back so the dock matches disk.
+    fn apply_curation(&mut self, id: &str, action: &CurationAction) {
+        let snapshot = self
+            .corpus
+            .iter()
+            .position(|c| c.id.0 == id)
+            .and_then(|idx| self.corpus.get(idx).cloned().map(|chunk| (idx, chunk)));
+        self.dock_status = Some(match self.curate(id, action) {
             Ok(json) => {
-                let filename = chunk_filename(&id);
+                let filename = chunk_filename(id);
                 match persist_chunk(&filename, &json) {
                     Ok(()) => format!("saved {filename}"),
-                    Err(err) => format!("save failed: {err}"),
+                    Err(err) => {
+                        // The persist failed — undo the in-memory edit so the dock
+                        // never shows a change that didn't reach disk.
+                        if let Some((idx, before)) = snapshot {
+                            if let Some(slot) = self.corpus.get_mut(idx) {
+                                *slot = before;
+                            }
+                        }
+                        format!("save failed: {err}")
+                    }
                 }
             }
             Err(err) => format!("curate failed: {err}"),
@@ -683,7 +695,7 @@ impl CockpitApp {
     /// loaded `corpus`. On web the 📚 toolbar button fills it from OPFS; `c` toggles.
     fn corpus_dock(&mut self, ctx: &egui::Context) {
         let mut clicked: Option<String> = None;
-        let mut action: Option<CurationAction> = None;
+        let mut action: Option<(String, CurationAction)> = None;
         egui::Window::new("corpus").default_width(360.0).show(ctx, |ui| {
             let stats = CorpusStats::aggregate(&self.corpus);
             if stats.total == 0 {
@@ -732,7 +744,13 @@ impl CockpitApp {
             if let Some(id) = self.selected.clone() {
                 if let Some(chunk) = self.corpus.iter().find(|c| c.id.0 == id) {
                     ui.separator();
-                    inspector(ui, chunk, &mut self.rename_buf, &mut action);
+                    // Bind any edit to *this* chunk's id, so a same-frame row click
+                    // (which changes the selection below) can't redirect it.
+                    let mut pending = None;
+                    inspector(ui, chunk, &mut self.rename_buf, &mut pending);
+                    if let Some(pending) = pending {
+                        action = Some((chunk.id.0.clone(), pending));
+                    }
                 }
             }
             if let Some(status) = &self.dock_status {
@@ -749,8 +767,8 @@ impl CockpitApp {
             }
             self.selected = Some(id);
         }
-        if let Some(action) = action {
-            self.apply_curation(&action);
+        if let Some((id, action)) = action {
+            self.apply_curation(&id, &action);
         }
     }
 
