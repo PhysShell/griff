@@ -8,12 +8,14 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdir, writeFile, access } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, access } from 'node:fs/promises';
 
 import { chromium } from 'playwright';
 
 import { startServer } from './serve.js';
-import { LAUNCH_ARGS, SIGNATURE, bootPage, canvasShot, decode, analyze } from './helpers.js';
+import {
+  LAUNCH_ARGS, SIGNATURE, bootPage, canvasShot, decode, analyze, coarseMatch, diffImage,
+} from './helpers.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, '..', 'dist');
@@ -81,10 +83,24 @@ test('the cockpit re-fits and keeps painting after a resize', async () => {
   await page.close();
 });
 
-// NOTE: the exact-pixel reference test (a coarse block-average compare against
-// cockpit-reference.png) was removed in the 2026-06-22 egui UX rework — the
-// toolbar + single-track view shifted the layout, and the reference can't be
-// re-blessed from this environment (no browser, and the CI render artifact is
-// network-blocked). The content checks above — WebGL2 context, non-blank canvas,
-// the SIGNATURE fills, and the resize re-fit — still guard the render; re-add a
-// freshly-blessed reference + the compare once the cockpit UI settles.
+// The exact-pixel reference guard is SKIPPED (not deleted) pending a re-bless:
+// the 2026-06-22 egui UX rework (toolbar + single-track view) shifted the layout,
+// and cockpit-reference.png can't be regenerated here (no browser; the CI render
+// artifact is network-blocked). The content checks above still gate the render.
+// To re-enable: re-bless from a browser run (`cp output/cockpit.png
+// cockpit-reference.png`) and drop the `skip`.
+test(
+  'the first frame matches the committed reference',
+  { skip: 'pending re-bless after the 2026-06-22 toolbar/single-track UX rework' },
+  async () => {
+    const { page, errors } = await bootPage(browser, baseURL);
+    const live = decode(await canvasShot(page));
+    const reference = decode(await readFile(join(here, 'cockpit-reference.png')));
+    const match = coarseMatch(reference, live);
+    await writeFile(join(outDir, 'cockpit-diff.png'), diffImage(reference, live));
+    console.log(`reference block match ${(100 * match).toFixed(1)}%`);
+    assert.ok(match > 0.95, `the render drifted from the reference — ${(100 * match).toFixed(1)}% match`);
+    assert.deepEqual(errors, [], `reference run must not error:\n${errors.join('\n')}`);
+    await page.close();
+  },
+);
