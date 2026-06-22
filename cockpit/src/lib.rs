@@ -339,6 +339,17 @@ impl CockpitApp {
         }
     }
 
+    /// Builds the app over an imported `score`, **keeping it** behind the view so
+    /// Capture works on the displayed file (ADR-0026). Use this for every real
+    /// score — the CLI entry and the web demo — so the initially-shown score is
+    /// capturable without first re-loading it; `title` labels the window.
+    #[must_use]
+    pub fn from_score(score: Score, title: String) -> Self {
+        let mut app = Self::new(build_view(&score), analyze(&score), title);
+        app.score = Some(score);
+        app
+    }
+
     /// The source label shown in the window title.
     #[must_use]
     pub fn title(&self) -> &str {
@@ -387,8 +398,18 @@ impl CockpitApp {
     fn do_capture(&mut self) {
         let now = now_rfc3339();
         let result = self.capture_json(&self.form.inputs(&now, &now)).and_then(|json| {
-            let id = self.form.id.trim();
-            let stem = if id.is_empty() { "chunk" } else { id };
+            // Slug the (user-editable) id for the filename so a stray `/` or `..`
+            // can't escape the corpus dir (#98 review); the chunk's own id keeps
+            // the raw value. Mirrors `seed_from`'s slug.
+            let slug: String = self
+                .form
+                .id
+                .trim()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                .collect();
+            let stem = slug.trim_matches('_');
+            let stem = if stem.is_empty() { "chunk" } else { stem };
             let filename = format!("{stem}.chunk.json");
             save_chunk(&filename, &json).map(|()| filename)
         });
@@ -427,6 +448,12 @@ impl CockpitApp {
     /// Drains the frame's key presses into the reducer; returns whether the
     /// user asked to quit.
     fn handle_input(&mut self, ctx: &egui::Context) -> bool {
+        // While a capture-form text field has focus, let egui keep the keys:
+        // typing in a field must not drive viewport shortcuts (space toggles
+        // playback, arrows scroll the roll, `i` closes the panel).
+        if ctx.egui_wants_keyboard_input() {
+            return false;
+        }
         let intents: Vec<Intent> = ctx.input(|i| {
             i.events
                 .iter()
@@ -545,7 +572,7 @@ pub mod web {
     use web_sys::console;
 
     use griff_core::import::import_score_auto;
-    use griff_ui_core::{analyze, build_view, manifest_from_jsons};
+    use griff_ui_core::manifest_from_jsons;
 
     use crate::CockpitApp;
 
@@ -690,7 +717,7 @@ pub mod web {
     /// Builds the cockpit over the baked demo score.
     fn demo_app() -> CockpitApp {
         let score = import_score_auto(DEMO_SCORE).expect("the baked demo score must import");
-        CockpitApp::new(build_view(&score), analyze(&score), "demo".to_owned())
+        CockpitApp::from_score(score, "demo".to_owned())
     }
 
     /// Boots the cockpit on `canvas`. The page's ES module calls this after the
@@ -923,9 +950,8 @@ mod tests {
 
     fn demo_app() -> CockpitApp {
         use griff_core::import::import_score_auto;
-        use griff_ui_core::{analyze, build_view};
         let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
-        CockpitApp::new(build_view(&score), analyze(&score), "demo".to_owned())
+        CockpitApp::from_score(score, "demo".to_owned())
     }
 
     /// A hand-built view with two adjacent sections, so section navigation has
@@ -1140,13 +1166,10 @@ mod tests {
     }
 
     #[test]
-    fn capture_json_builds_a_chunk_only_after_a_load() {
-        let mut app = demo_app(); // built via `new` → no score behind it yet
-        app.capture_json(&CaptureInputs::default())
-            .expect_err("capture needs a loaded score");
-
-        app.load("demo.mid".to_owned(), include_bytes!("../assets/demo.mid"))
-            .expect("loads the demo");
+    fn capture_json_builds_a_chunk_from_the_displayed_score() {
+        // `from_score` keeps the imported score behind the view, so Capture works
+        // on the initially-displayed file with no extra load (#98 review).
+        let app = demo_app();
         let inputs = CaptureInputs {
             id: "demo_001",
             title: "Demo",
@@ -1155,9 +1178,18 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z",
             ..CaptureInputs::default()
         };
-        let json = app.capture_json(&inputs).expect("captures a chunk");
+        let json = app.capture_json(&inputs).expect("captures the displayed score");
         assert!(json.contains("demo_001"), "the chunk carries its id");
         assert!(json.contains("\"rights\""), "rights are recorded");
+    }
+
+    #[test]
+    fn capture_json_reports_no_score_for_a_synthetic_view() {
+        // A hand-built view (via `new`, no imported score behind it) has nothing
+        // to capture — the `None` path still reports cleanly.
+        let app = two_section_app();
+        app.capture_json(&CaptureInputs::default())
+            .expect_err("a view with no backing score cannot capture");
     }
 
     #[test]

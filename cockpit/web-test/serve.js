@@ -3,7 +3,7 @@
 // browser warns and falls back to a slower array-buffer instantiate).
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname, resolve, relative } from 'node:path';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -14,13 +14,16 @@ const MIME = {
 
 /** Serve `root` on an ephemeral port; resolves with the listening server. */
 export function startServer(root) {
+  const rootAbs = resolve(root);
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
-      let path = normalize(decodeURIComponent(url.pathname));
+      let path = decodeURIComponent(url.pathname);
       if (path.endsWith('/')) path += 'index.html';
-      const file = join(root, path);
-      if (!file.startsWith(root)) {
+      // Resolve under root and reject anything that escapes it — a real
+      // containment check, not a string prefix (`/dist2` vs `/dist`) (#98 review).
+      const file = resolve(rootAbs, `.${path}`);
+      if (relative(rootAbs, file).startsWith('..')) {
         res.writeHead(403).end('forbidden');
         return;
       }

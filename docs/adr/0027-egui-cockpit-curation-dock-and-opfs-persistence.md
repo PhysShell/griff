@@ -89,8 +89,8 @@ persistence ADR-0026 set aside. That is this ADR.
 
 5. **The wasm build reuses ADR-0025's toolchain unchanged** — `wasm-bindgen
    --target web`, `gp` on, `getrandom` `wasm_js`, version-pinned
-   `wasm-bindgen-cli`, the existing `web/build.sh` + CI. `eframe` adds only its
-   web renderer (WebGL via `web-sys`); no Trunk. The per-target seams ADR-0024
+   `wasm-bindgen-cli`, now wired through `cockpit/build-web.sh` + the cockpit CI
+   workflows. `eframe` adds only its web renderer (WebGL via `web-sys`); no Trunk. The per-target seams ADR-0024
    named stay behind traits — audio (`cpal`/`midir` native ↔ WebAudio web) and
    storage (filesystem ↔ OPFS) — and everything above them is one codebase.
 

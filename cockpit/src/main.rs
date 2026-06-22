@@ -15,7 +15,6 @@ fn main() -> ExitCode {
 
     use griff_cockpit::CockpitApp;
     use griff_core::import::import_score_auto;
-    use griff_ui_core::{analyze, build_view};
 
     let Some(path) = env::args().nth(1) else {
         eprintln!("usage: griff-cockpit <file.mid|.gp3|.gp4|.gp5|.gpx>");
@@ -36,7 +35,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let app = CockpitApp::new(build_view(&score), analyze(&score), path);
+    let app = CockpitApp::from_score(score, path);
     let options = eframe::NativeOptions::default();
     match eframe::run_native(
         "griff · cockpit",

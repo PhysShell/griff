@@ -9,6 +9,8 @@ on:
       - 'cockpit/**'
       - 'core/**'
       - 'ui-core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/cockpit-pages.yml'
   workflow_dispatch:
 

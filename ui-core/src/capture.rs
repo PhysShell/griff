@@ -20,7 +20,7 @@ use griff_core::{gesture, harmony, structure, syncopation, technique};
 /// Mirrors the CLI's `griff curate` prompts; the numeric codes follow the CLI's
 /// prompt order (see the mappers below), and `created_at`/`updated_at` are
 /// caller-supplied so capture stays deterministic.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CaptureInputs<'a> {
     /// Chunk id; trimmed.
     pub id: &'a str,
@@ -50,6 +50,32 @@ pub struct CaptureInputs<'a> {
     pub created_at: &'a str,
     /// RFC3339 update timestamp (caller-supplied).
     pub updated_at: &'a str,
+}
+
+/// Conservative defaults so `..CaptureInputs::default()` never silently stamps
+/// permissive legal metadata: `reviewer` is the "none" sentinel (no decision)
+/// and `rights_status` falls through to `CopyrightedComposition` (rights
+/// reserved), not `PublicDomain` (#98 review). Real callers — the cockpit form,
+/// the CLI prompts — set reviewer and rights explicitly.
+impl Default for CaptureInputs<'_> {
+    fn default() -> Self {
+        Self {
+            id: "",
+            title: "",
+            filename: "",
+            tuning: "",
+            cohort: 0,
+            tags_idx: "",
+            quality_idx: "",
+            reviewer: -1,
+            rights_status: u32::MAX,
+            acquisition: 0,
+            redistributable: false,
+            notes: "",
+            created_at: "",
+            updated_at: "",
+        }
+    }
 }
 
 /// Maps an imported score's source-format tag to the corpus [`SourceFormat`]
@@ -248,6 +274,7 @@ mod tests {
             filename: "two_phrases.mid",
             tuning: "",
             cohort: 1,
+            rights_status: 0, // PublicDomain — explicit now that Default is conservative
             redistributable: true,
             notes: "public domain demo",
             created_at: "2026-01-01T00:00:00Z",

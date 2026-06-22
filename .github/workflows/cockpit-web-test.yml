@@ -10,6 +10,8 @@ on:
       - 'cockpit/**'
       - 'core/**'
       - 'ui-core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/cockpit-web-test.yml'
   push:
     branches: [main]
@@ -17,6 +19,8 @@ on:
       - 'cockpit/**'
       - 'core/**'
       - 'ui-core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/cockpit-web-test.yml'
 
 permissions:
