@@ -29,10 +29,12 @@
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
 use griff_core::classify::BarClass;
-use griff_core::corpus::{ChunkMeta, RightsStatus, StyleCohort, SwancoreTag};
+use griff_core::corpus::{ChunkMeta, ReviewerDecision, RightsStatus, StyleCohort, SwancoreTag};
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
+use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
+use griff_ui_core::viewport::CurationDecision;
 use griff_ui_core::{
     analyze, build_chunk, build_view, filter_chunks, Analysis, CaptureInputs, CorpusFilter,
     CorpusStats, Intent, PianoRollView, Step, ViewContext, Viewport,
@@ -221,13 +223,21 @@ fn tag_combo(ui: &mut egui::Ui, value: &mut Option<SwancoreTag>) {
         });
 }
 
-/// One row of the dock's chunk list: id, cohort, rights, and dup/redist marks.
-fn chunk_row(ui: &mut egui::Ui, chunk: &ChunkMeta) {
+/// One row of the dock's chunk list — a selectable label (a click selects the
+/// chunk for curation), prefixed by its reviewer/dup marks, plus cohort and
+/// rights. Returns whether the row was clicked this frame.
+fn chunk_row(ui: &mut egui::Ui, chunk: &ChunkMeta, selected: bool) -> bool {
     ui.horizontal(|ui| {
-        if chunk.duplicate.is_some() {
-            ui.label("≈").on_hover_text("near-duplicate");
-        }
-        ui.label(&chunk.id.0);
+        let mark = match chunk.reviewer {
+            Some(ReviewerDecision::Accepted) => "✓ ",
+            Some(ReviewerDecision::Rejected) => "✗ ",
+            Some(ReviewerDecision::NeedsReview) => "? ",
+            None => "",
+        };
+        let dup = if chunk.duplicate.is_some() { "≈ " } else { "" };
+        let clicked = ui
+            .selectable_label(selected, format!("{mark}{dup}{}", chunk.id.0))
+            .clicked();
         if let Some(cohort) = chunk.style_cohort {
             ui.weak(format!("{cohort:?}"));
         }
@@ -241,6 +251,50 @@ fn chunk_row(ui: &mut egui::Ui, chunk: &ChunkMeta) {
             }
             None => {
                 ui.weak("rights?");
+            }
+        }
+        clicked
+    })
+    .inner
+}
+
+/// The curation inspector for the selected chunk (ADR-0027 Slice 6): rename,
+/// approve / reject, and retag. Each control sets the `action` the dock then
+/// applies through the shared `griff_ui_core::curation` ops.
+fn inspector(
+    ui: &mut egui::Ui,
+    chunk: &ChunkMeta,
+    rename_buf: &mut String,
+    action: &mut Option<CurationAction>,
+) {
+    ui.label(format!("▸ {}", chunk.id.0));
+    ui.horizontal(|ui| {
+        ui.text_edit_singleline(rename_buf);
+        if ui.button("rename").clicked() {
+            *action = Some(CurationAction::Rename(rename_buf.clone()));
+        }
+    });
+    ui.horizontal(|ui| {
+        if ui.button("✓ approve").clicked() {
+            *action = Some(CurationAction::Decide(CurationDecision::Approve));
+        }
+        if ui.button("✗ reject").clicked() {
+            *action = Some(CurationAction::Decide(CurationDecision::Reject));
+        }
+    });
+    ui.label("tags");
+    let palette = tag_palette();
+    let mut names: Vec<String> = chunk.tags.iter().filter_map(|&t| tag_wire(t)).collect();
+    ui.horizontal_wrapped(|ui| {
+        for tag in &palette {
+            let present = names.contains(tag);
+            if ui.selectable_label(present, tag.as_str()).clicked() {
+                if present {
+                    names.retain(|n| n != tag);
+                } else {
+                    names.push(tag.clone());
+                }
+                *action = Some(CurationAction::Retag(names.clone()));
             }
         }
     });
@@ -379,6 +433,53 @@ fn save_chunk(filename: &str, json: &str) -> Result<(), String> {
     fs::write(filename, json).map_err(|err| err.to_string())
 }
 
+/// The OPFS/disk filename for a chunk `id` — a slug so a stray `/` or `..` can't
+/// escape the corpus dir (#98); the chunk's own id keeps its raw value. Capture
+/// and curation derive the same name, so an edit overwrites its own file.
+fn chunk_filename(id: &str) -> String {
+    let slug: String = id
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+    let stem = slug.trim_matches('_');
+    let stem = if stem.is_empty() { "chunk" } else { stem };
+    format!("{stem}.chunk.json")
+}
+
+/// Re-persists an edited chunk to the corpus (OPFS on web, the working dir on
+/// native) — no download, unlike capture's `save_chunk`.
+// The OPFS write is fire-and-forget, so the web arm is infallible; the signature
+// matches the fallible native arm so callers treat both the same.
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::unnecessary_wraps)]
+fn persist_chunk(filename: &str, json: &str) -> Result<(), String> {
+    web::persist(filename, json);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persist_chunk(filename: &str, json: &str) -> Result<(), String> {
+    use std::fs;
+    fs::write(filename, json).map_err(|err| err.to_string())
+}
+
+/// A curation edit on the selected chunk (ADR-0027 Slice 6), applied through the
+/// shared `griff_ui_core::curation` ops so the cockpit never reimplements them.
+enum CurationAction {
+    /// Approve / reject — sets the reviewer decision.
+    Decide(CurationDecision),
+    /// Rename the chunk's title.
+    Rename(String),
+    /// Replace the chunk's tags with this set (wire names).
+    Retag(Vec<String>),
+}
+
+/// A `SwancoreTag`'s wire name (`snake_case`), for the retag toggles.
+fn tag_wire(tag: SwancoreTag) -> Option<String> {
+    serde_json::to_value(tag).ok()?.as_str().map(ToOwned::to_owned)
+}
+
 /// The egui cockpit application: a `Scene` renderer over the shared core.
 #[derive(Debug)]
 pub struct CockpitApp {
@@ -400,6 +501,12 @@ pub struct CockpitApp {
     corpus_filter: CorpusFilter,
     /// Whether the corpus dock window is shown (the `c` key toggles it).
     show_dock: bool,
+    /// The selected chunk's id, for the curation inspector (ADR-0027 Slice 6).
+    selected: Option<String>,
+    /// The inspector's rename-field buffer (seeded from the selection's title).
+    rename_buf: String,
+    /// The last curation action's outcome, shown in the dock.
+    dock_status: Option<String>,
 }
 
 impl CockpitApp {
@@ -421,6 +528,9 @@ impl CockpitApp {
             corpus: Vec::new(),
             corpus_filter: CorpusFilter::default(),
             show_dock: false,
+            selected: None,
+            rename_buf: String::new(),
+            dock_status: None,
         }
     }
 
@@ -483,19 +593,7 @@ impl CockpitApp {
     fn do_capture(&mut self) {
         let now = now_rfc3339();
         let result = self.capture_json(&self.form.inputs(&now, &now)).and_then(|json| {
-            // Slug the (user-editable) id for the filename so a stray `/` or `..`
-            // can't escape the corpus dir (#98 review); the chunk's own id keeps
-            // the raw value. Mirrors `seed_from`'s slug.
-            let slug: String = self
-                .form
-                .id
-                .trim()
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
-                .collect();
-            let stem = slug.trim_matches('_');
-            let stem = if stem.is_empty() { "chunk" } else { stem };
-            let filename = format!("{stem}.chunk.json");
+            let filename = chunk_filename(&self.form.id);
             save_chunk(&filename, &json).map(|()| filename)
         });
         self.form.status = Some(match result {
@@ -541,10 +639,51 @@ impl CockpitApp {
         self.show_dock = true;
     }
 
+    /// Applies a curation edit to the chunk `id` through the shared
+    /// `griff_ui_core::curation` ops, updating the in-memory corpus; returns the
+    /// re-serialized `chunk.json` to persist.
+    ///
+    /// # Errors
+    /// A message if the chunk is absent or the op rejects the edit.
+    fn curate(&mut self, id: &str, action: &CurationAction) -> Result<String, String> {
+        let idx = self.corpus.iter().position(|c| c.id.0 == id).ok_or("no such chunk")?;
+        let json = serde_json::to_string(self.corpus.get(idx).ok_or("no such chunk")?)
+            .map_err(|err| err.to_string())?;
+        let edited = match action {
+            CurationAction::Decide(decision) => decide_record(&json, *decision),
+            CurationAction::Rename(title) => rename_record(&json, title),
+            CurationAction::Retag(names) => set_tags(&json, names),
+        }
+        .map_err(|err| format!("{err:?}"))?;
+        let meta: ChunkMeta = serde_json::from_str(&edited).map_err(|err| err.to_string())?;
+        *self.corpus.get_mut(idx).ok_or("no such chunk")? = meta;
+        Ok(edited)
+    }
+
+    /// Curates the selected chunk and persists it back to the corpus, recording
+    /// the outcome in the dock's status line.
+    fn apply_curation(&mut self, action: &CurationAction) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        self.dock_status = Some(match self.curate(&id, action) {
+            Ok(json) => {
+                let filename = chunk_filename(&id);
+                match persist_chunk(&filename, &json) {
+                    Ok(()) => format!("saved {filename}"),
+                    Err(err) => format!("save failed: {err}"),
+                }
+            }
+            Err(err) => format!("curate failed: {err}"),
+        });
+    }
+
     /// The corpus dock (ADR-0027 Slice 5): an aggregate dashboard, browse filters
     /// (class/tag · rights · cohort · dedup), and the filtered chunk list over the
     /// loaded `corpus`. On web the 📚 toolbar button fills it from OPFS; `c` toggles.
     fn corpus_dock(&mut self, ctx: &egui::Context) {
+        let mut clicked: Option<String> = None;
+        let mut action: Option<CurationAction> = None;
         egui::Window::new("corpus").default_width(360.0).show(ctx, |ui| {
             let stats = CorpusStats::aggregate(&self.corpus);
             if stats.total == 0 {
@@ -578,15 +717,41 @@ impl CockpitApp {
                 ui.checkbox(&mut self.corpus_filter.duplicates_only, "dups only");
             });
             ui.separator();
-            // ── filtered list ──
+            // ── filtered list (selectable) ──
             let kept = filter_chunks(&self.corpus, &self.corpus_filter);
             ui.label(format!("{} / {} shown", kept.len(), stats.total));
-            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
                 for chunk in kept {
-                    chunk_row(ui, chunk);
+                    let is_sel = self.selected.as_deref() == Some(chunk.id.0.as_str());
+                    if chunk_row(ui, chunk, is_sel) {
+                        clicked = Some(chunk.id.0.clone());
+                    }
                 }
             });
+            // ── curation inspector (ADR-0027 Slice 6) ──
+            if let Some(id) = self.selected.clone() {
+                if let Some(chunk) = self.corpus.iter().find(|c| c.id.0 == id) {
+                    ui.separator();
+                    inspector(ui, chunk, &mut self.rename_buf, &mut action);
+                }
+            }
+            if let Some(status) = &self.dock_status {
+                ui.weak(status);
+            }
         });
+        // Apply the click/curation after the closure releases its borrows.
+        if let Some(id) = clicked {
+            if self.selected.as_deref() != Some(id.as_str()) {
+                if let Some(chunk) = self.corpus.iter().find(|c| c.id.0 == id) {
+                    self.rename_buf = chunk.title.clone();
+                }
+                self.dock_status = None;
+            }
+            self.selected = Some(id);
+        }
+        if let Some(action) = action {
+            self.apply_curation(&action);
+        }
     }
 
     /// Drains the frame's key presses into the reducer; returns whether the
@@ -1391,6 +1556,42 @@ mod tests {
 
         // The dock draws a CPU frame without panicking, with a filter applied.
         app.corpus_filter.query = "riff_a".to_owned();
+        let ctx = egui::Context::default();
+        let _frame = ctx.run(egui::RawInput::default(), |ctx| app.corpus_dock(ctx));
+    }
+
+    #[test]
+    #[allow(deprecated)] // egui 0.34 flags `Context::run`; it still drives a CPU frame.
+    fn curate_decides_renames_and_retags_the_selected_chunk() {
+        use griff_core::import::import_score_auto;
+        use griff_ui_core::{build_chunk, CaptureInputs};
+        let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
+        let chunk_json = |id: &str| {
+            let inputs =
+                CaptureInputs { id, created_at: "t", updated_at: "t", ..CaptureInputs::default() };
+            serde_json::to_string(&build_chunk(&score, 0, &inputs).expect("builds")).expect("json")
+        };
+
+        let mut app = demo_app();
+        app.load_corpus(&[chunk_json("riff_a")]);
+        app.selected = Some("riff_a".to_owned());
+
+        // approve → reviewer decision; rename → title; retag → exact tag set.
+        app.curate("riff_a", &CurationAction::Decide(CurationDecision::Approve)).expect("approves");
+        assert_eq!(
+            app.corpus.first().expect("chunk").reviewer,
+            Some(ReviewerDecision::Accepted),
+        );
+        app.curate("riff_a", &CurationAction::Rename("My Riff".to_owned())).expect("renames");
+        assert_eq!(app.corpus.first().expect("chunk").title, "My Riff");
+        app.curate("riff_a", &CurationAction::Retag(vec!["clean_riff".to_owned()])).expect("retags");
+        assert_eq!(app.corpus.first().expect("chunk").tags, vec![SwancoreTag::CleanRiff]);
+
+        // an unknown id is rejected, not a panic.
+        app.curate("ghost", &CurationAction::Decide(CurationDecision::Reject))
+            .expect_err("no such chunk");
+
+        // the inspector renders for the selection without panicking.
         let ctx = egui::Context::default();
         let _frame = ctx.run(egui::RawInput::default(), |ctx| app.corpus_dock(ctx));
     }
