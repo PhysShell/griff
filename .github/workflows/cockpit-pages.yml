@@ -1,0 +1,68 @@
+# Builds the egui cockpit to wasm and deploys it to GitHub Pages — the canonical
+# web front (ADR-0027). Replaces the retired M1 playground deploy. Enable under
+# repo Settings → Pages → Source: "GitHub Actions".
+name: cockpit-pages
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cockpit/**'
+      - 'core/**'
+      - 'ui-core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/cockpit-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cockpit-wasm-${{ hashFiles('cockpit/Cargo.toml', 'core/Cargo.toml', 'ui-core/Cargo.toml', 'Cargo.lock') }}
+      # build-web.sh needs wasm-bindgen-cli matching the crate version pinned in
+      # cockpit/Cargo.toml; cache the built binary across runs.
+      - name: Cache wasm-bindgen-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-${{ hashFiles('cockpit/Cargo.toml') }}
+      - name: Install wasm-bindgen-cli
+        run: |
+          if command -v wasm-bindgen >/dev/null; then echo "cached: $(wasm-bindgen --version)"; exit 0; fi
+          ver=$(grep -m1 -E '^wasm-bindgen[[:space:]]*=' cockpit/Cargo.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          cargo install wasm-bindgen-cli --version "$ver" --locked
+      - name: Build cockpit → cockpit/dist
+        run: ./cockpit/build-web.sh
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: cockpit/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

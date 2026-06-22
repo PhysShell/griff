@@ -15,11 +15,14 @@ name = "griff-preview"
 path = "src/main.rs"
 
 [dependencies]
-griff-core = { path = "../core" }
+griff-core    = { path = "../core" }
+# The renderer-agnostic UI core (view-model, interaction core, scene, curation),
+# extracted per ADR-0016 so the egui frontend can share it without re-deriving
+# layout or interaction logic.
+griff-ui-core = { path = "../ui-core" }
 # unstable-rendered-line-info: Paragraph::line_count, the post-wrap row
 # count the inspector's scroll clamp needs (Codex P2, PR #41).
 ratatui    = { version = "0.29", features = ["unstable-rendered-line-info"] }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

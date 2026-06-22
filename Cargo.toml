@@ -1,9 +1,9 @@
 [workspace]
-members  = ["core", "cli", "plugin", "preview"]
+members  = ["core", "ui-core", "cockpit", "cli", "plugin", "preview"]
 # `fuzz/` is an isolated nightly cargo-fuzz crate (ADR-0010); it is
 # deliberately not a workspace member so stable `--workspace` builds,
-# clippy, and tests never touch it. `web/` is likewise wasm32-only (ADR-0024).
-exclude  = ["fuzz", "web"]
+# clippy, and tests never touch it.
+exclude  = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
