@@ -17,7 +17,7 @@ import { LAUNCH_ARGS, bootPage, canvasShot, decode, frameDiff, countColor } from
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, '..', 'dist');
 const multiTrack = join(here, '..', 'assets', 'multi_track.mid');
-const LANE1_TEAL = [0x36, 0xcf, 0xc9]; // lane_color(1), absent from the single-track demo
+const LANE0_ORANGE = [0xff, 0x7a, 0x45]; // lane_color(0) — the focused track's notes
 
 let server;
 let browser;
@@ -42,17 +42,18 @@ after(async () => {
 test('picking a file loads and paints the chosen score', async () => {
   const { page, errors } = await bootPage(browser, baseURL);
   const before = decode(await canvasShot(page));
-  assert.equal(countColor(before, LANE1_TEAL), 0, 'the single-track demo has no lane-1 teal');
 
   await page.setInputFiles('#file', multiTrack);
   await page.waitForTimeout(1500); // the app drains the inbox and re-fits
 
+  // The roll shows one track at a time (the toolbar's track selector switches it),
+  // so a load repaints the focused track's note lane rather than overlaying all.
   const after = decode(await canvasShot(page));
   const d = frameDiff(before, after);
-  const teal = countColor(after, LANE1_TEAL);
-  console.log(`load frameDiff ${(100 * d).toFixed(1)}%  lane-1 teal ${teal}px`);
+  const notes = countColor(after, LANE0_ORANGE);
+  console.log(`load frameDiff ${(100 * d).toFixed(1)}%  notes ${notes}px`);
   assert.ok(d > 0.02, `loading a new score should change the frame, diff was ${(100 * d).toFixed(1)}%`);
-  assert.ok(teal > 100, `a multi-track load should paint lane-1 teal, saw ${teal}px`);
+  assert.ok(notes > 100, `the loaded track should paint its note lane, saw ${notes}px`);
   assert.deepEqual(errors, [], `loading must not error:\n${errors.join('\n')}`);
   await page.close();
 });

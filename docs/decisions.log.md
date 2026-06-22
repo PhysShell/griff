@@ -1359,3 +1359,16 @@ Architectural decisions go to [`adr/`](adr/) instead.
   leave `None`, so they apply to CLI-split corpora, not phone captures — a later
   slice. Accepting that `decide` only reaches `Accepted`/`Rejected` (the UI
   `CurationDecision` has no `NeedsReview`), and that each retag toggle persists.
+
+- 2026-06-22 — In the context of maintainer UX feedback (the egui cockpit overlaid
+  every track on the roll and hid its controls behind hotkeys — "for a GUI you
+  want dumb but obvious UX"), facing whether to revive the retired JS playground
+  or make egui ergonomic, we decided for staying on egui (no JS) and giving it a
+  discoverable surface — a top toolbar (track selector + play/pause + capture/
+  corpus toggles) and a single-track view: the roll rebuilds from a one-track
+  sub-score (`single_track_score` → `build_view`/`analyze`), so it shows one part
+  at a time and capture targets the *selected* track, not the auto-`focus_track`.
+  Against restoring the JS front, to keep one Rust codebase while closing the
+  ergonomic gap. Accepting that the HTML toolbar (Open/Capture/Corpus/Manifest)
+  stays for now — the Playwright suite drives those DOM buttons, and audio +
+  visual phrase-slicing are the next ergonomic steps.

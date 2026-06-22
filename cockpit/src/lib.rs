@@ -507,6 +507,32 @@ pub struct CockpitApp {
     rename_buf: String,
     /// The last curation action's outcome, shown in the dock.
     dock_status: Option<String>,
+    /// Which track the roll shows in isolation — an index into the full score's
+    /// tracks. The roll, sections, and capture all follow it (the toolbar picks).
+    selected_track: usize,
+    /// Every track's display name, for the toolbar's track selector.
+    track_names: Vec<String>,
+}
+
+/// A single-track view of `score`: just `track`, so the roll shows one part
+/// instead of every track overlaid. Out-of-range falls back to the whole score.
+fn single_track_score(score: &Score, track: usize) -> Score {
+    let mut sub = score.clone();
+    if let Some(one) = score.tracks.get(track).cloned() {
+        sub.tracks = vec![one];
+    }
+    sub
+}
+
+/// Each track's display name (`track N` when unnamed), in order — the labels for
+/// the toolbar's track selector.
+fn track_labels(score: &Score) -> Vec<String> {
+    score
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, track)| track.name.clone().unwrap_or_else(|| format!("track {}", i + 1)))
+        .collect()
 }
 
 impl CockpitApp {
@@ -531,6 +557,8 @@ impl CockpitApp {
             selected: None,
             rename_buf: String::new(),
             dock_status: None,
+            selected_track: 0,
+            track_names: Vec::new(),
         }
     }
 
@@ -540,9 +568,42 @@ impl CockpitApp {
     /// capturable without first re-loading it; `title` labels the window.
     #[must_use]
     pub fn from_score(score: Score, title: String) -> Self {
-        let mut app = Self::new(build_view(&score), analyze(&score), title);
+        let analysis = analyze(&score);
+        let focus = analysis.focus_track;
+        let mut app = Self::new(build_view(&score), analysis, title);
+        app.track_names = track_labels(&score);
         app.score = Some(score);
+        app.focus_on_track(focus); // show just the auto-picked track, not all overlaid
         app
+    }
+
+    /// Shows track `track` alone: rebuilds the view, sections, and viewport from
+    /// its single-track sub-score and re-fits, so the roll stops overlaying every
+    /// part. Capture then targets this track. A no-op without a loaded score or
+    /// for an out-of-range index.
+    fn focus_on_track(&mut self, track: usize) {
+        let Some(score) = self.score.as_ref() else {
+            return;
+        };
+        let n = score.tracks.len();
+        // An out-of-range track on a non-empty score is a no-op (keep the view).
+        // A track-less score (a valid MIDI with no note-bearing tracks) still
+        // gets its empty plane built below, so the load isn't silently dropped.
+        if track >= n && n != 0 {
+            return;
+        }
+        let sub = single_track_score(score, track);
+        let view = build_view(&sub);
+        let analysis = analyze(&sub);
+        let ctx = build_context(&view, &analysis);
+        let mut vp = Viewport::new(&ctx, view.high_pitch);
+        vp.show_inspector = self.vp.show_inspector; // keep the panel state across a switch
+        self.view = view;
+        self.analysis = analysis;
+        self.ctx = ctx;
+        self.vp = vp;
+        self.selected_track = track.min(n.saturating_sub(1));
+        self.fitted = false;
     }
 
     /// The source label shown in the window title.
@@ -560,19 +621,13 @@ impl CockpitApp {
     pub fn load(&mut self, source: String, bytes: &[u8]) -> Result<(), String> {
         let score =
             import_score_auto(bytes).map_err(|err| format!("cannot import {source}: {err}"))?;
-        let view = build_view(&score);
-        let analysis = analyze(&score);
-        let ctx = build_context(&view, &analysis);
-        let mut vp = Viewport::new(&ctx, view.high_pitch);
-        vp.show_inspector = false;
-        self.view = view;
-        self.analysis = analysis;
-        self.ctx = ctx;
-        self.vp = vp;
+        let focus = analyze(&score).focus_track;
+        self.track_names = track_labels(&score);
         self.form.seed_from(&source);
         self.title = source;
+        self.vp.show_inspector = false; // a fresh load hides the capture panel
         self.score = Some(score);
-        self.fitted = false;
+        self.focus_on_track(focus); // rebuilds view/analysis/ctx/vp for the focus track
         Ok(())
     }
 
@@ -584,7 +639,7 @@ impl CockpitApp {
     /// Returns a message if no score is loaded yet, or if measuring fails.
     pub fn capture_json(&self, inputs: &CaptureInputs<'_>) -> Result<String, String> {
         let score = self.score.as_ref().ok_or_else(|| "no score loaded".to_owned())?;
-        let chunk = build_chunk(score, self.analysis.focus_track, inputs)?;
+        let chunk = build_chunk(score, self.selected_track, inputs)?;
         serde_json::to_string_pretty(&chunk).map_err(|err| err.to_string())
     }
 
@@ -836,6 +891,51 @@ impl CockpitApp {
             }
         }
     }
+
+    /// The top toolbar — the discoverable surface, so the controls aren't hidden
+    /// behind hotkeys: a track selector (the roll shows one part at a time),
+    /// play/pause, and toggles for the capture form and the corpus dock.
+    fn toolbar_bar(&mut self, ui: &mut egui::Ui) -> Option<usize> {
+        let mut focus: Option<usize> = None;
+        ui.horizontal_wrapped(|ui| {
+            if self.track_names.len() > 1 {
+                let current =
+                    self.track_names.get(self.selected_track).map_or("—", String::as_str);
+                egui::ComboBox::from_label("track").selected_text(current).show_ui(ui, |ui| {
+                    for (i, name) in self.track_names.iter().enumerate() {
+                        if ui.selectable_label(i == self.selected_track, name).clicked() {
+                            focus = Some(i);
+                        }
+                    }
+                });
+                ui.separator();
+            }
+            let play = if self.vp.playing { "⏸ pause" } else { "▶ play" };
+            if ui.button(play).on_hover_text("space").clicked() {
+                self.vp.playing = !self.vp.playing;
+            }
+            if ui
+                .button("⤓ capture")
+                .on_hover_text("edit + cut a chunk from the selected track (i)")
+                .clicked()
+            {
+                self.vp.show_inspector = !self.vp.show_inspector;
+            }
+            if ui.button("📚 corpus").on_hover_text("browse the captured corpus (c)").clicked() {
+                self.show_dock = !self.show_dock;
+            }
+            if !self.track_names.is_empty() {
+                ui.separator();
+                ui.weak(format!(
+                    "{}  ·  track {}/{}",
+                    self.title,
+                    self.selected_track.saturating_add(1),
+                    self.track_names.len()
+                ));
+            }
+        });
+        focus
+    }
 }
 
 /// Paints one placed cell at grid position (`col`, `vis_row`).
@@ -860,27 +960,34 @@ fn paint_cell(painter: &egui::Painter, origin: egui::Pos2, col: u16, vis_row: u1
 }
 
 impl eframe::App for CockpitApp {
-    // eframe's default `update` wraps this in a central panel; we draw the
-    // resolved scene straight into the provided `ui`.
+    // egui 0.34 deprecates the `TopBottomPanel` alias and the panel `.show`;
+    // `show_inside` carves the toolbar off the eframe-provided central ui.
+    #[allow(deprecated)]
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Apply a file or capture request the page handed us, if any.
+        // Apply a file/capture/corpus request the page handed us, if any.
         #[cfg(target_arch = "wasm32")]
         web::drain(self);
-        let egui_ctx = ui.ctx().clone();
-        if self.handle_input(&egui_ctx) {
-            egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        let ctx = ui.ctx().clone();
+        if self.handle_input(&ctx) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if self.vp.playing {
-            let dt = f64::from(egui_ctx.input(|i| i.stable_dt)).min(0.1);
+            let dt = f64::from(ctx.input(|i| i.stable_dt)).min(0.1);
             self.vp.advance_playback(dt, &self.ctx);
-            egui_ctx.request_repaint();
+            ctx.request_repaint();
         }
-        self.paint(ui);
+        let focus = egui::TopBottomPanel::top("toolbar")
+            .show_inside(ui, |ui| self.toolbar_bar(ui))
+            .inner;
+        if let Some(track) = focus {
+            self.focus_on_track(track);
+        }
+        egui::CentralPanel::default().show_inside(ui, |ui| self.paint(ui));
         if self.vp.show_inspector {
-            self.capture_panel(&egui_ctx);
+            self.capture_panel(&ctx);
         }
         if self.show_dock {
-            self.corpus_dock(&egui_ctx);
+            self.corpus_dock(&ctx);
         }
     }
 }
@@ -1495,11 +1602,46 @@ mod tests {
             .expect("multi_track.mid imports");
         assert_eq!(app.title(), "multi.mid", "the title follows the loaded source");
         assert_ne!(app.title(), demo_title, "the source changed");
+        assert_eq!(app.view.lanes.len(), 1, "the roll shows one track at a time");
         assert!(
-            app.view.lanes.len() >= 2,
-            "the multi-track file loads its several tracks, got {}",
-            app.view.lanes.len()
+            app.track_names.len() >= 2,
+            "the multi-track file fills the track selector, got {}",
+            app.track_names.len()
         );
+    }
+
+    #[test]
+    fn focus_on_track_isolates_a_track_and_targets_capture() {
+        let mut app = demo_app();
+        app.load("multi.mid".to_owned(), include_bytes!("../assets/multi_track.mid"))
+            .expect("multi_track.mid imports");
+        let tracks = app.track_names.len();
+        assert!(tracks >= 2, "needs a multi-track file");
+        // Loading focuses the auto-picked track: one lane shown, not all overlaid.
+        assert_eq!(app.view.lanes.len(), 1);
+
+        // Capture must use the *selected* track: its JSON matches build_chunk at
+        // that index, and switching tracks changes the result.
+        app.focus_on_track(0);
+        assert_eq!(app.selected_track, 0);
+        assert_eq!(app.view.lanes.len(), 1, "still a single lane after the switch");
+        let inputs =
+            CaptureInputs { id: "t", created_at: "t", updated_at: "t", ..Default::default() };
+        let score = app.score.clone().expect("score loaded");
+        let expected0 =
+            serde_json::to_string_pretty(&build_chunk(&score, 0, &inputs).expect("track 0"))
+                .expect("json");
+        assert_eq!(app.capture_json(&inputs).expect("captures"), expected0, "targets track 0");
+
+        app.focus_on_track(1);
+        let expected1 =
+            serde_json::to_string_pretty(&build_chunk(&score, 1, &inputs).expect("track 1"))
+                .expect("json");
+        assert_eq!(app.capture_json(&inputs).expect("captures"), expected1, "targets track 1");
+
+        // Out-of-range is a no-op, not a panic.
+        app.focus_on_track(tracks + 9);
+        assert_eq!(app.selected_track, 1, "an out-of-range track is ignored");
     }
 
     #[test]

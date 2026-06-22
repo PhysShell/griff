@@ -13,9 +13,12 @@ cargo run -p griff-cockpit -- path/to/score.mid     # or .gp3/.gp4/.gp5/.gpx
 ```
 
 Reads a MIDI or Guitar Pro file through the shared importer and opens the
-piano-roll window. Keys: `space` play/pause, `←`/`→` scroll, `↑`/`↓` pitch,
-`+`/`−` zoom, `[`/`]` section, `Home` reset, `i` inspector, `c` corpus dock,
-`q`/`Esc` quit.
+piano-roll window. A **top toolbar** surfaces the controls so nothing hides
+behind a hotkey: a **track selector** (the roll shows one part at a time, not
+every track overlaid — the selector switches it, and capture targets it),
+play/pause, and toggles for the capture form and the corpus dock. The same keys
+still work: `space` play/pause, `←`/`→` scroll, `↑`/`↓` pitch, `+`/`−` zoom,
+`[`/`]` section, `Home` reset, `i` inspector, `c` corpus dock, `q`/`Esc` quit.
 
 ## Web (wasm) — ADR-0027 Slice 2
 
