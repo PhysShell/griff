@@ -54,8 +54,9 @@ test('Corpus opens the dock over the roll', async () => {
   await Promise.all([page.waitForEvent('download'), page.click('#capture')]);
 
   // Wait for the async OPFS persist to land before reading the corpus back.
+  let persisted = false;
   for (let i = 0; i < 30; i += 1) {
-    const ready = await page.evaluate(async () => {
+    persisted = await page.evaluate(async () => {
       try {
         const corpus = await (await navigator.storage.getDirectory()).getDirectoryHandle('corpus');
         await corpus.getFileHandle('multi_track.chunk.json');
@@ -64,9 +65,10 @@ test('Corpus opens the dock over the roll', async () => {
         return false;
       }
     });
-    if (ready) break;
+    if (persisted) break;
     await page.waitForTimeout(200);
   }
+  assert.ok(persisted, 'the captured chunk should persist to OPFS before opening the dock');
 
   const before = decode(await canvasShot(page));
   await page.click('#corpus'); // read OPFS → load_corpus → dock opens next frame
