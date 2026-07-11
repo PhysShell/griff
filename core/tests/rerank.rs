@@ -31,6 +31,8 @@
     clippy::arithmetic_side_effects
 )]
 
+use std::slice;
+
 use griff_core::{
     closure::CLOSURE_AXIS_LABELS,
     event::{Pitch, Tempo, Ticks, TimeSignature},
@@ -57,7 +59,7 @@ fn material() -> PitchMaterial {
 }
 
 /// 4/4 at 480 PPQN over `bar_count` bars, range C2–C5.
-fn constraints(bar_count: usize) -> GenerationConstraints {
+const fn constraints(bar_count: usize) -> GenerationConstraints {
     GenerationConstraints {
         bar_count,
         time_signature: TimeSignature {
@@ -107,7 +109,9 @@ fn notes(score: &Score) -> Vec<(u32, u32, u8)> {
 }
 
 /// Comparable identity of a candidate: provenance plus produced notes.
-fn fingerprint(c: &SetCandidate) -> (GenerationStrategy, u64, Vec<(u32, u32, u8)>) {
+type Fingerprint = (GenerationStrategy, u64, Vec<(u32, u32, u8)>);
+
+fn fingerprint(c: &SetCandidate) -> Fingerprint {
     (c.strategy, c.seed.0, notes(&c.score))
 }
 
@@ -149,8 +153,7 @@ fn set_covers_every_strategy_and_derives_distinct_seeds() {
 
 #[test]
 fn set_skips_rhythm_copy_without_templates() {
-    let set =
-        generate_candidate_set(&set_request(7, 1, Vec::new(), None)).expect("set generation");
+    let set = generate_candidate_set(&set_request(7, 1, Vec::new(), None)).expect("set generation");
 
     assert_eq!(set.len(), 4, "remaining strategies × 1 variant");
     assert!(
@@ -231,10 +234,12 @@ fn set_applies_gesture_control() {
 
 #[test]
 fn set_rejects_zero_variants() {
-    assert_eq!(
+    // `Score` (inside `SetCandidate`) carries no `PartialEq`, so match on the
+    // error rather than comparing whole `Result`s.
+    assert!(matches!(
         generate_candidate_set(&set_request(7, 0, quarters(), None)),
         Err(SetError::VariantCountZero),
-    );
+    ));
 }
 
 // ── rerank ────────────────────────────────────────────────────────────────────
@@ -306,7 +311,10 @@ fn rerank_is_deterministic() {
     .map(|s| (s.value.strategy, s.value.seed.0))
     .collect();
 
-    assert_eq!(a, b, "rank order is stable under a fixed request and policy");
+    assert_eq!(
+        a, b,
+        "rank order is stable under a fixed request and policy"
+    );
 }
 
 #[test]
@@ -321,7 +329,7 @@ fn rerank_penalises_a_verbatim_quote_under_a_novelty_policy() {
         vec![(NOVELTY_AXIS_LABELS[0], 1.0), (NOVELTY_AXIS_LABELS[1], 1.0)],
     );
 
-    let ranked = rerank_candidates(set, &material(), std::slice::from_ref(&reference), &policy);
+    let ranked = rerank_candidates(set, &material(), slice::from_ref(&reference), &policy);
 
     let quoted = ranked
         .iter()
