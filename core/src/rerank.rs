@@ -1,7 +1,7 @@
 //! Candidate set + explainable rerank over the S6 strategies (ADR-0017;
 //! melodic-closure note §7.2/§7.3).
 //!
-//! S6 [`generate`](crate::generate::generate) produces exactly one candidate
+//! S6 [`generate`] produces exactly one candidate
 //! from one strategy; the S6 stage doc promises a *set*, and the ADR-0017
 //! scoring vocabulary exists precisely to rank one. This module is that seam,
 //! as two pure functions:

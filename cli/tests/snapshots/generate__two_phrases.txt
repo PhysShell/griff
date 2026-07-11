@@ -1,5 +1,16 @@
 $ griff generate <SRC> <OUT>
 exit: 0
 --- stdout ---
-generated 8 bars (RhythmCopyPitchSubstitute, seed 0) from a 7-tone scale (342 bytes) -> <OUT>
+candidates: 10 ranked under generation_rerank v1
+  1. RepeatVariation variant-seed 3625251794129094637 aggregate 0.850
+  2. MotifTransposeVariation variant-seed 7960286522194355700 aggregate 0.800
+  3. MotifTransposeVariation variant-seed 4560642061891045783 aggregate 0.800
+  4. ConstrainedRandomWalk variant-seed 487617019471545679 aggregate 0.800
+  5. ConstrainedRandomWalk variant-seed 398795221420464796 aggregate 0.800
+  6. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.800
+  7. RepeatVariation variant-seed 1961750202426094747 aggregate 0.800
+  8. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.750
+  9. RhythmCopyPitchSubstitute variant-seed 16481712997681181849 aggregate 0.750
+  10. ShuffleMotifs variant-seed 17909611376780542444 aggregate 0.733
+generated 8 bars (RepeatVariation, seed 0) from a 7-tone scale (342 bytes) -> <OUT>
 --- stderr ---

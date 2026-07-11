@@ -168,7 +168,10 @@ fn generate_no_gesture_changes_the_carve_not_the_determinism() {
         "generate --corpus --no-gesture must exit 0: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(fs::read(&out_file).is_ok());
+    assert!(
+        !fs::read(&out_file).expect("winner written").is_empty(),
+        "the un-carved winner still lands in the output file"
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
