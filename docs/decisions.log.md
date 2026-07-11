@@ -1403,3 +1403,20 @@ Architectural decisions go to [`adr/`](adr/) instead.
   question is deferred until the corpus re-scan shows which error buckets
   survive 0.4.2; if a meaningful share remains, that becomes an ADR
   (MIT-licensed upstream, so vendoring stays available).
+
+- 2026-07-11 — In the context of the first corpus-fed playtest (220 chunks:
+  the corpus was audible only when a rhythm-copy candidate won — the other
+  strategies hardcoded wall-to-wall quarters — and the aggregated gesture ask
+  of burst 69 / rest 6.6q never carved), facing how corpus rhythm should
+  reach generation, we decided for a shared **rhythm grid** — `RhythmTemplate`
+  carries onset-*placed* notes (offsets + durations, so rests and syncopation
+  survive extraction), every S6 strategy lays its pitches onto the first
+  usable template's per-bar grid (quarter fallback preserves the no-input
+  case), and the candidate set feeds the rotated template to every strategy —
+  plus a gesture-ask aggregation fix (only chunks that actually rest vote;
+  per-axis median), and against teaching each strategy corpus awareness
+  separately or padding templates with explicit rest events, to achieve
+  corpus rhythm audible across the whole candidate set, accepting deliberate
+  re-blesses of the generation goldens and that `complement` keeps its
+  historical quarter grid (an explicitly empty template list) until its own
+  increment.
