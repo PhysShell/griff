@@ -798,10 +798,11 @@ fn load_chunk_source(dir: &Path, record_name: &str) -> Option<(ChunkMeta, Score,
     Some((meta, sliced, track))
 }
 
-/// One duration template per *sounding* bar of the track's primary voice, in
-/// onset order. Silent bars are phrase rests, not templates; identical
-/// templates are deduped so a looped riff does not drown the set's template
-/// rotation in copies of one rhythm.
+/// One placement template per *sounding* bar of the track's primary voice:
+/// each note keeps its in-bar offset, so rests and syncopation survive into
+/// the grid. Silent bars are phrase rests, not templates; identical templates
+/// are deduped so a looped riff does not drown the set's template rotation in
+/// copies of one rhythm.
 fn bar_rhythms(score: &Score, track: usize) -> Vec<generate::RhythmTemplate> {
     let Some(voice) = score.tracks.get(track).and_then(|t| t.voices.first()) else {
         return Vec::new();
@@ -819,15 +820,18 @@ fn bar_rhythms(score: &Score, track: usize) -> Vec<generate::RhythmTemplate> {
 
     let mut templates = Vec::new();
     for bar in &score.master_bars {
-        let durations: Vec<Ticks> = notes
+        let placed: Vec<generate::TemplateNote> = notes
             .iter()
             .filter(|(onset, _)| *onset >= bar.tick_range.start.0 && *onset < bar.tick_range.end.0)
-            .map(|&(_, duration)| duration)
+            .map(|&(onset, duration)| generate::TemplateNote {
+                offset: Ticks(onset.saturating_sub(bar.tick_range.start.0)),
+                duration,
+            })
             .collect();
-        if durations.is_empty() {
+        if placed.is_empty() {
             continue;
         }
-        let template = generate::RhythmTemplate::from_durations(&durations);
+        let template = generate::RhythmTemplate { notes: placed };
         if !templates.contains(&template) {
             templates.push(template);
         }
@@ -835,29 +839,48 @@ fn bar_rhythms(score: &Score, track: usize) -> Vec<generate::RhythmTemplate> {
     templates
 }
 
-/// Aggregates the chunks' gesture statistics into one ask: the mean of the
-/// per-chunk [`GestureControl`]s (each already clamped by
+/// Aggregates the chunks' gesture statistics into one ask: the per-axis
+/// *median* of the per-chunk [`GestureControl`]s (each already clamped by
 /// [`GestureControl::from_stats`]), rounded back to whole burst notes.
-/// `None` when no chunk carries stats — the caller then generates
-/// wall-to-wall, it does not invent a gesture.
+///
+/// Only chunks that actually rest vote: a wall-to-wall riff's stats describe
+/// one giant burst (mean burst = the whole chunk) and would inflate the ask
+/// past ever carving (2026-07-11 playtest: burst 69 over a 32-note request
+/// carved nothing). The median keeps one long-burst outlier from dragging
+/// the ask out of carving range. `None` when no resting chunk carries stats —
+/// the caller then generates wall-to-wall, it does not invent a gesture.
 fn gesture_control_from_chunks(chunks: &[ChunkMeta]) -> Option<GestureControl> {
     let controls: Vec<GestureControl> = chunks
         .iter()
-        .filter_map(|c| c.gesture.as_ref().map(GestureControl::from_stats))
+        .filter_map(|c| c.gesture.as_ref())
+        .filter(|s| s.rest_count > 0 && s.mean_rest_quarters > 0.0)
+        .map(GestureControl::from_stats)
         .collect();
     if controls.is_empty() {
         return None;
     }
-    #[allow(clippy::cast_precision_loss)] // corpus sizes are far below 2^52
-    let n = controls.len() as f64;
     #[allow(clippy::cast_precision_loss)] // burst lengths are tiny
-    let mean_burst = controls.iter().map(|c| c.burst_notes as f64).sum::<f64>() / n;
-    let mean_rest = controls.iter().map(|c| c.rest_quarters).sum::<f64>() / n;
+    let burst = median(controls.iter().map(|c| c.burst_notes as f64).collect());
+    let rest = median(controls.iter().map(|c| c.rest_quarters).collect());
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rounded, clamped ≥ 1
     Some(GestureControl {
-        burst_notes: mean_burst.round().max(1.0) as usize,
-        rest_quarters: mean_rest.max(1.0),
+        burst_notes: burst.round().max(1.0) as usize,
+        rest_quarters: rest.max(1.0),
     })
+}
+
+/// The median of `values` (mean of the two middles for an even count).
+/// Deterministic: ties order by `total_cmp`. Caller guarantees non-empty.
+fn median(mut values: Vec<f64>) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        values.get(mid).copied().unwrap_or(0.0)
+    } else {
+        let hi = values.get(mid).copied().unwrap_or(0.0);
+        let lo = values.get(mid.saturating_sub(1)).copied().unwrap_or(0.0);
+        (lo + hi) / 2.0
+    }
 }
 
 /// Builds a tab-seeded [`generate::RuleGenerationRequest`]: the scale is the
