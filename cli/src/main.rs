@@ -1487,8 +1487,9 @@ impl From<complement::ComplementError> for CliError {
     clippy::indexing_slicing
 )]
 mod tests {
-    use griff_core::corpus::SourceFormat;
+    use griff_core::corpus::{ChunkMeta, SourceFormat};
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::gesture;
     use griff_core::score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
         Score, SourceMeta, Voice,
@@ -1496,7 +1497,8 @@ mod tests {
     use griff_core::slice::TickRange;
 
     use super::{
-        measure_group_relations, primary_voice_note_count, source_format, track_note_count, Track,
+        build_chunk_meta, measure_group_relations, primary_voice_note_count, source_format,
+        track_note_count, CurateInputs, Track,
     };
 
     fn score_tagged(format: Option<&str>) -> Score {
@@ -1997,5 +1999,274 @@ mod tests {
             format!("{err}").contains("part"),
             "the curator sees which measurement failed: {err}"
         );
+    }
+
+    // ── corpus-fed generation (research note §7.2/§7.3 wiring) ────────────────
+    //
+    // TDD red phase: `bar_rhythms`, `gesture_control_from_chunks`, and
+    // `load_corpus_material` do not exist yet, so these tests fail to compile
+    // until the green step. They specify how `griff generate --corpus <dir>`
+    // turns curated chunk records + their source tabs into generator inputs:
+    // per-bar rhythm templates, novelty reference scores, and an aggregated
+    // gesture ask.
+
+    /// A score of `bar_count` 4/4 bars (1920 ticks each) over `tracks`.
+    fn bars_score(bar_count: usize, tracks: Vec<Track>) -> Score {
+        let master_bars = (0..bar_count)
+            .map(|i| {
+                let start = u32::try_from(i).expect("small index") * 1920;
+                MasterBar {
+                    index: i,
+                    tick_range: TickRange::new(Ticks(start), Ticks(start + 1920))
+                        .expect("ordered"),
+                    time_signature: TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    },
+                    tempo: Tempo::new(120.0).expect("120 BPM"),
+                    repeat: RepeatMarker::default(),
+                }
+            })
+            .collect();
+        Score {
+            ticks_per_quarter: 480,
+            master_bars,
+            tracks,
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    /// A note atom of arbitrary duration.
+    fn note(start: u32, dur: u32, pitch: u8) -> AtomEvent {
+        AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(start),
+            duration: Ticks(dur),
+            pitch: Pitch::new(pitch).expect("valid pitch"),
+            velocity: Velocity::new(90).expect("valid velocity"),
+            marks: NoteMarks::empty(),
+            position: None,
+        })
+    }
+
+    #[test]
+    fn bar_rhythms_extracts_per_bar_templates_and_skips_silent_bars() {
+        use super::bar_rhythms;
+
+        // Bar 0: four quarters; bar 1: silent; bar 2: two eighths.
+        let track = track_of(vec![voice_of(
+            0,
+            vec![
+                note(0, 480, 40),
+                note(480, 480, 43),
+                note(960, 480, 45),
+                note(1440, 480, 47),
+                note(3840, 240, 50),
+                note(4080, 240, 47),
+            ],
+        )]);
+        let score = bars_score(3, vec![track]);
+
+        assert_eq!(
+            bar_rhythms(&score, 0),
+            vec![vec![Ticks(480); 4], vec![Ticks(240), Ticks(240)]],
+            "one template per sounding bar, in onset order; silent bars skipped"
+        );
+    }
+
+    #[test]
+    fn bar_rhythms_dedups_identical_templates() {
+        use super::bar_rhythms;
+
+        // Two identical quarter-note bars: the corpus should not drown the
+        // template rotation in copies of one rhythm.
+        let track = track_of(vec![voice_of(
+            0,
+            vec![
+                note(0, 480, 40),
+                note(480, 480, 43),
+                note(960, 480, 45),
+                note(1440, 480, 47),
+                note(1920, 480, 40),
+                note(2400, 480, 43),
+                note(2880, 480, 45),
+                note(3360, 480, 47),
+            ],
+        )]);
+        let score = bars_score(2, vec![track]);
+
+        assert_eq!(bar_rhythms(&score, 0), vec![vec![Ticks(480); 4]]);
+    }
+
+    /// Curate inputs with the community-tab rights defaults.
+    fn corpus_test_inputs(id: &str) -> CurateInputs {
+        use griff_core::corpus::{
+            Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort,
+        };
+        CurateInputs {
+            id: id.to_owned(),
+            title: format!("Chunk {id}"),
+            tuning: "standard_e".to_owned(),
+            style_cohort: StyleCohort::Core,
+            tags: Vec::new(),
+            quality_flags: vec![QualityFlag::Clean],
+            reviewer: None,
+            rights: RightsInfo {
+                rights_status: RightsStatus::CopyrightedComposition,
+                acquisition: Acquisition::CommunityTabSite,
+                redistributable: false,
+                notes: String::new(),
+            },
+        }
+    }
+
+    /// Gesture stats whose only meaningful fields here are the two the
+    /// control derives from; the rest are plausible fillers.
+    fn gesture_stats(mean_burst_notes: f64, mean_rest_quarters: f64) -> gesture::GestureStats {
+        gesture::GestureStats {
+            note_count: 12,
+            burst_count: 3,
+            mean_burst_notes,
+            max_burst_notes: 6,
+            rest_count: 2,
+            mean_rest_quarters,
+            rest_on_grid_share: 1.0,
+            modal_landing_share: 0.5,
+            mean_final_lengthening: 0.5,
+        }
+    }
+
+    /// A chunk record built through the real builder, with its measured
+    /// gesture replaced by `stats` (or cleared).
+    fn chunk_with_gesture(id: &str, stats: Option<gesture::GestureStats>) -> ChunkMeta {
+        use std::path::Path;
+        let track = track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(480, 62)])]);
+        let score = one_bar_score(vec![track]);
+        let inputs = corpus_test_inputs(id);
+        let mut meta = build_chunk_meta(
+            &score,
+            Path::new(&format!("{id}.mid")),
+            Some(0),
+            inputs.id.clone(),
+            inputs.title.clone(),
+            &inputs,
+            None,
+        );
+        meta.gesture = stats;
+        meta
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_averages_per_chunk_controls() {
+        use super::gesture_control_from_chunks;
+
+        // Per-chunk controls (4, 1.0q) and (2, 3.0q) average to (3, 2.0q);
+        // a stats-less chunk is skipped, not treated as zero.
+        let chunks = vec![
+            chunk_with_gesture("a", Some(gesture_stats(4.0, 1.0))),
+            chunk_with_gesture("b", None),
+            chunk_with_gesture("c", Some(gesture_stats(2.0, 3.0))),
+        ];
+        let control = gesture_control_from_chunks(&chunks).expect("stats present");
+        assert_eq!(control.burst_notes, 3);
+        assert!((control.rest_quarters - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_is_none_without_stats() {
+        use super::gesture_control_from_chunks;
+        let chunks = vec![chunk_with_gesture("a", None)];
+        assert!(gesture_control_from_chunks(&chunks).is_none());
+    }
+
+    #[test]
+    fn load_corpus_material_reads_chunks_slices_ranges_and_skips_missing_sources() {
+        use super::load_corpus_material;
+        use griff_core::midi;
+
+        let dir = std::env::temp_dir().join(format!(
+            "griff_corpus_material_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create corpus dir");
+
+        // Source tab: two bars, quarters then eighths.
+        let track = track_of(vec![voice_of(
+            0,
+            vec![
+                note(0, 480, 40),
+                note(480, 480, 43),
+                note(960, 480, 45),
+                note(1440, 480, 47),
+                note(1920, 240, 50),
+                note(2160, 240, 47),
+                note(2400, 240, 45),
+                note(2640, 240, 43),
+                note(2880, 240, 40),
+                note(3120, 240, 43),
+                note(3360, 240, 45),
+                note(3600, 240, 47),
+            ],
+        )]);
+        let source = bars_score(2, vec![track]);
+        std::fs::write(
+            dir.join("a.mid"),
+            midi::export_score(&source).expect("export source"),
+        )
+        .expect("write source");
+
+        // Chunk a: covers only bar 0 of its source. Chunk b: source missing.
+        let inputs = corpus_test_inputs("a");
+        let mut meta_a = build_chunk_meta(
+            &source,
+            &dir.join("a.mid"),
+            Some(0),
+            inputs.id.clone(),
+            inputs.title.clone(),
+            &inputs,
+            None,
+        );
+        meta_a.source.bar_range = Some((0, 0));
+        std::fs::write(
+            dir.join("a.chunk.json"),
+            serde_json::to_string(&meta_a).expect("serialize a"),
+        )
+        .expect("write a.chunk.json");
+
+        let mut meta_b = chunk_with_gesture("b", None);
+        meta_b.source.filename = "missing.mid".to_owned();
+        std::fs::write(
+            dir.join("b.chunk.json"),
+            serde_json::to_string(&meta_b).expect("serialize b"),
+        )
+        .expect("write b.chunk.json");
+
+        // A group record must be ignored, not parsed as a chunk.
+        std::fs::write(dir.join("g.group.json"), "{}").expect("write group");
+
+        let material = load_corpus_material(&dir).expect("corpus loads");
+
+        assert_eq!(
+            material.references.len(),
+            1,
+            "one chunk with a readable source"
+        );
+        assert_eq!(
+            material.references[0].master_bars.len(),
+            1,
+            "bar_range (0, 0) slices the source to one bar"
+        );
+        assert_eq!(
+            material.rhythms,
+            vec![vec![Ticks(480); 4]],
+            "rhythm templates come from the sliced bar range only"
+        );
+        assert_eq!(
+            material.skipped,
+            vec!["b.chunk.json".to_owned()],
+            "records whose source cannot be read are skipped, by record name"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
