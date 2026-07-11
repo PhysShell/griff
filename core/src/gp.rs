@@ -471,11 +471,18 @@ fn append_beat(
                 }
             }
             guitarpro::NoteType::Tie => {
-                if extend_tie(note, dur_ticks, ctx.zero_indexed, acc) {
+                if extend_tie(note, start, dur_ticks, ctx.zero_indexed, acc) {
                     continued = true;
                 }
             }
-            guitarpro::NoteType::Rest | guitarpro::NoteType::Unknown(_) => {
+            // A per-string entry whose type flag is absent keeps the parser's
+            // default kind `Rest` and carries no fret: it encodes a *silent
+            // string* in an otherwise sounding beat — normal GP encoding, not
+            // lost content. (A whole-rest beat is `BeatStatus::Rest`, handled
+            // above; an all-Rest-notes beat still falls through to the
+            // gapless rest group below.)
+            guitarpro::NoteType::Rest => {}
+            guitarpro::NoteType::Unknown(_) => {
                 acc.loss.add(ImportWarning::Other(format!(
                     "GP note kind {kind:?} not fully supported; skipped",
                     kind = note.kind,
@@ -506,14 +513,17 @@ fn append_beat(
 
 /// Continues a tied note onto the most recent note on its string by extending
 /// that note's duration. Returns `true` when a held note was found; otherwise
-/// records a loss (an orphan tie) and returns `false`.
+/// records a loss naming the string and the tie's start tick (so corpus scans
+/// can bucket orphan ties by cause) and returns `false`.
 fn extend_tie(
     note: &guitarpro::Note,
+    start: Ticks,
     dur_ticks: u32,
     zero_indexed: bool,
     acc: &mut VoiceAccum<'_>,
 ) -> bool {
-    let location = u8::try_from(gp_one_indexed_string(note.string, zero_indexed))
+    let string = gp_one_indexed_string(note.string, zero_indexed);
+    let location = u8::try_from(string)
         .ok()
         .and_then(|string| acc.held.get(&string).copied());
     if let Some((group_index, atom_index)) = location {
@@ -526,9 +536,10 @@ fn extend_tie(
             return true;
         }
     }
-    acc.loss.add(ImportWarning::Other(
-        "GP tie has no preceding note on its string; skipped".to_owned(),
-    ));
+    acc.loss.add(ImportWarning::Other(format!(
+        "GP tie has no preceding note on its string (string {string}, tick {tick}); skipped",
+        tick = start.0,
+    )));
     false
 }
 
