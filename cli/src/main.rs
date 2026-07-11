@@ -2358,8 +2358,13 @@ mod tests {
     #[test]
     fn bar_rhythms_extracts_per_bar_templates_and_skips_silent_bars() {
         use super::bar_rhythms;
+        use griff_core::generate::TemplateNote;
 
-        // Bar 0: four quarters; bar 1: silent; bar 2: two eighths.
+        // Bar 0: four quarters; bar 1: silent; bar 2: two *syncopated*
+        // eighths (off the downbeat, a gap between them). The extracted
+        // template must keep the in-bar offsets — rests and syncopation are
+        // exactly what the corpus should teach the grid (2026-07-11
+        // playtest: back-to-back extraction flattened them away).
         let track = track_of(vec![voice_of(
             0,
             vec![
@@ -2367,8 +2372,8 @@ mod tests {
                 note(480, 480, 43),
                 note(960, 480, 45),
                 note(1440, 480, 47),
-                note(3840, 240, 50),
-                note(4080, 240, 47),
+                note(4080, 240, 50),
+                note(4800, 240, 47),
             ],
         )]);
         let score = bars_score(3, vec![track]);
@@ -2377,9 +2382,20 @@ mod tests {
             bar_rhythms(&score, 0),
             vec![
                 RhythmTemplate::from_durations(&[Ticks(480); 4]),
-                RhythmTemplate::from_durations(&[Ticks(240), Ticks(240)]),
+                RhythmTemplate {
+                    notes: vec![
+                        TemplateNote {
+                            offset: Ticks(240),
+                            duration: Ticks(240),
+                        },
+                        TemplateNote {
+                            offset: Ticks(960),
+                            duration: Ticks(240),
+                        },
+                    ],
+                },
             ],
-            "one template per sounding bar, in onset order; silent bars skipped"
+            "templates keep in-bar offsets; silent bars skipped"
         );
     }
 
@@ -2438,7 +2454,7 @@ mod tests {
             burst_count: 3,
             mean_burst_notes,
             max_burst_notes: 6,
-            rest_count: 2,
+            rest_count: if mean_rest_quarters == 0.0 { 0 } else { 2 },
             mean_rest_quarters,
             rest_on_grid_share: 1.0,
             modal_landing_share: 0.5,
@@ -2480,6 +2496,50 @@ mod tests {
         let control = gesture_control_from_chunks(&chunks).expect("stats present");
         assert_eq!(control.burst_notes, 3);
         assert!((control.rest_quarters - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_ignores_restless_chunks() {
+        use super::gesture_control_from_chunks;
+
+        // A wall-to-wall riff's stats describe one giant burst (mean burst =
+        // the whole chunk); letting it vote inflates the ask past ever
+        // carving (2026-07-11 playtest: burst 69 over a 32-note request
+        // carved nothing). Only chunks that actually rest vote.
+        let chunks = vec![
+            chunk_with_gesture("wall", Some(gesture_stats(120.0, 0.0))),
+            chunk_with_gesture("a", Some(gesture_stats(4.0, 1.0))),
+            chunk_with_gesture("b", Some(gesture_stats(2.0, 3.0))),
+        ];
+        let control = gesture_control_from_chunks(&chunks).expect("resting chunks vote");
+        assert_eq!(control.burst_notes, 3, "the restless chunk does not vote");
+        assert!((control.rest_quarters - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_takes_the_median_against_outliers() {
+        use super::gesture_control_from_chunks;
+
+        // One long-burst outlier must not drag the ask out of carving range:
+        // the aggregate is the per-axis median, not the mean.
+        let chunks = vec![
+            chunk_with_gesture("a", Some(gesture_stats(2.0, 1.0))),
+            chunk_with_gesture("b", Some(gesture_stats(3.0, 1.5))),
+            chunk_with_gesture("c", Some(gesture_stats(100.0, 4.0))),
+        ];
+        let control = gesture_control_from_chunks(&chunks).expect("stats present");
+        assert_eq!(control.burst_notes, 3);
+        assert!((control.rest_quarters - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_is_none_when_no_chunk_rests() {
+        use super::gesture_control_from_chunks;
+        let chunks = vec![chunk_with_gesture("wall", Some(gesture_stats(120.0, 0.0)))];
+        assert!(
+            gesture_control_from_chunks(&chunks).is_none(),
+            "an all-wall-to-wall corpus asks for no gesture instead of a degenerate one"
+        );
     }
 
     #[test]
