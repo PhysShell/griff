@@ -1372,3 +1372,19 @@ Architectural decisions go to [`adr/`](adr/) instead.
   ergonomic gap. Accepting that the HTML toolbar (Open/Capture/Corpus/Manifest)
   stays for now — the Playwright suite drives those DOM buttons, and audio +
   visual phrase-slicing are the next ergonomic steps.
+
+- 2026-07-11 — In the context of `griff generate` emitting one hardcoded
+  rhythm-copy pass while the closure / novelty / gesture machinery sat
+  unwired (melodic-closure note §7.2/§7.3 named the gap), facing how to make
+  generation corpus-fed and self-selecting, we decided for a core
+  `rerank` seam — `generate_candidate_set` (every S6 strategy ×
+  seed variants, SplitMix64-derived; template rotation; optional gesture
+  carving) plus `rerank_candidates` (closure + novelty axes under the
+  uniform `generation_rerank` v1 policy) — and a CLI `--corpus <dir>` that
+  turns curated chunk records + source tabs into rhythm templates, novelty
+  references, and a mean burst/rest gesture ask, and against teaching each
+  strategy about the corpus directly or picking a winner inside core, to
+  achieve ADR-0017-explainable candidate selection with thresholds left to
+  the caller, accepting that the generate golden snapshots were re-blessed
+  (the default path now prints the ranking and picks the top-ranked
+  candidate) and that S9 still owes the policy its tuned weights.
