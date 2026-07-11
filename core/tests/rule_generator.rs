@@ -14,7 +14,7 @@ use griff_core::{
     event::{Pitch, Tempo, Ticks, TimeSignature},
     generate::{
         generate, GenerationCandidate, GenerationConstraints, GenerationError, GenerationSeed,
-        GenerationStrategy, PitchMaterial, RuleGenerationRequest,
+        GenerationStrategy, PitchMaterial, RhythmTemplate, RuleGenerationRequest,
     },
     score::{AtomEvent, AtomNote, MasterBar, Voice},
 };
@@ -42,8 +42,8 @@ fn constraints_2_bars_4_4() -> GenerationConstraints {
     }
 }
 
-fn quarter_rhythm() -> Vec<Ticks> {
-    vec![Ticks(480); 4] // four quarter notes per bar
+fn quarter_rhythm() -> RhythmTemplate {
+    RhythmTemplate::from_durations(&[Ticks(480); 4]) // four quarter notes per bar
 }
 
 fn request(strategy: GenerationStrategy) -> RuleGenerationRequest {

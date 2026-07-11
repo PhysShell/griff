@@ -36,7 +36,10 @@ use std::slice;
 use griff_core::{
     closure::CLOSURE_AXIS_LABELS,
     event::{Pitch, Tempo, Ticks, TimeSignature},
-    generate::{GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial},
+    generate::{
+        GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial, RhythmTemplate,
+        TemplateNote,
+    },
     gesture::GestureControl,
     novelty::NOVELTY_AXIS_LABELS,
     rerank::{
@@ -77,7 +80,7 @@ const fn constraints(bar_count: usize) -> GenerationConstraints {
 fn set_request(
     seed: u64,
     variants_per_strategy: usize,
-    source_rhythms: Vec<Vec<Ticks>>,
+    source_rhythms: Vec<RhythmTemplate>,
     gesture: Option<GestureControl>,
 ) -> SetRequest {
     SetRequest {
@@ -91,8 +94,8 @@ fn set_request(
 }
 
 /// One bar of quarter notes — the simplest usable rhythm template.
-fn quarters() -> Vec<Vec<Ticks>> {
-    vec![vec![Ticks(480); 4]]
+fn quarters() -> Vec<RhythmTemplate> {
+    vec![RhythmTemplate::from_durations(&[Ticks(480); 4])]
 }
 
 /// The `(onset, duration, pitch)` triples of the candidate's single voice.
@@ -184,7 +187,10 @@ fn rhythm_copy_variants_rotate_templates() {
     // Two deliberately extreme templates: one whole note vs eight eighths.
     // Variant 0 must draw the first template, variant 1 the second, so a
     // multi-template corpus is audible in the candidate set.
-    let templates = vec![vec![Ticks(1920)], vec![Ticks(240); 8]];
+    let templates = vec![
+        RhythmTemplate::from_durations(&[Ticks(1920)]),
+        RhythmTemplate::from_durations(&[Ticks(240); 8]),
+    ];
     let mut request = set_request(9, 2, templates, None);
     request.constraints = constraints(1);
 
@@ -200,6 +206,46 @@ fn rhythm_copy_variants_rotate_templates() {
         vec![1, 8],
         "one variant per template: whole-note bar and eighths bar"
     );
+}
+
+#[test]
+fn set_feeds_the_template_grid_to_every_strategy() {
+    // A gapped template must shape ALL strategies' candidates — the corpus
+    // is inaudible if only rhythm-copy hears it (2026-07-11 playtest).
+    let template = RhythmTemplate {
+        notes: vec![
+            TemplateNote {
+                offset: Ticks(0),
+                duration: Ticks(240),
+            },
+            TemplateNote {
+                offset: Ticks(960),
+                duration: Ticks(240),
+            },
+        ],
+    };
+    let set = generate_candidate_set(&set_request(7, 1, vec![template], None))
+        .expect("set generation");
+
+    assert_eq!(set.len(), 5, "every strategy contributes");
+    for candidate in &set {
+        let in_bar: Vec<u32> = notes(&candidate.score)
+            .iter()
+            .map(|&(onset, _, _)| onset % 1920)
+            .collect();
+        assert!(
+            in_bar.iter().all(|o| *o == 0 || *o == 960),
+            "{:?}: notes sit on the template grid, got {in_bar:?}",
+            candidate.strategy
+        );
+        assert!(
+            notes(&candidate.score)
+                .iter()
+                .all(|&(_, dur, _)| dur == 240),
+            "{:?}: durations come from the template",
+            candidate.strategy
+        );
+    }
 }
 
 #[test]

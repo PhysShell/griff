@@ -126,7 +126,7 @@ fn generate_is_deterministic_golden() {
             pitch_lo: Pitch(36),
             pitch_hi: Pitch(72),
         },
-        source_rhythms: vec![vec![Ticks(240); 8]],
+        source_rhythms: vec![RhythmTemplate::from_durations(&[Ticks(240); 8])],
         strategy: GenerationStrategy::ConstrainedRandomWalk,
     };
 

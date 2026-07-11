@@ -23,7 +23,7 @@ use griff_core::{
     event::{Pitch, Tempo, Ticks, TimeSignature},
     generate::{
         generate, GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial,
-        RuleGenerationRequest,
+        RhythmTemplate, RuleGenerationRequest,
     },
     score::{AtomEvent, Score},
     structure::{generate_structured, StructureControl, StructureGenError, StructuredRequest},
@@ -60,7 +60,7 @@ fn request(target_bars: usize, control: StructureControl) -> StructuredRequest {
         seed: GenerationSeed(7),
         pitch_material: c_major(),
         constraints: constraints(target_bars),
-        source_rhythms: vec![vec![Ticks(480); 4]],
+        source_rhythms: vec![RhythmTemplate::from_durations(&[Ticks(480); 4])],
         strategy: GenerationStrategy::ConstrainedRandomWalk,
         control,
     }
@@ -209,7 +209,7 @@ fn through_composed_control_delegates_to_s6() {
         seed: GenerationSeed(7),
         pitch_material: c_major(),
         constraints: constraints(4),
-        source_rhythms: vec![vec![Ticks(480); 4]],
+        source_rhythms: vec![RhythmTemplate::from_durations(&[Ticks(480); 4])],
         strategy: GenerationStrategy::ConstrainedRandomWalk,
     })
     .expect("plain S6 ok");
