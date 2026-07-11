@@ -2,15 +2,15 @@ $ griff generate <SRC> <OUT>
 exit: 0
 --- stdout ---
 candidates: 10 ranked under generation_rerank v1
-  1. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.883
-  2. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.856
-  3. MotifTransposeVariation variant-seed 7960286522194355700 aggregate 0.800
-  4. MotifTransposeVariation variant-seed 4560642061891045783 aggregate 0.800
-  5. ConstrainedRandomWalk variant-seed 487617019471545679 aggregate 0.800
-  6. ConstrainedRandomWalk variant-seed 398795221420464796 aggregate 0.800
-  7. RepeatVariation variant-seed 1961750202426094747 aggregate 0.800
-  8. RepeatVariation variant-seed 3625251794129094637 aggregate 0.800
-  9. RhythmCopyPitchSubstitute variant-seed 16481712997681181849 aggregate 0.790
-  10. ShuffleMotifs variant-seed 17909611376780542444 aggregate 0.750
-generated 8 bars (ShuffleMotifs, seed 0) from a 6-tone scale (342 bytes) -> <OUT>
+  1. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.856
+  2. RhythmCopyPitchSubstitute variant-seed 16481712997681181849 aggregate 0.790
+  3. MotifTransposeVariation variant-seed 7960286522194355700 aggregate 0.790
+  4. MotifTransposeVariation variant-seed 4560642061891045783 aggregate 0.790
+  5. ConstrainedRandomWalk variant-seed 487617019471545679 aggregate 0.790
+  6. ConstrainedRandomWalk variant-seed 398795221420464796 aggregate 0.790
+  7. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.790
+  8. ShuffleMotifs variant-seed 17909611376780542444 aggregate 0.723
+  9. RepeatVariation variant-seed 1961750202426094747 aggregate 0.723
+  10. RepeatVariation variant-seed 3625251794129094637 aggregate 0.723
+generated 8 bars (RhythmCopyPitchSubstitute, seed 0) from a 6-tone scale (558 bytes) -> <OUT>
 --- stderr ---

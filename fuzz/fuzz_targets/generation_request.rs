@@ -20,7 +20,7 @@ use griff_core::{
     event::{Pitch, Tempo, Ticks, TimeSignature},
     generate::{
         generate, GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial,
-        RuleGenerationRequest,
+        RhythmTemplate, RuleGenerationRequest,
     },
     score::AtomEvent,
 };
@@ -98,7 +98,7 @@ fuzz_target!(|input: FuzzInput| {
         source_rhythms: if rhythm.is_empty() {
             Vec::new()
         } else {
-            vec![rhythm]
+            vec![RhythmTemplate::from_durations(&rhythm)]
         },
         strategy,
     };

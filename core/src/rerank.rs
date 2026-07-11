@@ -13,8 +13,8 @@
 //!   independent of whether gesture carving is on, so gestured and plain runs
 //!   of the same request pair up seed-for-seed. `RhythmCopyPitchSubstitute`
 //!   is skipped (not an error) when no usable rhythm template exists; when
-//!   several templates exist, variants rotate through them so a
-//!   multi-template corpus is audible in the set. With a
+//!   templates exist, every strategy writes onto the rotated template's grid
+//!   so a multi-template corpus is audible in the whole set. With a
 //!   [`GestureControl`] the candidates are carved through the S6 gesture
 //!   compiler ([`generate_gestured`], research note §3.5) instead of staying
 //!   wall-to-wall.
@@ -28,10 +28,9 @@
 //!   the caller's policy.
 
 use crate::closure::{closure_axes, ClosureError};
-use crate::event::Ticks;
 use crate::generate::{
     generate, GenerationConstraints, GenerationError, GenerationSeed, GenerationStrategy,
-    PitchMaterial, RuleGenerationRequest,
+    PitchMaterial, RhythmTemplate, RuleGenerationRequest,
 };
 use crate::gesture::{generate_gestured, GestureControl, GestureGenError};
 use crate::novelty::{measure_novelty, novelty_axes, NoveltyError};
@@ -79,10 +78,10 @@ pub struct SetRequest {
     pub pitch_material: PitchMaterial,
     /// Structural constraints applied to every candidate.
     pub constraints: GenerationConstraints,
-    /// Rhythm templates (inner `Vec` = note durations per bar), typically
-    /// extracted from corpus chunks. Empty templates are ignored; with none
-    /// usable, `RhythmCopyPitchSubstitute` is skipped.
-    pub source_rhythms: Vec<Vec<Ticks>>,
+    /// Rhythm templates (one bar of placed notes each), typically extracted
+    /// from corpus chunks. Empty templates are ignored; with none usable,
+    /// `RhythmCopyPitchSubstitute` is skipped.
+    pub source_rhythms: Vec<RhythmTemplate>,
     /// Seed variants generated per strategy (must be ≥ 1).
     pub variants_per_strategy: usize,
     /// When set, every candidate is carved through the gesture compiler.
@@ -135,10 +134,10 @@ pub fn generate_candidate_set(request: &SetRequest) -> Result<Vec<SetCandidate>,
         return Err(SetError::VariantCountZero);
     }
 
-    let templates: Vec<&Vec<Ticks>> = request
+    let templates: Vec<&RhythmTemplate> = request
         .source_rhythms
         .iter()
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.notes.is_empty())
         .collect();
 
     let mut set = Vec::new();
@@ -149,13 +148,17 @@ pub fn generate_candidate_set(request: &SetRequest) -> Result<Vec<SetCandidate>,
         }
         for variant in 0..request.variants_per_strategy {
             let seed = GenerationSeed(derive_seed(request.seed.0, si, variant));
-            // Rotate templates across variants so each template gets heard;
-            // strategies other than rhythm-copy ignore the field entirely.
-            let source_rhythms = if needs_template {
-                let idx = variant.checked_rem(templates.len()).unwrap_or(0);
-                vec![templates.get(idx).map_or_else(Vec::new, |t| (*t).clone())]
-            } else {
+            // Rotate templates across variants so each template gets heard.
+            // Every strategy receives the grid — the corpus is inaudible if
+            // only rhythm-copy hears it; without templates the strategies
+            // fall back to the quarter grid inside `generate`.
+            let source_rhythms = if templates.is_empty() {
                 Vec::new()
+            } else {
+                let idx = variant.checked_rem(templates.len()).unwrap_or(0);
+                vec![templates
+                    .get(idx)
+                    .map_or_else(RhythmTemplate::default, |t| (*t).clone())]
             };
             let sub = RuleGenerationRequest {
                 seed,

@@ -27,7 +27,7 @@ use griff_core::{
     feature::voice_features,
     generate::{
         generate, GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial,
-        RuleGenerationRequest,
+        RhythmTemplate, RuleGenerationRequest,
     },
     midi::import_score,
     score::{AtomEvent, Score, Voice},

@@ -14,10 +14,14 @@ use crate::slice::TickRange;
 /// A single generated note, the internal intermediate of the rule strategies.
 ///
 /// Strategies emit `Vec<Vec<GenNote>>` (one inner `Vec` per bar); `bars_to_score`
-/// lowers these onto the canonical model. Meter and tempo are not carried here —
-/// they live on the master bars (ADR-0003), derived from the request constraints.
+/// lowers these onto the canonical model at `bar start + offset`, so in-bar
+/// silence (rests, syncopation) survives generation. Meter and tempo are not
+/// carried here — they live on the master bars (ADR-0003), derived from the
+/// request constraints.
 #[derive(Debug, Clone, Copy)]
 struct GenNote {
+    /// Onset offset from the bar start (from the rhythm grid).
+    offset: Ticks,
     pitch: Pitch,
     duration: Ticks,
     velocity: Velocity,
@@ -59,6 +63,98 @@ impl PitchMaterial {
     }
 }
 
+// ── rhythm grid ───────────────────────────────────────────────────────────────
+
+/// One placed note of a bar-length rhythm template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemplateNote {
+    /// Onset offset from the bar start.
+    pub offset: Ticks,
+    /// Note duration.
+    pub duration: Ticks,
+}
+
+/// A one-bar rhythm pattern of onset-*placed* notes.
+///
+/// Gaps — rests and syncopation — survive extraction and generation (offsets
+/// need not be contiguous). Every strategy lays its pitches onto this grid;
+/// the pitch logic stays the strategy's own.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RhythmTemplate {
+    /// The placed notes, expected in ascending offset order.
+    pub notes: Vec<TemplateNote>,
+}
+
+impl RhythmTemplate {
+    /// Rebuilds the legacy wall-to-wall shape: back-to-back durations become
+    /// notes whose offsets accumulate from the bar start.
+    #[must_use]
+    pub fn from_durations(durations: &[Ticks]) -> Self {
+        let mut notes = Vec::with_capacity(durations.len());
+        let mut offset = Ticks::ZERO;
+        for &duration in durations {
+            notes.push(TemplateNote { offset, duration });
+            offset = Ticks(offset.0.saturating_add(duration.0));
+        }
+        Self { notes }
+    }
+}
+
+/// The per-bar placement grid: the first non-empty template clamped to the
+/// bar, or the quarter-note fallback when no template is usable — so the
+/// no-corpus case keeps today's wall-to-wall quarter behaviour.
+fn bar_grid(
+    templates: &[RhythmTemplate],
+    bar_duration: Ticks,
+    ticks_per_quarter: Ticks,
+) -> Vec<TemplateNote> {
+    let clamped = templates
+        .iter()
+        .find(|t| !t.notes.is_empty())
+        .map(|t| clamp_template(t, bar_duration))
+        .unwrap_or_default();
+    if clamped.is_empty() {
+        quarter_grid(bar_duration, ticks_per_quarter)
+    } else {
+        clamped
+    }
+}
+
+/// Clamps a template to one bar: notes at or past the bar end drop, durations
+/// clamp to the bar end, zero durations drop, and the result sorts by offset
+/// so onsets stay non-decreasing.
+fn clamp_template(template: &RhythmTemplate, bar_duration: Ticks) -> Vec<TemplateNote> {
+    let mut notes: Vec<TemplateNote> = template
+        .notes
+        .iter()
+        .filter(|n| n.offset < bar_duration)
+        .map(|n| TemplateNote {
+            offset: n.offset,
+            duration: fit_duration(n.duration, Ticks(bar_duration.0.saturating_sub(n.offset.0))),
+        })
+        .filter(|n| n.duration > Ticks::ZERO)
+        .collect();
+    notes.sort_by_key(|n| n.offset.0);
+    notes
+}
+
+/// The fallback grid: quarter notes from the bar start, the last clamped to
+/// the bar end (e.g. 7/8 ends on an eighth).
+fn quarter_grid(bar_duration: Ticks, ticks_per_quarter: Ticks) -> Vec<TemplateNote> {
+    let step = ticks_per_quarter.max(Ticks(1));
+    let mut notes = Vec::new();
+    let mut offset = Ticks::ZERO;
+    while offset < bar_duration {
+        let remaining = Ticks(bar_duration.0.saturating_sub(offset.0));
+        notes.push(TemplateNote {
+            offset,
+            duration: fit_duration(step, remaining),
+        });
+        offset = Ticks(offset.0.saturating_add(step.0));
+    }
+    notes
+}
+
 /// Hard constraints that all generated phrases must satisfy.
 #[derive(Debug, Clone, Copy)]
 pub struct GenerationConstraints {
@@ -77,9 +173,13 @@ pub struct GenerationConstraints {
 }
 
 /// Which rule-based strategy to apply.
+///
+/// Every strategy lays its pitches onto the shared rhythm grid (the first
+/// usable [`RhythmTemplate`], quarter notes without one); the variants differ
+/// in *pitch* behaviour only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GenerationStrategy {
-    /// Copy a rhythm template from the corpus and substitute pitches from the scale.
+    /// Ascending scale degrees over the corpus rhythm (requires a template).
     RhythmCopyPitchSubstitute,
     /// Build a short motif and transpose it for each bar.
     MotifTransposeVariation,
@@ -115,8 +215,10 @@ pub struct RuleGenerationRequest {
     pub pitch_material: PitchMaterial,
     /// Structural constraints.
     pub constraints: GenerationConstraints,
-    /// Rhythm templates extracted from the corpus (inner `Vec` = note durations per bar).
-    pub source_rhythms: Vec<Vec<Ticks>>,
+    /// Rhythm templates extracted from the corpus; the first non-empty one is
+    /// the grid every strategy writes onto (callers rotating a template pool
+    /// pass one template per request).
+    pub source_rhythms: Vec<RhythmTemplate>,
     /// Strategy to apply.
     pub strategy: GenerationStrategy,
 }
@@ -146,7 +248,7 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
         return Err(GenerationError::BarCountZero);
     }
     if request.strategy == GenerationStrategy::RhythmCopyPitchSubstitute
-        && request.source_rhythms.first().map_or(true, Vec::is_empty)
+        && !request.source_rhythms.iter().any(|t| !t.notes.is_empty())
     {
         return Err(GenerationError::RhythmTemplateMissing);
     }
@@ -170,23 +272,20 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
     let mut prng = Xorshift64::new(request.seed.0);
     let c = &request.constraints;
     let pm = &request.pitch_material;
+    let grid = bar_grid(&request.source_rhythms, bar_duration, c.ticks_per_quarter);
 
     let bars = match request.strategy {
         GenerationStrategy::RhythmCopyPitchSubstitute => {
-            strategy_rhythm_copy(c, pm, &request.source_rhythms, &mut prng, bar_duration)
+            strategy_rhythm_copy(c, pm, &grid, &mut prng)
         }
         GenerationStrategy::MotifTransposeVariation => {
-            strategy_motif_transpose(c, pm, &mut prng, bar_duration)
+            strategy_motif_transpose(c, pm, &grid, &mut prng)
         }
         GenerationStrategy::ConstrainedRandomWalk => {
-            strategy_constrained_walk(c, pm, &mut prng, bar_duration)
+            strategy_constrained_walk(c, pm, &grid, &mut prng)
         }
-        GenerationStrategy::ShuffleMotifs => {
-            strategy_shuffle_motifs(c, pm, &mut prng, bar_duration)
-        }
-        GenerationStrategy::RepeatVariation => {
-            strategy_repeat_variation(c, pm, &mut prng, bar_duration)
-        }
+        GenerationStrategy::ShuffleMotifs => strategy_shuffle_motifs(c, pm, &grid, &mut prng),
+        GenerationStrategy::RepeatVariation => strategy_repeat_variation(c, pm, &grid, &mut prng),
     };
 
     let score = bars_to_score(&bars, c, bar_duration)?;
@@ -199,9 +298,10 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
 
 /// Lays the generated bars (each a `Vec<GenNote>`) onto the canonical model.
 ///
-/// Builds `MasterBar`s back-to-back from `bar_duration` and flattens each bar's
-/// notes into one `Voice` of `Single` event groups carrying absolute onsets.
-/// Tempo and meter live on the master bars (ADR-0003), not on notes.
+/// Builds `MasterBar`s back-to-back from `bar_duration` and places each bar's
+/// notes at `bar start + note offset` in one `Voice` of `Single` event groups —
+/// grid gaps become real silence. Tempo and meter live on the master bars
+/// (ADR-0003), not on notes.
 ///
 /// Returns [`GenerationError::InvalidConstraints`] when the absolute timeline
 /// cannot be represented in the `u32` tick space (rather than silently
@@ -229,22 +329,20 @@ fn bars_to_score(
             repeat: RepeatMarker::default(),
         });
 
-        let mut cursor = bar_start;
         for note in bar {
-            let atom = AtomEvent::Note(AtomNote {
-                absolute_start: cursor,
-                duration: note.duration,
-                pitch: note.pitch,
-                velocity: note.velocity,
-                marks: NoteMarks::empty(),
-                position: None,
-            });
-            cursor = cursor
-                .checked_add(atom.duration())
+            let absolute_start = bar_start
+                .checked_add(note.offset)
                 .map_err(|_| GenerationError::InvalidConstraints)?;
             event_groups.push(EventGroup {
                 kind: EventGroupKind::Single,
-                atoms: vec![atom],
+                atoms: vec![AtomEvent::Note(AtomNote {
+                    absolute_start,
+                    duration: note.duration,
+                    pitch: note.pitch,
+                    velocity: note.velocity,
+                    marks: NoteMarks::empty(),
+                    position: None,
+                })],
                 technique_spans: Vec::new(),
             });
         }
@@ -320,16 +418,6 @@ const fn advance_degree(degree: usize, scale_len: usize) -> usize {
     }
 }
 
-/// Returns the next index into a slice of length `len`, wrapping at `len`.
-const fn advance_idx(idx: usize, len: usize) -> usize {
-    let next = idx.wrapping_add(1);
-    if next >= len {
-        0
-    } else {
-        next
-    }
-}
-
 /// Clamps a tick duration so it does not exceed `remaining`.
 const fn fit_duration(raw: Ticks, remaining: Ticks) -> Ticks {
     if raw.0 > remaining.0 {
@@ -340,42 +428,31 @@ const fn fit_duration(raw: Ticks, remaining: Ticks) -> Ticks {
 }
 
 // ── strategies ────────────────────────────────────────────────────────────────
+//
+// Every strategy writes one pitch per grid slot; the grid carries the rhythm
+// (offsets + durations), the strategy carries the pitch logic.
 
 fn strategy_rhythm_copy(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
-    source_rhythms: &[Vec<Ticks>],
+    grid: &[TemplateNote],
     prng: &mut Xorshift64,
-    bar_duration: Ticks,
 ) -> Vec<Vec<GenNote>> {
-    // Validated non-empty before entering; first() is guaranteed Some.
-    let template: &[Ticks] = source_rhythms.first().map_or(&[], Vec::as_slice);
-
     let scale_len = pm.intervals.len();
     let mut degree = prng.next_mod(scale_len);
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for _ in 0..c.bar_count {
-        let mut notes = Vec::new();
-        let mut remaining = bar_duration;
-        let mut tidx = 0_usize;
-
-        while remaining > Ticks::ZERO {
-            let raw = template.get(tidx).copied().unwrap_or(Ticks(480));
-            let duration = fit_duration(raw, remaining);
-            if duration == Ticks::ZERO {
-                break;
-            }
+        let mut notes = Vec::with_capacity(grid.len());
+        for slot in grid {
             notes.push(GenNote {
+                offset: slot.offset,
                 pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
-                duration,
+                duration: slot.duration,
                 velocity: Velocity(90),
             });
-            remaining = Ticks(remaining.0.saturating_sub(duration.0));
             degree = advance_degree(degree, scale_len);
-            tidx = advance_idx(tidx, template.len().max(1));
         }
-
         bars.push(notes);
     }
     bars
@@ -384,8 +461,8 @@ fn strategy_rhythm_copy(
 fn strategy_motif_transpose(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
+    grid: &[TemplateNote],
     prng: &mut Xorshift64,
-    bar_duration: Ticks,
 ) -> Vec<Vec<GenNote>> {
     const MOTIF_LEN: usize = 4;
     // Transpositions in semitones applied cyclically per bar.
@@ -393,7 +470,6 @@ fn strategy_motif_transpose(
 
     let scale_len = pm.intervals.len();
     let start_degree = prng.next_mod(scale_len);
-    let step = Ticks(c.ticks_per_quarter.0);
 
     let mut bars = Vec::with_capacity(c.bar_count);
 
@@ -402,30 +478,20 @@ fn strategy_motif_transpose(
             .get(bi.checked_rem(TRANSPOSES.len()).unwrap_or(0))
             .copied()
             .unwrap_or(0_i8);
-        let mut notes = Vec::new();
-        let mut cursor = Ticks::ZERO;
-        let mut note_idx = 0_usize;
+        let mut notes = Vec::with_capacity(grid.len());
 
-        while cursor < bar_duration {
-            let motif_pos = note_idx.checked_rem(MOTIF_LEN).unwrap_or(0);
+        for (slot_idx, slot) in grid.iter().enumerate() {
+            let motif_pos = slot_idx.checked_rem(MOTIF_LEN).unwrap_or(0);
             let degree = (start_degree.wrapping_add(motif_pos))
                 .checked_rem(scale_len)
                 .unwrap_or(0);
             let base = pm.pitch_at(degree, c.pitch_lo, c.pitch_hi);
-            let transposed = apply_transpose(base, transpose, c.pitch_lo, c.pitch_hi);
-
-            let remaining = Ticks(bar_duration.0.saturating_sub(cursor.0));
-            let duration = fit_duration(step, remaining);
-            if duration == Ticks::ZERO {
-                break;
-            }
             notes.push(GenNote {
-                pitch: transposed,
-                duration,
+                offset: slot.offset,
+                pitch: apply_transpose(base, transpose, c.pitch_lo, c.pitch_hi),
+                duration: slot.duration,
                 velocity: Velocity(85),
             });
-            cursor = Ticks(cursor.0.saturating_add(duration.0));
-            note_idx = note_idx.wrapping_add(1);
         }
 
         bars.push(notes);
@@ -436,34 +502,25 @@ fn strategy_motif_transpose(
 fn strategy_constrained_walk(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
+    grid: &[TemplateNote],
     prng: &mut Xorshift64,
-    bar_duration: Ticks,
 ) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
     // Two-octave degree range keeps consecutive leaps ≤ 12 semitones.
     let max_degree = scale_len.saturating_mul(2).saturating_sub(1);
-    let step = Ticks(c.ticks_per_quarter.0);
     let mut degree = prng.next_mod(scale_len);
 
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for _ in 0..c.bar_count {
-        let mut notes = Vec::new();
-        let mut cursor = Ticks::ZERO;
-
-        while cursor < bar_duration {
-            let pitch = pm.pitch_at(degree, c.pitch_lo, c.pitch_hi);
-            let remaining = Ticks(bar_duration.0.saturating_sub(cursor.0));
-            let duration = fit_duration(step, remaining);
-            if duration == Ticks::ZERO {
-                break;
-            }
+        let mut notes = Vec::with_capacity(grid.len());
+        for slot in grid {
             notes.push(GenNote {
-                pitch,
-                duration,
+                offset: slot.offset,
+                pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
+                duration: slot.duration,
                 velocity: Velocity(80),
             });
-            cursor = Ticks(cursor.0.saturating_add(duration.0));
 
             // Walk ±1 degree, bounded to [0, max_degree].
             if prng.next_u64() & 1 == 0 {
@@ -472,7 +529,6 @@ fn strategy_constrained_walk(
                 degree = degree.saturating_add(1).min(max_degree);
             }
         }
-
         bars.push(notes);
     }
     bars
@@ -481,34 +537,24 @@ fn strategy_constrained_walk(
 fn strategy_shuffle_motifs(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
+    grid: &[TemplateNote],
     prng: &mut Xorshift64,
-    bar_duration: Ticks,
 ) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
-    let step = Ticks(c.ticks_per_quarter.0);
 
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for _ in 0..c.bar_count {
-        let mut notes = Vec::new();
-        let mut cursor = Ticks::ZERO;
-
-        while cursor < bar_duration {
+        let mut notes = Vec::with_capacity(grid.len());
+        for slot in grid {
             let degree = prng.next_mod(scale_len);
-            let pitch = pm.pitch_at(degree, c.pitch_lo, c.pitch_hi);
-            let remaining = Ticks(bar_duration.0.saturating_sub(cursor.0));
-            let duration = fit_duration(step, remaining);
-            if duration == Ticks::ZERO {
-                break;
-            }
             notes.push(GenNote {
-                pitch,
-                duration,
+                offset: slot.offset,
+                pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
+                duration: slot.duration,
                 velocity: Velocity(88),
             });
-            cursor = Ticks(cursor.0.saturating_add(duration.0));
         }
-
         bars.push(notes);
     }
     bars
@@ -517,14 +563,13 @@ fn strategy_shuffle_motifs(
 fn strategy_repeat_variation(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
+    grid: &[TemplateNote],
     prng: &mut Xorshift64,
-    bar_duration: Ticks,
 ) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
-    let step = Ticks(c.ticks_per_quarter.0);
     let base_degree = prng.next_mod(scale_len);
 
-    let base_bar = build_ascending_bar(c, pm, base_degree, step, bar_duration);
+    let base_bar = build_ascending_bar(c, pm, base_degree, grid);
     let mut bars = Vec::with_capacity(c.bar_count);
     bars.push(base_bar.clone());
 
@@ -550,34 +595,26 @@ fn strategy_repeat_variation(
     bars
 }
 
-/// Builds one bar of ascending scale-degree notes at `step` duration each.
+/// Builds one bar of ascending scale-degree notes over the grid.
 fn build_ascending_bar(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
     start_degree: usize,
-    step: Ticks,
-    bar_duration: Ticks,
+    grid: &[TemplateNote],
 ) -> Vec<GenNote> {
     let scale_len = pm.intervals.len();
     // Two-octave ceiling mirrors the walk strategy.
     let max_degree = scale_len.saturating_mul(2).saturating_sub(1);
-    let mut notes = Vec::new();
-    let mut cursor = Ticks::ZERO;
+    let mut notes = Vec::with_capacity(grid.len());
     let mut degree = start_degree;
 
-    while cursor < bar_duration {
-        let pitch = pm.pitch_at(degree, c.pitch_lo, c.pitch_hi);
-        let remaining = Ticks(bar_duration.0.saturating_sub(cursor.0));
-        let duration = fit_duration(step, remaining);
-        if duration == Ticks::ZERO {
-            break;
-        }
+    for slot in grid {
         notes.push(GenNote {
-            pitch,
-            duration,
+            offset: slot.offset,
+            pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
+            duration: slot.duration,
             velocity: Velocity(92),
         });
-        cursor = Ticks(cursor.0.saturating_add(duration.0));
         degree = degree.saturating_add(1).min(max_degree);
     }
 
@@ -623,7 +660,7 @@ pub fn bar_duration_ticks(
 
 #[cfg(test)]
 mod tests {
-    use super::bar_duration_ticks;
+    use super::{bar_duration_ticks, bar_grid, RhythmTemplate, TemplateNote};
     use crate::event::{Ticks, TimeSignature, ValidationError};
 
     #[test]
@@ -672,5 +709,49 @@ mod tests {
             ),
             Err(ValidationError::InvalidTimeSignatureDenominator { value: 3 }),
         );
+    }
+
+    #[test]
+    fn quarter_fallback_grid_clamps_the_last_slot() {
+        // 7/8 at 480 PPQN: 1680-tick bar → three quarters and one eighth.
+        let grid = bar_grid(&[], Ticks(1680), Ticks(480));
+        let expected: Vec<TemplateNote> = vec![
+            TemplateNote {
+                offset: Ticks(0),
+                duration: Ticks(480),
+            },
+            TemplateNote {
+                offset: Ticks(480),
+                duration: Ticks(480),
+            },
+            TemplateNote {
+                offset: Ticks(960),
+                duration: Ticks(480),
+            },
+            TemplateNote {
+                offset: Ticks(1440),
+                duration: Ticks(240),
+            },
+        ];
+        assert_eq!(grid, expected);
+    }
+
+    #[test]
+    fn unsorted_template_grid_sorts_by_offset() {
+        let template = RhythmTemplate {
+            notes: vec![
+                TemplateNote {
+                    offset: Ticks(960),
+                    duration: Ticks(240),
+                },
+                TemplateNote {
+                    offset: Ticks(0),
+                    duration: Ticks(240),
+                },
+            ],
+        };
+        let grid = bar_grid(&[template], Ticks(1920), Ticks(480));
+        let offsets: Vec<u32> = grid.iter().map(|n| n.offset.0).collect();
+        assert_eq!(offsets, vec![0, 960], "onsets must come back sorted");
     }
 }

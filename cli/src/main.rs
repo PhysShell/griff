@@ -721,7 +721,7 @@ struct GenerateOpts<'a> {
 struct CorpusMaterial {
     /// Per-bar rhythm templates from the chunks' sliced sources, deduped in
     /// first-seen order.
-    rhythms: Vec<Vec<Ticks>>,
+    rhythms: Vec<generate::RhythmTemplate>,
     /// The sliced chunk scores — the novelty guard's reference set.
     references: Vec<Score>,
     /// Aggregated burst/rest gesture ask, when any chunk carries stats.
@@ -746,7 +746,7 @@ fn load_corpus_material(dir: &Path) -> Result<CorpusMaterial, CliError> {
         .collect();
     record_names.sort_unstable();
 
-    let mut rhythms: Vec<Vec<Ticks>> = Vec::new();
+    let mut rhythms: Vec<generate::RhythmTemplate> = Vec::new();
     let mut references = Vec::new();
     let mut loaded_chunks = Vec::new();
     let mut skipped = Vec::new();
@@ -802,7 +802,7 @@ fn load_chunk_source(dir: &Path, record_name: &str) -> Option<(ChunkMeta, Score,
 /// onset order. Silent bars are phrase rests, not templates; identical
 /// templates are deduped so a looped riff does not drown the set's template
 /// rotation in copies of one rhythm.
-fn bar_rhythms(score: &Score, track: usize) -> Vec<Vec<Ticks>> {
+fn bar_rhythms(score: &Score, track: usize) -> Vec<generate::RhythmTemplate> {
     let Some(voice) = score.tracks.get(track).and_then(|t| t.voices.first()) else {
         return Vec::new();
     };
@@ -824,8 +824,12 @@ fn bar_rhythms(score: &Score, track: usize) -> Vec<Vec<Ticks>> {
             .filter(|(onset, _)| *onset >= bar.tick_range.start.0 && *onset < bar.tick_range.end.0)
             .map(|&(_, duration)| duration)
             .collect();
-        if !durations.is_empty() && !templates.contains(&durations) {
-            templates.push(durations);
+        if durations.is_empty() {
+            continue;
+        }
+        let template = generate::RhythmTemplate::from_durations(&durations);
+        if !templates.contains(&template) {
+            templates.push(template);
         }
     }
     templates
@@ -884,7 +888,9 @@ fn generation_request_from_score(
         seed: generate::GenerationSeed(seed),
         pitch_material: pitch_material_from(lo, &pitches),
         constraints,
-        source_rhythms: vec![first_bar_rhythm(score)],
+        source_rhythms: vec![generate::RhythmTemplate::from_durations(&first_bar_rhythm(
+            score,
+        ))],
         strategy: generate::GenerationStrategy::RhythmCopyPitchSubstitute,
     })
 }
@@ -1788,6 +1794,7 @@ impl From<complement::ComplementError> for CliError {
 mod tests {
     use griff_core::corpus::{ChunkMeta, SourceFormat};
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::generate::RhythmTemplate;
     use griff_core::gesture;
     use griff_core::score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
@@ -2368,7 +2375,10 @@ mod tests {
 
         assert_eq!(
             bar_rhythms(&score, 0),
-            vec![vec![Ticks(480); 4], vec![Ticks(240), Ticks(240)]],
+            vec![
+                RhythmTemplate::from_durations(&[Ticks(480); 4]),
+                RhythmTemplate::from_durations(&[Ticks(240), Ticks(240)]),
+            ],
             "one template per sounding bar, in onset order; silent bars skipped"
         );
     }
@@ -2394,7 +2404,10 @@ mod tests {
         )]);
         let score = bars_score(2, vec![track]);
 
-        assert_eq!(bar_rhythms(&score, 0), vec![vec![Ticks(480); 4]]);
+        assert_eq!(
+            bar_rhythms(&score, 0),
+            vec![RhythmTemplate::from_durations(&[Ticks(480); 4])]
+        );
     }
 
     /// Curate inputs with the community-tab rights defaults.
@@ -2554,7 +2567,7 @@ mod tests {
         );
         assert_eq!(
             material.rhythms,
-            vec![vec![Ticks(480); 4]],
+            vec![RhythmTemplate::from_durations(&[Ticks(480); 4])],
             "rhythm templates come from the sliced bar range only"
         );
         assert_eq!(

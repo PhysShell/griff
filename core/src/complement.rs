@@ -841,7 +841,11 @@ fn arrange_counter_melody(
             pitch_lo: Pitch::new(band_lo).unwrap_or(register.lowest),
             pitch_hi: Pitch::new(band_hi).unwrap_or(register.highest),
         },
-        source_rhythms: profile.bar_rhythms.clone(),
+        // Deliberately empty: the walk historically wrote quarters and the
+        // rhythm-grid change would otherwise silently re-rhythm part B onto
+        // A's bar durations. Feeding `profile.bar_rhythms` (as onset-aware
+        // templates) into the grid is its own increment with its own goldens.
+        source_rhythms: Vec::new(),
         strategy: GenerationStrategy::ConstrainedRandomWalk,
     };
     let candidate = generate(&request).map_err(ComplementError::Generation)?;
