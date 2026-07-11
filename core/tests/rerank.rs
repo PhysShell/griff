@@ -224,8 +224,8 @@ fn set_feeds_the_template_grid_to_every_strategy() {
             },
         ],
     };
-    let set = generate_candidate_set(&set_request(7, 1, vec![template], None))
-        .expect("set generation");
+    let set =
+        generate_candidate_set(&set_request(7, 1, vec![template], None)).expect("set generation");
 
     assert_eq!(set.len(), 5, "every strategy contributes");
     for candidate in &set {

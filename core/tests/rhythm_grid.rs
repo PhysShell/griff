@@ -162,8 +162,11 @@ fn from_durations_rebuilds_the_wall_to_wall_layout() {
 fn strategies_fall_back_to_quarters_without_a_template() {
     // No corpus, no template: today's wall-to-wall quarter behaviour holds
     // (characterization — the grid must not change the no-input case).
-    let candidate = generate(&request(GenerationStrategy::ConstrainedRandomWalk, Vec::new()))
-        .expect("generate succeeds");
+    let candidate = generate(&request(
+        GenerationStrategy::ConstrainedRandomWalk,
+        Vec::new(),
+    ))
+    .expect("generate succeeds");
     let quarters: Vec<(u32, u32)> = (0..8).map(|i| (i * 480, 480)).collect();
     assert_eq!(placements(&candidate), quarters);
 }
@@ -175,11 +178,8 @@ fn template_durations_clamp_to_the_bar_end() {
     let template = RhythmTemplate {
         notes: vec![tn(1440, 960)],
     };
-    let candidate = generate(&request(
-        GenerationStrategy::ShuffleMotifs,
-        vec![template],
-    ))
-    .expect("generate succeeds");
+    let candidate = generate(&request(GenerationStrategy::ShuffleMotifs, vec![template]))
+        .expect("generate succeeds");
     assert_eq!(placements(&candidate), vec![(1440, 480), (3360, 480)]);
 }
 
