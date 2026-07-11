@@ -1234,6 +1234,158 @@ mod tests {
     }
 
     #[test]
+    fn silent_string_rest_note_is_not_a_loss() {
+        // A per-string note entry whose type flag (0x20) is absent keeps the
+        // parser's default kind `Rest` and carries no fret: it encodes a
+        // *silent string* in an otherwise sounding beat — normal GP encoding,
+        // not lost content. It must be skipped without an ImportWarning (the
+        // 2026-07 corpus scan mis-read 138 of these as real losses).
+        let strings = vec![(1_i8, 64_i8), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        let beat = guitarpro::Beat {
+            notes: vec![
+                guitarpro::Note {
+                    value: 5,
+                    string: 3,
+                    kind: guitarpro::NoteType::Normal,
+                    ..Default::default()
+                },
+                guitarpro::Note {
+                    string: 4,
+                    kind: guitarpro::NoteType::Rest,
+                    ..Default::default()
+                },
+            ],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+
+        let mut groups: Vec<EventGroup> = Vec::new();
+        let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut loss = LossReport::new();
+        let mut acc = VoiceAccum {
+            groups: &mut groups,
+            held: &mut held,
+            loss: &mut loss,
+        };
+        append_beat(
+            &beat,
+            0,
+            480,
+            StringCtx {
+                strings: &strings,
+                zero_indexed: false,
+            },
+            &mut acc,
+        );
+
+        assert_eq!(groups.len(), 1, "the sounding note still imports");
+        assert_eq!(groups[0].atoms.len(), 1);
+        assert!(
+            matches!(groups[0].atoms[0], AtomEvent::Note(_)),
+            "the struck string is a note"
+        );
+        assert!(
+            loss.is_clean(),
+            "a silent string is not a loss: {:?}",
+            loss.warnings
+        );
+    }
+
+    #[test]
+    fn unknown_note_kind_still_records_a_loss() {
+        // The Rest fix must not swallow genuinely unsupported kinds: an
+        // Unknown(_) note stays a reported loss. Characterization of existing
+        // behaviour (no new API), committed alongside the red test above as
+        // its guard rail.
+        let strings = vec![(1_i8, 64_i8), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        let beat = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                string: 3,
+                kind: guitarpro::NoteType::Unknown(9),
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+
+        let mut groups: Vec<EventGroup> = Vec::new();
+        let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut loss = LossReport::new();
+        let mut acc = VoiceAccum {
+            groups: &mut groups,
+            held: &mut held,
+            loss: &mut loss,
+        };
+        append_beat(
+            &beat,
+            0,
+            480,
+            StringCtx {
+                strings: &strings,
+                zero_indexed: false,
+            },
+            &mut acc,
+        );
+
+        assert!(!loss.is_clean(), "an unknown note kind is a real loss");
+        assert_eq!(groups.len(), 1, "the beat still occupies its time...");
+        assert!(
+            matches!(groups[0].atoms[0], AtomEvent::Rest(_)),
+            "...as a rest, so the timeline stays gapless"
+        );
+    }
+
+    #[test]
+    fn orphan_tie_loss_names_the_string_and_start() {
+        // An orphan tie (no held note on its string) is a diagnosable event:
+        // the loss must carry the string number and the beat's start tick so
+        // corpus-side scans can localise the cause (2026-07 scan: 172
+        // occurrences with no context to bucket them by).
+        let strings = vec![(1_i8, 64_i8), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        let tie_only = guitarpro::Beat {
+            notes: vec![guitarpro::Note {
+                value: 2,
+                string: 3,
+                kind: guitarpro::NoteType::Tie,
+                ..Default::default()
+            }],
+            status: guitarpro::BeatStatus::Normal,
+            ..Default::default()
+        };
+
+        let mut groups: Vec<EventGroup> = Vec::new();
+        let mut held: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut loss = LossReport::new();
+        let mut acc = VoiceAccum {
+            groups: &mut groups,
+            held: &mut held,
+            loss: &mut loss,
+        };
+        append_beat(
+            &tie_only,
+            1920,
+            480,
+            StringCtx {
+                strings: &strings,
+                zero_indexed: false,
+            },
+            &mut acc,
+        );
+
+        let warning = loss
+            .warnings
+            .first()
+            .expect("an orphan tie is still a reported loss");
+        let ImportWarning::Other(message) = warning else {
+            panic!("orphan ties report as Other, got {warning:?}");
+        };
+        assert!(
+            message.contains("string 3") && message.contains("tick 1920"),
+            "the loss names where the tie hangs: {message}"
+        );
+    }
+
+    #[test]
     fn tied_note_extends_previous_note_duration() {
         // A tie (NoteType::Tie) continues the previous note on the same string:
         // it must extend that note's duration, not drop the held time nor emit a
