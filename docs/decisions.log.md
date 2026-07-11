@@ -1388,3 +1388,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   the caller, accepting that the generate golden snapshots were re-blessed
   (the default path now prints the ranking and picks the top-ranked
   candidate) and that S9 still owes the policy its tuned weights.
+
+- 2026-07-11 — In the context of the corpus import scan (410 community tabs;
+  98 parse errors, ~30% of supported formats, dominated by the `guitarpro`
+  0.3 parser's hard failures on cosmetic fields — "Invalid value N for
+  triplet feel", "Type conversion failed" for rse/lyrics/portamento — and 9
+  gpx XML errors), facing whether to fork/vendor the parser for leniency, we
+  decided for bumping to upstream `guitarpro` 0.4.2 first — it already makes
+  triplet feel lenient (unknown → `None`), halves the strict conversions
+  (124 → 59 sites), and rewrites the gpx importer — and against an immediate
+  fork, to achieve the cheapest possible ceiling lift with zero maintenance
+  surface, accepting a `model::legacy` import-path rename and one duplicated
+  `quick-xml` version in the tree (bans.multiple-versions = warn). The fork
+  question is deferred until the corpus re-scan shows which error buckets
+  survive 0.4.2; if a meaningful share remains, that becomes an ADR
+  (MIT-licensed upstream, so vendoring stays available).

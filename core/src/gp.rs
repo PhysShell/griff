@@ -35,8 +35,8 @@ use crate::{
     },
     slice::TickRange,
 };
-use guitarpro::model::key_signature::Duration as GpDuration;
-use guitarpro::model::note::NoteEffect as GpNoteEffect;
+use guitarpro::model::legacy::key_signature::Duration as GpDuration;
+use guitarpro::model::legacy::note::NoteEffect as GpNoteEffect;
 use std::collections::HashMap;
 
 /// Guitar Pro internal PPQN (pulses per quarter note).
@@ -707,8 +707,8 @@ fn gp_duration_ticks(dur: &GpDuration) -> u32 {
 )]
 mod tests {
     use super::*;
-    use guitarpro::model::effects::BendEffect;
-    use guitarpro::model::key_signature::Duration as GpDurationTest;
+    use guitarpro::model::legacy::effects::BendEffect;
+    use guitarpro::model::legacy::key_signature::Duration as GpDurationTest;
     use std::collections::HashMap;
 
     #[test]
