@@ -141,6 +141,92 @@ fn jstr(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "'"))
 }
 
+/// Ordered (by onset) output pitches of the chosen track.
+fn ordered_out_pitches(score: &Score, track: usize) -> Vec<u8> {
+    let Some(v) = score.tracks.get(track).and_then(|t| t.voices.first()) else {
+        return Vec::new();
+    };
+    let mut op: Vec<(u32, u8)> = v
+        .event_groups
+        .iter()
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some((n.absolute_start.0, n.pitch.0)),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+    op.sort_by_key(|(o, _)| *o);
+    op.into_iter().map(|(_, p)| p).collect()
+}
+
+fn ladder_ends(in_lo: u8, in_hi: u8, palette: &[u8]) -> (u8, u8) {
+    let rungs: Vec<u8> = (in_lo..=in_hi)
+        .filter(|p| palette.contains(&(p % 12)))
+        .collect();
+    (
+        *rungs.first().unwrap_or(&in_lo),
+        *rungs.last().unwrap_or(&in_lo),
+    )
+}
+
+/// Register + saturation + jump metrics (same fields as register_scan), for the
+/// winner-level production A/B. `palette` = the input's pitch classes.
+fn register_fields(pitches: &[u8], in_lo: u8, in_hi: u8, palette: &[u8]) -> String {
+    if pitches.is_empty() {
+        return "\"output_span\":0,\"exact_high_share\":0.0,\"mode_pitch_share\":0.0,\"mean_abs_interval\":0.0,\"max_abs_interval\":0,\"largest_upward_interval\":0,\"largest_downward_interval\":0,\"octave_leap_share\":0.0,\"pitch_stddev\":0.0,\"in_class_rate\":0.0".to_string();
+    }
+    let n = pitches.len() as f64;
+    let omin = *pitches.iter().min().unwrap();
+    let omax = *pitches.iter().max().unwrap();
+    let (_lad_lo, lad_hi) = ladder_ends(in_lo, in_hi, palette);
+    let exact_high = pitches.iter().filter(|&&p| p == lad_hi).count() as f64 / n;
+    let in_class = pitches
+        .iter()
+        .filter(|&&p| palette.contains(&(p % 12)))
+        .count() as f64
+        / n;
+    let mut counts = std::collections::HashMap::new();
+    for &p in pitches {
+        *counts.entry(p).or_insert(0u32) += 1;
+    }
+    let mode_share = f64::from(counts.values().copied().max().unwrap_or(0)) / n;
+    let signed: Vec<i32> = pitches
+        .windows(2)
+        .map(|w| i32::from(w[1]) - i32::from(w[0]))
+        .collect();
+    let absint: Vec<u32> = signed.iter().map(|i| i.unsigned_abs()).collect();
+    let mean_int = if absint.is_empty() {
+        0.0
+    } else {
+        absint.iter().map(|&i| f64::from(i)).sum::<f64>() / absint.len() as f64
+    };
+    let max_int = absint.iter().copied().max().unwrap_or(0);
+    let up = signed.iter().copied().max().unwrap_or(0).max(0);
+    let down = signed
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(0)
+        .min(0)
+        .unsigned_abs();
+    let oct_leap_share = if absint.is_empty() {
+        0.0
+    } else {
+        absint.iter().filter(|&&i| i >= 12).count() as f64 / absint.len() as f64
+    };
+    let pmean = pitches.iter().map(|&p| f64::from(p)).sum::<f64>() / n;
+    let pstd = (pitches
+        .iter()
+        .map(|&p| (f64::from(p) - pmean).powi(2))
+        .sum::<f64>()
+        / n)
+        .sqrt();
+    format!(
+        "\"output_span\":{},\"exact_high_share\":{exact_high:.3},\"mode_pitch_share\":{mode_share:.3},\"mean_abs_interval\":{mean_int:.2},\"max_abs_interval\":{max_int},\"largest_upward_interval\":{up},\"largest_downward_interval\":{down},\"octave_leap_share\":{oct_leap_share:.3},\"pitch_stddev\":{pstd:.2},\"in_class_rate\":{in_class:.3}",
+        omax.saturating_sub(omin)
+    )
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let midi = args
@@ -222,14 +308,21 @@ fn main() -> Result<(), String> {
     };
     let nerr = novelty_err.map_or_else(|| "null".to_string(), |e| jstr(&e));
 
+    // register block (point-5 metrics) over the ordered output line
+    let mut palette: Vec<u8> = in_pitches.iter().map(|p| p % 12).collect();
+    palette.sort_unstable();
+    palette.dedup();
+    let out_line = ordered_out_pitches(&generated, track);
+    let register = register_fields(&out_line, in_lo, in_hi, &palette);
+
     println!(
-        "{{\"midi\":{},\"notes\":{},\"bars\":{},\"distinct_dur\":{},\"distinct_bar_rhythms\":{},\"sounding_bars\":{},\"npb_min\":{},\"npb_max\":{},\"npb_mean\":{:.2},\"npb_std\":{:.2},\"nonquarter\":{},\"pitch_lo\":{},\"pitch_hi\":{},\"pitch_span\":{},\"pitch_mean\":{:.1},\"distinct_pitch\":{},\"in_lo\":{},\"in_hi\":{},\"in_span\":{},\"closure\":{{{}}},\"novelty\":{},\"novelty_error\":{}}}",
+        "{{\"midi\":{},\"notes\":{},\"bars\":{},\"distinct_dur\":{},\"distinct_bar_rhythms\":{},\"sounding_bars\":{},\"npb_min\":{},\"npb_max\":{},\"npb_mean\":{:.2},\"npb_std\":{:.2},\"nonquarter\":{},\"pitch_lo\":{},\"pitch_hi\":{},\"pitch_span\":{},\"pitch_mean\":{:.1},\"distinct_pitch\":{},\"in_lo\":{},\"in_hi\":{},\"in_span\":{},\"register\":{{{}}},\"closure\":{{{}}},\"novelty\":{},\"novelty_error\":{}}}",
         jstr(Path::new(&midi).file_name().and_then(|s| s.to_str()).unwrap_or("")),
         notes, bars, distinct_dur.len(), distinct_bar_rhythms, sounding_bars,
         npb_min, npb_max, npb_mean, npb_std, nonquarter,
         lo, hi, hi.saturating_sub(lo), mean, distinct_p.len(),
         in_lo, in_hi, in_hi.saturating_sub(in_lo),
-        closure_axes, novelty_json, nerr
+        register, closure_axes, novelty_json, nerr
     );
     Ok(())
 }

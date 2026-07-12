@@ -181,10 +181,24 @@ fn agg_gesture(stats: &[GestureStats]) -> Option<GestureControl> {
     })
 }
 
-/// Register metrics of one candidate's line, as embeddable JSON fields.
-fn register_fields(pitches: &[u8], in_lo: u8, in_hi: u8) -> String {
+/// Highest / lowest in-class pitch inside `[in_lo, in_hi]` — the ladder's top /
+/// bottom rung; falls back to `in_lo` when the range misses the palette (mirrors
+/// `ScaleLadder::build`, so saturation lands on the same rung the generator uses).
+fn ladder_ends(in_lo: u8, in_hi: u8, palette: &[u8]) -> (u8, u8) {
+    let rungs: Vec<u8> = (in_lo..=in_hi)
+        .filter(|p| palette.contains(&(p % 12)))
+        .collect();
+    (
+        *rungs.first().unwrap_or(&in_lo),
+        *rungs.last().unwrap_or(&in_lo),
+    )
+}
+
+/// Register + saturation + jump metrics of one candidate's line (ordered
+/// pitches), as embeddable JSON fields. `palette` = the input's pitch classes.
+fn register_fields(pitches: &[u8], in_lo: u8, in_hi: u8, palette: &[u8]) -> String {
     if pitches.is_empty() {
-        return "\"output_min\":0,\"output_max\":0,\"output_span\":0,\"range_utilization\":0.0,\"distinct_pitch\":0,\"distinct_pitch_classes\":0,\"lowest_octave_share\":0.0,\"highest_octave_share\":0.0,\"edge_low_share\":0.0,\"edge_high_share\":0.0,\"mean_abs_interval\":0.0,\"max_abs_interval\":0".to_string();
+        return "\"output_min\":0,\"output_max\":0,\"output_span\":0,\"range_utilization\":0.0,\"distinct_pitch\":0,\"distinct_pitch_classes\":0,\"lowest_octave_share\":0.0,\"highest_octave_share\":0.0,\"edge_low_share\":0.0,\"edge_high_share\":0.0,\"exact_low_share\":0.0,\"exact_high_share\":0.0,\"mode_pitch_share\":0.0,\"longest_same_pitch_run\":0,\"mean_abs_interval\":0.0,\"max_abs_interval\":0,\"largest_upward_interval\":0,\"largest_downward_interval\":0,\"octave_leap_count\":0,\"octave_leap_share\":0.0,\"pitch_stddev\":0.0,\"in_bounds_rate\":0.0,\"in_class_rate\":0.0".to_string();
     }
     let n = pitches.len() as f64;
     let omin = *pitches.iter().min().unwrap();
@@ -196,44 +210,73 @@ fn register_fields(pitches: &[u8], in_lo: u8, in_hi: u8) -> String {
     } else {
         f64::from(ospan) / f64::from(ispan)
     };
+    let (lad_lo, lad_hi) = ladder_ends(in_lo, in_hi, palette);
     let mut dp: Vec<u8> = pitches.to_vec();
     dp.sort_unstable();
     dp.dedup();
     let mut dpc: Vec<u8> = pitches.iter().map(|p| p % 12).collect();
     dpc.sort_unstable();
     dpc.dedup();
-    let low_share = pitches
-        .iter()
-        .filter(|&&p| p <= omin.saturating_add(11))
-        .count() as f64
-        / n;
-    let high_share = pitches
-        .iter()
-        .filter(|&&p| p >= omax.saturating_sub(11))
-        .count() as f64
-        / n;
-    let edge_low = pitches
-        .iter()
-        .filter(|&&p| p <= in_lo.saturating_add(11))
-        .count() as f64
-        / n;
-    let edge_high = pitches
-        .iter()
-        .filter(|&&p| p >= in_hi.saturating_sub(11))
-        .count() as f64
-        / n;
-    let intervals: Vec<u32> = pitches
+    let share = |pred: &dyn Fn(u8) -> bool| pitches.iter().filter(|&&p| pred(p)).count() as f64 / n;
+    let low_share = share(&|p| p <= omin.saturating_add(11));
+    let high_share = share(&|p| p >= omax.saturating_sub(11));
+    let edge_low = share(&|p| p <= in_lo.saturating_add(11));
+    let edge_high = share(&|p| p >= in_hi.saturating_sub(11));
+    let exact_low = share(&|p| p == lad_lo);
+    let exact_high = share(&|p| p == lad_hi);
+    let in_bounds = share(&|p| p >= in_lo && p <= in_hi);
+    let in_class = share(&|p| palette.contains(&(p % 12)));
+    // mode pitch share + longest same-pitch run
+    let mut counts = std::collections::HashMap::new();
+    for &p in pitches {
+        *counts.entry(p).or_insert(0u32) += 1;
+    }
+    let mode_share = f64::from(counts.values().copied().max().unwrap_or(0)) / n;
+    let mut longest = 1u32;
+    let mut cur = 1u32;
+    for w in pitches.windows(2) {
+        if w[0] == w[1] {
+            cur += 1;
+            longest = longest.max(cur);
+        } else {
+            cur = 1;
+        }
+    }
+    // signed intervals
+    let signed: Vec<i32> = pitches
         .windows(2)
-        .map(|w| u32::from(w[0].abs_diff(w[1])))
+        .map(|w| i32::from(w[1]) - i32::from(w[0]))
         .collect();
-    let mean_int = if intervals.is_empty() {
+    let absint: Vec<u32> = signed.iter().map(|i| i.unsigned_abs()).collect();
+    let mean_int = if absint.is_empty() {
         0.0
     } else {
-        intervals.iter().map(|&i| f64::from(i)).sum::<f64>() / intervals.len() as f64
+        absint.iter().map(|&i| f64::from(i)).sum::<f64>() / absint.len() as f64
     };
-    let max_int = intervals.iter().copied().max().unwrap_or(0);
+    let max_int = absint.iter().copied().max().unwrap_or(0);
+    let up = signed.iter().copied().max().unwrap_or(0).max(0);
+    let down = signed
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(0)
+        .min(0)
+        .unsigned_abs();
+    let oct_leaps = absint.iter().filter(|&&i| i >= 12).count();
+    let oct_leap_share = if absint.is_empty() {
+        0.0
+    } else {
+        oct_leaps as f64 / absint.len() as f64
+    };
+    let pmean = pitches.iter().map(|&p| f64::from(p)).sum::<f64>() / n;
+    let pstd = (pitches
+        .iter()
+        .map(|&p| (f64::from(p) - pmean).powi(2))
+        .sum::<f64>()
+        / n)
+        .sqrt();
     format!(
-        "\"output_min\":{omin},\"output_max\":{omax},\"output_span\":{ospan},\"range_utilization\":{util:.3},\"distinct_pitch\":{},\"distinct_pitch_classes\":{},\"lowest_octave_share\":{low_share:.3},\"highest_octave_share\":{high_share:.3},\"edge_low_share\":{edge_low:.3},\"edge_high_share\":{edge_high:.3},\"mean_abs_interval\":{mean_int:.2},\"max_abs_interval\":{max_int}",
+        "\"output_min\":{omin},\"output_max\":{omax},\"output_span\":{ospan},\"range_utilization\":{util:.3},\"distinct_pitch\":{},\"distinct_pitch_classes\":{},\"lowest_octave_share\":{low_share:.3},\"highest_octave_share\":{high_share:.3},\"edge_low_share\":{edge_low:.3},\"edge_high_share\":{edge_high:.3},\"exact_low_share\":{exact_low:.3},\"exact_high_share\":{exact_high:.3},\"mode_pitch_share\":{mode_share:.3},\"longest_same_pitch_run\":{longest},\"mean_abs_interval\":{mean_int:.2},\"max_abs_interval\":{max_int},\"largest_upward_interval\":{up},\"largest_downward_interval\":{down},\"octave_leap_count\":{oct_leaps},\"octave_leap_share\":{oct_leap_share:.3},\"pitch_stddev\":{pstd:.2},\"in_bounds_rate\":{in_bounds:.3},\"in_class_rate\":{in_class:.3}",
         dp.len(), dpc.len()
     )
 }
@@ -293,7 +336,7 @@ fn main() -> Result<(), String> {
     pc_rel.sort_unstable();
     pc_rel.dedup();
     println!(
-        "{{\"type\":\"input\",\"input\":{},\"min_pitch\":{in_lo},\"max_pitch\":{in_hi},\"input_span\":{},\"pitch_class_count\":{},\"pitch_classes_absolute\":{:?},\"pitch_classes_relative_to_min\":{:?},\"corpus_templates\":{},\"gesture_on\":{}}}",
+        "{{\"type\":\"input\",\"input\":{},\"min_pitch\":{in_lo},\"max_pitch\":{in_hi},\"input_span\":{},\"pitch_class_count\":{},\"pitch_classes_absolute\":{:?},\"pitch_classes_relative_to_min\":{:?},\"corpus_templates\":{},\"gesture_on\":{},\"variants_per_strategy\":{variants}}}",
         jstr(iname), in_hi - in_lo, pc_abs.len(), pc_abs, pc_rel, rhythms.len(), gesture_ctrl.is_some()
     );
 
@@ -315,11 +358,12 @@ fn main() -> Result<(), String> {
             };
             match generate_candidate_set(&req) {
                 Ok(cands) => {
+                    let set_size = cands.len();
                     for c in &cands {
                         let line = ordered_pitches(&c.score);
                         println!(
-                            "{{\"type\":\"candidate\",\"input\":{},\"seed\":{seed},\"gesture\":\"{glabel}\",\"strategy\":\"{:?}\",\"variant_seed\":\"{}\",\"pitch_lo_constraint\":{in_lo},\"pitch_hi_constraint\":{in_hi},\"input_span\":{},{}}}",
-                            jstr(iname), c.strategy, c.seed.0, in_hi - in_lo, register_fields(&line, in_lo, in_hi)
+                            "{{\"type\":\"candidate\",\"input\":{},\"seed\":{seed},\"gesture\":\"{glabel}\",\"strategy\":\"{:?}\",\"variant_seed\":\"{}\",\"variants_per_strategy\":{variants},\"candidate_set_size\":{set_size},\"pitch_lo_constraint\":{in_lo},\"pitch_hi_constraint\":{in_hi},\"input_span\":{},{}}}",
+                            jstr(iname), c.strategy, c.seed.0, in_hi - in_lo, register_fields(&line, in_lo, in_hi, &pc_abs)
                         );
                     }
                 }
