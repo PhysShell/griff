@@ -144,28 +144,37 @@ impl ScaleLadder {
         &self.pitches
     }
 
-    /// A contiguous window of the ladder spanning at most one octave (12
-    /// semitones), positioned by `selector` (a candidate-derived index).
+    /// The number of window anchors: rungs that leave a full octave above them
+    /// (`≤ top − 12`), floored at 1. When the ladder is narrower than an octave
+    /// only the bottom rung anchors, and the window is then the whole ladder.
     ///
-    /// The window's low anchor is chosen from the rungs that leave a full
-    /// octave above them (or the bottom rung when the whole ladder is narrower
-    /// than an octave), so a top-edge selector does not shrink the window;
-    /// across selectors the windows cover the entire ladder. Never empty.
+    /// Callers pick an anchor with `next_mod` over this count, so
+    /// [`octave_window`](ScaleLadder::octave_window) is fed a valid index
+    /// directly — no double modulo, no low-anchor bias.
     #[must_use]
-    pub fn octave_window(&self, selector: usize) -> LadderWindow<'_> {
+    pub fn octave_window_count(&self) -> usize {
         const SPAN: u8 = 12;
-        let top = self.pitches.last().map_or(0, |p| p.0);
-        // Anchors that leave a full octave above them: rungs at or below
-        // `top - SPAN`. When the ladder is narrower than an octave, only the
-        // bottom rung anchors (the window is then the whole ladder).
-        let anchor_ceiling = top.saturating_sub(SPAN);
-        let anchor_count = self
-            .pitches
+        let anchor_ceiling = self.pitches.last().map_or(0, |p| p.0).saturating_sub(SPAN);
+        self.pitches
             .iter()
             .take_while(|p| p.0 <= anchor_ceiling)
             .count()
-            .max(1);
-        let anchor = selector.checked_rem(anchor_count).unwrap_or(0);
+            .max(1)
+    }
+
+    /// A contiguous window of the ladder spanning at most one octave, anchored
+    /// at rung `anchor_index`.
+    ///
+    /// The parameter is an **anchor index**, not an arbitrary selector: valid
+    /// indices are `0` up to [`octave_window_count`](ScaleLadder::octave_window_count)
+    /// exclusive, and an index at or past the count wraps once. Never empty.
+    #[must_use]
+    pub fn octave_window(&self, anchor_index: usize) -> LadderWindow<'_> {
+        const SPAN: u8 = 12;
+        let top = self.pitches.last().map_or(0, |p| p.0);
+        let anchor = anchor_index
+            .checked_rem(self.octave_window_count())
+            .unwrap_or(0);
         let anchor_pitch = self.pitches.get(anchor).map_or(top, |p| p.0);
         let window_ceiling = anchor_pitch.saturating_add(SPAN);
         let end = self

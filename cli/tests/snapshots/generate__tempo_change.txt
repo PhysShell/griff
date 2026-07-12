@@ -5,7 +5,7 @@ rhythm: 1 loaded / 1 effective templates over 8 bars; gesture off; grids[1] ee74
 candidates: 10 total ranked under generation_rerank v1
   1. ShuffleMotifs variant-seed 17909611376780542444 aggregate 0.883
   2. ConstrainedRandomWalk variant-seed 398795221420464796 aggregate 0.833
-  3. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.817
+  3. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.833
   4. RepeatVariation variant-seed 1961750202426094747 aggregate 0.817
   5. RepeatVariation variant-seed 3625251794129094637 aggregate 0.817
   6. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.800

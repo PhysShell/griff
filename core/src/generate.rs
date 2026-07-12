@@ -631,9 +631,10 @@ fn strategy_shuffle_motifs(
 ) -> Vec<Vec<GenNote>> {
     // One deterministic per-candidate register window (≤ one octave): drawing
     // every note from the whole ladder lost local coherence (register A/B,
-    // 2026-07-12). The window is seed-positioned, so variants still cover the
-    // full ladder while each candidate stays locally coherent. Shuffle-only.
-    let window = ladder.octave_window(prng.next_mod(ladder.len()));
+    // 2026-07-12). The anchor is drawn over the anchor count (not the ladder
+    // length), so windows are unbiased and variants still cover the full
+    // ladder while each candidate stays locally coherent. Shuffle-only.
+    let window = ladder.octave_window(prng.next_mod(ladder.octave_window_count()));
     let window_len = window.len();
     let mut bars = Vec::with_capacity(c.bar_count);
 

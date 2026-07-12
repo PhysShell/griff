@@ -4,14 +4,14 @@ exit: 0
 rhythm: 1 loaded / 1 effective templates over 8 bars; gesture off; grids[1] a00f28234ee2108a
 candidates: 10 total ranked under generation_rerank v1
   1. ConstrainedRandomWalk variant-seed 398795221420464796 aggregate 0.883
-  2. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.867
-  3. MotifTransposeVariation variant-seed 4560642061891045783 aggregate 0.833
-  4. ConstrainedRandomWalk variant-seed 487617019471545679 aggregate 0.833
+  2. MotifTransposeVariation variant-seed 4560642061891045783 aggregate 0.833
+  3. ConstrainedRandomWalk variant-seed 487617019471545679 aggregate 0.833
+  4. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.817
   5. RepeatVariation variant-seed 1961750202426094747 aggregate 0.817
   6. RepeatVariation variant-seed 3625251794129094637 aggregate 0.817
   7. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.800
   8. RhythmCopyPitchSubstitute variant-seed 16481712997681181849 aggregate 0.800
   9. MotifTransposeVariation variant-seed 7960286522194355700 aggregate 0.800
-  10. ShuffleMotifs variant-seed 17909611376780542444 aggregate 0.733
+  10. ShuffleMotifs variant-seed 17909611376780542444 aggregate 0.800
 generated 8 bars (ConstrainedRandomWalk, seed 0) from a 4-tone scale (558 bytes) -> <OUT>
 --- stderr ---
