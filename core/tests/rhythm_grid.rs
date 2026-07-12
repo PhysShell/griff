@@ -32,8 +32,8 @@
 use griff_core::{
     event::{Pitch, Tempo, Ticks, TimeSignature},
     generate::{
-        generate, GenerationCandidate, GenerationConstraints, GenerationSeed, GenerationStrategy,
-        PitchMaterial, RhythmTemplate, RuleGenerationRequest, TemplateNote,
+        generate, rhythm_diagnostics, GenerationCandidate, GenerationConstraints, GenerationSeed,
+        GenerationStrategy, PitchMaterial, RhythmTemplate, RuleGenerationRequest, TemplateNote,
     },
     score::{AtomEvent, AtomNote, Voice},
 };
@@ -293,4 +293,54 @@ fn gapped_generation_is_deterministic_and_in_range() {
             );
         }
     }
+}
+
+// ── diagnostics seam (CLI generation-summary transparency) ─────────────────────
+
+#[test]
+fn rhythm_diagnostics_separate_loaded_from_effective() {
+    // Three templates: one empty, one entirely past the bar end (clamps away),
+    // one usable. Only the last is an effective grid the scheduler rotates.
+    let empty = RhythmTemplate { notes: vec![] };
+    let past_end = RhythmTemplate {
+        notes: vec![tn(2000, 240)],
+    };
+    let usable = RhythmTemplate {
+        notes: vec![tn(0, 480), tn(960, 480)],
+    };
+    let diag = rhythm_diagnostics(&[empty, past_end, usable], Ticks(1920));
+    assert_eq!(diag.loaded, 3, "loaded counts every passed template");
+    assert_eq!(diag.effective, 1, "empty and clamped-away templates drop");
+    assert_eq!(diag.fingerprints.len(), 1, "one fingerprint per effective grid");
+}
+
+#[test]
+fn rhythm_diagnostics_fingerprints_track_rhythm_identity() {
+    // Equal rhythms → equal fingerprints; a different rhythm → a different
+    // one. This is the metric that makes a corpus A/B interpretable.
+    let eighths_a = RhythmTemplate::from_durations(&[Ticks(240); 8]);
+    let eighths_b = RhythmTemplate::from_durations(&[Ticks(240); 8]);
+    let whole = RhythmTemplate {
+        notes: vec![tn(0, 1920)],
+    };
+    let diag = rhythm_diagnostics(&[eighths_a, eighths_b, whole], Ticks(1920));
+    assert_eq!(diag.effective, 3);
+    assert_eq!(
+        diag.fingerprints[0], diag.fingerprints[1],
+        "identical rhythms share a fingerprint"
+    );
+    assert_ne!(
+        diag.fingerprints[0], diag.fingerprints[2],
+        "a distinct rhythm gets a distinct fingerprint"
+    );
+}
+
+#[test]
+fn rhythm_diagnostics_no_templates_reads_as_quarter_fallback() {
+    // No usable template → zero effective grids (the caller then knows the
+    // quarter fallback was used); no fingerprints.
+    let diag = rhythm_diagnostics(&[], Ticks(1920));
+    assert_eq!(diag.loaded, 0);
+    assert_eq!(diag.effective, 0);
+    assert!(diag.fingerprints.is_empty());
 }
