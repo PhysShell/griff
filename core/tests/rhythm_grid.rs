@@ -118,6 +118,18 @@ fn notes(candidate: &GenerationCandidate) -> Vec<AtomNote> {
         .collect()
 }
 
+/// Note count per bar of `bar_ticks`, indexed by bar.
+fn notes_per_bar(candidate: &GenerationCandidate, bar_ticks: u32) -> Vec<usize> {
+    let mut per_bar = vec![0_usize; candidate.score.master_bars.len()];
+    for (onset, _) in placements(candidate) {
+        let bar = (onset / bar_ticks) as usize;
+        if let Some(slot) = per_bar.get_mut(bar) {
+            *slot += 1;
+        }
+    }
+    per_bar
+}
+
 // ── the grid reaches every strategy ───────────────────────────────────────────
 
 #[test]
@@ -198,6 +210,72 @@ fn unusable_template_falls_back_to_quarters() {
     .expect("generate succeeds");
     let quarters: Vec<(u32, u32)> = (0..8).map(|i| (i * 480, 480)).collect();
     assert_eq!(placements(&candidate), quarters);
+}
+
+// ── per-bar template rotation ─────────────────────────────────────────────────
+
+#[test]
+fn multiple_templates_rotate_across_bars() {
+    // Two rhythms — bar of eighths (8 notes) vs one whole note (1) — must
+    // alternate across bars so a corpus's rhythmic variety survives *inside*
+    // one phrase (2026-07 A/B: distinct_dur stuck at 1 because every bar
+    // reused the first template).
+    let eighths = RhythmTemplate::from_durations(&[Ticks(240); 8]);
+    let whole = RhythmTemplate {
+        notes: vec![tn(0, 1920)],
+    };
+    // Every per-bar-independent strategy rotates; RepeatVariation is its own
+    // case (its identity is repetition — tested separately below).
+    for strategy in [
+        GenerationStrategy::RhythmCopyPitchSubstitute,
+        GenerationStrategy::MotifTransposeVariation,
+        GenerationStrategy::ConstrainedRandomWalk,
+        GenerationStrategy::ShuffleMotifs,
+    ] {
+        let mut req = request(strategy, vec![eighths.clone(), whole.clone()]);
+        req.constraints.bar_count = 4;
+        let candidate = generate(&req).expect("generate succeeds");
+        assert_eq!(
+            notes_per_bar(&candidate, 1920),
+            vec![8, 1, 8, 1],
+            "{strategy:?}: bars must cycle the two template rhythms"
+        );
+    }
+}
+
+#[test]
+fn repeat_variation_keeps_one_rhythm_across_bars() {
+    // RepeatVariation's identity is repetition (call/response), so it stays on
+    // the first template's rhythm even when several exist — otherwise the
+    // "repeat" no longer reads as one.
+    let eighths = RhythmTemplate::from_durations(&[Ticks(240); 8]);
+    let whole = RhythmTemplate {
+        notes: vec![tn(0, 1920)],
+    };
+    let mut req = request(
+        GenerationStrategy::RepeatVariation,
+        vec![eighths, whole],
+    );
+    req.constraints.bar_count = 4;
+    let candidate = generate(&req).expect("generate succeeds");
+    assert_eq!(
+        notes_per_bar(&candidate, 1920),
+        vec![8, 8, 8, 8],
+        "repeat variation repeats the first template's rhythm"
+    );
+}
+
+#[test]
+fn single_template_still_repeats_every_bar() {
+    // One template → rotation is trivial: every bar uses it (the grid must not
+    // regress the single-template case).
+    let template = RhythmTemplate {
+        notes: vec![tn(0, 240), tn(960, 240)],
+    };
+    let mut req = request(GenerationStrategy::ConstrainedRandomWalk, vec![template]);
+    req.constraints.bar_count = 3;
+    let candidate = generate(&req).expect("generate succeeds");
+    assert_eq!(notes_per_bar(&candidate, 1920), vec![2, 2, 2]);
 }
 
 #[test]

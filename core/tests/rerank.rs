@@ -183,28 +183,26 @@ fn set_is_deterministic_for_a_fixed_request() {
 }
 
 #[test]
-fn rhythm_copy_variants_rotate_templates() {
-    // Two deliberately extreme templates: one whole note vs eight eighths.
-    // Variant 0 must draw the first template, variant 1 the second, so a
-    // multi-template corpus is audible in the candidate set.
+fn candidate_hears_every_template_across_its_bars() {
+    // Per-bar rotation supersedes per-variant rotation: a single candidate now
+    // cycles the whole rhythmic palette across its bars, so a multi-template
+    // corpus is audible *within* each candidate, not only across the set.
     let templates = vec![
-        RhythmTemplate::from_durations(&[Ticks(1920)]),
-        RhythmTemplate::from_durations(&[Ticks(240); 8]),
+        RhythmTemplate::from_durations(&[Ticks(1920)]), // bar 0: 1 note
+        RhythmTemplate::from_durations(&[Ticks(240); 8]), // bar 1: 8 notes
     ];
-    let mut request = set_request(9, 2, templates, None);
-    request.constraints = constraints(1);
+    let mut request = set_request(9, 1, templates, None);
+    request.constraints = constraints(2);
 
     let set = generate_candidate_set(&request).expect("set generation");
-    let mut counts: Vec<usize> = set
+    let rhythm_copy = set
         .iter()
-        .filter(|c| c.strategy == GenerationStrategy::RhythmCopyPitchSubstitute)
-        .map(|c| notes(&c.score).len())
-        .collect();
-    counts.sort_unstable();
+        .find(|c| c.strategy == GenerationStrategy::RhythmCopyPitchSubstitute)
+        .expect("rhythm-copy candidate present");
     assert_eq!(
-        counts,
-        vec![1, 8],
-        "one variant per template: whole-note bar and eighths bar"
+        notes(&rhythm_copy.score).len(),
+        9,
+        "one candidate hears both rhythms across its two bars (1 + 8)"
     );
 }
 
