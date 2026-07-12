@@ -1,5 +1,17 @@
 $ griff generate <SRC> <OUT>
 exit: 0
 --- stdout ---
-generated 8 bars (RhythmCopyPitchSubstitute, seed 0) from a 6-tone scale (558 bytes) -> <OUT>
+rhythm: 1 loaded / 1 effective templates over 8 bars; gesture off; grids[1] 7d150fc3c01468b8
+candidates: 10 total ranked under generation_rerank v1
+  1. MotifTransposeVariation variant-seed 7960286522194355700 aggregate 0.873
+  2. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.823
+  3. RhythmCopyPitchSubstitute variant-seed 16481712997681181849 aggregate 0.806
+  4. MotifTransposeVariation variant-seed 4560642061891045783 aggregate 0.790
+  5. ConstrainedRandomWalk variant-seed 487617019471545679 aggregate 0.790
+  6. ConstrainedRandomWalk variant-seed 398795221420464796 aggregate 0.790
+  7. RepeatVariation variant-seed 1961750202426094747 aggregate 0.790
+  8. RepeatVariation variant-seed 3625251794129094637 aggregate 0.756
+  9. ShuffleMotifs variant-seed 17909611376780542444 aggregate 0.656
+  10. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.656
+generated 8 bars (MotifTransposeVariation, seed 0) from a 6-tone scale (558 bytes) -> <OUT>
 --- stderr ---

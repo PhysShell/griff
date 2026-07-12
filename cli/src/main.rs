@@ -7,6 +7,10 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
+use griff_cli::generation_input::{
+    generation_request_from_score, load_corpus_material, CorpusMaterial, GenerationInputError,
+};
+use griff_cli::primary_voice_note_count;
 use griff_core::{
     boundary,
     classify::{self, BarClass},
@@ -16,12 +20,13 @@ use griff_core::{
         PairRelation, QualityFlag, ReviewerDecision, RightsInfo, RightsStatus, SourceFormat,
         SourceRef, StyleCohort, SwancoreTag, SCHEMA_VERSION,
     },
-    event::{NoteMarks, NotePosition, Pitch, TechniqueSource, Ticks},
+    event::{NoteMarks, NotePosition, TechniqueSource, Ticks},
     generate, gesture, harmony,
     import::{self, ImportError},
     midi::{self, MidiError},
-    novelty,
+    novelty, rerank,
     score::{AtomEvent, Score, Track, Voice},
+    scoring,
     slice::{self, TickRange},
     split, structure, syncopation, technique, unfold,
 };
@@ -86,8 +91,12 @@ enum Command {
         path: PathBuf,
     },
 
-    /// Generate a fresh riff (S6) seeded from a tab's scale, rhythm, meter, and
-    /// pitch range, and write it to a MIDI file.
+    /// Generate a fresh riff (S6) seeded from a tab's scale, meter, and pitch
+    /// range: every strategy contributes seed variants to a candidate set,
+    /// the set is reranked on the closure + novelty axes (ADR-0017), and the
+    /// winner is written to a MIDI file. With `--corpus`, rhythm templates,
+    /// novelty references, and the gesture ask come from curated chunks
+    /// instead of the input's first bar.
     Generate {
         /// Source MIDI or Guitar Pro file whose material seeds the generator.
         #[arg(value_name = "INPUT")]
@@ -101,6 +110,20 @@ enum Command {
         /// Number of bars to generate.
         #[arg(long, default_value_t = 8)]
         bars: usize,
+        /// Directory of curated `*.chunk.json` records sitting next to their
+        /// source tabs: supplies rhythm templates, novelty references, and
+        /// the burst/rest gesture ask.
+        #[arg(long, value_name = "DIR")]
+        corpus: Option<PathBuf>,
+        /// Seed variants *per strategy* in the candidate set. The reranked set
+        /// holds this many × 5 strategies candidates (fewer only when
+        /// rhythm-copy is skipped for want of a template) — e.g. `10` ranks 50.
+        #[arg(long, default_value_t = 2)]
+        candidates: usize,
+        /// Skip burst/rest gesture carving even when the corpus provides
+        /// gesture statistics (wall-to-wall writing).
+        #[arg(long)]
+        no_gesture: bool,
     },
 
     /// Arrange a complementary part (S13) for a tab's primary track — a second
@@ -184,7 +207,20 @@ fn run() -> Result<(), CliError> {
             output,
             seed,
             bars,
-        } => cmd_generate(&input, &output, seed, bars),
+            corpus,
+            candidates,
+            no_gesture,
+        } => cmd_generate(
+            &input,
+            &output,
+            &GenerateOpts {
+                seed,
+                bars,
+                corpus: corpus.as_deref(),
+                candidates,
+                no_gesture,
+            },
+        ),
         Command::Complement {
             input,
             output,
@@ -231,19 +267,6 @@ fn note_count_in_range(voice: &Voice, range: TickRange) -> usize {
             onset >= range.start.0 && onset < range.end.0
         })
         .count()
-}
-
-/// Note atoms in a track's primary (first) voice — the voice every analysis
-/// module measures (`analyze_part`, structure, gesture, …). Curate selects
-/// measurable tracks with this predicate so selection and measurement agree.
-fn primary_voice_note_count(track: &Track) -> usize {
-    track.voices.first().map_or(0, |v| {
-        v.event_groups
-            .iter()
-            .flat_map(|g| &g.atoms)
-            .filter(|a| matches!(a, AtomEvent::Note(_)))
-            .count()
-    })
 }
 
 /// Total note atoms across all voices of a track.
@@ -551,132 +574,181 @@ fn phrase_reasons(r: boundary::BoundaryReason) -> String {
     }
 }
 
-/// Generates a fresh riff (S6) seeded from the source's musical material — its
-/// pitch palette, the rhythm of its first sounding bar, and its meter, tempo,
-/// and range — then writes the result to a MIDI file.
-fn cmd_generate(input: &Path, output: &Path, seed: u64, bars: usize) -> Result<(), CliError> {
+/// Generates a fresh riff seeded from the source's musical material — its
+/// pitch palette, meter, tempo, and range — as a reranked candidate set
+/// (research note §7.2/§7.3): every S6 strategy contributes `candidates`
+/// seed variants, each candidate is scored on the closure + novelty axes
+/// under the `generation_rerank` v1 policy, and the winner is written to a
+/// MIDI file.
+///
+/// Without `--corpus`, the rhythm template is the input's first sounding bar
+/// and novelty has nothing to measure against (all candidates read fully
+/// novel). With `--corpus`, rhythm templates, novelty references, and the
+/// burst/rest gesture ask come from the curated chunks.
+fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<(), CliError> {
+    let GenerateOpts {
+        seed,
+        bars,
+        corpus,
+        candidates,
+        no_gesture,
+    } = *opts;
     let data = fs::read(input)?;
     let score = import::import_score_auto(&data)?;
-    let request = generation_request_from_score(&score, seed, bars)?;
-    let candidate = generate::generate(&request)?;
-    let out_bytes = midi::export_score(&candidate.score)?;
+    let base = generation_request_from_score(&score, seed, bars)?;
+
+    let material = corpus.map(load_corpus_material).transpose()?;
+    let (source_rhythms, gesture_ask) = material.as_ref().map_or_else(
+        || (base.source_rhythms.clone(), None),
+        |m| {
+            // A corpus without extractable rhythms still generates: fall back
+            // to the input's first bar rather than dropping rhythm-copy.
+            let rhythms = if m.rhythms.is_empty() {
+                base.source_rhythms.clone()
+            } else {
+                m.rhythms.clone()
+            };
+            (rhythms, if no_gesture { None } else { m.gesture })
+        },
+    );
+    let references: &[Score] = material.as_ref().map_or(&[], |m| &m.references);
+
+    if let Some(m) = &material {
+        print_corpus_summary(m, no_gesture);
+    }
+    print_rhythm_diagnostics(&source_rhythms, &base.constraints, gesture_ask.is_some());
+
+    let set = rerank::generate_candidate_set(&rerank::SetRequest {
+        seed: base.seed,
+        pitch_material: base.pitch_material.clone(),
+        constraints: base.constraints,
+        source_rhythms,
+        variants_per_strategy: candidates,
+        gesture: gesture_ask,
+    })?;
+    let policy = rerank::rerank_weights_v1();
+    let ranked = rerank::rerank_candidates(set, &base.pitch_material, references, &policy);
+    let winner = ranked
+        .first()
+        .ok_or_else(|| CliError::Corpus("no candidate survived scoring".to_owned()))?;
+
+    print_ranking(&ranked, &policy);
+
+    let out_bytes = midi::export_score(&winner.value.score)?;
     fs::write(output, &out_bytes)?;
     println!(
         "generated {bars} bars ({strategy:?}, seed {seed}) from a {tones}-tone scale \
          ({n} bytes) -> {out}",
-        strategy = candidate.strategy,
-        tones = request.pitch_material.intervals.len(),
+        strategy = winner.value.strategy,
+        tones = base.pitch_material.intervals.len(),
         n = out_bytes.len(),
         out = output.display(),
     );
     Ok(())
 }
 
-/// Builds a tab-seeded [`generate::RuleGenerationRequest`]: the scale is the
-/// source's distinct pitch classes, the rhythm template its first sounding bar,
-/// and meter / tempo / range its transport.
-fn generation_request_from_score(
-    score: &Score,
-    seed: u64,
-    bars: usize,
-) -> Result<generate::RuleGenerationRequest, CliError> {
-    if bars == 0 {
-        return Err(CliError::Generate(generate::GenerationError::BarCountZero));
-    }
-    let pitches = all_pitches(score);
-    let (lo, hi) = pitch_range(&pitches)?;
-    let first_bar = score.master_bars.first().ok_or(CliError::Generate(
-        generate::GenerationError::InvalidConstraints,
-    ))?;
-    let constraints = generate::GenerationConstraints {
-        bar_count: bars,
-        time_signature: first_bar.time_signature,
-        tempo: first_bar.tempo,
-        ticks_per_quarter: Ticks(u32::from(score.ticks_per_quarter)),
-        pitch_lo: lo,
-        pitch_hi: hi,
+/// Prints what the corpus supplied to the pass: chunk / template counts, the
+/// gesture ask (and whether `--no-gesture` overrode it), and any skipped
+/// records.
+fn print_corpus_summary(m: &CorpusMaterial, no_gesture: bool) {
+    let gesture_note = m.gesture.map_or_else(
+        || "no gesture stats".to_owned(),
+        |g| {
+            format!(
+                "gesture burst {} / rest {}q{}",
+                g.burst_notes,
+                g.rest_quarters,
+                if no_gesture { " (skipped)" } else { "" },
+            )
+        },
+    );
+    println!(
+        "corpus: {} chunks ({} rhythm templates, {gesture_note}){}",
+        m.references.len(),
+        m.rhythms.len(),
+        if m.skipped.is_empty() {
+            String::new()
+        } else {
+            format!(", skipped: {}", m.skipped.join(", "))
+        },
+    );
+}
+
+/// Prints a deterministic rhythm-grid diagnostic for the run: how many
+/// templates were loaded vs effective (after empty-removal + clamp), the bar
+/// count, whether gesture carving is on, and the fingerprints of the first
+/// `min(bars, effective)` grids a run of `bars` bars actually rotates through.
+///
+/// A small transparency seam for corpus A/B, not an analytics subsystem: with
+/// no corpus, `source_rhythms` is the input's own first-bar rhythm (one
+/// template, so `1 loaded / 1 effective`), so the two A/B legs are directly
+/// comparable. `effective == 0` means the quarter fallback was used.
+fn print_rhythm_diagnostics(
+    source_rhythms: &[generate::RhythmTemplate],
+    constraints: &generate::GenerationConstraints,
+    gesture_on: bool,
+) {
+    let Ok(bar_duration) =
+        generate::bar_duration_ticks(constraints.time_signature, constraints.ticks_per_quarter)
+    else {
+        return;
     };
-    Ok(generate::RuleGenerationRequest {
-        seed: generate::GenerationSeed(seed),
-        pitch_material: pitch_material_from(lo, &pitches),
-        constraints,
-        source_rhythms: vec![first_bar_rhythm(score)],
-        strategy: generate::GenerationStrategy::RhythmCopyPitchSubstitute,
-    })
-}
-
-/// Every note pitch across all tracks and voices, in track/voice order.
-fn all_pitches(score: &Score) -> Vec<u8> {
-    score
-        .tracks
-        .iter()
-        .flat_map(|t| &t.voices)
-        .flat_map(|v| &v.event_groups)
-        .flat_map(|g| &g.atoms)
-        .filter_map(|a| match a {
-            AtomEvent::Note(n) => Some(n.pitch.0),
-            AtomEvent::Rest(_) => None,
-        })
-        .collect()
-}
-
-/// The lowest and highest pitch present; errors (no pitch material) when the
-/// source is silent.
-fn pitch_range(pitches: &[u8]) -> Result<(Pitch, Pitch), CliError> {
-    let lo = pitches.iter().min().copied().ok_or(CliError::Generate(
-        generate::GenerationError::EmptyPitchMaterial,
-    ))?;
-    let hi = pitches.iter().max().copied().unwrap_or(lo);
-    Ok((Pitch(lo), Pitch(hi)))
-}
-
-/// A scale rooted at `lo` whose intervals are the distinct semitone classes the
-/// source uses, so the generated riff stays in the tab's pitch palette.
-fn pitch_material_from(lo: Pitch, pitches: &[u8]) -> generate::PitchMaterial {
-    let mut intervals: Vec<u8> = pitches
-        .iter()
-        .map(|&p| p.saturating_sub(lo.0).checked_rem(12).unwrap_or(0))
-        .collect();
-    intervals.sort_unstable();
-    intervals.dedup();
-    if intervals.is_empty() {
-        intervals.push(0);
-    }
-    generate::PitchMaterial {
-        root: lo,
-        intervals,
-    }
-}
-
-/// The note durations of the first *sounding* bar — the earliest master bar
-/// holding any note across all tracks and voices — in onset order, as the
-/// rhythm template the generator copies. Falls back to four quarter notes only
-/// when the source is entirely silent.
-fn first_bar_rhythm(score: &Score) -> Vec<Ticks> {
-    for bar in &score.master_bars {
-        let mut notes: Vec<(u32, Ticks)> = score
-            .tracks
+    let diag = generate::rhythm_diagnostics(source_rhythms, bar_duration);
+    let shown = diag.effective.min(constraints.bar_count);
+    let fingerprints = if diag.effective == 0 {
+        " (quarter fallback)".to_owned()
+    } else {
+        let hexes: Vec<String> = diag
+            .fingerprints
             .iter()
-            .flat_map(|t| &t.voices)
-            .flat_map(|v| &v.event_groups)
-            .flat_map(|g| &g.atoms)
-            .filter_map(|a| match a {
-                AtomEvent::Note(n)
-                    if n.absolute_start.0 >= bar.tick_range.start.0
-                        && n.absolute_start.0 < bar.tick_range.end.0 =>
-                {
-                    Some((n.absolute_start.0, n.duration))
-                }
-                _ => None,
-            })
+            .take(shown)
+            .map(|h| format!("{h:x}"))
             .collect();
-        if !notes.is_empty() {
-            notes.sort_by_key(|&(onset, _)| onset);
-            return notes.into_iter().map(|(_, dur)| dur).collect();
-        }
+        format!("; grids[{shown}] {}", hexes.join(" "))
+    };
+    println!(
+        "rhythm: {loaded} loaded / {effective} effective templates over {bars} bars; gesture {onoff}{fingerprints}",
+        loaded = diag.loaded,
+        effective = diag.effective,
+        bars = constraints.bar_count,
+        onoff = if gesture_on { "on" } else { "off" },
+    );
+}
+
+/// Prints the ranked candidate list with its policy provenance (ADR-0017).
+fn print_ranking(ranked: &[scoring::Scored<rerank::SetCandidate>], policy: &scoring::WeightPolicy) {
+    // `ranked.len()` is the *total* candidate count (variants × strategies),
+    // not the `--candidates` flag — spelled out so the summary is unambiguous.
+    println!(
+        "candidates: {} total ranked under {} v{}",
+        ranked.len(),
+        policy.id,
+        policy.version,
+    );
+    for (rank, scored) in ranked.iter().enumerate() {
+        println!(
+            "  {}. {:?} variant-seed {} aggregate {:.3}",
+            rank.saturating_add(1),
+            scored.value.strategy,
+            scored.value.seed.0,
+            scored.aggregate(),
+        );
     }
-    let quarter = Ticks(u32::from(score.ticks_per_quarter));
-    vec![quarter; 4]
+}
+
+/// Options of `griff generate` beyond the input/output pair.
+#[derive(Debug, Clone, Copy)]
+struct GenerateOpts<'a> {
+    /// Deterministic base seed.
+    seed: u64,
+    /// Bars to generate.
+    bars: usize,
+    /// Corpus directory, when one is given.
+    corpus: Option<&'a Path>,
+    /// Seed variants per strategy in the candidate set.
+    candidates: usize,
+    /// Skip gesture carving even when the corpus provides stats.
+    no_gesture: bool,
 }
 
 /// Arranges a complementary part B (S13) for the primary track of `input` and
@@ -1424,6 +1496,8 @@ enum CliError {
     Ensemble(String),
     Split(String),
     Generate(generate::GenerationError),
+    Set(rerank::SetError),
+    Corpus(String),
     Complement(complement::ComplementError),
 }
 
@@ -1438,6 +1512,8 @@ impl fmt::Display for CliError {
             Self::Ensemble(msg) => write!(f, "ensemble error: {msg}"),
             Self::Split(msg) => write!(f, "split error: {msg}"),
             Self::Generate(e) => write!(f, "generation error: {e:?}"),
+            Self::Set(e) => write!(f, "candidate set error: {e:?}"),
+            Self::Corpus(msg) => write!(f, "corpus error: {msg}"),
             Self::Complement(e) => write!(f, "complement error: {e:?}"),
         }
     }
@@ -1467,6 +1543,26 @@ impl From<generate::GenerationError> for CliError {
     }
 }
 
+impl From<rerank::SetError> for CliError {
+    fn from(e: rerank::SetError) -> Self {
+        // Flatten the plain-generation case so it reads the same wherever it
+        // surfaced from.
+        match e {
+            rerank::SetError::Generation(g) => Self::Generate(g),
+            other => Self::Set(other),
+        }
+    }
+}
+
+impl From<GenerationInputError> for CliError {
+    fn from(e: GenerationInputError) -> Self {
+        match e {
+            GenerationInputError::Generation(g) => Self::Generate(g),
+            GenerationInputError::Corpus(msg) => Self::Corpus(msg),
+        }
+    }
+}
+
 impl From<complement::ComplementError> for CliError {
     fn from(e: complement::ComplementError) -> Self {
         Self::Complement(e)
@@ -1487,8 +1583,10 @@ impl From<complement::ComplementError> for CliError {
     clippy::indexing_slicing
 )]
 mod tests {
-    use griff_core::corpus::SourceFormat;
+    use griff_core::corpus::{ChunkMeta, SourceFormat};
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::generate::RhythmTemplate;
+    use griff_core::gesture;
     use griff_core::score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
         Score, SourceMeta, Voice,
@@ -1496,7 +1594,8 @@ mod tests {
     use griff_core::slice::TickRange;
 
     use super::{
-        measure_group_relations, primary_voice_note_count, source_format, track_note_count, Track,
+        build_chunk_meta, measure_group_relations, primary_voice_note_count, source_format,
+        track_note_count, CurateInputs, Track,
     };
 
     fn score_tagged(format: Option<&str>) -> Score {
@@ -1755,9 +1854,9 @@ mod tests {
     }
 
     /// Single-track curation inputs with id `dgd`.
-    fn split_inputs() -> super::CurateInputs {
+    fn split_inputs() -> CurateInputs {
         use griff_core::corpus::{Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort};
-        super::CurateInputs {
+        CurateInputs {
             id: "dgd".to_owned(),
             title: "Riff".to_owned(),
             tuning: "standard_e".to_owned(),
@@ -1997,5 +2096,337 @@ mod tests {
             format!("{err}").contains("part"),
             "the curator sees which measurement failed: {err}"
         );
+    }
+
+    // ── corpus-fed generation (research note §7.2/§7.3 wiring) ────────────────
+    //
+    // TDD red phase: `bar_rhythms`, `gesture_control_from_chunks`, and
+    // `load_corpus_material` do not exist yet, so these tests fail to compile
+    // until the green step. They specify how `griff generate --corpus <dir>`
+    // turns curated chunk records + their source tabs into generator inputs:
+    // per-bar rhythm templates, novelty reference scores, and an aggregated
+    // gesture ask.
+
+    /// A score of `bar_count` 4/4 bars (1920 ticks each) over `tracks`.
+    fn bars_score(bar_count: usize, tracks: Vec<Track>) -> Score {
+        let master_bars = (0..bar_count)
+            .map(|i| {
+                let start = u32::try_from(i).expect("small index").saturating_mul(1920);
+                MasterBar {
+                    index: i,
+                    tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
+                        .expect("ordered"),
+                    time_signature: TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    },
+                    tempo: Tempo::new(120.0).expect("120 BPM"),
+                    repeat: RepeatMarker::default(),
+                }
+            })
+            .collect();
+        Score {
+            ticks_per_quarter: 480,
+            master_bars,
+            tracks,
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    /// A note atom of arbitrary duration.
+    fn note(start: u32, dur: u32, pitch: u8) -> AtomEvent {
+        AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(start),
+            duration: Ticks(dur),
+            pitch: Pitch::new(pitch).expect("valid pitch"),
+            velocity: Velocity::new(90).expect("valid velocity"),
+            marks: NoteMarks::empty(),
+            position: None,
+        })
+    }
+
+    #[test]
+    fn bar_rhythms_extracts_per_bar_templates_and_skips_silent_bars() {
+        use griff_cli::generation_input::bar_rhythms;
+        use griff_core::generate::TemplateNote;
+
+        // Bar 0: four quarters; bar 1: silent; bar 2: two *syncopated*
+        // eighths (off the downbeat, a gap between them). The extracted
+        // template must keep the in-bar offsets — rests and syncopation are
+        // exactly what the corpus should teach the grid (2026-07-11
+        // playtest: back-to-back extraction flattened them away).
+        let track = track_of(vec![voice_of(
+            0,
+            vec![
+                note(0, 480, 40),
+                note(480, 480, 43),
+                note(960, 480, 45),
+                note(1440, 480, 47),
+                note(4080, 240, 50),
+                note(4800, 240, 47),
+            ],
+        )]);
+        let score = bars_score(3, vec![track]);
+
+        assert_eq!(
+            bar_rhythms(&score, 0),
+            vec![
+                RhythmTemplate::from_durations(&[Ticks(480); 4]),
+                RhythmTemplate {
+                    notes: vec![
+                        TemplateNote {
+                            offset: Ticks(240),
+                            duration: Ticks(240),
+                        },
+                        TemplateNote {
+                            offset: Ticks(960),
+                            duration: Ticks(240),
+                        },
+                    ],
+                },
+            ],
+            "templates keep in-bar offsets; silent bars skipped"
+        );
+    }
+
+    #[test]
+    fn bar_rhythms_dedups_identical_templates() {
+        use griff_cli::generation_input::bar_rhythms;
+
+        // Two identical quarter-note bars: the corpus should not drown the
+        // template rotation in copies of one rhythm.
+        let track = track_of(vec![voice_of(
+            0,
+            vec![
+                note(0, 480, 40),
+                note(480, 480, 43),
+                note(960, 480, 45),
+                note(1440, 480, 47),
+                note(1920, 480, 40),
+                note(2400, 480, 43),
+                note(2880, 480, 45),
+                note(3360, 480, 47),
+            ],
+        )]);
+        let score = bars_score(2, vec![track]);
+
+        assert_eq!(
+            bar_rhythms(&score, 0),
+            vec![RhythmTemplate::from_durations(&[Ticks(480); 4])]
+        );
+    }
+
+    /// Curate inputs with the community-tab rights defaults.
+    fn corpus_test_inputs(id: &str) -> CurateInputs {
+        use griff_core::corpus::{Acquisition, QualityFlag, RightsInfo, RightsStatus, StyleCohort};
+        CurateInputs {
+            id: id.to_owned(),
+            title: format!("Chunk {id}"),
+            tuning: "standard_e".to_owned(),
+            style_cohort: StyleCohort::Core,
+            tags: Vec::new(),
+            quality_flags: vec![QualityFlag::Clean],
+            reviewer: None,
+            rights: RightsInfo {
+                rights_status: RightsStatus::CopyrightedComposition,
+                acquisition: Acquisition::CommunityTabSite,
+                redistributable: false,
+                notes: String::new(),
+            },
+        }
+    }
+
+    /// Gesture stats whose only meaningful fields here are the two the
+    /// control derives from; the rest are plausible fillers.
+    fn gesture_stats(mean_burst_notes: f64, mean_rest_quarters: f64) -> gesture::GestureStats {
+        gesture::GestureStats {
+            note_count: 12,
+            burst_count: 3,
+            mean_burst_notes,
+            max_burst_notes: 6,
+            rest_count: if mean_rest_quarters == 0.0 { 0 } else { 2 },
+            mean_rest_quarters,
+            rest_on_grid_share: 1.0,
+            modal_landing_share: 0.5,
+            mean_final_lengthening: 0.5,
+        }
+    }
+
+    /// A chunk record built through the real builder, with its measured
+    /// gesture replaced by `stats` (or cleared).
+    fn chunk_with_gesture(id: &str, stats: Option<gesture::GestureStats>) -> ChunkMeta {
+        use std::path::Path;
+        let track = track_of(vec![voice_of(0, vec![quarter(0, 60), quarter(480, 62)])]);
+        let score = one_bar_score(vec![track]);
+        let inputs = corpus_test_inputs(id);
+        let mut meta = build_chunk_meta(
+            &score,
+            Path::new(&format!("{id}.mid")),
+            Some(0),
+            inputs.id.clone(),
+            inputs.title.clone(),
+            &inputs,
+            None,
+        );
+        meta.gesture = stats;
+        meta
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_averages_per_chunk_controls() {
+        use griff_cli::generation_input::gesture_control_from_chunks;
+
+        // Per-chunk controls (4, 1.0q) and (2, 3.0q) average to (3, 2.0q);
+        // a stats-less chunk is skipped, not treated as zero.
+        let chunks = vec![
+            chunk_with_gesture("a", Some(gesture_stats(4.0, 1.0))),
+            chunk_with_gesture("b", None),
+            chunk_with_gesture("c", Some(gesture_stats(2.0, 3.0))),
+        ];
+        let control = gesture_control_from_chunks(&chunks).expect("stats present");
+        assert_eq!(control.burst_notes, 3);
+        assert!((control.rest_quarters - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_ignores_restless_chunks() {
+        use griff_cli::generation_input::gesture_control_from_chunks;
+
+        // A wall-to-wall riff's stats describe one giant burst (mean burst =
+        // the whole chunk); letting it vote inflates the ask past ever
+        // carving (2026-07-11 playtest: burst 69 over a 32-note request
+        // carved nothing). Only chunks that actually rest vote.
+        let chunks = vec![
+            chunk_with_gesture("wall", Some(gesture_stats(120.0, 0.0))),
+            chunk_with_gesture("a", Some(gesture_stats(4.0, 1.0))),
+            chunk_with_gesture("b", Some(gesture_stats(2.0, 3.0))),
+        ];
+        let control = gesture_control_from_chunks(&chunks).expect("resting chunks vote");
+        assert_eq!(control.burst_notes, 3, "the restless chunk does not vote");
+        assert!((control.rest_quarters - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_takes_the_median_against_outliers() {
+        use griff_cli::generation_input::gesture_control_from_chunks;
+
+        // One long-burst outlier must not drag the ask out of carving range:
+        // the aggregate is the per-axis median, not the mean.
+        let chunks = vec![
+            chunk_with_gesture("a", Some(gesture_stats(2.0, 1.0))),
+            chunk_with_gesture("b", Some(gesture_stats(3.0, 1.5))),
+            chunk_with_gesture("c", Some(gesture_stats(100.0, 4.0))),
+        ];
+        let control = gesture_control_from_chunks(&chunks).expect("stats present");
+        assert_eq!(control.burst_notes, 3);
+        assert!((control.rest_quarters - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_is_none_when_no_chunk_rests() {
+        use griff_cli::generation_input::gesture_control_from_chunks;
+        let chunks = vec![chunk_with_gesture("wall", Some(gesture_stats(120.0, 0.0)))];
+        assert!(
+            gesture_control_from_chunks(&chunks).is_none(),
+            "an all-wall-to-wall corpus asks for no gesture instead of a degenerate one"
+        );
+    }
+
+    #[test]
+    fn gesture_control_from_chunks_is_none_without_stats() {
+        use griff_cli::generation_input::gesture_control_from_chunks;
+        let chunks = vec![chunk_with_gesture("a", None)];
+        assert!(gesture_control_from_chunks(&chunks).is_none());
+    }
+
+    #[test]
+    fn load_corpus_material_reads_chunks_slices_ranges_and_skips_missing_sources() {
+        use std::{env, fs, process};
+
+        use griff_cli::generation_input::load_corpus_material;
+        use griff_core::midi;
+
+        let dir = env::temp_dir().join(format!("griff_corpus_material_{}", process::id()));
+        fs::create_dir_all(&dir).expect("create corpus dir");
+
+        // Source tab: two bars, quarters then eighths.
+        let track = track_of(vec![voice_of(
+            0,
+            vec![
+                note(0, 480, 40),
+                note(480, 480, 43),
+                note(960, 480, 45),
+                note(1440, 480, 47),
+                note(1920, 240, 50),
+                note(2160, 240, 47),
+                note(2400, 240, 45),
+                note(2640, 240, 43),
+                note(2880, 240, 40),
+                note(3120, 240, 43),
+                note(3360, 240, 45),
+                note(3600, 240, 47),
+            ],
+        )]);
+        let source = bars_score(2, vec![track]);
+        fs::write(
+            dir.join("a.mid"),
+            midi::export_score(&source).expect("export source"),
+        )
+        .expect("write source");
+
+        // Chunk a: covers only bar 0 of its source. Chunk b: source missing.
+        let inputs = corpus_test_inputs("a");
+        let mut meta_a = build_chunk_meta(
+            &source,
+            &dir.join("a.mid"),
+            Some(0),
+            inputs.id.clone(),
+            inputs.title.clone(),
+            &inputs,
+            None,
+        );
+        meta_a.source.bar_range = Some((0, 0));
+        fs::write(
+            dir.join("a.chunk.json"),
+            serde_json::to_string(&meta_a).expect("serialize a"),
+        )
+        .expect("write a.chunk.json");
+
+        let mut meta_b = chunk_with_gesture("b", None);
+        meta_b.source.filename = "missing.mid".to_owned();
+        fs::write(
+            dir.join("b.chunk.json"),
+            serde_json::to_string(&meta_b).expect("serialize b"),
+        )
+        .expect("write b.chunk.json");
+
+        // A group record must be ignored, not parsed as a chunk.
+        fs::write(dir.join("g.group.json"), "{}").expect("write group");
+
+        let material = load_corpus_material(&dir).expect("corpus loads");
+
+        assert_eq!(
+            material.references.len(),
+            1,
+            "one chunk with a readable source"
+        );
+        assert_eq!(
+            material.references[0].master_bars.len(),
+            1,
+            "bar_range (0, 0) slices the source to one bar"
+        );
+        assert_eq!(
+            material.rhythms,
+            vec![RhythmTemplate::from_durations(&[Ticks(480); 4])],
+            "rhythm templates come from the sliced bar range only"
+        );
+        assert_eq!(
+            material.skipped,
+            vec!["b.chunk.json".to_owned()],
+            "records whose source cannot be read are skipped, by record name"
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 }

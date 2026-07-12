@@ -13,7 +13,7 @@ categories.workspace   = true
 [dependencies]
 midly      = { workspace = true }
 thiserror  = { workspace = true }
-guitarpro  = { version = "0.3", default-features = false, optional = true }
+guitarpro  = { version = "0.4", default-features = false, optional = true }
 serde      = { workspace = true }
 
 [features]

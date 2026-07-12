@@ -4,6 +4,16 @@ Status: done
 Depends on: S5
 ADRs: ADR-0005, ADR-0010
 
+> Progress (2026-07-11): the promised candidate *set* landed —
+> `core/src/rerank.rs` fans a request over every strategy × seed variants and
+> reranks on the closure + novelty axes under the `generation_rerank` v1
+> policy (ADR-0017; melodic-closure note §7.2/§7.3). `griff generate` uses it
+> by default, and `--corpus <dir>` feeds rhythm templates, novelty
+> references, and the burst/rest gesture ask from curated chunks
+> (decisions.log 2026-07-11). Still open from the list below: cadence-aware
+> endings inside the strategies, anchor preservation, the string/fret
+> playability filter, and the density/syncopation corpus gates.
+
 ## Goal
 
 First musically useful, non-neural generator producing recognizably

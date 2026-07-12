@@ -39,6 +39,13 @@ use crate::generate::{
 };
 use crate::score::{AtomEvent, AtomNote, EventGroup, EventGroupKind, Score, Track, Voice};
 use crate::scoring::{rank_indices, Axes, Axis, Scored, WeightPolicy};
+use crate::tonal::estimate_from_histograms;
+
+/// The two scale shapes the key estimate considers.
+///
+/// Re-exported from [`crate::tonal`], which now owns the tonal vocabulary; the
+/// `complement::KeyMode` path is preserved for existing callers.
+pub use crate::tonal::KeyMode;
 
 /// A named complementarity preset for generating part B (glossary §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -133,35 +140,17 @@ pub enum VariationError {
     Arrange(ComplementError),
 }
 
-/// Major or natural minor — the two scale shapes the key estimate considers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyMode {
-    /// The major (Ionian) scale.
-    Major,
-    /// The natural minor (Aeolian) scale.
-    Minor,
-}
-
-impl KeyMode {
-    /// Semitone offsets of this mode's scale above its tonic.
-    #[must_use]
-    pub const fn scale_offsets(self) -> [u8; 7] {
-        match self {
-            Self::Major => [0, 2, 4, 5, 7, 9, 11],
-            Self::Minor => [0, 2, 3, 5, 7, 8, 10],
-        }
-    }
-}
-
 /// The part's estimated key and how well its notes fit that key's scale —
 /// the harmonic context of a part profile (glossary §8).
 ///
-/// Estimated with the Krumhansl–Schmuckler key-finding algorithm: the part's
-/// duration-weighted pitch-class histogram is correlated (Pearson) against
-/// the 24 rotated Krumhansl–Kessler tonal-hierarchy profiles and the best
-/// correlation wins, ties resolving to the earliest key in the
-/// major-then-minor, C-upward scan. `scale_fit` is a fact, not a verdict —
-/// what counts as "fitting well enough" is corpus/S9 calibration territory.
+/// The lossy projection of the winning [`crate::tonal::TonalCandidate`]: the
+/// part's duration-weighted pitch-class histogram is correlated (Pearson)
+/// against the 24 rotated Krumhansl–Kessler tonal-hierarchy profiles and the
+/// best correlation wins, ties resolving to the earliest key in the
+/// major-then-minor, C-upward scan. Dropping the runner-up and margin discards
+/// the estimate's uncertainty — callers that need it use [`crate::tonal`]
+/// directly. `scale_fit` is a fact, not a verdict — what counts as "fitting
+/// well enough" is corpus/S9 calibration territory.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HarmonicContext {
     /// Tonic pitch class: `0` = C … `11` = B.
@@ -506,101 +495,36 @@ pub fn analyze_part(score: &Score, track_index: usize) -> Result<PartProfile, Co
     })
 }
 
-/// Krumhansl–Kessler major tonal-hierarchy profile (probe-tone ratings).
-const KK_MAJOR: [f64; 12] = [
-    6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
-];
-/// Krumhansl–Kessler natural-minor tonal-hierarchy profile.
-const KK_MINOR: [f64; 12] = [
-    6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
-];
-
 /// Estimates the part's key from its notes (Krumhansl–Schmuckler), or `None`
 /// when there are none.
 ///
-/// Histogram weights are note durations in ticks; a part whose notes all have
-/// zero duration falls back to counting notes so the estimate stays defined.
-/// Takes `(pitch, duration-in-ticks)` pairs so other analyses (the S14
-/// complexity profile) reuse the one estimator.
-// Float-only arithmetic over fixed 12-bin histograms; pitch-class indices are
-// mod-12 by construction.
+/// The winner-only projection of a [`crate::tonal::TonalEstimate`]: builds the
+/// part's raw pitch-class evidence from `(pitch, duration-in-ticks)` pairs and
+/// keeps the top-ranked candidate. Histogram weights are duration mass; a part
+/// whose notes all have zero duration falls back to onset counts so the estimate
+/// stays defined. Other analyses (the S14 complexity profile) reuse this one
+/// estimator.
+// Fixed 12-bin histograms; pitch-class indices are mod-12 by construction.
 #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 pub(crate) fn estimate_harmony(notes: &[(u8, u32)]) -> Option<HarmonicContext> {
     if notes.is_empty() {
         return None;
     }
 
-    let total_ticks: u64 = notes.iter().map(|&(_, d)| u64::from(d)).sum();
-    let mut histogram = [0.0_f64; 12];
+    let mut onset_counts = [0_u32; 12];
+    let mut duration_mass = [0_u64; 12];
     for &(pitch, duration) in notes {
         let pc = usize::from(pitch) % 12;
-        let weight = if total_ticks == 0 {
-            1.0
-        } else {
-            f64::from(duration)
-        };
-        histogram[pc] += weight;
+        onset_counts[pc] = onset_counts[pc].saturating_add(1);
+        duration_mass[pc] = duration_mass[pc].saturating_add(u64::from(duration));
     }
 
-    let mut best: Option<(f64, u8, KeyMode)> = None;
-    for mode in [KeyMode::Major, KeyMode::Minor] {
-        let profile = match mode {
-            KeyMode::Major => &KK_MAJOR,
-            KeyMode::Minor => &KK_MINOR,
-        };
-        for tonic in 0..12_u8 {
-            let r = rotated_correlation(&histogram, profile, tonic);
-            if best.map_or(true, |(b, _, _)| r > b) {
-                best = Some((r, tonic, mode));
-            }
-        }
-    }
-    let (_, tonic_pitch_class, mode) = best?;
-
-    let total: f64 = histogram.iter().sum();
-    let on_scale: f64 = mode
-        .scale_offsets()
-        .iter()
-        .map(|&s| histogram[usize::from(tonic_pitch_class + s) % 12])
-        .sum();
-    let scale_fit = if total > 0.0 { on_scale / total } else { 0.0 };
-
+    let winner = *estimate_from_histograms(notes.len(), &onset_counts, &duration_mass)?.winner()?;
     Some(HarmonicContext {
-        tonic_pitch_class,
-        mode,
-        scale_fit,
+        tonic_pitch_class: winner.tonic,
+        mode: winner.mode,
+        scale_fit: winner.scale_fit,
     })
-}
-
-/// Pearson correlation between `histogram` and `profile` rotated so the
-/// profile's tonic sits on pitch class `tonic`.
-// Float-only arithmetic over fixed 12-bin arrays; indices are mod-12.
-#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-fn rotated_correlation(histogram: &[f64; 12], profile: &[f64; 12], tonic: u8) -> f64 {
-    let mut rotated = [0.0_f64; 12];
-    for (pc, slot) in rotated.iter_mut().enumerate() {
-        *slot = profile[(pc + 12 - usize::from(tonic)) % 12];
-    }
-
-    let n = 12.0_f64;
-    let mean_x: f64 = histogram.iter().sum::<f64>() / n;
-    let mean_y: f64 = rotated.iter().sum::<f64>() / n;
-    let mut numerator = 0.0_f64;
-    let mut var_x = 0.0_f64;
-    let mut var_y = 0.0_f64;
-    for (x, y) in histogram.iter().zip(rotated.iter()) {
-        let dx = x - mean_x;
-        let dy = y - mean_y;
-        numerator = dx.mul_add(dy, numerator);
-        var_x = dx.mul_add(dx, var_x);
-        var_y = dy.mul_add(dy, var_y);
-    }
-    let denominator = (var_x * var_y).sqrt();
-    if denominator > 0.0 {
-        numerator / denominator
-    } else {
-        0.0
-    }
 }
 
 /// Measures the complement relation between two *existing* tracks.
@@ -841,7 +765,11 @@ fn arrange_counter_melody(
             pitch_lo: Pitch::new(band_lo).unwrap_or(register.lowest),
             pitch_hi: Pitch::new(band_hi).unwrap_or(register.highest),
         },
-        source_rhythms: profile.bar_rhythms.clone(),
+        // Deliberately empty: the walk historically wrote quarters and the
+        // rhythm-grid change would otherwise silently re-rhythm part B onto
+        // A's bar durations. Feeding `profile.bar_rhythms` (as onset-aware
+        // templates) into the grid is its own increment with its own goldens.
+        source_rhythms: Vec::new(),
         strategy: GenerationStrategy::ConstrainedRandomWalk,
     };
     let candidate = generate(&request).map_err(ComplementError::Generation)?;
@@ -1369,26 +1297,21 @@ fn spread_window(ladder_len: usize, pitch_spread: f64) -> usize {
 /// octave — every degree (`ladder_index`) was previously placed only in the
 /// lowest octave.
 fn band_scale_ladder(lo: u8, hi: u8, intervals: &[u8]) -> Vec<u8> {
-    let hi16 = u16::from(hi);
-    let mut ladder: Vec<u8> = Vec::new();
-    let mut base = u16::from(lo);
-    while base <= hi16 {
-        for &interval in intervals {
-            let p = base.saturating_add(u16::from(interval));
-            if p <= hi16 {
-                if let Ok(p8) = u8::try_from(p) {
-                    ladder.push(p8);
-                }
-            }
-        }
-        base = base.saturating_add(12);
-    }
-    ladder.sort_unstable();
-    ladder.dedup();
-    if ladder.is_empty() {
-        ladder.push(lo);
-    }
-    ladder
+    // Delegates to the shared ladder (register increment): one degree→pitch
+    // mapper across the codebase. `intervals` are offsets from `lo`, so the
+    // palette is their pitch classes anchored at `lo`. Fully qualified to avoid
+    // the `feature::PitchRange` import already in scope.
+    use crate::pitch::{PitchClassSet, PitchRange as LadderRange, ScaleLadder};
+
+    let range = LadderRange::new(Pitch(lo), Pitch(hi));
+    let classes = PitchClassSet::new(intervals.iter().map(|&i| lo.wrapping_add(i)));
+    // The arranger tolerates a bare `lo` floor when the palette selects nothing
+    // in range (its pre-existing behaviour) — the strict always-in-class
+    // contract is the generator's, enforced there via the `Result`.
+    ScaleLadder::build(&range, &classes).map_or_else(
+        |_| vec![lo],
+        |ladder| ladder.pitches().iter().map(|p| p.0).collect(),
+    )
 }
 
 /// Seed-deterministic scale-degree (`ladder_index`) picker for note `index`

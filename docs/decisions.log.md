@@ -1372,3 +1372,273 @@ Architectural decisions go to [`adr/`](adr/) instead.
   ergonomic gap. Accepting that the HTML toolbar (Open/Capture/Corpus/Manifest)
   stays for now — the Playwright suite drives those DOM buttons, and audio +
   visual phrase-slicing are the next ergonomic steps.
+
+- 2026-07-11 — In the context of `griff generate` emitting one hardcoded
+  rhythm-copy pass while the closure / novelty / gesture machinery sat
+  unwired (melodic-closure note §7.2/§7.3 named the gap), facing how to make
+  generation corpus-fed and self-selecting, we decided for a core
+  `rerank` seam — `generate_candidate_set` (every S6 strategy ×
+  seed variants, SplitMix64-derived; template rotation; optional gesture
+  carving) plus `rerank_candidates` (closure + novelty axes under the
+  uniform `generation_rerank` v1 policy) — and a CLI `--corpus <dir>` that
+  turns curated chunk records + source tabs into rhythm templates, novelty
+  references, and a mean burst/rest gesture ask, and against teaching each
+  strategy about the corpus directly or picking a winner inside core, to
+  achieve ADR-0017-explainable candidate selection with thresholds left to
+  the caller, accepting that the generate golden snapshots were re-blessed
+  (the default path now prints the ranking and picks the top-ranked
+  candidate) and that S9 still owes the policy its tuned weights.
+
+- 2026-07-11 — In the context of the corpus import scan (410 community tabs;
+  98 parse errors, ~30% of supported formats, dominated by the `guitarpro`
+  0.3 parser's hard failures on cosmetic fields — "Invalid value N for
+  triplet feel", "Type conversion failed" for rse/lyrics/portamento — and 9
+  gpx XML errors), facing whether to fork/vendor the parser for leniency, we
+  decided for bumping to upstream `guitarpro` 0.4.2 first — it already makes
+  triplet feel lenient (unknown → `None`), halves the strict conversions
+  (124 → 59 sites), and rewrites the gpx importer — and against an immediate
+  fork, to achieve the cheapest possible ceiling lift with zero maintenance
+  surface, accepting a `model::legacy` import-path rename and one duplicated
+  `quick-xml` version in the tree (bans.multiple-versions = warn). The fork
+  question is deferred until the corpus re-scan shows which error buckets
+  survive 0.4.2; if a meaningful share remains, that becomes an ADR
+  (MIT-licensed upstream, so vendoring stays available).
+
+- 2026-07-11 — In the context of the first corpus-fed playtest (220 chunks:
+  the corpus was audible only when a rhythm-copy candidate won — the other
+  strategies hardcoded wall-to-wall quarters — and the aggregated gesture ask
+  of burst 69 / rest 6.6q never carved), facing how corpus rhythm should
+  reach generation, we decided for a shared **rhythm grid** — `RhythmTemplate`
+  carries onset-*placed* notes (offsets + durations, so rests and syncopation
+  survive extraction), every S6 strategy lays its pitches onto the first
+  usable template's per-bar grid (quarter fallback preserves the no-input
+  case), and the candidate set feeds the rotated template to every strategy —
+  plus a gesture-ask aggregation fix (only chunks that actually rest vote;
+  per-axis median), and against teaching each strategy corpus awareness
+  separately or padding templates with explicit rest events, to achieve
+  corpus rhythm audible across the whole candidate set, accepting deliberate
+  re-blesses of the generation goldens and that `complement` keeps its
+  historical quarter grid (an explicitly empty template list) until its own
+  increment.
+
+- 2026-07-12 — In the context of the corpus-fed playtest showing rhythm
+  monotony (`distinct_dur` stuck at 1.0 — one rhythm for the whole phrase),
+  facing where the collapse happened, we decided for **per-bar template
+  rotation** — `bar_grids` builds one grid per corpus template and strategies
+  cycle them by bar index, and the rerank set hands every candidate the whole
+  template palette (variants differ by seed, the pitch line) — and against
+  keeping per-variant rotation or randomising the per-bar choice, to achieve
+  within-phrase rhythmic variety that stays deterministic (SPEC §6),
+  prioritising it over cadence-aware endings (the previously-queued next step)
+  because it hit the larger measured hole. `RepeatVariation` keeps one rhythm
+  across bars (repetition is its identity). Accepting the deterministic
+  index-mod scheduler's limits as **parked refinements** (not this
+  increment): a large corpus is heard only through its first templates in
+  first-seen filename order, and every candidate starts at the same template
+  phase (bar 0 → template 0) — a later increment can add a deterministic
+  per-candidate phase offset or diverse-template selection. Cadence-aware
+  endings move to the next slot — and are further blocked until the pitch
+  model is split (below), because `PitchMaterial.root` is currently the
+  input's minimum pitch, so landing on the "tonic" would land on the lowest
+  pitch class, a wrong musical contract.
+
+- 2026-07-12 — In the context of closing the rotation bump for a corpus A/B,
+  facing that per-bar template resolution (empty-removal, clamp, fallback) is
+  invisible from the MIDI output, we decided for a small deterministic
+  **diagnostic seam** — `rhythm_diagnostics` (loaded vs effective template
+  counts plus a stable FNV-1a fingerprint per effective grid) printed in the
+  CLI generation summary — and against a standing analytics subsystem, to
+  make the A/B interpretable (which run used how many *distinct* bar rhythms),
+  accepting that `distinct_bar_rhythms == bar_count` is explicitly **not** a
+  contract (it depends on the count of unique effective templates, clamping,
+  and gesture carving), and that the arbiter's acceptance of the bump awaits
+  the local corpus A/B — checking a systematic rise in distinct bar rhythms,
+  comparing gesture-on against `--no-gesture` separately, and confirming no
+  empty / anomalously-clamped / non-deterministic bars.
+
+- 2026-07-12 — **Rotation bump: ACCEPTED.** The local corpus A/B (60 runs, 30
+  before/after pairs) is in — but the independent evidence is **10 unique
+  rhythmic conditions** (5 seeds × gesture on/off), not 30 confirmations: the
+  three inputs produced identical rhythmic results because the rhythm schedule
+  is set by the shared corpus, not the input. The large effect held in all ten
+  conditions and every one of the 30 rows. `distinct_bar_rhythms` rose gesture-on
+  `2.20 → 7.80` (+5.60) and gesture-off `1.80 → 7.80` (+6.00), and after
+  rotation the per-seed `distinct_bar_rhythms` **matches** between gesture on and
+  off. Stated precisely: *gesture does not re-collapse per-bar rhythm-signature
+  diversity after rotation, although it still changes duration diversity and
+  notes-per-bar dispersion* (after-rotation `distinct_dur` gesture-on 3.0 /
+  off 4.2; `npb_std` gesture-on 2.26 / off 1.86) — so gesture is **not** claimed
+  orthogonal to rotation. No empty pieces (8/8 sounding bars), `RepeatVariation`
+  never won to mask the effect, and repeat runs were byte-identical
+  (determinism, SPEC §6). The parked refinements above stand.
+
+- 2026-07-12 — Clarification (no code decision), **corrected**: the rotation
+  A/B did **not** pass `--candidates` — it ran at the default **2**
+  variants-per-strategy, so `candidates=10` in that tooling's JSON is the
+  *ranked-set size* (2 × 5 strategies = 10 total ranked candidates), not a
+  variant count. (The later register baseline is a different config: 10
+  variants-per-strategy → 50 candidates per condition, 2500 total.) The
+  `--candidates` flag semantics themselves are variants-per-strategy, and the
+  CLI help / ranking line already say so — only this historical A/B
+  description is corrected here; an earlier draft wrongly read the rotation run
+  as "10 × 5 = 50".
+
+- 2026-07-12 — **Register status: NOT accepted yet.** The structural
+  first-octave confinement is confirmed and the shared full-range
+  `ScaleLadder` is implemented, but behavioral acceptance is **pending a
+  corpus/synthetic post-fix A/B** (bounds, class membership, register
+  reachability, candidate- and winner-level span, max/mean intervals, exact
+  low/high boundary shares, top-clamp saturation, longest repeated-pitch run,
+  winner distribution). Until those numbers are in, the register decision
+  stays pending — `TonalCenter` and cadence remain not-started. Checkable
+  risks of the current strategy code, to be measured (not pre-fixed): (a)
+  `ShuffleMotifs` draws every note from the whole ladder → possible
+  many-octave leaps; (b) `MotifTransposeVariation` uses positive degree
+  offsets + top clamp → possible saturation on the top rung; (c)
+  `RepeatVariation`/`build_ascending_bar` can likewise saturate at the top;
+  (d) `RhythmCopyPitchSubstitute`'s full ascending wrap can jump high→low; (e)
+  the reranker has no register-coherence axis. The likely post-measurement
+  shape (a **parked** direction, not this increment): full `ScaleLadder` → a
+  deterministic per-candidate `LadderWindow`/`RegisterPlan` → local strategy
+  movement, so the full range is reachable *between variants* without every
+  note using it.
+
+- 2026-07-12 — In the context of the register the rotation A/B exposed (~one
+  octave, low — `rhythm_copy`/`shuffle` walked degrees only in `[0, scale_len)`,
+  one octave above `PitchMaterial.root` = the input's minimum pitch, and
+  `motif_transpose` shifted by semitones, leaving the pitch-class palette),
+  facing how to use the full `[pitch_lo, pitch_hi]` range without a second
+  pitch mapper, we decided for a shared **`griff_core::pitch`** module —
+  `PitchRange`, `PitchClassSet`, and a `ScaleLadder` (the ascending in-range,
+  in-class pitches indexed by a linear degree) that the generator and (via
+  `band_scale_ladder`) the complement arranger both use — and against a
+  second independent degree→pitch mapper or a full tonal-center inference now,
+  to achieve a full-range, always-in-class register that stays deterministic
+  (SPEC §6), accepting that the contract is **reachability** ("the full ladder
+  is reachable and generation is no longer structurally confined to the first
+  octave"), *not* that every piece must span the whole range. `PitchMaterial.root`
+  is now a pitch-class anchor, **not** a tonal center; `TonalCenter` inference
+  is a separate later increment (and cadence-aware endings stay frozen until it
+  lands, since only then is a real tonic available to cadence onto). Generate
+  goldens (core + CLI) were re-blessed for the new mapping.
+
+- 2026-07-12 — **Register post-fix A/B (local experimental evidence, not
+  product thresholds).** The full-range ladder fixed structural
+  first-octave confinement and reachability (synthetic after-ladder
+  in-range/in-class share was 1.0). But candidate *coherence* regressed,
+  isolated mainly to `ShuffleMotifs`: drawing every note from the whole
+  ladder blew up the register — Shuffle wide-synthetic median candidate span
+  ~`11 → 46` semitones, octave-leap share ~`0 → 0.62` — and 10 of 50
+  post-ladder production winners crossed the experiment's incoherence
+  threshold, all `ShuffleMotifs`. Wording correction: the reranker does **not**
+  "prefer wide register" (its six axes are only closure + novelty) — rather,
+  *it does not penalize register incoherence, so some incoherent candidates
+  score well on the existing closure/novelty axes and reach the output.*
+  Consequence: register behavioral acceptance stays **blocked** pending a
+  Shuffle-window A/B; the fix repairs candidate *generation* (a deterministic
+  per-candidate `LadderWindow` for Shuffle), not the ranker — scoring must not
+  become a landfill that hides malformed candidates. `TonalCenter`, cadence,
+  a register-coherence rerank axis, and reranker weights v2 all stay
+  not-started.
+
+- 2026-07-12 — In the context of the register A/B's isolated blocker
+  (`ShuffleMotifs` incoherence from sampling the whole ladder), facing how to
+  restore local coherence without touching the other strategies or the ranker,
+  we decided for a **Shuffle-only `LadderWindow`** — `ScaleLadder::octave_window`
+  returns a contiguous ≤-one-octave slice, seed-positioned per candidate (low
+  anchor drawn from rungs that leave a full octave above, so selectors cover
+  the ladder without top/bottom bias), and Shuffle draws every note from its
+  window — and against redesigning the strategy, a register-coherence rerank
+  axis, hard octave-leap rejection, or a weights change, to fix candidate
+  *generation* (not hide malformed candidates behind scoring). Register
+  diagnostics (`RegisterStats`: mean/max abs interval, octave-leap share,
+  pitch stddev) are added as a pure, reusable measurement for tests and the
+  harness, explicitly **not** part of `rerank_weights_v1`. Reachability is
+  retained across variants; the window bounds per-candidate locality only.
+  `TonalCenter`, cadence, a global `RegisterPlan`, and reranker policy v2 stay
+  not-started. Register behavioral acceptance remains **pending** the external
+  Shuffle-window A/B.
+
+- 2026-07-12 — **Register track: ACCEPTED.** The wrap-free A/B is in
+  (2500/2500 candidate pairs, 50/50 winner pairs, published raw checksums
+  match): RhythmCopy > 12-semitone candidates 398 → 0, RepeatVariation
+  > 12 candidates on the observed grids 16 → 0, winner > 12 candidates
+  19 → 0, non-target strategy pitch hashes 500/500 identical, mean aggregate
+  0.8896 → 0.8951 / median 0.879 → 0.901. The register track is accepted as:
+  full-range reachability (`ScaleLadder`), an unbiased Shuffle window
+  (anchor drawn over `octave_window_count`), wrap-free RhythmCopy (a reflecting
+  `DegreeCursor`), and endpoint-local RepeatVariation (variation chosen local
+  to the bar's actual penultimate degree, closing the proven dense-grid
+  counterexample). A generic register-coherence rerank axis is **not**
+  justified — repairing candidate generation was sufficient, and scoring stays
+  free of malformed-candidate hiding.
+
+  Documentation corrections to the experimental record:
+  - the register candidate *scan* used **10 variants/strategy** (50 candidates
+    per condition, 2500 total);
+  - the *winner* CLI command omitted `--candidates`, so it used the default
+    **2 variants/strategy** (10 ranked) — the two configs are distinct;
+  - `25.36 → 6.02` is the **mean** winner max interval; the observed **maximum**
+    max interval is `57 → 12`;
+  - the bias CSV records observed output minima unless the harness genuinely
+    exposes the internal anchor index.
+
+  Still frozen: `TonalCenter` and cadence (both awaiting a real tonal center);
+  no reranker policy v2.
+
+- 2026-07-12 — **TonalContext Phase 1: shared tonal evidence/inference layer.**
+  In the context of generation having only a pitch-class palette and no notion
+  of a tonal center, and facing a key estimator that was private to
+  `complement`, single-winner, and part-scoped, we decided to generalise
+  `complement::estimate_harmony` into a pure-core module `core/src/tonal.rs`
+  split into *evidence* (raw, observed facts) and *inference* (a scored,
+  uncertain estimate), and against inventing a second estimator or wiring any of
+  it into generation yet:
+  - `PitchEvidence::measure(score, scope)` projects an explicit `EvidenceScope`
+    (whole-score / track / voice) into raw `onset_counts: [u32;12]`,
+    `duration_mass: [u64;12]` (summed ticks), `note_count`, and the observed
+    `feature::PitchRange` — additive across scopes (whole = Σ tracks = Σ voices);
+  - `estimate_key` ranks all 24 keys best-first into a `TonalEstimate` with an
+    explicit `confidence_margin` (winner − runner-up); each `TonalCandidate`
+    carries tonic, `KeyMode`, Pearson correlation and its own `scale_fit`;
+  - KS v1 stays duration-only: duration mass weights the histogram, raw onset
+    counts are the fallback only when total duration mass is zero — no
+    onset/duration blend and no metric-accent policy;
+  - an exactly flat histogram scores every key at a finite `0.0`, margin `0.0`,
+    C-major-first tie order — an ordering convention, explicitly not confidence.
+  `complement::estimate_harmony` now projects the winning candidate into
+  `HarmonicContext`; `KeyMode` moved to `tonal` and is re-exported from
+  `complement`, so its public path is unchanged. To achieve one shared estimator
+  with explicit uncertainty, accepting that the richer estimate is not yet
+  consumed anywhere. Characterization held: all existing complement/structure
+  tests and the tie ordering are unchanged (no golden change). Scope guardrails
+  held — no generation/reranker/cadence/track-selection change and no
+  `PitchMaterial` change. Uncalibrated by design: no confidence thresholds and no
+  automatic scope selection (the diatonic ≈ 0.076 / pentatonic ≈ 0.085 margins
+  are diagnostics, not cutoffs). Phase 0 note amended (§7) to record what shipped
+  and that a real-song key is a hypothesis for a scope, not verified truth.
+  Cadence and `TonalCenter` stay frozen.
+
+- 2026-07-12 — **TonalContext Phase 1: ACCEPTED AND CLOSED.** Focused local
+  equivalence validation is green and independently reviewed; the cloud
+  implementation (red `6f9114d`, green `184b586`, docs `e2c9c7f`) is accepted
+  against the local validation commit
+  `bd2c7c8575858de414861dd3bf8562f70597ce06`. Acceptance figures:
+  - `HarmonicContext` exact equivalence: **16/16, 0 changed**;
+  - structure-consumer equivalence: **7/7 byte-identical**;
+  - core evidence mapping vs. the frozen prototype facts: **39/39, 0
+    mismatches**;
+  - histogram additivity (whole = Σ tracks = Σ voices): **PASS**;
+  - 24 finite candidates per scope: **PASS**;
+  - generation byte smoke: **30/30 identical**.
+
+  Follow-up archival/housekeeping commit
+  `3993bb096ebb4dded8bd71501ff9801b9f2cf81d` added `phase1_evidence.jsonl`,
+  regenerated the generation-smoke CSV with full 64-hex SHA-256, reconfirmed
+  30/30 byte-identical via `cmp`, and documented the exact comparison
+  methodology.
+
+  **No generation behavior changed.** Frozen status carried forward unchanged:
+  confidence thresholds **not calibrated**; automatic scope selection **not
+  approved**; generation integration **frozen**; cadence **frozen**; Phase 2
+  **not started**.

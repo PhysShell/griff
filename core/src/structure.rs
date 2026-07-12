@@ -53,7 +53,7 @@ use crate::event::{Pitch, SpanTechnique, Ticks, Tuning};
 use crate::fretboard::{measure_playability, FingeringWeights, STANDARD_MAX_FRET};
 use crate::generate::{
     bar_duration_ticks, generate, GenerationConstraints, GenerationError, GenerationSeed,
-    GenerationStrategy, PitchMaterial, RuleGenerationRequest,
+    GenerationStrategy, PitchMaterial, RhythmTemplate, RuleGenerationRequest,
 };
 use crate::score::{
     AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
@@ -660,7 +660,7 @@ pub struct StructuredRequest {
     /// Structural constraints; `bar_count` is the **target span** in bars.
     pub constraints: GenerationConstraints,
     /// Rhythm templates for strategies that need them.
-    pub source_rhythms: Vec<Vec<Ticks>>,
+    pub source_rhythms: Vec<RhythmTemplate>,
     /// S6 strategy used to generate the base motif.
     pub strategy: GenerationStrategy,
     /// The structure control to compile.
