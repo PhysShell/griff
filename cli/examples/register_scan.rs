@@ -72,6 +72,48 @@ fn ordered_pitches(score: &Score) -> Vec<u8> {
     op.into_iter().map(|(_, p)| p).collect()
 }
 
+/// Per-bar structure for RepeatVariation checks: the first sounding bar's note
+/// count (the grid the pattern repeats) and the largest in-bar penultimate->last
+/// interval (the varied last note vs its predecessor — the wrap can hide here on
+/// long grids even when the whole-line max interval looks fine).
+fn bar_metrics(score: &Score) -> (usize, u32) {
+    let Some(track) = first_note_track(score) else {
+        return (0, 0);
+    };
+    let Some(v) = score.tracks.get(track).and_then(|t| t.voices.first()) else {
+        return (0, 0);
+    };
+    let notes: Vec<(u32, u8)> = v
+        .event_groups
+        .iter()
+        .flat_map(|g| &g.atoms)
+        .filter_map(|a| match a {
+            AtomEvent::Note(n) => Some((n.absolute_start.0, n.pitch.0)),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+    let mut grid = 0usize;
+    let mut var_prev = 0u32;
+    for bar in &score.master_bars {
+        let (s, e) = (bar.tick_range.start.0, bar.tick_range.end.0);
+        let mut bn: Vec<(u32, u8)> = notes
+            .iter()
+            .copied()
+            .filter(|(o, _)| *o >= s && *o < e)
+            .collect();
+        bn.sort_by_key(|(o, _)| *o);
+        if grid == 0 && !bn.is_empty() {
+            grid = bn.len();
+        }
+        if bn.len() >= 2 {
+            let last = bn[bn.len() - 1].1;
+            let penult = bn[bn.len() - 2].1;
+            var_prev = var_prev.max((i32::from(last) - i32::from(penult)).unsigned_abs());
+        }
+    }
+    (grid, var_prev)
+}
+
 /// Highest / lowest in-class pitch inside `[in_lo, in_hi]` — the ladder's top /
 /// bottom rung; falls back to `in_lo` when the range misses the palette (mirrors
 /// `ScaleLadder::build`, so saturation lands on the same rung the generator uses).
@@ -295,8 +337,9 @@ fn main() -> Result<(), String> {
                     let set_size = cands.len();
                     for c in &cands {
                         let line = ordered_pitches(&c.score);
+                        let (grid_nc, var_prev) = bar_metrics(&c.score);
                         println!(
-                            "{{\"type\":\"candidate\",\"input\":{},\"seed\":{seed},\"gesture\":\"{glabel}\",\"strategy\":\"{:?}\",\"variant_seed\":\"{}\",\"variants_per_strategy\":{variants},\"candidate_set_size\":{set_size},\"pitch_lo_constraint\":{in_lo},\"pitch_hi_constraint\":{in_hi},\"input_span\":{},{}}}",
+                            "{{\"type\":\"candidate\",\"input\":{},\"seed\":{seed},\"gesture\":\"{glabel}\",\"strategy\":\"{:?}\",\"variant_seed\":\"{}\",\"variants_per_strategy\":{variants},\"candidate_set_size\":{set_size},\"grid_note_count\":{grid_nc},\"variation_prev_interval\":{var_prev},\"pitch_lo_constraint\":{in_lo},\"pitch_hi_constraint\":{in_hi},\"input_span\":{},{}}}",
                             jstr(iname), c.strategy, c.seed.0, in_hi - in_lo, register_fields(&line, in_lo, in_hi, &pc_abs)
                         );
                     }
