@@ -89,7 +89,7 @@ fn ladder_ends(in_lo: u8, in_hi: u8, palette: &[u8]) -> (u8, u8) {
 /// pitches), as embeddable JSON fields. `palette` = the input's pitch classes.
 fn register_fields(pitches: &[u8], in_lo: u8, in_hi: u8, palette: &[u8]) -> String {
     if pitches.is_empty() {
-        return "\"output_min\":0,\"output_max\":0,\"output_span\":0,\"range_utilization\":0.0,\"distinct_pitch\":0,\"distinct_pitch_classes\":0,\"lowest_octave_share\":0.0,\"highest_octave_share\":0.0,\"edge_low_share\":0.0,\"edge_high_share\":0.0,\"exact_low_share\":0.0,\"exact_high_share\":0.0,\"mode_pitch_share\":0.0,\"longest_same_pitch_run\":0,\"mean_abs_interval\":0.0,\"max_abs_interval\":0,\"largest_upward_interval\":0,\"largest_downward_interval\":0,\"octave_leap_count\":0,\"octave_leap_share\":0.0,\"at_least_octave_share\":0.0,\"exact_octave_share\":0.0,\"over_octave_share\":0.0,\"alternation_rate\":0.0,\"pitch_hash\":\"0\",\"pitch_stddev\":0.0,\"in_bounds_rate\":0.0,\"in_class_rate\":0.0".to_string();
+        return "\"output_min\":0,\"output_max\":0,\"output_span\":0,\"range_utilization\":0.0,\"distinct_pitch\":0,\"distinct_pitch_classes\":0,\"lowest_octave_share\":0.0,\"highest_octave_share\":0.0,\"edge_low_share\":0.0,\"edge_high_share\":0.0,\"exact_low_share\":0.0,\"exact_high_share\":0.0,\"mode_pitch_share\":0.0,\"longest_same_pitch_run\":0,\"mean_abs_interval\":0.0,\"max_abs_interval\":0,\"largest_upward_interval\":0,\"largest_downward_interval\":0,\"octave_leap_count\":0,\"octave_leap_share\":0.0,\"at_least_octave_share\":0.0,\"exact_octave_share\":0.0,\"over_octave_share\":0.0,\"alternation_rate\":0.0,\"boundary_reversal_count\":0,\"boundary_plateau_run\":0,\"pitch_hash\":\"0\",\"pitch_stddev\":0.0,\"in_bounds_rate\":0.0,\"in_class_rate\":0.0".to_string();
     }
     let n = pitches.len() as f64;
     let omin = *pitches.iter().min().unwrap();
@@ -176,6 +176,31 @@ fn register_fields(pitches: &[u8], in_lo: u8, in_hi: u8, palette: &[u8]) -> Stri
         phash ^= u64::from(p);
         phash = phash.wrapping_mul(0x0000_0100_0000_01b3);
     }
+    // boundary behaviour — reflecting traversal reverses AT a rung end; a clamp
+    // saturates INTO a run at a rung end. Both distinguish wrap-free fixes.
+    let at_bound = |p: u8| p == lad_lo || p == lad_hi;
+    let boundary_reversals = if pitches.len() < 3 {
+        0
+    } else {
+        (1..pitches.len() - 1)
+            .filter(|&i| {
+                at_bound(pitches[i])
+                    && signed[i - 1] != 0
+                    && signed[i] != 0
+                    && (signed[i - 1] > 0) != (signed[i] > 0)
+            })
+            .count()
+    };
+    let mut boundary_plateau = 0u32;
+    let mut bcur = 0u32;
+    for &p in pitches {
+        if at_bound(p) {
+            bcur += 1;
+            boundary_plateau = boundary_plateau.max(bcur);
+        } else {
+            bcur = 0;
+        }
+    }
     let pmean = pitches.iter().map(|&p| f64::from(p)).sum::<f64>() / n;
     let pstd = (pitches
         .iter()
@@ -184,7 +209,7 @@ fn register_fields(pitches: &[u8], in_lo: u8, in_hi: u8, palette: &[u8]) -> Stri
         / n)
         .sqrt();
     format!(
-        "\"output_min\":{omin},\"output_max\":{omax},\"output_span\":{ospan},\"range_utilization\":{util:.3},\"distinct_pitch\":{},\"distinct_pitch_classes\":{},\"lowest_octave_share\":{low_share:.3},\"highest_octave_share\":{high_share:.3},\"edge_low_share\":{edge_low:.3},\"edge_high_share\":{edge_high:.3},\"exact_low_share\":{exact_low:.3},\"exact_high_share\":{exact_high:.3},\"mode_pitch_share\":{mode_share:.3},\"longest_same_pitch_run\":{longest},\"mean_abs_interval\":{mean_int:.2},\"max_abs_interval\":{max_int},\"largest_upward_interval\":{up},\"largest_downward_interval\":{down},\"octave_leap_count\":{oct_leaps},\"octave_leap_share\":{oct_leap_share:.3},\"at_least_octave_share\":{oct_leap_share:.3},\"exact_octave_share\":{exact_octave:.3},\"over_octave_share\":{over_octave:.3},\"alternation_rate\":{alternation:.3},\"pitch_hash\":\"{phash:016x}\",\"pitch_stddev\":{pstd:.2},\"in_bounds_rate\":{in_bounds:.3},\"in_class_rate\":{in_class:.3}",
+        "\"output_min\":{omin},\"output_max\":{omax},\"output_span\":{ospan},\"range_utilization\":{util:.3},\"distinct_pitch\":{},\"distinct_pitch_classes\":{},\"lowest_octave_share\":{low_share:.3},\"highest_octave_share\":{high_share:.3},\"edge_low_share\":{edge_low:.3},\"edge_high_share\":{edge_high:.3},\"exact_low_share\":{exact_low:.3},\"exact_high_share\":{exact_high:.3},\"mode_pitch_share\":{mode_share:.3},\"longest_same_pitch_run\":{longest},\"mean_abs_interval\":{mean_int:.2},\"max_abs_interval\":{max_int},\"largest_upward_interval\":{up},\"largest_downward_interval\":{down},\"octave_leap_count\":{oct_leaps},\"octave_leap_share\":{oct_leap_share:.3},\"at_least_octave_share\":{oct_leap_share:.3},\"exact_octave_share\":{exact_octave:.3},\"over_octave_share\":{over_octave:.3},\"alternation_rate\":{alternation:.3},\"boundary_reversal_count\":{boundary_reversals},\"boundary_plateau_run\":{boundary_plateau},\"pitch_hash\":\"{phash:016x}\",\"pitch_stddev\":{pstd:.2},\"in_bounds_rate\":{in_bounds:.3},\"in_class_rate\":{in_class:.3}",
         dp.len(), dpc.len()
     )
 }
