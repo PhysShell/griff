@@ -231,8 +231,15 @@ pub struct RegisterStats {
     pub mean_abs_interval: f64,
     /// Largest absolute interval between successive notes, in semitones.
     pub max_abs_interval: u8,
-    /// Share of successive intervals larger than an octave (> 12 semitones).
-    pub octave_leap_share: f64,
+    /// Share of successive intervals **strictly greater** than an octave
+    /// (> 12 semitones).
+    pub over_octave_share: f64,
+    /// Share of successive intervals that are **exactly** an octave
+    /// (== 12 semitones).
+    pub exact_octave_share: f64,
+    /// Share of successive intervals **at least** an octave (≥ 12 semitones) —
+    /// the sum of the exact and over-octave shares.
+    pub at_least_octave_share: f64,
     /// Population standard deviation of the pitches.
     pub pitch_stddev: f64,
 }
@@ -249,25 +256,33 @@ impl RegisterStats {
                 _ => None,
             })
             .collect();
-        let (mean_abs_interval, max_abs_interval, octave_leap_share) = if intervals.is_empty() {
-            (0.0, 0, 0.0)
-        } else {
-            #[allow(clippy::cast_precision_loss)] // counts are tiny
-            let n = intervals.len() as f64;
-            let sum: u32 = intervals.iter().map(|&i| u32::from(i)).sum();
-            let max = intervals.iter().copied().max().unwrap_or(0);
-            let leaps = intervals.iter().filter(|&&i| i > 12).count();
-            #[allow(clippy::cast_precision_loss)]
-            let mean = f64::from(sum) / n;
-            #[allow(clippy::cast_precision_loss)]
-            let share = leaps as f64 / n;
-            #[allow(clippy::cast_possible_truncation)] // ≤ 127 by MIDI range
-            (mean, max.min(255) as u8, share)
-        };
+        if intervals.is_empty() {
+            return Self {
+                mean_abs_interval: 0.0,
+                max_abs_interval: 0,
+                over_octave_share: 0.0,
+                exact_octave_share: 0.0,
+                at_least_octave_share: 0.0,
+                pitch_stddev: stddev(pitches),
+            };
+        }
+        #[allow(clippy::cast_precision_loss)] // counts are tiny
+        let n = intervals.len() as f64;
+        let sum: u32 = intervals.iter().map(|&i| u32::from(i)).sum();
+        let max = intervals.iter().copied().max().unwrap_or(0);
+        let over = intervals.iter().filter(|&&i| i > 12).count();
+        let exact = intervals.iter().filter(|&&i| i == 12).count();
+        #[allow(clippy::cast_precision_loss)] // counts are tiny
+        let share = |count: usize| count as f64 / n;
+        #[allow(clippy::cast_precision_loss)]
+        let mean = f64::from(sum) / n;
+        #[allow(clippy::cast_possible_truncation)] // ≤ 127 by MIDI range
         Self {
-            mean_abs_interval,
-            max_abs_interval,
-            octave_leap_share,
+            mean_abs_interval: mean,
+            max_abs_interval: max.min(255) as u8,
+            over_octave_share: share(over),
+            exact_octave_share: share(exact),
+            at_least_octave_share: share(over.saturating_add(exact)),
             pitch_stddev: stddev(pitches),
         }
     }

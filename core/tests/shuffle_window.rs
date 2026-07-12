@@ -99,15 +99,55 @@ fn octave_window_handles_narrow_and_single_rung_ladders() {
 
 #[test]
 fn register_stats_measure_interval_shape() {
-    // Ascending octave line: intervals all +12 → every step is an octave leap.
+    // Exact-octave line [40,52,64]: intervals 12, 12 — exactly an octave each,
+    // so over-octave (> 12) is 0 while exact-octave (== 12) is all of them.
     let stats = RegisterStats::measure(&[40, 52, 64]);
-    assert!((stats.octave_leap_share - 0.0).abs() < 1e-9 || stats.octave_leap_share <= 1.0);
-    assert_eq!(stats.max_abs_interval, 12);
-    // A flat line has zero spread and zero leaps.
+    assert!(
+        (stats.mean_abs_interval - 12.0).abs() < 1e-9,
+        "mean interval 12"
+    );
+    assert_eq!(stats.max_abs_interval, 12, "max interval 12");
+    assert!(
+        (stats.over_octave_share - 0.0).abs() < 1e-9,
+        "no interval > 12"
+    );
+    assert!(
+        (stats.exact_octave_share - 1.0).abs() < 1e-9,
+        "every interval == 12"
+    );
+    assert!(
+        (stats.at_least_octave_share - 1.0).abs() < 1e-9,
+        ">= 12 is all"
+    );
+
+    // A flat line has zero spread and zero leaps of any kind.
     let flat = RegisterStats::measure(&[50, 50, 50]);
     assert_eq!(flat.max_abs_interval, 0);
-    assert!((flat.octave_leap_share - 0.0).abs() < 1e-9);
+    assert!((flat.over_octave_share - 0.0).abs() < 1e-9);
+    assert!((flat.exact_octave_share - 0.0).abs() < 1e-9);
+    assert!((flat.at_least_octave_share - 0.0).abs() < 1e-9);
     assert!((flat.pitch_stddev - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn register_stats_split_octave_families_on_mixed_intervals() {
+    // Intervals 5, 12, 13: a below-octave step, an exact octave, and an
+    // over-octave leap — the three octave shares must separate cleanly.
+    let stats = RegisterStats::measure(&[50, 55, 67, 80]);
+    assert_eq!(stats.max_abs_interval, 13);
+    assert!((stats.mean_abs_interval - 10.0).abs() < 1e-9, "(5+12+13)/3");
+    assert!(
+        (stats.over_octave_share - 1.0 / 3.0).abs() < 1e-9,
+        "only 13 is > 12"
+    );
+    assert!(
+        (stats.exact_octave_share - 1.0 / 3.0).abs() < 1e-9,
+        "only 12 is == 12"
+    );
+    assert!(
+        (stats.at_least_octave_share - 2.0 / 3.0).abs() < 1e-9,
+        "12 and 13 are >= 12"
+    );
 }
 
 // ── Shuffle generation contract ─────────────────────────────────────────────────
@@ -171,10 +211,10 @@ fn shuffle_candidate_stays_within_one_octave() {
             assert!((28..=64).contains(p), "seed {seed}: pitch {p} out of range");
             assert!(chromatic().pitch_classes().contains_pitch(Pitch(*p)));
         }
-        // A one-octave window admits no >octave leap.
+        // A one-octave window admits no strictly-over-octave leap.
         assert!(
-            (RegisterStats::measure(&ps).octave_leap_share - 0.0).abs() < 1e-9,
-            "seed {seed}: octave-leap share must be zero inside a window"
+            (RegisterStats::measure(&ps).over_octave_share - 0.0).abs() < 1e-9,
+            "seed {seed}: over-octave share must be zero inside a window"
         );
     }
 }
