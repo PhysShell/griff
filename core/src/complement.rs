@@ -1381,11 +1381,13 @@ fn band_scale_ladder(lo: u8, hi: u8, intervals: &[u8]) -> Vec<u8> {
 
     let range = LadderRange::new(Pitch(lo), Pitch(hi));
     let classes = PitchClassSet::new(intervals.iter().map(|&i| lo.wrapping_add(i)));
-    ScaleLadder::build(&range, &classes)
-        .pitches()
-        .iter()
-        .map(|p| p.0)
-        .collect()
+    // The arranger tolerates a bare `lo` floor when the palette selects nothing
+    // in range (its pre-existing behaviour) — the strict always-in-class
+    // contract is the generator's, enforced there via the `Result`.
+    ScaleLadder::build(&range, &classes).map_or_else(
+        |_| vec![lo],
+        |ladder| ladder.pitches().iter().map(|p| p.0).collect(),
+    )
 }
 
 /// Seed-deterministic scale-degree (`ladder_index`) picker for note `index`

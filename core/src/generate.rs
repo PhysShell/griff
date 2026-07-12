@@ -3,7 +3,7 @@
 use crate::event::{
     NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, ValidationError, Velocity,
 };
-use crate::pitch::{PitchClassSet, PitchRange, ScaleLadder};
+use crate::pitch::{PitchClassSet, PitchRange, PitchSelectionError, ScaleLadder};
 use crate::score::{
     AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
     Track, Voice,
@@ -299,6 +299,15 @@ pub enum GenerationError {
     BarCountZero,
     /// `RhythmCopyPitchSubstitute` requires at least one non-empty source rhythm.
     RhythmTemplateMissing,
+    /// No pitch could be selected: the palette is empty, or no allowed pitch
+    /// class falls in `[pitch_lo, pitch_hi]` (from [`ScaleLadder::build`]).
+    PitchSelection(PitchSelectionError),
+}
+
+impl From<PitchSelectionError> for GenerationError {
+    fn from(e: PitchSelectionError) -> Self {
+        Self::PitchSelection(e)
+    }
 }
 
 /// Generates a single candidate phrase using the requested rule-based strategy.
@@ -343,7 +352,7 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
     let ladder = ScaleLadder::build(
         &PitchRange::new(c.pitch_lo, c.pitch_hi),
         &request.pitch_material.pitch_classes(),
-    );
+    )?;
 
     let bars = match request.strategy {
         GenerationStrategy::RhythmCopyPitchSubstitute => {

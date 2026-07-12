@@ -89,7 +89,10 @@ fn scale_ladder_spans_the_full_range_in_class() {
 fn scale_ladder_empty_class_set_errors() {
     // An empty palette has no in-class pitch — the ladder must NOT fall back
     // to `lo` (which would silently break the always-in-class contract).
-    let err = ScaleLadder::build(&PitchRange::new(Pitch(40), Pitch(60)), &PitchClassSet::new([]));
+    let err = ScaleLadder::build(
+        &PitchRange::new(Pitch(40), Pitch(60)),
+        &PitchClassSet::new([]),
+    );
     assert_eq!(err, Err(PitchSelectionError::EmptyPitchClassSet));
 }
 
@@ -97,7 +100,10 @@ fn scale_ladder_empty_class_set_errors() {
 fn scale_ladder_no_allowed_pitch_in_range_errors() {
     // Palette {C} (class 0); range [41,42] contains no C — an explicit error,
     // not a fallback to an out-of-palette pitch.
-    let err = ScaleLadder::build(&PitchRange::new(Pitch(41), Pitch(42)), &PitchClassSet::new([0]));
+    let err = ScaleLadder::build(
+        &PitchRange::new(Pitch(41), Pitch(42)),
+        &PitchClassSet::new([0]),
+    );
     assert_eq!(err, Err(PitchSelectionError::NoAllowedPitchInRange));
 }
 
@@ -105,9 +111,11 @@ fn scale_ladder_no_allowed_pitch_in_range_errors() {
 fn scale_ladder_single_allowed_note_is_ok() {
     // A narrow range holding exactly one in-class pitch resolves to a
     // one-rung ladder (that pitch), not an error.
-    let ladder =
-        ScaleLadder::build(&PitchRange::new(Pitch(47), Pitch(49)), &PitchClassSet::new([0])) // C=48
-            .expect("one C in [47,49]");
+    let ladder = ScaleLadder::build(
+        &PitchRange::new(Pitch(47), Pitch(49)),
+        &PitchClassSet::new([0]),
+    ) // C=48
+    .expect("one C in [47,49]");
     assert_eq!(ladder.pitches(), &[Pitch(48)]);
 }
 

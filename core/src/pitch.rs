@@ -73,28 +73,47 @@ impl PitchClassSet {
     }
 }
 
+/// Why a [`ScaleLadder`] cannot be built: the palette selects no pitch, so no
+/// degree can resolve in-class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PitchSelectionError {
+    /// The [`PitchClassSet`] is empty — no classes to select.
+    EmptyPitchClassSet,
+    /// The palette is non-empty, but no allowed pitch falls in the range.
+    NoAllowedPitchInRange,
+}
+
 /// The ascending ladder of every pitch in a [`PitchRange`] whose class is in a
 /// [`PitchClassSet`].
 ///
-/// Never empty: an empty class set — or one whose classes never land in range
-/// — falls back to the range's `lo`, so a degree always resolves to a pitch.
+/// Never empty by construction: [`build`](ScaleLadder::build) returns
+/// [`PitchSelectionError`] rather than fall back to an out-of-palette pitch, so
+/// every rung — and every degree — is guaranteed in-class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScaleLadder {
     pitches: Vec<Pitch>,
 }
 
 impl ScaleLadder {
-    /// Builds the ladder over `range` from the `classes` palette.
-    #[must_use]
-    pub fn build(range: &PitchRange, classes: &PitchClassSet) -> Self {
-        let mut pitches: Vec<Pitch> = (range.lo.0..=range.hi.0)
+    /// Builds the ladder over `range` from the `classes` palette, or reports
+    /// why no in-class pitch is available (empty palette, or none in range).
+    ///
+    /// # Errors
+    /// [`PitchSelectionError::EmptyPitchClassSet`] when `classes` is empty;
+    /// [`PitchSelectionError::NoAllowedPitchInRange`] when the palette is
+    /// non-empty but no allowed pitch falls in `range`.
+    pub fn build(range: &PitchRange, classes: &PitchClassSet) -> Result<Self, PitchSelectionError> {
+        if classes.is_empty() {
+            return Err(PitchSelectionError::EmptyPitchClassSet);
+        }
+        let pitches: Vec<Pitch> = (range.lo.0..=range.hi.0)
             .map(Pitch)
             .filter(|&p| classes.contains_pitch(p))
             .collect();
         if pitches.is_empty() {
-            pitches.push(range.lo);
+            return Err(PitchSelectionError::NoAllowedPitchInRange);
         }
-        Self { pitches }
+        Ok(Self { pitches })
     }
 
     /// Number of rungs (always ≥ 1).
@@ -136,7 +155,8 @@ mod tests {
     #[test]
     fn ladder_at_clamps_past_the_top() {
         let classes = PitchClassSet::new([0, 7]); // C, G
-        let ladder = ScaleLadder::build(&PitchRange::new(Pitch(48), Pitch(60)), &classes);
+        let ladder =
+            ScaleLadder::build(&PitchRange::new(Pitch(48), Pitch(60)), &classes).expect("in-class");
         // C3(48) G3(55) C4(60)
         assert_eq!(ladder.pitches(), &[Pitch(48), Pitch(55), Pitch(60)]);
         assert_eq!(ladder.at(0), Pitch(48));
