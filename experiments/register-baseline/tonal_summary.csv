@@ -1,0 +1,28 @@
+input,all_tracks_distinct_pc,rank,scope,tonic,mode,score,margin
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",12,1,all_tracks,E,minor,0.9204,0.2875
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",12,2,track_1,E,minor,0.9119,0.2724
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",12,3,track_1_v0,E,minor,0.9119,0.2724
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",12,4,track_0,D,major,0.8174,0.0647
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",12,5,track_0_v0,D,major,0.8174,0.0647
+"Wolf & Bear - Deleto.gp5",12,1,track_0,C#,minor,0.7866,0.1557
+"Wolf & Bear - Deleto.gp5",12,2,track_0_v0,C#,minor,0.7866,0.1557
+"Wolf & Bear - Deleto.gp5",12,3,track_2,F#,major,0.7493,0.0844
+"Wolf & Bear - Deleto.gp5",12,4,track_2_v0,F#,major,0.7493,0.0844
+"Wolf & Bear - Deleto.gp5",12,5,all_tracks,F#,major,0.7242,0.0747
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",12,1,all_tracks,D,major,0.7471,0.0975
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",12,2,track_0,D,major,0.7017,0.0855
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",12,3,track_0_v0,D,major,0.7017,0.0855
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",12,4,track_1,A,major,0.6921,0.0174
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",12,5,track_1_v0,A,major,0.6921,0.0174
+"synth_wide_diatonic.mid",7,1,all_tracks,C,major,0.8160,0.0757
+"synth_wide_diatonic.mid",7,2,track_0,C,major,0.8160,0.0757
+"synth_wide_diatonic.mid",7,3,track_0_v0,C,major,0.8160,0.0757
+"synth_wide_pentatonic.mid",5,1,all_tracks,C,major,0.8049,0.0854
+"synth_wide_pentatonic.mid",5,2,track_0,C,major,0.8049,0.0854
+"synth_wide_pentatonic.mid",5,3,track_0_v0,C,major,0.8049,0.0854
+"synth_wide_chromatic.mid",12,1,all_tracks,C,major,0.6845,0.0003
+"synth_wide_chromatic.mid",12,2,track_0,C,major,0.6845,0.0003
+"synth_wide_chromatic.mid",12,3,track_0_v0,C,major,0.6845,0.0003
+"synth_narrow_diatonic.mid",7,1,all_tracks,C,major,0.7564,0.0443
+"synth_narrow_diatonic.mid",7,2,track_0,C,major,0.7564,0.0443
+"synth_narrow_diatonic.mid",7,3,track_0_v0,C,major,0.7564,0.0443
