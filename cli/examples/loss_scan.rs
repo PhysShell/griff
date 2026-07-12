@@ -83,7 +83,11 @@ fn main() {
             }
             Ok(score) => {
                 let warnings: Vec<String> = score.loss.warnings.iter().map(warn_kind).collect();
-                let status = if warnings.is_empty() { "clean" } else { "lossy" };
+                let status = if warnings.is_empty() {
+                    "clean"
+                } else {
+                    "lossy"
+                };
                 let kinds = warnings
                     .iter()
                     .map(|k| format!("\"{}\"", jesc(k)))
