@@ -1472,11 +1472,36 @@ Architectural decisions go to [`adr/`](adr/) instead.
   never won to mask the effect, and repeat runs were byte-identical
   (determinism, SPEC §6). The parked refinements above stand.
 
-- 2026-07-12 — Clarification (no code decision): in the A/B tooling's report,
-  `candidates=10` is the **variants-per-strategy** flag, so the reranked set is
-  10 × 5 strategies = **50** candidates (fewer only when `RhythmCopyPitchSubstitute`
-  is skipped for want of a template) — the reranker does not choose from ten. The
-  CLI `--candidates` help and the ranking line are reworded to say so.
+- 2026-07-12 — Clarification (no code decision), **corrected**: the rotation
+  A/B did **not** pass `--candidates` — it ran at the default **2**
+  variants-per-strategy, so `candidates=10` in that tooling's JSON is the
+  *ranked-set size* (2 × 5 strategies = 10 total ranked candidates), not a
+  variant count. (The later register baseline is a different config: 10
+  variants-per-strategy → 50 candidates per condition, 2500 total.) The
+  `--candidates` flag semantics themselves are variants-per-strategy, and the
+  CLI help / ranking line already say so — only this historical A/B
+  description is corrected here; an earlier draft wrongly read the rotation run
+  as "10 × 5 = 50".
+
+- 2026-07-12 — **Register status: NOT accepted yet.** The structural
+  first-octave confinement is confirmed and the shared full-range
+  `ScaleLadder` is implemented, but behavioral acceptance is **pending a
+  corpus/synthetic post-fix A/B** (bounds, class membership, register
+  reachability, candidate- and winner-level span, max/mean intervals, exact
+  low/high boundary shares, top-clamp saturation, longest repeated-pitch run,
+  winner distribution). Until those numbers are in, the register decision
+  stays pending — `TonalCenter` and cadence remain not-started. Checkable
+  risks of the current strategy code, to be measured (not pre-fixed): (a)
+  `ShuffleMotifs` draws every note from the whole ladder → possible
+  many-octave leaps; (b) `MotifTransposeVariation` uses positive degree
+  offsets + top clamp → possible saturation on the top rung; (c)
+  `RepeatVariation`/`build_ascending_bar` can likewise saturate at the top;
+  (d) `RhythmCopyPitchSubstitute`'s full ascending wrap can jump high→low; (e)
+  the reranker has no register-coherence axis. The likely post-measurement
+  shape (a **parked** direction, not this increment): full `ScaleLadder` → a
+  deterministic per-candidate `LadderWindow`/`RegisterPlan` → local strategy
+  movement, so the full range is reachable *between variants* without every
+  note using it.
 
 - 2026-07-12 — In the context of the register the rotation A/B exposed (~one
   octave, low — `rhythm_copy`/`shuffle` walked degrees only in `[0, scale_len)`,
