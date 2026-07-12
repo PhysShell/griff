@@ -283,3 +283,149 @@ fn repeat_variation_narrow_ladders_work() {
         }
     }
 }
+
+// ── RepeatVariation: endpoint-local on DENSE grids ──────────────────────────────
+
+/// An `n`-note template filling a 4/4 bar (1920 ticks) — a dense grid whose
+/// ascending base bar climbs many rungs, so a base-local variation would be a
+/// large intra-bar drop from the (high) penultimate note.
+fn dense_template(n: usize) -> RhythmTemplate {
+    let dur = u32::try_from(1920 / n.max(1)).unwrap_or(30);
+    RhythmTemplate::from_durations(&vec![Ticks(dur.max(1)); n])
+}
+
+/// `(material, lo, hi)` covering the arbiter's matrix.
+fn repeat_materials() -> Vec<(PitchMaterial, u8, u8)> {
+    vec![
+        (chromatic(), 28, 64),                 // wide chromatic
+        (pentatonic(), 28, 64),                // wide pentatonic
+        (material_at(48, vec![0, 7]), 48, 55), // narrow two-rung (C,G)
+        (material_at(48, vec![0]), 48, 49),    // single-rung
+    ]
+}
+
+fn material_at(root: u8, intervals: Vec<u8>) -> PitchMaterial {
+    PitchMaterial {
+        root: Pitch(root),
+        intervals,
+    }
+}
+
+/// Per-bar pitch lists (onset order within each 1920-tick bar).
+fn bars_pitches(score: &Score) -> Vec<Vec<u8>> {
+    let mut bars = vec![Vec::new(); score.master_bars.len()];
+    for group in &score.tracks[0].voices[0].event_groups {
+        for atom in &group.atoms {
+            if let AtomEvent::Note(n) = atom {
+                let bar = (n.absolute_start.0 / 1920) as usize;
+                if let Some(b) = bars.get_mut(bar) {
+                    b.push(n.pitch.0);
+                }
+            }
+        }
+    }
+    bars
+}
+
+#[test]
+fn repeat_variation_endpoint_local_across_grid_sizes() {
+    for (pm, lo, hi) in repeat_materials() {
+        let constraints = GenerationConstraints {
+            pitch_lo: Pitch(lo),
+            pitch_hi: Pitch(hi),
+            ..wide(8)
+        };
+        for &n in &[4_usize, 6, 8, 16, 32, 64] {
+            let template = dense_template(n);
+            for seed in 0..256_u64 {
+                let mut req = request(
+                    GenerationStrategy::RepeatVariation,
+                    pm.clone(),
+                    seed,
+                    constraints,
+                );
+                req.source_rhythms = vec![template.clone()];
+                let c = generate(&req).expect("dense repeat generates");
+                let ps = pitches(&c.score);
+                assert!(!ps.is_empty(), "n={n} seed {seed}: empty line");
+                for p in &ps {
+                    assert!(
+                        (lo..=hi).contains(p),
+                        "n={n} seed {seed}: pitch {p} out of bounds"
+                    );
+                    assert!(
+                        pm.pitch_classes().contains_pitch(Pitch(*p)),
+                        "n={n} seed {seed}: out of class"
+                    );
+                }
+                assert!(
+                    max_abs_interval(&ps) <= 12,
+                    "n={n} seed {seed}: whole-line interval > 12"
+                );
+                // The variation replaces each varied bar's last note; the step
+                // from the (possibly high) penultimate must stay within an
+                // octave — the dense-grid endpoint-locality contract.
+                for (bar_index, bar) in bars_pitches(&c.score).iter().enumerate() {
+                    if bar_index >= 1 && bar.len() >= 2 {
+                        let last = bar[bar.len() - 1];
+                        let penult = bar[bar.len() - 2];
+                        assert!(
+                            last.abs_diff(penult) <= 12,
+                            "n={n} seed {seed} bar {bar_index}: {penult} -> {last} exceeds an octave"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn repeat_variation_dense_grid_counterexample() {
+    // The proven counterexample: chromatic ladder (len 37), a 32-note grid.
+    // The ascending base bar reaches ~degree 31, so a base-local variation
+    // (~degree 2) is a ~28-semitone drop. The endpoint-local fix keeps the
+    // varied last note within an octave of the penultimate.
+    let pm = chromatic();
+    for seed in 0..96_u64 {
+        let mut req = request(
+            GenerationStrategy::RepeatVariation,
+            pm.clone(),
+            seed,
+            wide(4),
+        );
+        req.source_rhythms = vec![dense_template(32)];
+        let c = generate(&req).expect("gen");
+        for (bar_index, bar) in bars_pitches(&c.score).iter().enumerate() {
+            if bar_index >= 1 && bar.len() >= 2 {
+                let last = bar[bar.len() - 1];
+                let penult = bar[bar.len() - 2];
+                assert!(
+                    last.abs_diff(penult) <= 12,
+                    "seed {seed} bar {bar_index}: dense-grid jump {penult} -> {last}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn repeat_variation_differs_from_final_and_is_deterministic() {
+    // On a wide ladder the variation must differ from the base bar's final
+    // note (an alternative always exists), and the request stays deterministic.
+    let pm = pentatonic();
+    let mut req = request(GenerationStrategy::RepeatVariation, pm, 77, wide(8));
+    req.source_rhythms = vec![dense_template(16)];
+    let a = generate(&req).expect("a");
+    let b = generate(&req).expect("b");
+    assert_eq!(pitches(&a.score), pitches(&b.score), "deterministic");
+
+    let bars = bars_pitches(&a.score);
+    assert!(bars.len() >= 2);
+    let base_last = *bars[0].last().unwrap();
+    let varied_last = *bars[1].last().unwrap();
+    assert_ne!(
+        varied_last, base_last,
+        "variation must differ from the base bar's final note when possible"
+    );
+}
