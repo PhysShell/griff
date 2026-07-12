@@ -38,7 +38,7 @@ use griff_core::{
         generate, GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial,
         RhythmTemplate, RuleGenerationRequest,
     },
-    pitch::{PitchClassSet, PitchRange, ScaleLadder},
+    pitch::{PitchClassSet, PitchRange, PitchSelectionError, ScaleLadder},
     rerank::{generate_candidate_set, SetRequest},
     score::{AtomEvent, Score},
 };
@@ -67,7 +67,8 @@ fn scale_ladder_spans_the_full_range_in_class() {
     // E minor pentatonic classes {E,G,A,B,D} over E1..E4 (28..=64): every rung
     // is in class, ascending, and the ladder covers more than one octave.
     let classes = PitchClassSet::new([2, 4, 7, 9, 11]); // D E G A B
-    let ladder = ScaleLadder::build(&PitchRange::new(Pitch(28), Pitch(64)), &classes);
+    let ladder =
+        ScaleLadder::build(&PitchRange::new(Pitch(28), Pitch(64)), &classes).expect("in-class");
 
     assert!(ladder.len() > 5, "a 3-octave pentatonic ladder is long");
     let pitches: Vec<u8> = ladder.pitches().iter().map(|p| p.0).collect();
@@ -85,13 +86,29 @@ fn scale_ladder_spans_the_full_range_in_class() {
 }
 
 #[test]
-fn scale_ladder_empty_class_set_falls_back_to_lo() {
-    let ladder = ScaleLadder::build(
-        &PitchRange::new(Pitch(40), Pitch(60)),
-        &PitchClassSet::new([]),
-    );
-    assert_eq!(ladder.len(), 1);
-    assert_eq!(ladder.pitches(), &[Pitch(40)]);
+fn scale_ladder_empty_class_set_errors() {
+    // An empty palette has no in-class pitch — the ladder must NOT fall back
+    // to `lo` (which would silently break the always-in-class contract).
+    let err = ScaleLadder::build(&PitchRange::new(Pitch(40), Pitch(60)), &PitchClassSet::new([]));
+    assert_eq!(err, Err(PitchSelectionError::EmptyPitchClassSet));
+}
+
+#[test]
+fn scale_ladder_no_allowed_pitch_in_range_errors() {
+    // Palette {C} (class 0); range [41,42] contains no C — an explicit error,
+    // not a fallback to an out-of-palette pitch.
+    let err = ScaleLadder::build(&PitchRange::new(Pitch(41), Pitch(42)), &PitchClassSet::new([0]));
+    assert_eq!(err, Err(PitchSelectionError::NoAllowedPitchInRange));
+}
+
+#[test]
+fn scale_ladder_single_allowed_note_is_ok() {
+    // A narrow range holding exactly one in-class pitch resolves to a
+    // one-rung ladder (that pitch), not an error.
+    let ladder =
+        ScaleLadder::build(&PitchRange::new(Pitch(47), Pitch(49)), &PitchClassSet::new([0])) // C=48
+            .expect("one C in [47,49]");
+    assert_eq!(ladder.pitches(), &[Pitch(48)]);
 }
 
 // ── generation contract ───────────────────────────────────────────────────────
@@ -237,6 +254,26 @@ fn narrow_range_still_generates_in_bounds() {
             );
         }
     }
+}
+
+#[test]
+fn generate_errors_when_no_palette_pitch_is_in_range() {
+    // A single-pitch range whose class is outside the pentatonic palette:
+    // the generator surfaces an explicit error instead of a silent
+    // out-of-palette floor.
+    let narrow = GenerationConstraints {
+        pitch_lo: Pitch(48), // C, class 0 — not in {2,4,7,9,11}
+        pitch_hi: Pitch(48),
+        ..wide(4)
+    };
+    let req = RuleGenerationRequest {
+        constraints: narrow,
+        ..request(GenerationStrategy::ConstrainedRandomWalk, 5)
+    };
+    assert!(
+        generate(&req).is_err(),
+        "no in-palette pitch in range must be a GenerationError, not a fallback"
+    );
 }
 
 #[test]
