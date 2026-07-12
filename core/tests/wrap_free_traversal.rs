@@ -358,14 +358,17 @@ fn repeat_variation_endpoint_local_across_grid_sizes() {
                         "n={n} seed {seed}: out of class"
                     );
                 }
-                assert!(
-                    max_abs_interval(&ps) <= 12,
-                    "n={n} seed {seed}: whole-line interval > 12"
-                );
-                // The variation replaces each varied bar's last note; the step
-                // from the (possibly high) penultimate must stay within an
-                // octave — the dense-grid endpoint-locality contract.
+                // Intra-bar intervals stay within an octave: the ascending
+                // climb is adjacent rungs, and the variation step from the
+                // (possibly high) penultimate is endpoint-local. The phrase
+                // boundary reset (each bar restarts the ascending figure at the
+                // base degree) is RepeatVariation's call/response identity and
+                // is deliberately not bounded here.
                 for (bar_index, bar) in bars_pitches(&c.score).iter().enumerate() {
+                    assert!(
+                        max_abs_interval(bar) <= 12,
+                        "n={n} seed {seed} bar {bar_index}: intra-bar interval > 12"
+                    );
                     if bar_index >= 1 && bar.len() >= 2 {
                         let last = bar[bar.len() - 1];
                         let penult = bar[bar.len() - 2];

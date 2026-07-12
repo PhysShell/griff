@@ -701,21 +701,12 @@ fn strategy_repeat_variation(
     let mut bars = Vec::with_capacity(c.bar_count);
     bars.push(base_bar.clone());
 
-    // Variation degree: a *local* two-rung displacement from base, reflected at
-    // the top so it never wraps the whole ladder (register A/B, 2026-07-12).
-    // Falls back to a one-rung move (then stays put) on ladders too short for
-    // two rungs, so the variation differs from base whenever possible.
-    let max_degree = len.saturating_sub(1);
-    let var_degree = if base_degree.saturating_add(2) <= max_degree {
-        base_degree.saturating_add(2)
-    } else if base_degree >= 2 {
-        base_degree.saturating_sub(2)
-    } else if base_degree.saturating_add(1) <= max_degree {
-        base_degree.saturating_add(1)
-    } else {
-        base_degree.saturating_sub(1)
-    };
-    let var_pitch = ladder.at(var_degree);
+    // The variation replaces the base bar's *last* note. On a dense grid the
+    // ascending bar climbs (and clamps) far from `base_degree`, so a base-local
+    // displacement would drop a wide intra-bar interval from the high
+    // penultimate note. Pick the variation local to the actual bar endpoint
+    // instead (register A/B, 2026-07-12).
+    let var_pitch = ladder.at(variation_degree(base_degree, grid.len(), len));
 
     for _ in 1..c.bar_count {
         let mut varied = base_bar.clone();
@@ -726,6 +717,61 @@ fn strategy_repeat_variation(
         bars.push(varied);
     }
     bars
+}
+
+/// The variation degree for a repeat bar: local to the base bar's *endpoint*.
+///
+/// The base bar ascends and clamps, so its last note sits at
+/// `min(base + grid_len − 1, max)` and its penultimate at
+/// `min(base + grid_len − 2, max)`. The historical `base ± 2` displacement is
+/// kept when it is already within two rungs of that penultimate (the common
+/// short-grid case is unchanged); otherwise the variation is chosen from the
+/// rungs around the penultimate — nearest to the old preferred degree, never
+/// equal to the final degree when an alternative exists, deterministic.
+fn variation_degree(base_degree: usize, grid_len: usize, len: usize) -> usize {
+    let max_degree = len.saturating_sub(1);
+    let last_degree = base_degree
+        .saturating_add(grid_len.saturating_sub(1))
+        .min(max_degree);
+    let penult_degree = if grid_len >= 2 {
+        base_degree
+            .saturating_add(grid_len.saturating_sub(2))
+            .min(max_degree)
+    } else {
+        last_degree
+    };
+
+    // The historical base-local preference (two rungs, reflected near the top).
+    let preferred = if base_degree.saturating_add(2) <= max_degree {
+        base_degree.saturating_add(2)
+    } else if base_degree >= 2 {
+        base_degree.saturating_sub(2)
+    } else if base_degree.saturating_add(1) <= max_degree {
+        base_degree.saturating_add(1)
+    } else {
+        base_degree.saturating_sub(1)
+    };
+
+    // Keep the preferred degree when it is already endpoint-local and (for a
+    // multi-rung ladder) differs from the final degree — the safe common case.
+    if preferred.abs_diff(penult_degree) <= 2 && (len <= 1 || preferred != last_degree) {
+        return preferred;
+    }
+
+    // Otherwise choose a rung around the penultimate: in bounds, not the final
+    // degree (when an alternative exists), nearest the old preferred degree,
+    // ties broken by the lower degree.
+    [
+        penult_degree.wrapping_sub(2),
+        penult_degree.wrapping_sub(1),
+        penult_degree.wrapping_add(1),
+        penult_degree.wrapping_add(2),
+    ]
+    .into_iter()
+    .filter(|&d| d <= max_degree)
+    .filter(|&d| len <= 1 || d != last_degree)
+    .min_by_key(|&d| (d.abs_diff(preferred), d))
+    .unwrap_or(preferred)
 }
 
 /// Builds one bar of ascending ladder-degree notes over the grid.
