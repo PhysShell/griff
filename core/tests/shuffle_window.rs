@@ -150,6 +150,83 @@ fn register_stats_split_octave_families_on_mixed_intervals() {
     );
 }
 
+// ── anchor selection (unbiased) ────────────────────────────────────────────────
+
+#[test]
+fn octave_window_count_is_the_full_octave_anchor_count() {
+    // The anchor count is the number of rungs that leave a full octave above
+    // them (rungs ≤ top − 12), floored at 1 — for both a dense (chromatic) and
+    // a sparse (pentatonic) palette.
+    for classes in [
+        PitchClassSet::new(0..12),
+        PitchClassSet::new([0, 3, 5, 7, 10]),
+    ] {
+        let ladder =
+            ScaleLadder::build(&PitchRange::new(Pitch(28), Pitch(64)), &classes).expect("ok");
+        let rungs: Vec<u8> = ladder.pitches().iter().map(|p| p.0).collect();
+        let top = *rungs.last().unwrap();
+        let expected = rungs
+            .iter()
+            .filter(|&&p| p <= top.saturating_sub(12))
+            .count()
+            .max(1);
+        assert_eq!(
+            ladder.octave_window_count(),
+            expected,
+            "anchor count must be the full-octave anchor count"
+        );
+    }
+}
+
+#[test]
+fn every_anchor_index_is_a_nonempty_octave_window() {
+    let classes = PitchClassSet::new(0..12);
+    let ladder = ScaleLadder::build(&PitchRange::new(Pitch(28), Pitch(64)), &classes).expect("ok");
+    for anchor in 0..ladder.octave_window_count() {
+        let w = ladder.octave_window(anchor);
+        assert!(w.len() >= 1, "anchor {anchor}: window never empty");
+        let ps: Vec<u8> = w.pitches().iter().map(|p| p.0).collect();
+        assert!(
+            ps.last().unwrap() - ps.first().unwrap() <= 12,
+            "anchor {anchor}: span exceeds one octave"
+        );
+    }
+}
+
+#[test]
+fn first_and_last_anchors_reach_low_and_high_ends() {
+    let classes = PitchClassSet::new([0, 3, 5, 7, 10]);
+    let ladder = ScaleLadder::build(&PitchRange::new(Pitch(28), Pitch(64)), &classes).expect("ok");
+    let count = ladder.octave_window_count();
+    assert_eq!(
+        ladder.octave_window(0).pitches().first(),
+        ladder.pitches().first(),
+        "anchor 0 starts at the lowest rung"
+    );
+    assert_eq!(
+        ladder.octave_window(count - 1).pitches().last(),
+        ladder.pitches().last(),
+        "the top anchor reaches the highest rung"
+    );
+}
+
+#[test]
+fn cycling_anchor_indices_visits_each_window_once() {
+    let classes = PitchClassSet::new(0..12);
+    let ladder = ScaleLadder::build(&PitchRange::new(Pitch(28), Pitch(64)), &classes).expect("ok");
+    let count = ladder.octave_window_count();
+    let starts: Vec<u8> = (0..count)
+        .map(|a| ladder.octave_window(a).pitches()[0].0)
+        .collect();
+    let mut unique = starts.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), count, "each anchor index is a distinct window");
+    // `count` (one past the last valid index) wraps to anchor 0 — the only
+    // modulo, so the caller passing `next_mod(count)` never double-mods.
+    assert_eq!(ladder.octave_window(count).pitches()[0].0, starts[0]);
+}
+
 // ── Shuffle generation contract ─────────────────────────────────────────────────
 
 fn chromatic() -> PitchMaterial {
