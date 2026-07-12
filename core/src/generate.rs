@@ -100,26 +100,83 @@ impl RhythmTemplate {
     }
 }
 
-/// The per-bar placement grids: one clamped grid per non-empty template, in
-/// input order, so strategies can rotate rhythms across bars. Falls back to a
-/// single quarter-note grid when no template is usable — the no-corpus case
-/// keeps today's wall-to-wall quarter behaviour. Never empty.
+/// The *effective* grids: one clamped grid per template that survives
+/// empty-removal and clamping to the bar, in input order. May be empty (the
+/// caller falls back to the quarter grid). This is the set the per-bar
+/// scheduler rotates, and the set [`rhythm_diagnostics`] reports.
+fn effective_grids(templates: &[RhythmTemplate], bar_duration: Ticks) -> Vec<Vec<TemplateNote>> {
+    templates
+        .iter()
+        .filter(|t| !t.notes.is_empty())
+        .map(|t| clamp_template(t, bar_duration))
+        .filter(|g| !g.is_empty())
+        .collect()
+}
+
+/// The per-bar placement grids: the effective grids, or a single quarter-note
+/// grid when none is usable — the no-corpus case keeps today's wall-to-wall
+/// quarter behaviour. Never empty.
 fn bar_grids(
     templates: &[RhythmTemplate],
     bar_duration: Ticks,
     ticks_per_quarter: Ticks,
 ) -> Vec<Vec<TemplateNote>> {
-    let grids: Vec<Vec<TemplateNote>> = templates
-        .iter()
-        .filter(|t| !t.notes.is_empty())
-        .map(|t| clamp_template(t, bar_duration))
-        .filter(|g| !g.is_empty())
-        .collect();
+    let grids = effective_grids(templates, bar_duration);
     if grids.is_empty() {
         vec![quarter_grid(bar_duration, ticks_per_quarter)]
     } else {
         grids
     }
+}
+
+/// A deterministic diagnostic of how rhythm templates resolve for a given bar
+/// duration — for CLI generation-summary transparency (making a corpus A/B
+/// interpretable), not a runtime generation input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RhythmDiagnostics {
+    /// Templates passed in, before empty-removal.
+    pub loaded: usize,
+    /// Effective grids: templates surviving empty-removal and clamping to the
+    /// bar (the grids the per-bar scheduler rotates). Zero means the quarter
+    /// fallback was used.
+    pub effective: usize,
+    /// A stable fingerprint per effective grid, in scheduler order — the
+    /// FNV-1a hash of its `(offset, duration)` pairs. Equal rhythms share a
+    /// fingerprint; distinct rhythms differ.
+    pub fingerprints: Vec<u64>,
+}
+
+/// Reports how `templates` resolve at `bar_duration` (see [`RhythmDiagnostics`]).
+#[must_use]
+pub fn rhythm_diagnostics(templates: &[RhythmTemplate], bar_duration: Ticks) -> RhythmDiagnostics {
+    let grids = effective_grids(templates, bar_duration);
+    let fingerprints = grids.iter().map(|g| grid_fingerprint(g)).collect();
+    RhythmDiagnostics {
+        loaded: templates.len(),
+        effective: grids.len(),
+        fingerprints,
+    }
+}
+
+/// FNV-1a (64-bit) hash of a grid's `(offset, duration)` pairs — a stable,
+/// order-sensitive fingerprint of one bar rhythm.
+fn grid_fingerprint(grid: &[TemplateNote]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for note in grid {
+        for byte in note
+            .offset
+            .0
+            .to_le_bytes()
+            .into_iter()
+            .chain(note.duration.0.to_le_bytes())
+        {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    }
+    hash
 }
 
 /// The grid for bar `bar_index`, cycling through `grids` (guaranteed
@@ -183,9 +240,12 @@ pub struct GenerationConstraints {
 
 /// Which rule-based strategy to apply.
 ///
-/// Every strategy lays its pitches onto the shared rhythm grid (the first
-/// usable [`RhythmTemplate`], quarter notes without one); the variants differ
-/// in *pitch* behaviour only.
+/// Every strategy lays its pitches onto the rhythm grids built from
+/// `source_rhythms` (quarter notes when none are usable); the four
+/// per-bar-independent strategies rotate the grids by bar index, while
+/// [`RepeatVariation`](GenerationStrategy::RepeatVariation) deliberately holds
+/// the first grid (repetition is its identity). The strategies differ in
+/// *pitch* behaviour only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GenerationStrategy {
     /// Ascending scale degrees over the corpus rhythm (requires a template).
@@ -224,9 +284,12 @@ pub struct RuleGenerationRequest {
     pub pitch_material: PitchMaterial,
     /// Structural constraints.
     pub constraints: GenerationConstraints,
-    /// Rhythm templates extracted from the corpus; the first non-empty one is
-    /// the grid every strategy writes onto (callers rotating a template pool
-    /// pass one template per request).
+    /// Rhythm templates extracted from the corpus — the whole palette. Each
+    /// non-empty template becomes one effective bar grid (empty templates and
+    /// templates that clamp away are dropped); the per-bar-independent
+    /// strategies rotate the effective grids by bar index, so a single
+    /// generation carries the corpus's rhythmic variety across its bars.
+    /// Empty or all-unusable → the quarter-note fallback grid.
     pub source_rhythms: Vec<RhythmTemplate>,
     /// Strategy to apply.
     pub strategy: GenerationStrategy,
@@ -439,7 +502,9 @@ const fn fit_duration(raw: Ticks, remaining: Ticks) -> Ticks {
 // ── strategies ────────────────────────────────────────────────────────────────
 //
 // Every strategy writes one pitch per grid slot; the grid carries the rhythm
-// (offsets + durations), the strategy carries the pitch logic.
+// (offsets + durations), the strategy carries the pitch logic. The four
+// per-bar-independent strategies select their bar's grid via `grid_for_bar`
+// (rotation by bar index); `strategy_repeat_variation` holds `grids[0]`.
 
 fn strategy_rhythm_copy(
     c: &GenerationConstraints,

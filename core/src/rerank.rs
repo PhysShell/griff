@@ -12,11 +12,13 @@
 //!   `(strategy index, variant index)` — deterministic (SPEC §6) and
 //!   independent of whether gesture carving is on, so gestured and plain runs
 //!   of the same request pair up seed-for-seed. `RhythmCopyPitchSubstitute`
-//!   is skipped (not an error) when no usable rhythm template exists; when
-//!   templates exist, every strategy writes onto the rotated template's grid
-//!   so a multi-template corpus is audible in the whole set. With a
-//!   [`GestureControl`] the candidates are carved through the S6 gesture
-//!   compiler ([`generate_gestured`], research note §3.5) instead of staying
+//!   is skipped (not an error) when no usable rhythm template exists;
+//!   otherwise every candidate receives the whole template palette, which
+//!   [`generate`] rotates per bar — so a multi-template corpus is audible
+//!   *within* each candidate, and variants of one strategy differ by seed
+//!   (the pitch line), not by template. With a [`GestureControl`] the
+//!   candidates are carved through the S6 gesture compiler
+//!   ([`generate_gestured`], research note §3.5) instead of staying
 //!   wall-to-wall.
 //! - [`rerank_candidates`] scores each candidate on the four closure axes
 //!   ([`closure_axes`]) plus the two novelty axes ([`novelty_axes`] against

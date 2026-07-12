@@ -311,7 +311,11 @@ fn rhythm_diagnostics_separate_loaded_from_effective() {
     let diag = rhythm_diagnostics(&[empty, past_end, usable], Ticks(1920));
     assert_eq!(diag.loaded, 3, "loaded counts every passed template");
     assert_eq!(diag.effective, 1, "empty and clamped-away templates drop");
-    assert_eq!(diag.fingerprints.len(), 1, "one fingerprint per effective grid");
+    assert_eq!(
+        diag.fingerprints.len(),
+        1,
+        "one fingerprint per effective grid"
+    );
 }
 
 #[test]
