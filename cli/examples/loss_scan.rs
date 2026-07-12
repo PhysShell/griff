@@ -5,6 +5,8 @@
 //! subset selection. Prints nothing derived that embeds corpus note content.
 //!
 //! Run: `cargo run --release -p griff-cli --example loss_scan -- <dir>`
+#![allow(clippy::pedantic, clippy::restriction, clippy::nursery)]
+
 use griff_core::import::import_score_auto;
 use griff_core::score::{AtomEvent, ImportWarning, Score};
 use std::path::{Path, PathBuf};

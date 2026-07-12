@@ -8,6 +8,8 @@
 //! compare.
 //!
 //! Run: analyze <generated.mid> --input <tab> [--corpus <dir>]
+#![allow(clippy::pedantic, clippy::restriction, clippy::nursery)]
+
 use griff_core::corpus::ChunkMeta;
 use griff_core::event::Pitch;
 use griff_core::generate::PitchMaterial;
@@ -137,7 +139,6 @@ fn axes_json(axes: &griff_core::scoring::Axes) -> String {
         .join(",")
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let midi = args
