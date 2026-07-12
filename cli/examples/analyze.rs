@@ -7,12 +7,10 @@
 //! computed, else `null` plus a `novelty_error` reason (never a silent empty).
 //!
 //! Run: analyze <generated.mid> --input <tab> [--corpus <dir>]
-use griff_core::corpus::ChunkMeta;
-use griff_core::event::Pitch;
-use griff_core::generate::PitchMaterial;
+use griff_cli::generation_input::{generation_request_from_score, load_corpus_material};
 use griff_core::import::import_score_auto;
 use griff_core::score::{AtomEvent, Score};
-use griff_core::{closure, novelty, slice};
+use griff_core::{closure, novelty};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -48,20 +46,6 @@ fn all_pitches(score: &Score) -> Vec<u8> {
         .collect()
 }
 
-fn material_from(pitches: &[u8]) -> PitchMaterial {
-    let lo = pitches.iter().copied().min().unwrap_or(0);
-    let mut intervals: Vec<u8> = pitches.iter().map(|&p| p.saturating_sub(lo) % 12).collect();
-    intervals.sort_unstable();
-    intervals.dedup();
-    if intervals.is_empty() {
-        intervals.push(0);
-    }
-    PitchMaterial {
-        root: Pitch(lo),
-        intervals,
-    }
-}
-
 fn track_notes(score: &Score, track: usize) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     if let Some(v) = score.tracks.get(track).and_then(|t| t.voices.first()) {
@@ -95,39 +79,6 @@ fn per_bar_rhythm(score: &Score, track: usize) -> (Vec<usize>, usize, usize) {
         }
     }
     (per_bar_notes, sigs.len(), sounding)
-}
-
-fn load_references(dir: &Path) -> Vec<Score> {
-    let mut refs = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return refs;
-    };
-    let mut names: Vec<String> = rd
-        .filter_map(Result::ok)
-        .filter_map(|e| e.file_name().to_str().map(ToOwned::to_owned))
-        .filter(|n| n.ends_with(".chunk.json"))
-        .collect();
-    names.sort_unstable();
-    for name in names {
-        let Ok(txt) = std::fs::read_to_string(dir.join(&name)) else {
-            continue;
-        };
-        let Ok(meta) = serde_json::from_str::<ChunkMeta>(&txt) else {
-            continue;
-        };
-        let Ok(bytes) = std::fs::read(dir.join(&meta.source.filename)) else {
-            continue;
-        };
-        let Ok(src) = import_score_auto(&bytes) else {
-            continue;
-        };
-        let sliced = match meta.source.bar_range {
-            Some((f, l)) => slice::extract_bars(&src, (f as usize)..(l as usize + 1)),
-            None => src,
-        };
-        refs.push(sliced);
-    }
-    refs
 }
 
 fn axes_json(axes: &griff_core::scoring::Axes) -> String {
@@ -243,7 +194,10 @@ fn main() -> Result<(), String> {
     let src = import_score_auto(&sbytes).map_err(|e| format!("import input '{input}': {e}"))?;
 
     let in_pitches = all_pitches(&src);
-    let material = material_from(&in_pitches);
+    // production pitch material (the request the generator would build from this input)
+    let material = generation_request_from_score(&src, 0, 1)
+        .map(|r| r.pitch_material)
+        .ok();
     let in_lo = in_pitches.iter().copied().min().unwrap_or(0);
     let in_hi = in_pitches.iter().copied().max().unwrap_or(0);
     let track = first_note_track(&generated).ok_or("generated MIDI has no note-bearing track")?;
@@ -281,7 +235,9 @@ fn main() -> Result<(), String> {
     distinct_p.sort_unstable();
     distinct_p.dedup();
 
-    let closure_axes = closure::closure_axes(&generated, track, &material)
+    let closure_axes = material
+        .as_ref()
+        .and_then(|m| closure::closure_axes(&generated, track, m).ok())
         .map(|a| axes_json(&a))
         .unwrap_or_default();
 
@@ -289,7 +245,9 @@ fn main() -> Result<(), String> {
     let (novelty_json, novelty_err) = match &corpus {
         None => ("null".to_string(), Some("no --corpus given".to_string())),
         Some(d) => {
-            let refs = load_references(Path::new(d));
+            let refs = load_corpus_material(Path::new(d))
+                .map(|m| m.references)
+                .unwrap_or_default();
             if refs.is_empty() {
                 (
                     "null".to_string(),
