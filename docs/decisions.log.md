@@ -1431,7 +1431,27 @@ Architectural decisions go to [`adr/`](adr/) instead.
   within-phrase rhythmic variety that stays deterministic (SPEC §6),
   prioritising it over cadence-aware endings (the previously-queued next step)
   because it hit the larger measured hole. `RepeatVariation` keeps one rhythm
-  across bars (repetition is its identity). Accepting that only the first
-  `bar_count` templates of a large corpus are heard (index-mod selection);
-  diverse-template sampling is a parked refinement. Cadence-aware endings move
-  to the next slot.
+  across bars (repetition is its identity). Accepting the deterministic
+  index-mod scheduler's limits as **parked refinements** (not this
+  increment): a large corpus is heard only through its first templates in
+  first-seen filename order, and every candidate starts at the same template
+  phase (bar 0 → template 0) — a later increment can add a deterministic
+  per-candidate phase offset or diverse-template selection. Cadence-aware
+  endings move to the next slot — and are further blocked until the pitch
+  model is split (below), because `PitchMaterial.root` is currently the
+  input's minimum pitch, so landing on the "tonic" would land on the lowest
+  pitch class, a wrong musical contract.
+
+- 2026-07-12 — In the context of closing the rotation bump for a corpus A/B,
+  facing that per-bar template resolution (empty-removal, clamp, fallback) is
+  invisible from the MIDI output, we decided for a small deterministic
+  **diagnostic seam** — `rhythm_diagnostics` (loaded vs effective template
+  counts plus a stable FNV-1a fingerprint per effective grid) printed in the
+  CLI generation summary — and against a standing analytics subsystem, to
+  make the A/B interpretable (which run used how many *distinct* bar rhythms),
+  accepting that `distinct_bar_rhythms == bar_count` is explicitly **not** a
+  contract (it depends on the count of unique effective templates, clamping,
+  and gesture carving), and that the arbiter's acceptance of the bump awaits
+  the local corpus A/B — checking a systematic rise in distinct bar rhythms,
+  comparing gesture-on against `--no-gesture` separately, and confirming no
+  empty / anomalously-clamped / non-deterministic bars.
