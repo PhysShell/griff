@@ -1373,26 +1373,19 @@ fn spread_window(ladder_len: usize, pitch_spread: f64) -> usize {
 /// octave — every degree (`ladder_index`) was previously placed only in the
 /// lowest octave.
 fn band_scale_ladder(lo: u8, hi: u8, intervals: &[u8]) -> Vec<u8> {
-    let hi16 = u16::from(hi);
-    let mut ladder: Vec<u8> = Vec::new();
-    let mut base = u16::from(lo);
-    while base <= hi16 {
-        for &interval in intervals {
-            let p = base.saturating_add(u16::from(interval));
-            if p <= hi16 {
-                if let Ok(p8) = u8::try_from(p) {
-                    ladder.push(p8);
-                }
-            }
-        }
-        base = base.saturating_add(12);
-    }
-    ladder.sort_unstable();
-    ladder.dedup();
-    if ladder.is_empty() {
-        ladder.push(lo);
-    }
-    ladder
+    // Delegates to the shared ladder (register increment): one degree→pitch
+    // mapper across the codebase. `intervals` are offsets from `lo`, so the
+    // palette is their pitch classes anchored at `lo`. Fully qualified to avoid
+    // the `feature::PitchRange` import already in scope.
+    use crate::pitch::{PitchClassSet, PitchRange as LadderRange, ScaleLadder};
+
+    let range = LadderRange::new(Pitch(lo), Pitch(hi));
+    let classes = PitchClassSet::new(intervals.iter().map(|&i| lo.wrapping_add(i)));
+    ScaleLadder::build(&range, &classes)
+        .pitches()
+        .iter()
+        .map(|p| p.0)
+        .collect()
 }
 
 /// Seed-deterministic scale-degree (`ladder_index`) picker for note `index`

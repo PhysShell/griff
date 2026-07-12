@@ -3,6 +3,7 @@
 use crate::event::{
     NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, ValidationError, Velocity,
 };
+use crate::pitch::{PitchClassSet, PitchRange, ScaleLadder};
 use crate::score::{
     AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
     Track, Voice,
@@ -31,35 +32,27 @@ struct GenNote {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GenerationSeed(pub u64);
 
-/// A pitch scale expressed as a root MIDI note plus semitone offsets from it.
+/// A pitch palette: an anchor MIDI note plus semitone offsets from it.
+///
+/// The palette contributes only its *pitch classes* to generation — the
+/// `root` is a class anchor, **not** a tonal center. Degree-to-pitch mapping
+/// goes through a [`ScaleLadder`](crate::pitch::ScaleLadder) over the request's
+/// `[pitch_lo, pitch_hi]` range, so the full register is reachable and the
+/// input's minimum pitch is never treated as a tonic (tonal-center inference
+/// is a later increment).
 #[derive(Debug, Clone)]
 pub struct PitchMaterial {
-    /// Root MIDI pitch (0–127).
+    /// Anchor MIDI pitch (0–127); contributes its class to the palette.
     pub root: Pitch,
-    /// Semitone offsets from root (typically 0–11) that define the scale.
+    /// Semitone offsets from `root` (typically 0–11) that define the scale.
     pub intervals: Vec<u8>,
 }
 
 impl PitchMaterial {
-    /// Maps a linear `degree` (unbounded) to a MIDI pitch, clamped to `[lo, hi]`.
-    ///
-    /// Successive degrees walk up the scale; each full cycle adds one octave.
-    fn pitch_at(&self, degree: usize, lo: Pitch, hi: Pitch) -> Pitch {
-        let scale_len = self.intervals.len();
-        // scale_len >= 1 guaranteed by EmptyPitchMaterial guard in generate().
-        let octave = degree.checked_div(scale_len).unwrap_or(0);
-        let idx = degree.checked_rem(scale_len).unwrap_or(0);
-        let interval = self.intervals.get(idx).copied().unwrap_or(0);
-        // octave * 12 capped at 127 via u8 cast; saturating_add avoids overflow
-        let octave_offset = u8::try_from(octave.saturating_mul(12)).unwrap_or(127_u8);
-        let raw = self
-            .root
-            .0
-            .saturating_add(interval)
-            .saturating_add(octave_offset);
-        let actual_lo = lo.0.min(hi.0);
-        let actual_hi = lo.0.max(hi.0).min(127);
-        Pitch(raw.clamp(actual_lo, actual_hi))
+    /// The palette's pitch classes: each `(root + interval) mod 12`.
+    #[must_use]
+    pub fn pitch_classes(&self) -> PitchClassSet {
+        PitchClassSet::new(self.intervals.iter().map(|&i| self.root.0.wrapping_add(i)))
     }
 }
 
@@ -343,21 +336,29 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
 
     let mut prng = Xorshift64::new(request.seed.0);
     let c = &request.constraints;
-    let pm = &request.pitch_material;
     let grids = bar_grids(&request.source_rhythms, bar_duration, c.ticks_per_quarter);
+    // The single degree→pitch mapper: the full in-range, in-class ladder, so
+    // strategies span `[pitch_lo, pitch_hi]` rather than one octave above the
+    // palette anchor (register increment).
+    let ladder = ScaleLadder::build(
+        &PitchRange::new(c.pitch_lo, c.pitch_hi),
+        &request.pitch_material.pitch_classes(),
+    );
 
     let bars = match request.strategy {
         GenerationStrategy::RhythmCopyPitchSubstitute => {
-            strategy_rhythm_copy(c, pm, &grids, &mut prng)
+            strategy_rhythm_copy(c, &ladder, &grids, &mut prng)
         }
         GenerationStrategy::MotifTransposeVariation => {
-            strategy_motif_transpose(c, pm, &grids, &mut prng)
+            strategy_motif_transpose(c, &ladder, &grids, &mut prng)
         }
         GenerationStrategy::ConstrainedRandomWalk => {
-            strategy_constrained_walk(c, pm, &grids, &mut prng)
+            strategy_constrained_walk(c, &ladder, &grids, &mut prng)
         }
-        GenerationStrategy::ShuffleMotifs => strategy_shuffle_motifs(c, pm, &grids, &mut prng),
-        GenerationStrategy::RepeatVariation => strategy_repeat_variation(c, pm, &grids, &mut prng),
+        GenerationStrategy::ShuffleMotifs => strategy_shuffle_motifs(c, &ladder, &grids, &mut prng),
+        GenerationStrategy::RepeatVariation => {
+            strategy_repeat_variation(c, &ladder, &grids, &mut prng)
+        }
     };
 
     let score = bars_to_score(&bars, c, bar_duration)?;
@@ -480,10 +481,11 @@ impl Xorshift64 {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/// Returns the next degree in the scale, wrapping at `scale_len`.
-const fn advance_degree(degree: usize, scale_len: usize) -> usize {
+/// Returns the next ladder degree, wrapping at `len` (the ladder length), so an
+/// ascending run climbs the full register before returning to the bottom.
+const fn advance_degree(degree: usize, len: usize) -> usize {
     let next = degree.wrapping_add(1);
-    if next >= scale_len {
+    if next >= len {
         0
     } else {
         next
@@ -508,12 +510,12 @@ const fn fit_duration(raw: Ticks, remaining: Ticks) -> Ticks {
 
 fn strategy_rhythm_copy(
     c: &GenerationConstraints,
-    pm: &PitchMaterial,
+    ladder: &ScaleLadder,
     grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
-    let scale_len = pm.intervals.len();
-    let mut degree = prng.next_mod(scale_len);
+    let len = ladder.len();
+    let mut degree = prng.next_mod(len);
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for bar_index in 0..c.bar_count {
@@ -522,11 +524,11 @@ fn strategy_rhythm_copy(
         for slot in grid {
             notes.push(GenNote {
                 offset: slot.offset,
-                pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
+                pitch: ladder.at(degree),
                 duration: slot.duration,
                 velocity: Velocity(90),
             });
-            degree = advance_degree(degree, scale_len);
+            degree = advance_degree(degree, len);
         }
         bars.push(notes);
     }
@@ -535,36 +537,37 @@ fn strategy_rhythm_copy(
 
 fn strategy_motif_transpose(
     c: &GenerationConstraints,
-    pm: &PitchMaterial,
+    ladder: &ScaleLadder,
     grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
     const MOTIF_LEN: usize = 4;
-    // Transpositions in semitones applied cyclically per bar.
-    const TRANSPOSES: [i8; 7] = [0, 3, 5, 7, -3, -5, -7];
+    // Per-bar climb offsets in ladder *degrees* (scale steps, not semitones):
+    // transposing along the ladder keeps every note in the pitch-class palette
+    // and reaches higher registers, where the old semitone shift could leave
+    // the palette entirely.
+    const DEGREE_OFFSETS: [usize; 7] = [0, 2, 4, 7, 3, 5, 1];
 
-    let scale_len = pm.intervals.len();
-    let start_degree = prng.next_mod(scale_len);
-
+    let start_degree = prng.next_mod(ladder.len());
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for bi in 0..c.bar_count {
         let grid = grid_for_bar(grids, bi);
-        let transpose = TRANSPOSES
-            .get(bi.checked_rem(TRANSPOSES.len()).unwrap_or(0))
+        let bar_offset = DEGREE_OFFSETS
+            .get(bi.checked_rem(DEGREE_OFFSETS.len()).unwrap_or(0))
             .copied()
-            .unwrap_or(0_i8);
+            .unwrap_or(0);
         let mut notes = Vec::with_capacity(grid.len());
 
         for (slot_idx, slot) in grid.iter().enumerate() {
             let motif_pos = slot_idx.checked_rem(MOTIF_LEN).unwrap_or(0);
-            let degree = (start_degree.wrapping_add(motif_pos))
-                .checked_rem(scale_len)
-                .unwrap_or(0);
-            let base = pm.pitch_at(degree, c.pitch_lo, c.pitch_hi);
+            // `ladder.at` clamps a degree past the top to the highest rung.
+            let degree = start_degree
+                .saturating_add(bar_offset)
+                .saturating_add(motif_pos);
             notes.push(GenNote {
                 offset: slot.offset,
-                pitch: apply_transpose(base, transpose, c.pitch_lo, c.pitch_hi),
+                pitch: ladder.at(degree),
                 duration: slot.duration,
                 velocity: Velocity(85),
             });
@@ -577,14 +580,14 @@ fn strategy_motif_transpose(
 
 fn strategy_constrained_walk(
     c: &GenerationConstraints,
-    pm: &PitchMaterial,
+    ladder: &ScaleLadder,
     grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
-    let scale_len = pm.intervals.len();
-    // Two-octave degree range keeps consecutive leaps ≤ 12 semitones.
-    let max_degree = scale_len.saturating_mul(2).saturating_sub(1);
-    let mut degree = prng.next_mod(scale_len);
+    // Walk the whole ladder — consecutive ±1-degree steps are adjacent scale
+    // tones, so leaps stay small while the full register is reachable.
+    let max_degree = ladder.len().saturating_sub(1);
+    let mut degree = prng.next_mod(ladder.len());
 
     let mut bars = Vec::with_capacity(c.bar_count);
 
@@ -594,7 +597,7 @@ fn strategy_constrained_walk(
         for slot in grid {
             notes.push(GenNote {
                 offset: slot.offset,
-                pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
+                pitch: ladder.at(degree),
                 duration: slot.duration,
                 velocity: Velocity(80),
             });
@@ -613,22 +616,22 @@ fn strategy_constrained_walk(
 
 fn strategy_shuffle_motifs(
     c: &GenerationConstraints,
-    pm: &PitchMaterial,
+    ladder: &ScaleLadder,
     grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
-    let scale_len = pm.intervals.len();
-
+    let len = ladder.len();
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for bar_index in 0..c.bar_count {
         let grid = grid_for_bar(grids, bar_index);
         let mut notes = Vec::with_capacity(grid.len());
         for slot in grid {
-            let degree = prng.next_mod(scale_len);
+            // Draw from the whole ladder, so the shuffle spans the register.
+            let degree = prng.next_mod(len);
             notes.push(GenNote {
                 offset: slot.offset,
-                pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
+                pitch: ladder.at(degree),
                 duration: slot.duration,
                 velocity: Velocity(88),
             });
@@ -640,30 +643,31 @@ fn strategy_shuffle_motifs(
 
 fn strategy_repeat_variation(
     c: &GenerationConstraints,
-    pm: &PitchMaterial,
+    ladder: &ScaleLadder,
     grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
-    let scale_len = pm.intervals.len();
-    let base_degree = prng.next_mod(scale_len);
+    let len = ladder.len();
+    let base_degree = prng.next_mod(len);
 
     // Repetition is this strategy's identity (call/response), so it stays on
     // the first bar's rhythm rather than rotating templates.
     let grid = grid_for_bar(grids, 0);
-    let base_bar = build_ascending_bar(c, pm, base_degree, grid);
+    let base_bar = build_ascending_bar(ladder, base_degree, grid);
     let mut bars = Vec::with_capacity(c.bar_count);
     bars.push(base_bar.clone());
 
-    // Variation degree: advance 2 steps from base so the pitch always differs.
+    // Variation degree: advance 2 ladder steps from base so the pitch always
+    // differs (wrapping at the ladder length).
     let var_degree = {
         let d = base_degree.wrapping_add(2);
-        if d < scale_len {
+        if d < len {
             d
         } else {
-            d.saturating_sub(scale_len)
+            d.saturating_sub(len)
         }
     };
-    let var_pitch = pm.pitch_at(var_degree, c.pitch_lo, c.pitch_hi);
+    let var_pitch = ladder.at(var_degree);
 
     for _ in 1..c.bar_count {
         let mut varied = base_bar.clone();
@@ -676,23 +680,21 @@ fn strategy_repeat_variation(
     bars
 }
 
-/// Builds one bar of ascending scale-degree notes over the grid.
+/// Builds one bar of ascending ladder-degree notes over the grid.
 fn build_ascending_bar(
-    c: &GenerationConstraints,
-    pm: &PitchMaterial,
+    ladder: &ScaleLadder,
     start_degree: usize,
     grid: &[TemplateNote],
 ) -> Vec<GenNote> {
-    let scale_len = pm.intervals.len();
-    // Two-octave ceiling mirrors the walk strategy.
-    let max_degree = scale_len.saturating_mul(2).saturating_sub(1);
+    // Climb the whole ladder; `ladder.at` clamps at the top rung.
+    let max_degree = ladder.len().saturating_sub(1);
     let mut notes = Vec::with_capacity(grid.len());
     let mut degree = start_degree;
 
     for slot in grid {
         notes.push(GenNote {
             offset: slot.offset,
-            pitch: pm.pitch_at(degree, c.pitch_lo, c.pitch_hi),
+            pitch: ladder.at(degree),
             duration: slot.duration,
             velocity: Velocity(92),
         });
@@ -700,15 +702,6 @@ fn build_ascending_bar(
     }
 
     notes
-}
-
-/// Transposes a pitch by `semitones`, clamping the result to `[lo, hi]`.
-fn apply_transpose(pitch: Pitch, semitones: i8, lo: Pitch, hi: Pitch) -> Pitch {
-    let raw = i16::from(pitch.0).saturating_add(i16::from(semitones));
-    let actual_lo = i16::from(lo.0.min(hi.0));
-    let actual_hi = i16::from(lo.0.max(hi.0).min(127));
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Pitch(raw.clamp(actual_lo, actual_hi) as u8)
 }
 
 /// Computes the duration of one bar for a PPQN resolution and meter.

@@ -36,7 +36,7 @@ use griff_core::{
     event::{Pitch, Tempo, Ticks, TimeSignature},
     generate::{
         generate, GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial,
-        RuleGenerationRequest,
+        RhythmTemplate, RuleGenerationRequest,
     },
     pitch::{PitchClassSet, PitchRange, ScaleLadder},
     rerank::{generate_candidate_set, SetRequest},
@@ -86,7 +86,10 @@ fn scale_ladder_spans_the_full_range_in_class() {
 
 #[test]
 fn scale_ladder_empty_class_set_falls_back_to_lo() {
-    let ladder = ScaleLadder::build(&PitchRange::new(Pitch(40), Pitch(60)), &PitchClassSet::new([]));
+    let ladder = ScaleLadder::build(
+        &PitchRange::new(Pitch(40), Pitch(60)),
+        &PitchClassSet::new([]),
+    );
     assert_eq!(ladder.len(), 1);
     assert_eq!(ladder.pitches(), &[Pitch(40)]);
 }
@@ -147,7 +150,9 @@ fn request(strategy: GenerationStrategy, seed: u64) -> RuleGenerationRequest {
         seed: GenerationSeed(seed),
         pitch_material: pentatonic(),
         constraints: wide(8),
-        source_rhythms: Vec::new(),
+        // A quarter template so RhythmCopyPitchSubstitute has one; the pitch
+        // contract is about degrees, not rhythm.
+        source_rhythms: vec![RhythmTemplate::from_durations(&[Ticks(480); 4])],
         strategy,
     }
 }
@@ -226,7 +231,10 @@ fn narrow_range_still_generates_in_bounds() {
         };
         let candidate = generate(&req).expect("narrow generate succeeds");
         for p in pitches(&candidate.score) {
-            assert!((40..=45).contains(&p), "{strategy:?}: pitch {p} out of narrow range");
+            assert!(
+                (40..=45).contains(&p),
+                "{strategy:?}: pitch {p} out of narrow range"
+            );
         }
     }
 }
@@ -244,7 +252,10 @@ fn reversed_bounds_do_not_regress() {
         ..request(GenerationStrategy::ConstrainedRandomWalk, 9)
     })
     .expect("reversed-bounds generate succeeds");
-    assert!(!pitches(&candidate.score).is_empty(), "still produces notes");
+    assert!(
+        !pitches(&candidate.score).is_empty(),
+        "still produces notes"
+    );
     for p in pitches(&candidate.score) {
         assert!((28..=64).contains(&p), "pitch {p} in normalised range");
     }

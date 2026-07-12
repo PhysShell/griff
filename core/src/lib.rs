@@ -21,6 +21,7 @@ pub mod harmony;
 pub mod import;
 pub mod midi;
 pub mod novelty;
+pub mod pitch;
 pub mod rerank;
 pub mod score;
 pub mod scoring;
