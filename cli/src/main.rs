@@ -625,6 +625,7 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
     if let Some(m) = &material {
         print_corpus_summary(m, no_gesture);
     }
+    print_rhythm_diagnostics(&source_rhythms, &base.constraints, gesture_ask.is_some());
 
     let set = rerank::generate_candidate_set(&rerank::SetRequest {
         seed: base.seed,
@@ -679,6 +680,47 @@ fn print_corpus_summary(m: &CorpusMaterial, no_gesture: bool) {
         } else {
             format!(", skipped: {}", m.skipped.join(", "))
         },
+    );
+}
+
+/// Prints a deterministic rhythm-grid diagnostic for the run: how many
+/// templates were loaded vs effective (after empty-removal + clamp), the bar
+/// count, whether gesture carving is on, and the fingerprints of the first
+/// `min(bars, effective)` grids a run of `bars` bars actually rotates through.
+///
+/// A small transparency seam for corpus A/B, not an analytics subsystem: with
+/// no corpus, `source_rhythms` is the input's own first-bar rhythm (one
+/// template, so `1 loaded / 1 effective`), so the two A/B legs are directly
+/// comparable. `effective == 0` means the quarter fallback was used.
+fn print_rhythm_diagnostics(
+    source_rhythms: &[generate::RhythmTemplate],
+    constraints: &generate::GenerationConstraints,
+    gesture_on: bool,
+) {
+    let Ok(bar_duration) =
+        generate::bar_duration_ticks(constraints.time_signature, constraints.ticks_per_quarter)
+    else {
+        return;
+    };
+    let diag = generate::rhythm_diagnostics(source_rhythms, bar_duration);
+    let shown = diag.effective.min(constraints.bar_count);
+    let fingerprints = if diag.effective == 0 {
+        " (quarter fallback)".to_owned()
+    } else {
+        let hexes: Vec<String> = diag
+            .fingerprints
+            .iter()
+            .take(shown)
+            .map(|h| format!("{h:x}"))
+            .collect();
+        format!("; grids[{shown}] {}", hexes.join(" "))
+    };
+    println!(
+        "rhythm: {loaded} loaded / {effective} effective templates over {bars} bars; gesture {onoff}{fingerprints}",
+        loaded = diag.loaded,
+        effective = diag.effective,
+        bars = constraints.bar_count,
+        onoff = if gesture_on { "on" } else { "off" },
     );
 }
 

@@ -125,6 +125,14 @@ fn generate_with_corpus_ranks_candidates_and_writes_winner() {
         stdout.contains("ranked under generation_rerank v1"),
         "stdout names the rerank policy and version (ADR-0017 provenance): {stdout}"
     );
+    // The rhythm diagnostic seam (A/B transparency): loaded vs effective
+    // templates, bar count, gesture on/off, and per-grid fingerprints.
+    assert!(
+        stdout.contains("rhythm:")
+            && stdout.contains("effective templates")
+            && stdout.contains("grids["),
+        "stdout carries the rhythm-grid diagnostics: {stdout}"
+    );
     assert!(
         !fs::read(&out_file).expect("winner written").is_empty(),
         "the top-ranked candidate lands in the output file"
