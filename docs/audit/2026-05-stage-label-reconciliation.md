@@ -19,7 +19,12 @@ forward.
 transport refactor · `S3` Guitar Pro import · `S4` phrase boundary detection ·
 `S5` corpus + schema · `S6` rule generator v0 · `S7` graph layer · `S8`
 preview app · `S9` feedback layer · `S10` CLAP MVP · `S11` region
-regeneration · `S12` neural assistance.
+regeneration · `S12` neural assistance · `S13` complementary part generation ·
+`S14` structure controls and metrics · `S15` tonal context and harmonic control.
+
+S13 and later stages are append-only additions. Their logical dependency order
+may place them beside or before an earlier-numbered future stage; existing stage
+numbers are never repurposed or renumbered to make the list look prettier.
 
 ## Mislabel mapping
 
@@ -43,14 +48,17 @@ baseline**. It is the input to:
 
 ## Rules from here
 
-1. New commits use canonical `S0…S12` numbering per the glossary only.
+1. New commits use canonical stage numbers per the glossary and this roadmap.
 2. A stage is "closed" only when its acceptance criterion (its stage doc) is
    met, tested, and documented.
 3. Earlier mislabeled work is **not** re-closed under its old number; relevant
    pieces are re-credited to their true stage in the stage docs' "See also".
+4. New cross-cutting stages take the next free number. Existing S-numbers are
+   never reassigned, even when the logical execution order differs.
 
 ## See also
 
 - [`../glossary.md`](../glossary.md) §0, §17
 - [`../SPEC.md`](../SPEC.md)
 - [`../stages/S0-baseline-and-tests.md`](../stages/S0-baseline-and-tests.md)
+- [`../stages/S15-tonal-context-and-harmonic-control.md`](../stages/S15-tonal-context-and-harmonic-control.md)
