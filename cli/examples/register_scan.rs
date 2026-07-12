@@ -74,16 +74,21 @@ fn ordered_pitches(score: &Score) -> Vec<u8> {
     op.into_iter().map(|(_, p)| p).collect()
 }
 
-/// Per-bar structure for RepeatVariation checks: the first sounding bar's note
-/// count (the grid the pattern repeats) and the largest in-bar penultimate->last
-/// interval (the varied last note vs its predecessor — the wrap can hide here on
-/// long grids even when the whole-line max interval looks fine).
-fn bar_metrics(score: &Score) -> (usize, u32) {
+/// Bar-structure metrics for RepeatVariation, separating three interval kinds so
+/// a deliberate figure-reset at the bar boundary is not conflated with an
+/// in-bar/variation wrap:
+/// - `grid` — first sounding bar's note count (the repeated figure length);
+/// - `var_prev` — largest in-bar penultimate->varied-last interval;
+/// - `intra_max` — largest interval between consecutive notes WITHIN a bar;
+/// - `inter_reset` — largest interval at a bar boundary (last-of-bar ->
+///   first-of-next), report-only (a conscious figure return is allowed);
+/// - `last_distinct` — distinct bar-final pitches (variation present when > 1).
+fn bar_metrics(score: &Score) -> (usize, u32, u32, u32, usize) {
     let Some(track) = first_note_track(score) else {
-        return (0, 0);
+        return (0, 0, 0, 0, 0);
     };
     let Some(v) = score.tracks.get(track).and_then(|t| t.voices.first()) else {
-        return (0, 0);
+        return (0, 0, 0, 0, 0);
     };
     let notes: Vec<(u32, u8)> = v
         .event_groups
@@ -96,6 +101,10 @@ fn bar_metrics(score: &Score) -> (usize, u32) {
         .collect();
     let mut grid = 0usize;
     let mut var_prev = 0u32;
+    let mut intra_max = 0u32;
+    let mut inter_reset = 0u32;
+    let mut last_notes: Vec<u8> = Vec::new();
+    let mut prev_bar_last: Option<u8> = None;
     for bar in &score.master_bars {
         let (s, e) = (bar.tick_range.start.0, bar.tick_range.end.0);
         let mut bn: Vec<(u32, u8)> = notes
@@ -104,16 +113,30 @@ fn bar_metrics(score: &Score) -> (usize, u32) {
             .filter(|(o, _)| *o >= s && *o < e)
             .collect();
         bn.sort_by_key(|(o, _)| *o);
-        if grid == 0 && !bn.is_empty() {
+        if bn.is_empty() {
+            continue;
+        }
+        if grid == 0 {
             grid = bn.len();
+        }
+        for w in bn.windows(2) {
+            intra_max = intra_max.max((i32::from(w[1].1) - i32::from(w[0].1)).unsigned_abs());
         }
         if bn.len() >= 2 {
             let last = bn[bn.len() - 1].1;
             let penult = bn[bn.len() - 2].1;
             var_prev = var_prev.max((i32::from(last) - i32::from(penult)).unsigned_abs());
         }
+        if let (Some(pl), Some(first)) = (prev_bar_last, bn.first()) {
+            inter_reset = inter_reset.max((i32::from(first.1) - i32::from(pl)).unsigned_abs());
+        }
+        let bar_last = bn[bn.len() - 1].1;
+        last_notes.push(bar_last);
+        prev_bar_last = Some(bar_last);
     }
-    (grid, var_prev)
+    last_notes.sort_unstable();
+    last_notes.dedup();
+    (grid, var_prev, intra_max, inter_reset, last_notes.len())
 }
 
 /// Highest / lowest in-class pitch inside `[in_lo, in_hi]` — the ladder's top /
@@ -349,9 +372,10 @@ fn main() -> Result<(), String> {
                     let set_size = cands.len();
                     for c in &cands {
                         let line = ordered_pitches(&c.score);
-                        let (grid_nc, var_prev) = bar_metrics(&c.score);
+                        let (grid_nc, var_prev, intra_max, inter_reset, last_distinct) =
+                            bar_metrics(&c.score);
                         println!(
-                            "{{\"type\":\"candidate\",\"input\":{},\"seed\":{seed},\"gesture\":\"{glabel}\",\"strategy\":\"{:?}\",\"variant_seed\":\"{}\",\"variants_per_strategy\":{variants},\"candidate_set_size\":{set_size},\"grid_note_count\":{grid_nc},\"variation_prev_interval\":{var_prev},\"pitch_lo_constraint\":{in_lo},\"pitch_hi_constraint\":{in_hi},\"input_span\":{},{}}}",
+                            "{{\"type\":\"candidate\",\"input\":{},\"seed\":{seed},\"gesture\":\"{glabel}\",\"strategy\":\"{:?}\",\"variant_seed\":\"{}\",\"variants_per_strategy\":{variants},\"candidate_set_size\":{set_size},\"grid_note_count\":{grid_nc},\"variation_prev_interval\":{var_prev},\"intra_bar_max_interval\":{intra_max},\"inter_bar_reset_interval\":{inter_reset},\"last_note_distinct\":{last_distinct},\"pitch_lo_constraint\":{in_lo},\"pitch_hi_constraint\":{in_hi},\"input_span\":{},{}}}",
                             jstr(iname), c.strategy, c.seed.0, in_hi - in_lo, register_fields(&line, in_lo, in_hi, &pc_abs)
                         );
                     }
