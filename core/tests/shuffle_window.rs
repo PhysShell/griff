@@ -221,7 +221,11 @@ fn cycling_anchor_indices_visits_each_window_once() {
     let mut unique = starts.clone();
     unique.sort_unstable();
     unique.dedup();
-    assert_eq!(unique.len(), count, "each anchor index is a distinct window");
+    assert_eq!(
+        unique.len(),
+        count,
+        "each anchor index is a distinct window"
+    );
     // `count` (one past the last valid index) wraps to anchor 0 — the only
     // modulo, so the caller passing `next_mod(count)` never double-mods.
     assert_eq!(ladder.octave_window(count).pitches()[0].0, starts[0]);
