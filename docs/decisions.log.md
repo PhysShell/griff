@@ -1477,3 +1477,22 @@ Architectural decisions go to [`adr/`](adr/) instead.
   10 × 5 strategies = **50** candidates (fewer only when `RhythmCopyPitchSubstitute`
   is skipped for want of a template) — the reranker does not choose from ten. The
   CLI `--candidates` help and the ranking line are reworded to say so.
+
+- 2026-07-12 — In the context of the register the rotation A/B exposed (~one
+  octave, low — `rhythm_copy`/`shuffle` walked degrees only in `[0, scale_len)`,
+  one octave above `PitchMaterial.root` = the input's minimum pitch, and
+  `motif_transpose` shifted by semitones, leaving the pitch-class palette),
+  facing how to use the full `[pitch_lo, pitch_hi]` range without a second
+  pitch mapper, we decided for a shared **`griff_core::pitch`** module —
+  `PitchRange`, `PitchClassSet`, and a `ScaleLadder` (the ascending in-range,
+  in-class pitches indexed by a linear degree) that the generator and (via
+  `band_scale_ladder`) the complement arranger both use — and against a
+  second independent degree→pitch mapper or a full tonal-center inference now,
+  to achieve a full-range, always-in-class register that stays deterministic
+  (SPEC §6), accepting that the contract is **reachability** ("the full ladder
+  is reachable and generation is no longer structurally confined to the first
+  octave"), *not* that every piece must span the whole range. `PitchMaterial.root`
+  is now a pitch-class anchor, **not** a tonal center; `TonalCenter` inference
+  is a separate later increment (and cadence-aware endings stay frozen until it
+  lands, since only then is a real tonic available to cadence onto). Generate
+  goldens (core + CLI) were re-blessed for the new mapping.
