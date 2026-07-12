@@ -25,7 +25,8 @@
     clippy::panic,
     clippy::indexing_slicing,
     clippy::missing_assert_message,
-    clippy::missing_const_for_fn
+    clippy::missing_const_for_fn,
+    clippy::arithmetic_side_effects
 )]
 
 use griff_core::{
@@ -252,10 +253,7 @@ fn repeat_variation_keeps_one_rhythm_across_bars() {
     let whole = RhythmTemplate {
         notes: vec![tn(0, 1920)],
     };
-    let mut req = request(
-        GenerationStrategy::RepeatVariation,
-        vec![eighths, whole],
-    );
+    let mut req = request(GenerationStrategy::RepeatVariation, vec![eighths, whole]);
     req.constraints.bar_count = 4;
     let candidate = generate(&req).expect("generate succeeds");
     assert_eq!(

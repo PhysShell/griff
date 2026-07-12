@@ -100,24 +100,33 @@ impl RhythmTemplate {
     }
 }
 
-/// The per-bar placement grid: the first non-empty template clamped to the
-/// bar, or the quarter-note fallback when no template is usable — so the
-/// no-corpus case keeps today's wall-to-wall quarter behaviour.
-fn bar_grid(
+/// The per-bar placement grids: one clamped grid per non-empty template, in
+/// input order, so strategies can rotate rhythms across bars. Falls back to a
+/// single quarter-note grid when no template is usable — the no-corpus case
+/// keeps today's wall-to-wall quarter behaviour. Never empty.
+fn bar_grids(
     templates: &[RhythmTemplate],
     bar_duration: Ticks,
     ticks_per_quarter: Ticks,
-) -> Vec<TemplateNote> {
-    let clamped = templates
+) -> Vec<Vec<TemplateNote>> {
+    let grids: Vec<Vec<TemplateNote>> = templates
         .iter()
-        .find(|t| !t.notes.is_empty())
+        .filter(|t| !t.notes.is_empty())
         .map(|t| clamp_template(t, bar_duration))
-        .unwrap_or_default();
-    if clamped.is_empty() {
-        quarter_grid(bar_duration, ticks_per_quarter)
+        .filter(|g| !g.is_empty())
+        .collect();
+    if grids.is_empty() {
+        vec![quarter_grid(bar_duration, ticks_per_quarter)]
     } else {
-        clamped
+        grids
     }
+}
+
+/// The grid for bar `bar_index`, cycling through `grids` (guaranteed
+/// non-empty by [`bar_grids`]).
+fn grid_for_bar(grids: &[Vec<TemplateNote>], bar_index: usize) -> &[TemplateNote] {
+    let idx = bar_index.checked_rem(grids.len()).unwrap_or(0);
+    grids.get(idx).map_or(&[], Vec::as_slice)
 }
 
 /// Clamps a template to one bar: notes at or past the bar end drop, durations
@@ -272,20 +281,20 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
     let mut prng = Xorshift64::new(request.seed.0);
     let c = &request.constraints;
     let pm = &request.pitch_material;
-    let grid = bar_grid(&request.source_rhythms, bar_duration, c.ticks_per_quarter);
+    let grids = bar_grids(&request.source_rhythms, bar_duration, c.ticks_per_quarter);
 
     let bars = match request.strategy {
         GenerationStrategy::RhythmCopyPitchSubstitute => {
-            strategy_rhythm_copy(c, pm, &grid, &mut prng)
+            strategy_rhythm_copy(c, pm, &grids, &mut prng)
         }
         GenerationStrategy::MotifTransposeVariation => {
-            strategy_motif_transpose(c, pm, &grid, &mut prng)
+            strategy_motif_transpose(c, pm, &grids, &mut prng)
         }
         GenerationStrategy::ConstrainedRandomWalk => {
-            strategy_constrained_walk(c, pm, &grid, &mut prng)
+            strategy_constrained_walk(c, pm, &grids, &mut prng)
         }
-        GenerationStrategy::ShuffleMotifs => strategy_shuffle_motifs(c, pm, &grid, &mut prng),
-        GenerationStrategy::RepeatVariation => strategy_repeat_variation(c, pm, &grid, &mut prng),
+        GenerationStrategy::ShuffleMotifs => strategy_shuffle_motifs(c, pm, &grids, &mut prng),
+        GenerationStrategy::RepeatVariation => strategy_repeat_variation(c, pm, &grids, &mut prng),
     };
 
     let score = bars_to_score(&bars, c, bar_duration)?;
@@ -435,14 +444,15 @@ const fn fit_duration(raw: Ticks, remaining: Ticks) -> Ticks {
 fn strategy_rhythm_copy(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
-    grid: &[TemplateNote],
+    grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
     let mut degree = prng.next_mod(scale_len);
     let mut bars = Vec::with_capacity(c.bar_count);
 
-    for _ in 0..c.bar_count {
+    for bar_index in 0..c.bar_count {
+        let grid = grid_for_bar(grids, bar_index);
         let mut notes = Vec::with_capacity(grid.len());
         for slot in grid {
             notes.push(GenNote {
@@ -461,7 +471,7 @@ fn strategy_rhythm_copy(
 fn strategy_motif_transpose(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
-    grid: &[TemplateNote],
+    grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
     const MOTIF_LEN: usize = 4;
@@ -474,6 +484,7 @@ fn strategy_motif_transpose(
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for bi in 0..c.bar_count {
+        let grid = grid_for_bar(grids, bi);
         let transpose = TRANSPOSES
             .get(bi.checked_rem(TRANSPOSES.len()).unwrap_or(0))
             .copied()
@@ -502,7 +513,7 @@ fn strategy_motif_transpose(
 fn strategy_constrained_walk(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
-    grid: &[TemplateNote],
+    grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
@@ -512,7 +523,8 @@ fn strategy_constrained_walk(
 
     let mut bars = Vec::with_capacity(c.bar_count);
 
-    for _ in 0..c.bar_count {
+    for bar_index in 0..c.bar_count {
+        let grid = grid_for_bar(grids, bar_index);
         let mut notes = Vec::with_capacity(grid.len());
         for slot in grid {
             notes.push(GenNote {
@@ -537,14 +549,15 @@ fn strategy_constrained_walk(
 fn strategy_shuffle_motifs(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
-    grid: &[TemplateNote],
+    grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
 
     let mut bars = Vec::with_capacity(c.bar_count);
 
-    for _ in 0..c.bar_count {
+    for bar_index in 0..c.bar_count {
+        let grid = grid_for_bar(grids, bar_index);
         let mut notes = Vec::with_capacity(grid.len());
         for slot in grid {
             let degree = prng.next_mod(scale_len);
@@ -563,12 +576,15 @@ fn strategy_shuffle_motifs(
 fn strategy_repeat_variation(
     c: &GenerationConstraints,
     pm: &PitchMaterial,
-    grid: &[TemplateNote],
+    grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
     let scale_len = pm.intervals.len();
     let base_degree = prng.next_mod(scale_len);
 
+    // Repetition is this strategy's identity (call/response), so it stays on
+    // the first bar's rhythm rather than rotating templates.
+    let grid = grid_for_bar(grids, 0);
     let base_bar = build_ascending_bar(c, pm, base_degree, grid);
     let mut bars = Vec::with_capacity(c.bar_count);
     bars.push(base_bar.clone());
@@ -660,7 +676,9 @@ pub fn bar_duration_ticks(
 
 #[cfg(test)]
 mod tests {
-    use super::{bar_duration_ticks, bar_grid, RhythmTemplate, TemplateNote};
+    #![allow(clippy::expect_used)]
+
+    use super::{bar_duration_ticks, bar_grids, RhythmTemplate, TemplateNote};
     use crate::event::{Ticks, TimeSignature, ValidationError};
 
     #[test]
@@ -714,7 +732,10 @@ mod tests {
     #[test]
     fn quarter_fallback_grid_clamps_the_last_slot() {
         // 7/8 at 480 PPQN: 1680-tick bar → three quarters and one eighth.
-        let grid = bar_grid(&[], Ticks(1680), Ticks(480));
+        // No template → a single quarter-grid fallback.
+        let grids = bar_grids(&[], Ticks(1680), Ticks(480));
+        assert_eq!(grids.len(), 1, "no template yields one fallback grid");
+        let grid = grids.first().expect("one fallback grid");
         let expected: Vec<TemplateNote> = vec![
             TemplateNote {
                 offset: Ticks(0),
@@ -733,7 +754,7 @@ mod tests {
                 duration: Ticks(240),
             },
         ];
-        assert_eq!(grid, expected);
+        assert_eq!(grid, &expected);
     }
 
     #[test]
@@ -750,8 +771,13 @@ mod tests {
                 },
             ],
         };
-        let grid = bar_grid(&[template], Ticks(1920), Ticks(480));
-        let offsets: Vec<u32> = grid.iter().map(|n| n.offset.0).collect();
+        let grids = bar_grids(&[template], Ticks(1920), Ticks(480));
+        let offsets: Vec<u32> = grids
+            .first()
+            .expect("one grid")
+            .iter()
+            .map(|n| n.offset.0)
+            .collect();
         assert_eq!(offsets, vec![0, 960], "onsets must come back sorted");
     }
 }

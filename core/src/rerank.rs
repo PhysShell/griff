@@ -146,25 +146,19 @@ pub fn generate_candidate_set(request: &SetRequest) -> Result<Vec<SetCandidate>,
         if needs_template && templates.is_empty() {
             continue;
         }
+        // Every candidate hears the whole template palette: `generate` rotates
+        // it per bar, so a single candidate carries the corpus's rhythmic
+        // variety across its bars (not just across variants). Variants then
+        // differ by seed — the pitch line — while sharing the rhythm sequence.
+        // Without templates the strategies fall back to the quarter grid.
+        let source_rhythms: Vec<RhythmTemplate> = templates.iter().map(|t| (*t).clone()).collect();
         for variant in 0..request.variants_per_strategy {
             let seed = GenerationSeed(derive_seed(request.seed.0, si, variant));
-            // Rotate templates across variants so each template gets heard.
-            // Every strategy receives the grid — the corpus is inaudible if
-            // only rhythm-copy hears it; without templates the strategies
-            // fall back to the quarter grid inside `generate`.
-            let source_rhythms = if templates.is_empty() {
-                Vec::new()
-            } else {
-                let idx = variant.checked_rem(templates.len()).unwrap_or(0);
-                vec![templates
-                    .get(idx)
-                    .map_or_else(RhythmTemplate::default, |t| (*t).clone())]
-            };
             let sub = RuleGenerationRequest {
                 seed,
                 pitch_material: request.pitch_material.clone(),
                 constraints: request.constraints,
-                source_rhythms,
+                source_rhythms: source_rhythms.clone(),
                 strategy: *strategy,
             };
             let (score, gesture) = match request.gesture {
