@@ -1585,3 +1585,36 @@ Architectural decisions go to [`adr/`](adr/) instead.
 
   Still frozen: `TonalCenter` and cadence (both awaiting a real tonal center);
   no reranker policy v2.
+
+- 2026-07-12 — **TonalContext Phase 1: shared tonal evidence/inference layer.**
+  In the context of generation having only a pitch-class palette and no notion
+  of a tonal center, and facing a key estimator that was private to
+  `complement`, single-winner, and part-scoped, we decided to generalise
+  `complement::estimate_harmony` into a pure-core module `core/src/tonal.rs`
+  split into *evidence* (raw, observed facts) and *inference* (a scored,
+  uncertain estimate), and against inventing a second estimator or wiring any of
+  it into generation yet:
+  - `PitchEvidence::measure(score, scope)` projects an explicit `EvidenceScope`
+    (whole-score / track / voice) into raw `onset_counts: [u32;12]`,
+    `duration_mass: [u64;12]` (summed ticks), `note_count`, and the observed
+    `feature::PitchRange` — additive across scopes (whole = Σ tracks = Σ voices);
+  - `estimate_key` ranks all 24 keys best-first into a `TonalEstimate` with an
+    explicit `confidence_margin` (winner − runner-up); each `TonalCandidate`
+    carries tonic, `KeyMode`, Pearson correlation and its own `scale_fit`;
+  - KS v1 stays duration-only: duration mass weights the histogram, raw onset
+    counts are the fallback only when total duration mass is zero — no
+    onset/duration blend and no metric-accent policy;
+  - an exactly flat histogram scores every key at a finite `0.0`, margin `0.0`,
+    C-major-first tie order — an ordering convention, explicitly not confidence.
+  `complement::estimate_harmony` now projects the winning candidate into
+  `HarmonicContext`; `KeyMode` moved to `tonal` and is re-exported from
+  `complement`, so its public path is unchanged. To achieve one shared estimator
+  with explicit uncertainty, accepting that the richer estimate is not yet
+  consumed anywhere. Characterization held: all existing complement/structure
+  tests and the tie ordering are unchanged (no golden change). Scope guardrails
+  held — no generation/reranker/cadence/track-selection change and no
+  `PitchMaterial` change. Uncalibrated by design: no confidence thresholds and no
+  automatic scope selection (the diatonic ≈ 0.076 / pentatonic ≈ 0.085 margins
+  are diagnostics, not cutoffs). Phase 0 note amended (§7) to record what shipped
+  and that a real-song key is a hypothesis for a scope, not verified truth.
+  Cadence and `TonalCenter` stay frozen.

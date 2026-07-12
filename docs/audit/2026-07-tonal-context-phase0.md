@@ -192,18 +192,64 @@ The actual estimator stays the Krumhansl–Schmuckler correlation already in
 
 - **Phase 0 (this note):** contract audit, typed evidence/inference design,
   synthetic test plan. No code.
-- **Phase 1 (gated on `tonal_evidence` scan):** a pure-core evidence/inference
-  module — `PitchEvidence` measurement + a `TonalEstimate` inference promoted
-  from `estimate_harmony`, with the candidate list and confidence margin;
-  `HarmonicContext` re-expressed as its projection (characterization tests, no
-  golden change to complement). Still no generation/reranker/cadence change.
+- **Phase 1 (landed 2026-07-12, `core/src/tonal.rs`):** a pure-core
+  evidence/inference module — `PitchEvidence` measurement + a `TonalEstimate`
+  inference promoted from `estimate_harmony`, with the candidate list and
+  confidence margin; `HarmonicContext` re-expressed as its projection
+  (characterization tests, no golden change to complement). No
+  generation/reranker/cadence change. See §7 for what shipped vs. this sketch.
 - **Later (own increments):** a scoped `TonalEstimate` on the generation input;
   only then does cadence unfreeze, and only behind a confidence gate (a
   low-confidence or ambiguous estimate must *not* force a cadence onto a
   guessed tonic — the register track's "no silent fallback" rule applies to
   tonality too).
 
-## 7. Sources
+## 7. Phase 1 amendments (landed 2026-07-12)
+
+Phase 1 shipped as the pure-core module `core/src/tonal.rs` (red suite
+`core/tests/tonal.rs`); `complement::estimate_harmony` now projects the winning
+candidate of a `tonal::TonalEstimate` and its characterization tests are
+unchanged. The shipped shape refines the §2 sketch in a few honest ways,
+recorded here rather than rewritten in place so the design history stays
+readable.
+
+**What shipped (vs. the §2.1–§2.2 sketch).**
+
+- `PitchEvidence` carries *raw integer* histograms, not the `f64` `*_pc_weights`
+  of the sketch: `onset_counts: [u32; 12]` and `duration_mass: [u64; 12]`, plus
+  `note_count` and the observed `feature::PitchRange`. Evidence stays raw; the
+  inference resolves the weighting. There is no separate `sounding_ticks` field
+  — per-class `duration_mass` carries it and its sum is the scope total.
+- `TonalCandidate` is `{ tonic, mode: KeyMode, correlation, scale_fit }`. It
+  reuses the existing `KeyMode` (not a fresh `Mode`), and — beyond the sketch —
+  *every* candidate carries its own `scale_fit`, not only the winner.
+- `TonalEstimate` is `{ candidates (24, best-first), confidence_margin }`. The
+  scope is **not** duplicated onto the estimate; it lives on the `PitchEvidence`
+  that produced it. This also lets `estimate_harmony` — which holds weighted
+  notes and no scope — share the one inference core without inventing a scope.
+- KS v1 landed exactly as contracted: duration mass weights the histogram, raw
+  onset counts are the fallback only when the total duration mass is zero, and
+  there is no onset/duration blend and no metric-accent policy.
+
+**What these facts are — and are not.**
+
+1. A key result on real-song input is a *tonal hypothesis for a scope*, not
+   verified truth. The estimator earns trust on the synthetic cases (§4); a key
+   it reports over a corpus track is the winning correlation, not a
+   ground-truth label.
+2. `onset_counts` are **raw facts** — literal per-class onset tallies, carrying
+   no weighting or normalisation.
+3. `duration_mass` is **duration mass** — summed sounded ticks — **not**
+   wall-clock sounding time; ties, overlaps and tempo are not modelled here.
+4. Every `TonalCandidate` contains `scale_fit`, the weighted on-scale fraction
+   for that key — a per-candidate fact, not a verdict.
+5. Confidence thresholds and automatic scope selection remain **uncalibrated**.
+   Phase 1 exposes the margin and the per-scope evidence but sets no
+   High/Low/Ambiguous cutoff and makes no automatic whole-score-vs-track
+   choice. The local margins observed on the synthetic fixtures (diatonic
+   ≈ 0.076, pentatonic ≈ 0.085) are diagnostics, not thresholds.
+
+## 8. Sources
 
 - C. Krumhansl & E. Kessler, probe-tone key profiles, *Psychological Review*
   89, 1982 (the profiles already used by `estimate_harmony`).
