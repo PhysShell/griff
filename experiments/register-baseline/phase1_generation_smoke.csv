@@ -1,31 +1,31 @@
-input,seed,gesture,sha_before,sha_after,identical
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",1,on,414deaf1fe664e36,414deaf1fe664e36,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",1,off,4fa4c4b68b58d7c8,4fa4c4b68b58d7c8,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",2,on,f97b9464c4b5dbc8,f97b9464c4b5dbc8,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",2,off,44666295447cde1d,44666295447cde1d,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",3,on,9fe7334833e4ec03,9fe7334833e4ec03,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",3,off,9205072a5618161d,9205072a5618161d,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",4,on,68fd9ea66cdb47ba,68fd9ea66cdb47ba,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",4,off,61674d384dd9581e,61674d384dd9581e,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",5,on,6a9f88673920c831,6a9f88673920c831,yes
-"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",5,off,741404938ca868a5,741404938ca868a5,yes
-"Wolf & Bear - Deleto.gp5",1,on,684f2ff641e85278,684f2ff641e85278,yes
-"Wolf & Bear - Deleto.gp5",1,off,c649d4f31d4e6741,c649d4f31d4e6741,yes
-"Wolf & Bear - Deleto.gp5",2,on,ae7cf8679e25c704,ae7cf8679e25c704,yes
-"Wolf & Bear - Deleto.gp5",2,off,d53007cc4c21e451,d53007cc4c21e451,yes
-"Wolf & Bear - Deleto.gp5",3,on,0850202888eb95c8,0850202888eb95c8,yes
-"Wolf & Bear - Deleto.gp5",3,off,7f3390de0a8ba0b2,7f3390de0a8ba0b2,yes
-"Wolf & Bear - Deleto.gp5",4,on,03c3f6f90560265e,03c3f6f90560265e,yes
-"Wolf & Bear - Deleto.gp5",4,off,eeb04f622f5dbe7d,eeb04f622f5dbe7d,yes
-"Wolf & Bear - Deleto.gp5",5,on,0dc43d17b4eed24d,0dc43d17b4eed24d,yes
-"Wolf & Bear - Deleto.gp5",5,off,b356999a81a21532,b356999a81a21532,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",1,on,bf0fadf50115d592,bf0fadf50115d592,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",1,off,5e0872792e7b982f,5e0872792e7b982f,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",2,on,af8a0c6406cc86f3,af8a0c6406cc86f3,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",2,off,3062a60df5f4d4f5,3062a60df5f4d4f5,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",3,on,db8ae10cb8f3bff3,db8ae10cb8f3bff3,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",3,off,c15b06622154f635,c15b06622154f635,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",4,on,9500e147f6c4ee85,9500e147f6c4ee85,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",4,off,f4a008672b58c831,f4a008672b58c831,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",5,on,a243066a2f0e0f4b,a243066a2f0e0f4b,yes
-"Hail The Sun - Eight-Ball Coroners Pocket.gpx",5,off,f9ede5bd952016ed,f9ede5bd952016ed,yes
+input,seed,gesture,sha256_before,sha256_after,byte_identical
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",1,on,414deaf1fe664e364e24cd548f82669b7b0fa064a3350bb4af6b80d0462fc776,414deaf1fe664e364e24cd548f82669b7b0fa064a3350bb4af6b80d0462fc776,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",1,off,4fa4c4b68b58d7c853420a549d134fe83c339f21caea97cd9d2d9dadcf5b7605,4fa4c4b68b58d7c853420a549d134fe83c339f21caea97cd9d2d9dadcf5b7605,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",2,on,f97b9464c4b5dbc8c0c8bef9cc4e1b578d6efa9e40b38175eb5ef08ed35bfc49,f97b9464c4b5dbc8c0c8bef9cc4e1b578d6efa9e40b38175eb5ef08ed35bfc49,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",2,off,44666295447cde1d2af3aa46f1ed42d8c5b75121554519ddc756d2501720b95a,44666295447cde1d2af3aa46f1ed42d8c5b75121554519ddc756d2501720b95a,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",3,on,9fe7334833e4ec031564fd7535148acfb8a226e3bfe65a6532f5c7ceddf00476,9fe7334833e4ec031564fd7535148acfb8a226e3bfe65a6532f5c7ceddf00476,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",3,off,9205072a5618161deaeb53ee9df57216792efd6759563c650fd778a1532e1297,9205072a5618161deaeb53ee9df57216792efd6759563c650fd778a1532e1297,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",4,on,68fd9ea66cdb47ba1fa92fb8fd4669ff4b66a80946cb2e9695b3148853cd3894,68fd9ea66cdb47ba1fa92fb8fd4669ff4b66a80946cb2e9695b3148853cd3894,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",4,off,61674d384dd9581e43509de6da72b4b0b7b680dc6b9209b0251d623a1f10754c,61674d384dd9581e43509de6da72b4b0b7b680dc6b9209b0251d623a1f10754c,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",5,on,6a9f88673920c8319614992992262d21fcbad63187ec731ee4574697ffca8348,6a9f88673920c8319614992992262d21fcbad63187ec731ee4574697ffca8348,yes
+"Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",5,off,741404938ca868a59477770447feda3be1f2cd6fde8ad0cb3934fb51097ef0d9,741404938ca868a59477770447feda3be1f2cd6fde8ad0cb3934fb51097ef0d9,yes
+"Wolf & Bear - Deleto.gp5",1,on,684f2ff641e852789ff3d6e4f57ad7033689878982e8735e106d2959f303e4bc,684f2ff641e852789ff3d6e4f57ad7033689878982e8735e106d2959f303e4bc,yes
+"Wolf & Bear - Deleto.gp5",1,off,c649d4f31d4e6741c241b9e692c13d43ac7c2da62d15e205452fe8ac95e8ccdc,c649d4f31d4e6741c241b9e692c13d43ac7c2da62d15e205452fe8ac95e8ccdc,yes
+"Wolf & Bear - Deleto.gp5",2,on,ae7cf8679e25c7042459ce728e2b0c3d3300a85020905e298a760bc08992bb91,ae7cf8679e25c7042459ce728e2b0c3d3300a85020905e298a760bc08992bb91,yes
+"Wolf & Bear - Deleto.gp5",2,off,d53007cc4c21e4519d26ffa284d17cbb14d3aea52f2e56bae36d21fd1b6659c4,d53007cc4c21e4519d26ffa284d17cbb14d3aea52f2e56bae36d21fd1b6659c4,yes
+"Wolf & Bear - Deleto.gp5",3,on,0850202888eb95c80b8af2c80d19f7c54add89977b7ee31da2718432cebbaa54,0850202888eb95c80b8af2c80d19f7c54add89977b7ee31da2718432cebbaa54,yes
+"Wolf & Bear - Deleto.gp5",3,off,7f3390de0a8ba0b2bd37eb040e012bcd9031a0441893c7edbfbc840bd5c2c5ef,7f3390de0a8ba0b2bd37eb040e012bcd9031a0441893c7edbfbc840bd5c2c5ef,yes
+"Wolf & Bear - Deleto.gp5",4,on,03c3f6f90560265e33c65decdeb953bc37408d054d10b72201845b5f665f92d7,03c3f6f90560265e33c65decdeb953bc37408d054d10b72201845b5f665f92d7,yes
+"Wolf & Bear - Deleto.gp5",4,off,eeb04f622f5dbe7d5275459182ea2dcda511c4de4c753b854138f9055c3a87ce,eeb04f622f5dbe7d5275459182ea2dcda511c4de4c753b854138f9055c3a87ce,yes
+"Wolf & Bear - Deleto.gp5",5,on,0dc43d17b4eed24d2ee57ce60b4aa0c413b0939523991d5ef0a4232c0aebed33,0dc43d17b4eed24d2ee57ce60b4aa0c413b0939523991d5ef0a4232c0aebed33,yes
+"Wolf & Bear - Deleto.gp5",5,off,b356999a81a215320343c7018abbad2cf6392af102bbe3222d7683efa094ad18,b356999a81a215320343c7018abbad2cf6392af102bbe3222d7683efa094ad18,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",1,on,bf0fadf50115d5924863d1c1cb18338cb47eeeba8329d1b5f4bc3c14686f5f3d,bf0fadf50115d5924863d1c1cb18338cb47eeeba8329d1b5f4bc3c14686f5f3d,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",1,off,5e0872792e7b982fe240e8ab1e1d1b8941eed05f76f4094850709c7e9cc7ec71,5e0872792e7b982fe240e8ab1e1d1b8941eed05f76f4094850709c7e9cc7ec71,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",2,on,af8a0c6406cc86f359c13e8b06271004182aeb685cc3ef0b3b83e8f3275ddb4d,af8a0c6406cc86f359c13e8b06271004182aeb685cc3ef0b3b83e8f3275ddb4d,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",2,off,3062a60df5f4d4f50c8b8965f65c4760abc78e33eeb8f2bfa9e50d8b88abc25c,3062a60df5f4d4f50c8b8965f65c4760abc78e33eeb8f2bfa9e50d8b88abc25c,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",3,on,db8ae10cb8f3bff3445cee759217252f507dfd6f7e45b81ed91a12eeec45c84d,db8ae10cb8f3bff3445cee759217252f507dfd6f7e45b81ed91a12eeec45c84d,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",3,off,c15b06622154f6354495b733ebd38b7f3d4753936951adc3a9ffb3fc7b75ab0c,c15b06622154f6354495b733ebd38b7f3d4753936951adc3a9ffb3fc7b75ab0c,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",4,on,9500e147f6c4ee855f5938ca31aebeaa009088e8834a69615ddfb1d25443e35f,9500e147f6c4ee855f5938ca31aebeaa009088e8834a69615ddfb1d25443e35f,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",4,off,f4a008672b58c831b77a1c92cc5dbe9ef0bbbcf993e99d0907c5ad76aadb5ac4,f4a008672b58c831b77a1c92cc5dbe9ef0bbbcf993e99d0907c5ad76aadb5ac4,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",5,on,a243066a2f0e0f4b3bee5ec203e64a4031b58ab064a1f626c25694b2b36a4284,a243066a2f0e0f4b3bee5ec203e64a4031b58ab064a1f626c25694b2b36a4284,yes
+"Hail The Sun - Eight-Ball Coroners Pocket.gpx",5,off,f9ede5bd952016ed0d259b8e002a1a907b53a7119e90a25a7f6a5c6ed74c36ff,f9ede5bd952016ed0d259b8e002a1a907b53a7119e90a25a7f6a5c6ed74c36ff,yes

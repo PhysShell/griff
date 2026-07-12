@@ -21,10 +21,23 @@ Throwaway experiment tooling. Focused equivalence check of the new shared
 `synth_wide_pentatonic` b9b827c1d6748904 · `synth_wide_chromatic` 0ae9b26d010bdaa0 ·
 `synth_narrow_diatonic` 3e5da3f3d2e732f7 (same set as `tonal_evidence.jsonl`).
 
-## Artifact checksums (sha256, first 16 hex)
+## Artifact checksums (sha256, first 16 hex — file-level; see comparison note)
 `phase1_harmony_equivalence.csv` b7503cd9e4d2386b ·
 `phase1_evidence_equivalence.csv` b93cf89f70918eb3 ·
-`phase1_generation_smoke.csv` c2cfe7508c03c040 · `phase1_evidence.jsonl` 0bfdb7be8dd0b2e1.
+`phase1_generation_smoke.csv` 378b879f61ab07a9 · `phase1_evidence.jsonl` 0bfdb7be8dd0b2e1.
+
+## Comparison methodology (what was compared, in full)
+The 16-hex values above and any 16-hex fields are **display prefixes only**. The
+actual equivalence decisions used full data, not truncated hashes:
+- **HarmonicContext / structure**: full-file `diff` (every byte).
+- **Evidence**: element-wise compare of the full 12-slot `onset_counts` /
+  `duration_mass` arrays and exact `winner_correlation` / `confidence_margin`
+  float bits (`f64::to_bits`), correlation matched to 4 decimals.
+- **Generation smoke**: `phase1_generation_smoke.csv` now carries the **full
+  64-hex SHA-256** of each MIDI, and the pass was reconfirmed by a byte-level
+  `cmp` (not just the hash): **30/30 full-SHA-256-equal AND 30/30 byte-identical**.
+  (An earlier run of this CSV stored 16-hex prefixes and compared on the prefix;
+  it has been regenerated with full SHA-256 + `cmp`.)
 
 ## 1. HarmonicContext non-regression (production `complement::analyze_part`)
 `harmony_dump` on every track, both arms, comparing Some/None,
@@ -53,7 +66,8 @@ verified ground truth.
 
 ## 3. Generation smoke (tree-drift only; tonal not wired into generation)
 `griff generate`, 3 real × seeds 1..5 × gesture on/off, production default
-candidate count, MIDI sha256 before vs after: **30/30 byte-identical.**
+candidate count, full SHA-256 + byte `cmp` before vs after: **30/30
+full-SHA-256-equal AND 30/30 byte-identical.**
 
 ## 4. Estimator-drift removal (`tonal_scan.rs`)
 `tonal_scan` now delegates to `PitchEvidence::measure` + `estimate_key`; its
