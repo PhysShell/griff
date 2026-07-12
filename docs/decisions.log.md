@@ -1618,3 +1618,27 @@ Architectural decisions go to [`adr/`](adr/) instead.
   are diagnostics, not cutoffs). Phase 0 note amended (§7) to record what shipped
   and that a real-song key is a hypothesis for a scope, not verified truth.
   Cadence and `TonalCenter` stay frozen.
+
+- 2026-07-12 — **TonalContext Phase 1: ACCEPTED AND CLOSED.** Focused local
+  equivalence validation is green and independently reviewed; the cloud
+  implementation (red `6f9114d`, green `184b586`, docs `e2c9c7f`) is accepted
+  against the local validation commit
+  `bd2c7c8575858de414861dd3bf8562f70597ce06`. Acceptance figures:
+  - `HarmonicContext` exact equivalence: **16/16, 0 changed**;
+  - structure-consumer equivalence: **7/7 byte-identical**;
+  - core evidence mapping vs. the frozen prototype facts: **39/39, 0
+    mismatches**;
+  - histogram additivity (whole = Σ tracks = Σ voices): **PASS**;
+  - 24 finite candidates per scope: **PASS**;
+  - generation byte smoke: **30/30 identical**.
+
+  Follow-up archival/housekeeping commit
+  `3993bb096ebb4dded8bd71501ff9801b9f2cf81d` added `phase1_evidence.jsonl`,
+  regenerated the generation-smoke CSV with full 64-hex SHA-256, reconfirmed
+  30/30 byte-identical via `cmp`, and documented the exact comparison
+  methodology.
+
+  **No generation behavior changed.** Frozen status carried forward unchanged:
+  confidence thresholds **not calibrated**; automatic scope selection **not
+  approved**; generation integration **frozen**; cadence **frozen**; Phase 2
+  **not started**.
