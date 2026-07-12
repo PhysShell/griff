@@ -1558,3 +1558,30 @@ Architectural decisions go to [`adr/`](adr/) instead.
   `TonalCenter`, cadence, a global `RegisterPlan`, and reranker policy v2 stay
   not-started. Register behavioral acceptance remains **pending** the external
   Shuffle-window A/B.
+
+- 2026-07-12 — **Register track: ACCEPTED.** The wrap-free A/B is in
+  (2500/2500 candidate pairs, 50/50 winner pairs, published raw checksums
+  match): RhythmCopy > 12-semitone candidates 398 → 0, RepeatVariation
+  > 12 candidates on the observed grids 16 → 0, winner > 12 candidates
+  19 → 0, non-target strategy pitch hashes 500/500 identical, mean aggregate
+  0.8896 → 0.8951 / median 0.879 → 0.901. The register track is accepted as:
+  full-range reachability (`ScaleLadder`), an unbiased Shuffle window
+  (anchor drawn over `octave_window_count`), wrap-free RhythmCopy (a reflecting
+  `DegreeCursor`), and endpoint-local RepeatVariation (variation chosen local
+  to the bar's actual penultimate degree, closing the proven dense-grid
+  counterexample). A generic register-coherence rerank axis is **not**
+  justified — repairing candidate generation was sufficient, and scoring stays
+  free of malformed-candidate hiding.
+
+  Documentation corrections to the experimental record:
+  - the register candidate *scan* used **10 variants/strategy** (50 candidates
+    per condition, 2500 total);
+  - the *winner* CLI command omitted `--candidates`, so it used the default
+    **2 variants/strategy** (10 ranked) — the two configs are distinct;
+  - `25.36 → 6.02` is the **mean** winner max interval; the observed **maximum**
+    max interval is `57 → 12`;
+  - the bias CSV records observed output minima unless the harness genuinely
+    exposes the internal anchor index.
+
+  Still frozen: `TonalCenter` and cadence (both awaiting a real tonal center);
+  no reranker policy v2.
