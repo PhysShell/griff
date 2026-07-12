@@ -1455,3 +1455,25 @@ Architectural decisions go to [`adr/`](adr/) instead.
   the local corpus A/B — checking a systematic rise in distinct bar rhythms,
   comparing gesture-on against `--no-gesture` separately, and confirming no
   empty / anomalously-clamped / non-deterministic bars.
+
+- 2026-07-12 — **Rotation bump: ACCEPTED.** The local corpus A/B (60 runs, 30
+  before/after pairs) is in — but the independent evidence is **10 unique
+  rhythmic conditions** (5 seeds × gesture on/off), not 30 confirmations: the
+  three inputs produced identical rhythmic results because the rhythm schedule
+  is set by the shared corpus, not the input. The large effect held in all ten
+  conditions and every one of the 30 rows. `distinct_bar_rhythms` rose gesture-on
+  `2.20 → 7.80` (+5.60) and gesture-off `1.80 → 7.80` (+6.00), and after
+  rotation the per-seed `distinct_bar_rhythms` **matches** between gesture on and
+  off. Stated precisely: *gesture does not re-collapse per-bar rhythm-signature
+  diversity after rotation, although it still changes duration diversity and
+  notes-per-bar dispersion* (after-rotation `distinct_dur` gesture-on 3.0 /
+  off 4.2; `npb_std` gesture-on 2.26 / off 1.86) — so gesture is **not** claimed
+  orthogonal to rotation. No empty pieces (8/8 sounding bars), `RepeatVariation`
+  never won to mask the effect, and repeat runs were byte-identical
+  (determinism, SPEC §6). The parked refinements above stand.
+
+- 2026-07-12 — Clarification (no code decision): in the A/B tooling's report,
+  `candidates=10` is the **variants-per-strategy** flag, so the reranked set is
+  10 × 5 strategies = **50** candidates (fewer only when `RhythmCopyPitchSubstitute`
+  is skipped for want of a template) — the reranker does not choose from ten. The
+  CLI `--candidates` help and the ranking line are reworded to say so.

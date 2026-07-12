@@ -113,7 +113,9 @@ enum Command {
         /// the burst/rest gesture ask.
         #[arg(long, value_name = "DIR")]
         corpus: Option<PathBuf>,
-        /// Seed variants per strategy in the candidate set.
+        /// Seed variants *per strategy* in the candidate set. The reranked set
+        /// holds this many × 5 strategies candidates (fewer only when
+        /// rhythm-copy is skipped for want of a template) — e.g. `10` ranks 50.
         #[arg(long, default_value_t = 2)]
         candidates: usize,
         /// Skip burst/rest gesture carving even when the corpus provides
@@ -726,8 +728,10 @@ fn print_rhythm_diagnostics(
 
 /// Prints the ranked candidate list with its policy provenance (ADR-0017).
 fn print_ranking(ranked: &[scoring::Scored<rerank::SetCandidate>], policy: &scoring::WeightPolicy) {
+    // `ranked.len()` is the *total* candidate count (variants × strategies),
+    // not the `--candidates` flag — spelled out so the summary is unambiguous.
     println!(
-        "candidates: {} ranked under {} v{}",
+        "candidates: {} total ranked under {} v{}",
         ranked.len(),
         policy.id,
         policy.version,

@@ -2,7 +2,7 @@ $ griff generate <SRC> <OUT>
 exit: 0
 --- stdout ---
 rhythm: 1 loaded / 1 effective templates over 8 bars; gesture off; grids[1] ee747d11b006e748
-candidates: 10 ranked under generation_rerank v1
+candidates: 10 total ranked under generation_rerank v1
   1. ShuffleMotifs variant-seed 2939584983604071071 aggregate 0.883
   2. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.833
   3. RepeatVariation variant-seed 1961750202426094747 aggregate 0.833
