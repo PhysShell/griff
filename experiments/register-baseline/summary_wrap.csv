@@ -1,0 +1,6 @@
+"strategy","over12_before","over12_after","max_int_before","max_int_after","largest_down_before","largest_down_after","pitch_hash_changed","winners_before","winners_after","incoherent_winners_before","incoherent_winners_after"
+"RhythmCopyPitchSubstitute","398","0","57","6","57","6","498","23","20","19","0"
+"MotifTransposeVariation","0","0","9","9","9","9","0","0","0","0","0"
+"ConstrainedRandomWalk","0","0","6","6","4","4","0","10","10","0","0"
+"ShuffleMotifs","0","0","12","12","12","12","0","12","16","0","0"
+"RepeatVariation","16","0","57","6","57","6","38","5","4","0","0"
