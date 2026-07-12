@@ -67,8 +67,16 @@ fn octave_window_selectors_cover_the_full_ladder() {
         }
     }
     let rungs: Vec<u8> = ladder.pitches().iter().map(|p| p.0).collect();
-    assert_eq!(union.iter().min(), rungs.first(), "windows reach the bottom rung");
-    assert_eq!(union.iter().max(), rungs.last(), "windows reach the top rung");
+    assert_eq!(
+        union.iter().min(),
+        rungs.first(),
+        "windows reach the bottom rung"
+    );
+    assert_eq!(
+        union.iter().max(),
+        rungs.last(),
+        "windows reach the top rung"
+    );
 }
 
 #[test]
@@ -79,8 +87,11 @@ fn octave_window_handles_narrow_and_single_rung_ladders() {
     assert_eq!(narrow.octave_window(3).len(), narrow.len());
 
     // A single-rung ladder → a one-pitch window.
-    let one = ScaleLadder::build(&PitchRange::new(Pitch(47), Pitch(49)), &PitchClassSet::new([0]))
-        .expect("one C");
+    let one = ScaleLadder::build(
+        &PitchRange::new(Pitch(47), Pitch(49)),
+        &PitchClassSet::new([0]),
+    )
+    .expect("one C");
     let w = one.octave_window(9);
     assert_eq!(w.len(), 1);
     assert_eq!(w.pitches(), &[Pitch(48)]);
@@ -175,13 +186,26 @@ fn shuffle_variants_cover_below_middle_and_above_first_octave() {
     // bounded. (Not every variant must hit the exact endpoints.)
     let mut union: BTreeSet<u8> = BTreeSet::new();
     for seed in 0..200_u64 {
-        for p in pitches(&generate(&shuffle_request(seed, wide(8))).expect("generate")) {
+        for p in pitches(
+            &generate(&shuffle_request(seed, wide(8)))
+                .expect("generate")
+                .score,
+        ) {
             union.insert(p);
         }
     }
-    assert!(union.iter().any(|&p| p < 40), "reaches the first octave (28..40)");
-    assert!(union.iter().any(|&p| (40..52).contains(&p)), "reaches the second octave");
-    assert!(union.iter().any(|&p| p >= 52), "reaches above the second octave");
+    assert!(
+        union.iter().any(|&p| p < 40),
+        "reaches the first octave (28..40)"
+    );
+    assert!(
+        union.iter().any(|&p| (40..52).contains(&p)),
+        "reaches the second octave"
+    );
+    assert!(
+        union.iter().any(|&p| p >= 52),
+        "reaches above the second octave"
+    );
 }
 
 #[test]

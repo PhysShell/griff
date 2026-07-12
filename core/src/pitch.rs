@@ -143,6 +143,150 @@ impl ScaleLadder {
     pub fn pitches(&self) -> &[Pitch] {
         &self.pitches
     }
+
+    /// A contiguous window of the ladder spanning at most one octave (12
+    /// semitones), positioned by `selector` (a candidate-derived index).
+    ///
+    /// The window's low anchor is chosen from the rungs that leave a full
+    /// octave above them (or the bottom rung when the whole ladder is narrower
+    /// than an octave), so a top-edge selector does not shrink the window;
+    /// across selectors the windows cover the entire ladder. Never empty.
+    #[must_use]
+    pub fn octave_window(&self, selector: usize) -> LadderWindow<'_> {
+        const SPAN: u8 = 12;
+        let top = self.pitches.last().map_or(0, |p| p.0);
+        // Anchors that leave a full octave above them: rungs at or below
+        // `top - SPAN`. When the ladder is narrower than an octave, only the
+        // bottom rung anchors (the window is then the whole ladder).
+        let anchor_ceiling = top.saturating_sub(SPAN);
+        let anchor_count = self
+            .pitches
+            .iter()
+            .take_while(|p| p.0 <= anchor_ceiling)
+            .count()
+            .max(1);
+        let anchor = selector.checked_rem(anchor_count).unwrap_or(0);
+        let anchor_pitch = self.pitches.get(anchor).map_or(top, |p| p.0);
+        let window_ceiling = anchor_pitch.saturating_add(SPAN);
+        let end = self
+            .pitches
+            .iter()
+            .rposition(|p| p.0 <= window_ceiling)
+            .unwrap_or(anchor);
+        LadderWindow {
+            ladder: self,
+            start: anchor,
+            len: end.saturating_sub(anchor).saturating_add(1),
+        }
+    }
+}
+
+/// A contiguous, at-most-one-octave slice of a [`ScaleLadder`].
+///
+/// The local register one candidate stays within. The full ladder remains the
+/// source of reachability; the window is the locally-coherent subset.
+#[derive(Debug, Clone, Copy)]
+pub struct LadderWindow<'a> {
+    ladder: &'a ScaleLadder,
+    start: usize,
+    len: usize,
+}
+
+impl LadderWindow<'_> {
+    /// Number of rungs in the window (always ≥ 1).
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Always `false` — a window is never empty; present for lint parity.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The pitch at window-relative `degree`, clamped to the window ends.
+    #[must_use]
+    pub fn at(&self, degree: usize) -> Pitch {
+        let within = degree.min(self.len.saturating_sub(1));
+        self.ladder.at(self.start.saturating_add(within))
+    }
+
+    /// The window's rungs, ascending.
+    #[must_use]
+    pub fn pitches(&self) -> &[Pitch] {
+        let end = self.start.saturating_add(self.len).min(self.ladder.len());
+        self.ladder.pitches().get(self.start..end).unwrap_or(&[])
+    }
+}
+
+/// Diagnostic register statistics of a pitch line.
+///
+/// For tests and the A/B harness (arbiter). **Purely observational**: never
+/// wired into [`rerank_weights_v1`](crate::rerank::rerank_weights_v1);
+/// repairing candidate generation is separate from ranking.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RegisterStats {
+    /// Mean absolute interval between successive notes, in semitones.
+    pub mean_abs_interval: f64,
+    /// Largest absolute interval between successive notes, in semitones.
+    pub max_abs_interval: u8,
+    /// Share of successive intervals larger than an octave (> 12 semitones).
+    pub octave_leap_share: f64,
+    /// Population standard deviation of the pitches.
+    pub pitch_stddev: f64,
+}
+
+impl RegisterStats {
+    /// Measures the register shape of `pitches` (in program order). An empty or
+    /// single-note line reports zeros.
+    #[must_use]
+    pub fn measure(pitches: &[u8]) -> Self {
+        let intervals: Vec<u16> = pitches
+            .windows(2)
+            .filter_map(|w| match w {
+                [a, b] => Some(u16::from((*a).abs_diff(*b))),
+                _ => None,
+            })
+            .collect();
+        let (mean_abs_interval, max_abs_interval, octave_leap_share) = if intervals.is_empty() {
+            (0.0, 0, 0.0)
+        } else {
+            #[allow(clippy::cast_precision_loss)] // counts are tiny
+            let n = intervals.len() as f64;
+            let sum: u32 = intervals.iter().map(|&i| u32::from(i)).sum();
+            let max = intervals.iter().copied().max().unwrap_or(0);
+            let leaps = intervals.iter().filter(|&&i| i > 12).count();
+            #[allow(clippy::cast_precision_loss)]
+            let mean = f64::from(sum) / n;
+            #[allow(clippy::cast_precision_loss)]
+            let share = leaps as f64 / n;
+            #[allow(clippy::cast_possible_truncation)] // ≤ 127 by MIDI range
+            (mean, max.min(255) as u8, share)
+        };
+        Self {
+            mean_abs_interval,
+            max_abs_interval,
+            octave_leap_share,
+            pitch_stddev: stddev(pitches),
+        }
+    }
+}
+
+/// Population standard deviation of a pitch line (0 for < 2 notes).
+fn stddev(pitches: &[u8]) -> f64 {
+    if pitches.len() < 2 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)] // small counts / MIDI range
+    let n = pitches.len() as f64;
+    let mean = pitches.iter().map(|&p| f64::from(p)).sum::<f64>() / n;
+    let var = pitches
+        .iter()
+        .map(|&p| (f64::from(p) - mean).powi(2))
+        .sum::<f64>()
+        / n;
+    var.sqrt()
 }
 
 #[cfg(test)]

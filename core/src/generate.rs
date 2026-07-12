@@ -629,18 +629,22 @@ fn strategy_shuffle_motifs(
     grids: &[Vec<TemplateNote>],
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
-    let len = ladder.len();
+    // One deterministic per-candidate register window (≤ one octave): drawing
+    // every note from the whole ladder lost local coherence (register A/B,
+    // 2026-07-12). The window is seed-positioned, so variants still cover the
+    // full ladder while each candidate stays locally coherent. Shuffle-only.
+    let window = ladder.octave_window(prng.next_mod(ladder.len()));
+    let window_len = window.len();
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for bar_index in 0..c.bar_count {
         let grid = grid_for_bar(grids, bar_index);
         let mut notes = Vec::with_capacity(grid.len());
         for slot in grid {
-            // Draw from the whole ladder, so the shuffle spans the register.
-            let degree = prng.next_mod(len);
+            let degree = prng.next_mod(window_len);
             notes.push(GenNote {
                 offset: slot.offset,
-                pitch: ladder.at(degree),
+                pitch: window.at(degree),
                 duration: slot.duration,
                 velocity: Velocity(88),
             });
