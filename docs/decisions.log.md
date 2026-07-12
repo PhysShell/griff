@@ -1540,3 +1540,21 @@ Architectural decisions go to [`adr/`](adr/) instead.
   become a landfill that hides malformed candidates. `TonalCenter`, cadence,
   a register-coherence rerank axis, and reranker weights v2 all stay
   not-started.
+
+- 2026-07-12 — In the context of the register A/B's isolated blocker
+  (`ShuffleMotifs` incoherence from sampling the whole ladder), facing how to
+  restore local coherence without touching the other strategies or the ranker,
+  we decided for a **Shuffle-only `LadderWindow`** — `ScaleLadder::octave_window`
+  returns a contiguous ≤-one-octave slice, seed-positioned per candidate (low
+  anchor drawn from rungs that leave a full octave above, so selectors cover
+  the ladder without top/bottom bias), and Shuffle draws every note from its
+  window — and against redesigning the strategy, a register-coherence rerank
+  axis, hard octave-leap rejection, or a weights change, to fix candidate
+  *generation* (not hide malformed candidates behind scoring). Register
+  diagnostics (`RegisterStats`: mean/max abs interval, octave-leap share,
+  pitch stddev) are added as a pure, reusable measurement for tests and the
+  harness, explicitly **not** part of `rerank_weights_v1`. Reachability is
+  retained across variants; the window bounds per-candidate locality only.
+  `TonalCenter`, cadence, a global `RegisterPlan`, and reranker policy v2 stay
+  not-started. Register behavioral acceptance remains **pending** the external
+  Shuffle-window A/B.
