@@ -28,19 +28,25 @@ endpoint-local RepeatVariation fix — NOT a full corpus A/B.
 - `inter_bar_reset_interval` — last-of-bar → first-of-next (bar-boundary figure
   reset) — **report-only**, a deliberate figure return is allowed.
 
-## Result (6144 synthetic + 768 corpus RepeatVariation candidates)
-| material | intra_max (all grids) | var_prev | inter_reset (report) | in_bounds/in_class | variation |
+## Result (6144 synthetic + 768 real-corpus RepeatVariation candidates)
+`intra_max` / `var_prev` columns are the max over all grids; `inter_reset` is the
+**full candidate-level observed range** (report-only).
+
+| material | intra_max | var_prev | inter_reset (candidate-level range) | in_bounds/in_class | variation |
 |---|---|---|---|---|---|
-| WIDE_chromatic | 2 | 2 | 3..48 | 1 / 1 | present (2 distinct) |
-| WIDE_pentatonic | 5 | 5 | 8..48 | 1 / 1 | present |
+| WIDE_chromatic | 2 | 2 | 1..48 | 1 / 1 | present (2 distinct) |
+| WIDE_pentatonic | 5 | 5 | 3..48 | 1 / 1 | present |
 | two_rung | 7 | 7 | 7 | 1 / 1 | present |
 | single_rung | 0 | 0 | 0 | 1 / 1 | none (1 rung — impossible) |
 
 Acceptance over all 6144: `intra_bar_max > 12` = **0**, `variation_prev > 12` =
 **0**, `in_bounds < 1` = 0, `in_class < 1` = 0, variation present where ladder
 > 1 = **4608/4608**, single-rung variation correctly absent. Deterministic
-(re-run identical). Corpus grid-6 regression: intra/var max 2, 0 over 12,
-in-bounds/in-class = 1. `inter_bar_reset` grows with grid (the ascending figure's
+(re-run identical). **Real-corpus regression: this raw run exercised grid 6 only**
+(`grid_note_count = 6` for all 768 rows across the 3 real inputs) — intra/var max
+2, 0 over 12, in-bounds/in-class = 1; **grid 4 is covered by the synthetic
+matrix** (the broader corpus historically carries 4/6 templates, but only grid 6
+surfaced in this run). `inter_bar_reset` grows with grid (the ascending figure's
 loop point) — expected and allowed.
 
 ## Verdict
