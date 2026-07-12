@@ -4,9 +4,9 @@ exit: 0
 rhythm: 1 loaded / 1 effective templates over 8 bars; gesture off; grids[1] 7d150fc3c01468b8
 candidates: 10 total ranked under generation_rerank v1
   1. MotifTransposeVariation variant-seed 7960286522194355700 aggregate 0.873
-  2. RepeatVariation variant-seed 3625251794129094637 aggregate 0.806
-  3. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.790
-  4. RhythmCopyPitchSubstitute variant-seed 16481712997681181849 aggregate 0.790
+  2. RhythmCopyPitchSubstitute variant-seed 16294208416658607535 aggregate 0.823
+  3. RhythmCopyPitchSubstitute variant-seed 16481712997681181849 aggregate 0.806
+  4. RepeatVariation variant-seed 3625251794129094637 aggregate 0.806
   5. MotifTransposeVariation variant-seed 4560642061891045783 aggregate 0.790
   6. ConstrainedRandomWalk variant-seed 487617019471545679 aggregate 0.790
   7. ConstrainedRandomWalk variant-seed 398795221420464796 aggregate 0.790

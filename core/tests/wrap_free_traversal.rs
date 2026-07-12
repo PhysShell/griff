@@ -95,16 +95,22 @@ fn pitches(score: &Score) -> Vec<u8> {
 /// The ladder the generator uses for a material over the wide range.
 fn ladder_of(pm: &PitchMaterial) -> Vec<u8> {
     let c = wide(1);
-    ScaleLadder::build(&PitchRange::new(c.pitch_lo, c.pitch_hi), &pm.pitch_classes())
-        .expect("in-class")
-        .pitches()
-        .iter()
-        .map(|p| p.0)
-        .collect()
+    ScaleLadder::build(
+        &PitchRange::new(c.pitch_lo, c.pitch_hi),
+        &pm.pitch_classes(),
+    )
+    .expect("in-class")
+    .pitches()
+    .iter()
+    .map(|p| p.0)
+    .collect()
 }
 
 fn max_abs_interval(ps: &[u8]) -> u8 {
-    ps.windows(2).map(|w| w[0].abs_diff(w[1])).max().unwrap_or(0)
+    ps.windows(2)
+        .map(|w| w[0].abs_diff(w[1]))
+        .max()
+        .unwrap_or(0)
 }
 
 /// The longest run of a single repeated pitch.
@@ -130,8 +136,12 @@ fn longest_repeat(ps: &[u8]) -> usize {
 fn rhythm_copy_moves_by_adjacent_rungs_without_wrap() {
     for pm in [chromatic(), pentatonic()] {
         let ladder = ladder_of(&pm);
-        let index_of =
-            |p: u8| -> usize { ladder.iter().position(|&r| r == p).expect("pitch on ladder") };
+        let index_of = |p: u8| -> usize {
+            ladder
+                .iter()
+                .position(|&r| r == p)
+                .expect("pitch on ladder")
+        };
         for seed in [1_u64, 2, 7, 42, 99, 1000, 55_555] {
             let c = generate(&request(
                 GenerationStrategy::RhythmCopyPitchSubstitute,
@@ -184,12 +194,18 @@ fn rhythm_copy_union_reaches_low_middle_high() {
         union.extend(pitches(&c.score));
     }
     let mid = (u16::from(lo) + u16::from(hi)) / 2;
-    assert!(union.iter().any(|&p| p <= lo + 4), "reaches the low register");
+    assert!(
+        union.iter().any(|&p| p <= lo + 4),
+        "reaches the low register"
+    );
     assert!(
         union.iter().any(|&p| u16::from(p).abs_diff(mid) <= 3),
         "reaches the middle register"
     );
-    assert!(union.iter().any(|&p| p >= hi - 4), "reaches the high register");
+    assert!(
+        union.iter().any(|&p| p >= hi - 4),
+        "reaches the high register"
+    );
 }
 
 #[test]

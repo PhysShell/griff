@@ -490,14 +490,42 @@ impl Xorshift64 {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/// Returns the next ladder degree, wrapping at `len` (the ladder length), so an
-/// ascending run climbs the full register before returning to the bottom.
-const fn advance_degree(degree: usize, len: usize) -> usize {
-    let next = degree.wrapping_add(1);
-    if next >= len {
-        0
-    } else {
-        next
+/// A degree cursor that walks the full ladder by one rung at a time and
+/// **reflects** at the ends instead of wrapping — `… 3 4 3 2 1 0 1 …` — so a
+/// traversal never jumps top→bottom (register A/B, 2026-07-12). A one-rung
+/// ladder stays put.
+struct DegreeCursor {
+    degree: usize,
+    ascending: bool,
+}
+
+impl DegreeCursor {
+    const fn new(degree: usize) -> Self {
+        Self {
+            degree,
+            ascending: true,
+        }
+    }
+
+    /// Advances one rung within `[0, len)`, reversing direction at either end.
+    fn step(&mut self, len: usize) {
+        let max = len.saturating_sub(1);
+        if max == 0 {
+            return; // one-rung ladder: stationary
+        }
+        if self.ascending {
+            if self.degree >= max {
+                self.ascending = false;
+                self.degree = max.saturating_sub(1);
+            } else {
+                self.degree = self.degree.saturating_add(1);
+            }
+        } else if self.degree == 0 {
+            self.ascending = true;
+            self.degree = 1.min(max);
+        } else {
+            self.degree = self.degree.saturating_sub(1);
+        }
     }
 }
 
@@ -524,7 +552,9 @@ fn strategy_rhythm_copy(
     prng: &mut Xorshift64,
 ) -> Vec<Vec<GenNote>> {
     let len = ladder.len();
-    let mut degree = prng.next_mod(len);
+    // Reflecting cursor over the full ladder — gradual traversal, never a
+    // top->bottom modulo wrap (register A/B, 2026-07-12).
+    let mut cursor = DegreeCursor::new(prng.next_mod(len));
     let mut bars = Vec::with_capacity(c.bar_count);
 
     for bar_index in 0..c.bar_count {
@@ -533,11 +563,11 @@ fn strategy_rhythm_copy(
         for slot in grid {
             notes.push(GenNote {
                 offset: slot.offset,
-                pitch: ladder.at(degree),
+                pitch: ladder.at(cursor.degree),
                 duration: slot.duration,
                 velocity: Velocity(90),
             });
-            degree = advance_degree(degree, len);
+            cursor.step(len);
         }
         bars.push(notes);
     }
@@ -671,15 +701,19 @@ fn strategy_repeat_variation(
     let mut bars = Vec::with_capacity(c.bar_count);
     bars.push(base_bar.clone());
 
-    // Variation degree: advance 2 ladder steps from base so the pitch always
-    // differs (wrapping at the ladder length).
-    let var_degree = {
-        let d = base_degree.wrapping_add(2);
-        if d < len {
-            d
-        } else {
-            d.saturating_sub(len)
-        }
+    // Variation degree: a *local* two-rung displacement from base, reflected at
+    // the top so it never wraps the whole ladder (register A/B, 2026-07-12).
+    // Falls back to a one-rung move (then stays put) on ladders too short for
+    // two rungs, so the variation differs from base whenever possible.
+    let max_degree = len.saturating_sub(1);
+    let var_degree = if base_degree.saturating_add(2) <= max_degree {
+        base_degree.saturating_add(2)
+    } else if base_degree >= 2 {
+        base_degree.saturating_sub(2)
+    } else if base_degree.saturating_add(1) <= max_degree {
+        base_degree.saturating_add(1)
+    } else {
+        base_degree.saturating_sub(1)
     };
     let var_pitch = ladder.at(var_degree);
 
