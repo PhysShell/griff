@@ -14,6 +14,8 @@
 //!
 //! Run: register_scan <input.tab> --corpus <dir> [--seeds 1,2,3,4,5] [--variants 10] [--gesture both|on|off]
 use griff_cli::generation_input::{generation_request_from_score, load_corpus_material};
+use griff_core::event::Ticks;
+use griff_core::generate::RhythmTemplate;
 use griff_core::import::import_score_auto;
 use griff_core::rerank::{generate_candidate_set, SetRequest};
 use griff_core::score::{AtomEvent, Score};
@@ -305,11 +307,21 @@ fn main() -> Result<(), String> {
         jstr(iname), in_hi - in_lo, pc_abs.len(), pc_abs, pc_rel, material.rhythms.len(), material.gesture.is_some()
     );
 
+    // --synth-grid N overrides corpus rhythm with a single N-note uniform bar,
+    // for the focused RepeatVariation long-grid gate (grids the corpus lacks).
+    let synth_grid: Option<usize> = arg_after(&args, "--synth-grid").and_then(|s| s.parse().ok());
+    let bar_ticks = src.master_bars.first().map_or(1920, |b| {
+        b.tick_range.end.0.saturating_sub(b.tick_range.start.0)
+    });
+
     for &seed in &seeds {
         let base = generation_request_from_score(&src, seed, 8)
             .map_err(|e| format!("generation_request_from_score: {e:?}"))?;
-        // corpus rhythms when present, else the request's first-bar fallback (as cmd_generate does)
-        let source_rhythms = if material.rhythms.is_empty() {
+        // synthetic grid > corpus rhythms > first-bar fallback (as cmd_generate does)
+        let source_rhythms = if let Some(g) = synth_grid.filter(|&g| g > 0) {
+            let dur = (bar_ticks / g as u32).max(1);
+            vec![RhythmTemplate::from_durations(&vec![Ticks(dur); g])]
+        } else if material.rhythms.is_empty() {
             base.source_rhythms.clone()
         } else {
             material.rhythms.clone()

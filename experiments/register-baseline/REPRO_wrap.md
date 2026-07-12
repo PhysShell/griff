@@ -18,14 +18,21 @@ committed (ADR-0005); the synthetic fixtures here contain no corpus material.
 ## Config (identical on both arms)
 - inputs: 3 real (DGD / Wolf & Bear / Hail The Sun, private corpus) + 2 synthetic
   (`fixtures/synth_wide_diatonic.mid`, `synth_narrow_diatonic.mid`)
-- seeds 1..5 · gesture {on, off} · 10 variants/strategy · 8 bars
+- seeds 1..5 · gesture {on, off} · 8 bars
+- **candidate scan** (`register_scan`): `--variants 10` → **10 variants/strategy =
+  50 candidates/condition** (5 strategies).
+- **winner-level** (`griff generate`): the recorded command carries **no
+  `--candidates` flag**, so the CLI default applies — **2 variants/strategy = 10
+  candidates**, then reranked to one winner.
 - 369 production templates · production `generation_input` seam · production
   reranker · corpus record-list hash
   `213bd8572c95ebb74151a84997ace78067383fc534ed67ef359188777c64f5ed`
 
 ## Commands
 ```
+# candidate scan — 10 variants/strategy (50 candidates/condition)
 register_scan "<input>" --corpus <corpus_dir> --seeds 1,2,3,4,5 --variants 10
+# winner level — no --candidates: CLI default 2 variants/strategy (10 candidates)
 griff generate "<input>" out.mid --seed S --bars 8 --corpus <corpus_dir> [--no-gesture]
 analyze out.mid --input "<input>" --corpus <corpus_dir>
 # bias sanity (A only): register_scan WIDE --seeds 1..100 --variants 10 --gesture off, Shuffle rows
@@ -45,20 +52,26 @@ analyze out.mid --input "<input>" --corpus <corpus_dir>
   plateau max 2→**1** (no saturation); union span preserved (DGD 57→56, WIDE
   48→48); in-bounds = in-class = 1.0; deterministic (re-run identical).
 - **RepeatVariation**: >12 candidates 16→**0**/500; max interval / variation
-  penultimate→last 57→**6**; only corpus grids 4 and 6 occur (no ≥8 template in
-  this corpus, so long-grid wrap is untested here but the reflecting traversal is
-  grid-agnostic by construction); boundary plateau UNCHANGED before→after (11→11,
-  a pre-existing repeat-structure artifact, not introduced by the fix);
+  penultimate→last 57→**6**. This covers **only corpus grids 4 and 6** (the corpus
+  carries no ≥8-note template). Grid-agnosticism is **NOT** established here —
+  longer grids (8/16/32/64) remain untested and are the subject of the pending
+  focused Repeat validation. Boundary plateau UNCHANGED before→after (11→11, a
+  pre-existing repeat-structure artifact, not introduced by the fix);
   distinct_pitch 5.8 → variation nontrivial.
 - **Regression**: Shuffle / MotifTranspose / CRW — 500/500 identical pitch_hash
   A→B. RhythmCopy 498/500 changed, Repeat 38/500 changed (only the wrap ones).
 - **Winner level**: winners with interval >12 = 19→**0**/50 (all were RhythmCopy);
-  winner max interval 25.4→6.0; over-octave 0.007→0.000; aggregate mean
-  0.890→0.895 (median 0.878→0.901, stable); six rerank axes stable; distribution
-  stays diverse (4 strategies).
+  **mean** winner `max_abs_interval` 25.36→**6.02**; **maximum observed** winner
+  interval 57→**12** (the residual 12 is a ShuffleMotifs window edge, not a wrap);
+  over-octave 0.007→0.000; aggregate mean 0.890→0.895 (median 0.878→0.901,
+  stable); six rerank axes stable; distribution stays diverse (4 strategies).
 - **Bias sanity (A)**: 1000 Shuffle candidates on WIDE — window span ≤12,
-  in-bounds = in-class = 1.0, 23 distinct anchors 36..74 (low/mid/high all
-  present), thirds 334/339/327 (low/high ratio 1.02 — **no 2× lower skew**).
+  in-bounds = in-class = 1.0. `bias_sanity.csv` histograms **`observed_output_min`**
+  (each candidate's line minimum), a **proxy** for the internal LadderWindow
+  anchor — not the anchor itself: the top bucket 74 exceeds the highest valid
+  full-octave anchor (72 for WIDE 36..84) because the window clamps at the ladder
+  top. 23 distinct observed minima 36..74 (low/mid/high all present); thirds
+  334/339/327 (low/high ratio 1.02 — **no 2× lower skew**).
 
 ## Verdict
 **#1 — wrap-free traversal fixes residual register defect; no rerank axis
