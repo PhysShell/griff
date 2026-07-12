@@ -1420,3 +1420,18 @@ Architectural decisions go to [`adr/`](adr/) instead.
   re-blesses of the generation goldens and that `complement` keeps its
   historical quarter grid (an explicitly empty template list) until its own
   increment.
+
+- 2026-07-12 — In the context of the corpus-fed playtest showing rhythm
+  monotony (`distinct_dur` stuck at 1.0 — one rhythm for the whole phrase),
+  facing where the collapse happened, we decided for **per-bar template
+  rotation** — `bar_grids` builds one grid per corpus template and strategies
+  cycle them by bar index, and the rerank set hands every candidate the whole
+  template palette (variants differ by seed, the pitch line) — and against
+  keeping per-variant rotation or randomising the per-bar choice, to achieve
+  within-phrase rhythmic variety that stays deterministic (SPEC §6),
+  prioritising it over cadence-aware endings (the previously-queued next step)
+  because it hit the larger measured hole. `RepeatVariation` keeps one rhythm
+  across bars (repetition is its identity). Accepting that only the first
+  `bar_count` templates of a large corpus are heard (index-mod selection);
+  diverse-template sampling is a parked refinement. Cadence-aware endings move
+  to the next slot.
