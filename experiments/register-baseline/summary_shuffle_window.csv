@@ -1,0 +1,6 @@
+"strategy","span_med_before","span_med_after","max_int_before","max_int_after","over_octave_before","over_octave_after","exact_octave_before","exact_octave_after","pitch_hash_changed","candidates","winners_before","winners_after"
+"RhythmCopyPitchSubstitute","53","53","57","57","0,018","0,018","0","0","0","500","21","25"
+"MotifTransposeVariation","10","10","9","9","0","0","0","0","0","500","0","0"
+"ConstrainedRandomWalk","11","11","6","6","0","0","0","0","0","500","8","14"
+"ShuffleMotifs","52","12","57","12","0,481","0","0,026","0,015","500","500","14","4"
+"RepeatVariation","5","5","57","57","0,011","0,011","0","0","0","500","7","7"
