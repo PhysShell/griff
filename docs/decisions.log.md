@@ -1521,3 +1521,22 @@ Architectural decisions go to [`adr/`](adr/) instead.
   is a separate later increment (and cadence-aware endings stay frozen until it
   lands, since only then is a real tonic available to cadence onto). Generate
   goldens (core + CLI) were re-blessed for the new mapping.
+
+- 2026-07-12 — **Register post-fix A/B (local experimental evidence, not
+  product thresholds).** The full-range ladder fixed structural
+  first-octave confinement and reachability (synthetic after-ladder
+  in-range/in-class share was 1.0). But candidate *coherence* regressed,
+  isolated mainly to `ShuffleMotifs`: drawing every note from the whole
+  ladder blew up the register — Shuffle wide-synthetic median candidate span
+  ~`11 → 46` semitones, octave-leap share ~`0 → 0.62` — and 10 of 50
+  post-ladder production winners crossed the experiment's incoherence
+  threshold, all `ShuffleMotifs`. Wording correction: the reranker does **not**
+  "prefer wide register" (its six axes are only closure + novelty) — rather,
+  *it does not penalize register incoherence, so some incoherent candidates
+  score well on the existing closure/novelty axes and reach the output.*
+  Consequence: register behavioral acceptance stays **blocked** pending a
+  Shuffle-window A/B; the fix repairs candidate *generation* (a deterministic
+  per-candidate `LadderWindow` for Shuffle), not the ranker — scoring must not
+  become a landfill that hides malformed candidates. `TonalCenter`, cadence,
+  a register-coherence rerank axis, and reranker weights v2 all stay
+  not-started.
