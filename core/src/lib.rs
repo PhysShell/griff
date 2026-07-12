@@ -31,4 +31,5 @@ pub mod split;
 pub mod structure;
 pub mod syncopation;
 pub mod technique;
+pub mod tonal;
 pub mod unfold;
