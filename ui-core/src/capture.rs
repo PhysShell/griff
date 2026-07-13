@@ -286,7 +286,11 @@ mod tests {
         assert_eq!(chunk.id.0, "two_phrases_001", "the id is trimmed");
         assert_eq!(chunk.title, "Two Phrases");
         assert_eq!(chunk.tuning, "standard_e", "an empty tuning defaults");
-        assert_eq!(chunk.style_cohort, Some(StyleCohort::Adjacent), "cohort 1 = adjacent");
+        assert_eq!(
+            chunk.style_cohort,
+            Some(StyleCohort::Adjacent),
+            "cohort 1 = adjacent"
+        );
         let rights = chunk.rights.as_ref().expect("rights captured");
         assert_eq!(rights.rights_status, RightsStatus::PublicDomain);
         assert!(rights.redistributable);
@@ -294,7 +298,10 @@ mod tests {
 
         // Byte-compatible with what `griff manifest` reads.
         let json = serde_json::to_string(&chunk).expect("serializes");
-        assert!(json.contains("two_phrases_001"), "the chunk serializes its id");
+        assert!(
+            json.contains("two_phrases_001"),
+            "the chunk serializes its id"
+        );
     }
 
     #[test]

@@ -7,10 +7,9 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use griff_cli::generation_input::{
-    generation_request_from_score, load_corpus_material, CorpusMaterial, GenerationInputError,
-};
+use griff_cli::generation_input::{load_corpus_material, CorpusMaterial, GenerationInputError};
 use griff_cli::primary_voice_note_count;
+use griff_core::generation_input::{ranked_candidates, GenerationAsk, RankedSet};
 use griff_core::{
     boundary,
     classify::{self, BarClass},
@@ -595,44 +594,39 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
     } = *opts;
     let data = fs::read(input)?;
     let score = import::import_score_auto(&data)?;
-    let base = generation_request_from_score(&score, seed, bars)?;
-
     let material = corpus.map(load_corpus_material).transpose()?;
-    let (source_rhythms, gesture_ask) = material.as_ref().map_or_else(
-        || (base.source_rhythms.clone(), None),
-        |m| {
-            // A corpus without extractable rhythms still generates: fall back
-            // to the input's first bar rather than dropping rhythm-copy.
-            let rhythms = if m.rhythms.is_empty() {
-                base.source_rhythms.clone()
-            } else {
-                m.rhythms.clone()
-            };
-            (rhythms, if no_gesture { None } else { m.gesture })
-        },
-    );
-    let references: &[Score] = material.as_ref().map_or(&[], |m| &m.references);
 
     if let Some(m) = &material {
         print_corpus_summary(m, no_gesture);
     }
-    print_rhythm_diagnostics(&source_rhythms, &base.constraints, gesture_ask.is_some());
 
-    let set = rerank::generate_candidate_set(&rerank::SetRequest {
-        seed: base.seed,
-        pitch_material: base.pitch_material.clone(),
-        constraints: base.constraints,
+    // The shared compiler: the cockpit's Generate panel enters here too, so the
+    // two cannot drift.
+    let set = ranked_candidates(
+        &score,
+        material.as_ref(),
+        &GenerationAsk {
+            seed,
+            bars,
+            variants_per_strategy: candidates,
+            gesture: !no_gesture,
+        },
+    )?;
+    let RankedSet {
+        ranked,
+        base,
         source_rhythms,
-        variants_per_strategy: candidates,
-        gesture: gesture_ask,
-    })?;
-    let policy = rerank::rerank_weights_v1();
-    let ranked = rerank::rerank_candidates(set, &base.pitch_material, references, &policy);
+        gesture,
+        policy,
+    } = &set;
+
+    print_rhythm_diagnostics(source_rhythms, &base.constraints, gesture.is_some());
+
     let winner = ranked
         .first()
         .ok_or_else(|| CliError::Corpus("no candidate survived scoring".to_owned()))?;
 
-    print_ranking(&ranked, &policy);
+    print_ranking(ranked, policy);
 
     let out_bytes = midi::export_score(&winner.value.score)?;
     fs::write(output, &out_bytes)?;
@@ -1558,6 +1552,7 @@ impl From<GenerationInputError> for CliError {
     fn from(e: GenerationInputError) -> Self {
         match e {
             GenerationInputError::Generation(g) => Self::Generate(g),
+            GenerationInputError::Set(s) => Self::Set(s),
             GenerationInputError::Corpus(msg) => Self::Corpus(msg),
         }
     }

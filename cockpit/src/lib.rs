@@ -30,15 +30,21 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
 use griff_core::classify::BarClass;
 use griff_core::corpus::{ChunkMeta, ReviewerDecision, RightsStatus, StyleCohort, SwancoreTag};
+use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
-use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
+use griff_ui_core::generate::generate_set;
+use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
 use griff_ui_core::viewport::CurationDecision;
 use griff_ui_core::{
     analyze, build_chunk, build_view, filter_chunks, Analysis, CaptureInputs, CorpusFilter,
     CorpusStats, Intent, PianoRollView, Step, ViewContext, Viewport,
 };
+
+pub mod generation;
+
+use generation::{GeneratePanel, KeptProvenance};
 
 /// Pixel width of one grid cell.
 const CELL_W: f32 = 9.0;
@@ -234,7 +240,11 @@ fn chunk_row(ui: &mut egui::Ui, chunk: &ChunkMeta, selected: bool) -> bool {
             // No decision yet reads as "needs a look", like an explicit NeedsReview.
             Some(ReviewerDecision::NeedsReview) | None => "? ",
         };
-        let dup = if chunk.duplicate.is_some() { "≈ " } else { "" };
+        let dup = if chunk.duplicate.is_some() {
+            "≈ "
+        } else {
+            ""
+        };
         let clicked = ui
             .selectable_label(selected, format!("{mark}{dup}{}", chunk.id.0))
             .clicked();
@@ -310,7 +320,10 @@ fn text_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 
 /// A labelled [`egui::ComboBox`] selecting a `u32` code from `(code, label)`s.
 fn combo(ui: &mut egui::Ui, label: &str, value: &mut u32, options: &[(u32, &str)]) {
-    let current = options.iter().find(|opt| opt.0 == *value).map_or("", |opt| opt.1);
+    let current = options
+        .iter()
+        .find(|opt| opt.0 == *value)
+        .map_or("", |opt| opt.1);
     egui::ComboBox::from_label(label)
         .selected_text(current)
         .show_ui(ui, |ui| {
@@ -348,9 +361,9 @@ impl Default for CaptureForm {
             tuning: String::new(),
             tags_idx: String::new(),
             notes: String::new(),
-            cohort: 0,             // core
-            rights_status: 3,      // copyrighted — the safe default until stated
-            acquisition: 0,        // community tab
+            cohort: 0,        // core
+            rights_status: 3, // copyrighted — the safe default until stated
+            acquisition: 0,   // community tab
             redistributable: false,
             status: None,
         }
@@ -385,7 +398,13 @@ impl CaptureForm {
         let base = stem.rsplit_once('.').map_or(stem, |(name, _)| name);
         let slug: String = base
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
             .collect();
         slug.trim_matches('_').clone_into(&mut self.id);
         base.clone_into(&mut self.title);
@@ -397,7 +416,10 @@ impl CaptureForm {
 /// The current time as an RFC3339 timestamp (`created_at`/`updated_at`).
 #[cfg(target_arch = "wasm32")]
 fn now_rfc3339() -> String {
-    js_sys::Date::new_0().to_iso_string().as_string().unwrap_or_default()
+    js_sys::Date::new_0()
+        .to_iso_string()
+        .as_string()
+        .unwrap_or_default()
 }
 
 /// The current time as an RFC3339 timestamp, from the system clock (no `chrono`:
@@ -405,7 +427,9 @@ fn now_rfc3339() -> String {
 #[cfg(not(target_arch = "wasm32"))]
 fn now_rfc3339() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let (hh, mm, ss) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
     let z = i64::try_from(secs / 86_400).unwrap_or(0) + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -440,7 +464,13 @@ fn chunk_filename(id: &str) -> String {
     let slug: String = id
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect();
     let stem = slug.trim_matches('_');
     let stem = if stem.is_empty() { "chunk" } else { stem };
@@ -477,7 +507,10 @@ enum CurationAction {
 
 /// A `SwancoreTag`'s wire name (`snake_case`), for the retag toggles.
 fn tag_wire(tag: SwancoreTag) -> Option<String> {
-    serde_json::to_value(tag).ok()?.as_str().map(ToOwned::to_owned)
+    serde_json::to_value(tag)
+        .ok()?
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 /// The egui cockpit application: a `Scene` renderer over the shared core.
@@ -512,6 +545,15 @@ pub struct CockpitApp {
     selected_track: usize,
     /// Every track's display name, for the toolbar's track selector.
     track_names: Vec<String>,
+    /// The Generate panel: knobs, the last candidate set, the selection (S8).
+    gen_panel: GeneratePanel,
+    /// The corpus material a generation pass consumes — rhythm templates,
+    /// novelty references, the gesture ask. `None` until a corpus is loaded;
+    /// a pass then seeds from the displayed score alone.
+    material: Option<CorpusMaterial>,
+    /// Where a kept candidate is written (native only).
+    #[cfg(not(target_arch = "wasm32"))]
+    out_dir: std::path::PathBuf,
 }
 
 /// A single-track view of `score`: just `track`, so the roll shows one part
@@ -531,7 +573,12 @@ fn track_labels(score: &Score) -> Vec<String> {
         .tracks
         .iter()
         .enumerate()
-        .map(|(i, track)| track.name.clone().unwrap_or_else(|| format!("track {}", i + 1)))
+        .map(|(i, track)| {
+            track
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("track {}", i + 1))
+        })
         .collect()
 }
 
@@ -559,6 +606,10 @@ impl CockpitApp {
             dock_status: None,
             selected_track: 0,
             track_names: Vec::new(),
+            gen_panel: GeneratePanel::new(),
+            material: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            out_dir: std::path::PathBuf::from("keeps"),
         }
     }
 
@@ -631,6 +682,305 @@ impl CockpitApp {
         Ok(())
     }
 
+    /// Shows an already-built `score` under `title` — the path a freshly
+    /// generated candidate takes, with no export/re-import round-trip. Unlike
+    /// [`Self::load`] it leaves the capture form alone: the form still describes
+    /// the curator's chunk, not the machine's candidate.
+    pub fn show_score(&mut self, score: Score, title: String) {
+        let focus = analyze(&score).focus_track;
+        self.track_names = track_labels(&score);
+        self.title = title;
+        self.score = Some(score);
+        self.focus_on_track(focus);
+    }
+
+    /// Attaches a corpus to the Generate panel: its material (rhythm templates,
+    /// novelty references, gesture ask) and its source tabs as the seed
+    /// pick-list. Without one, a pass seeds from the displayed score alone.
+    pub fn attach_corpus(&mut self, material: CorpusMaterial, sources: Vec<generation::SourceTab>) {
+        self.material = Some(material);
+        self.gen_panel.source = if sources.is_empty() { None } else { Some(0) };
+        self.gen_panel.sources = sources;
+        self.gen_panel.open = true;
+    }
+
+    /// Where kept candidates are written.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_out_dir(&mut self, dir: std::path::PathBuf) {
+        self.out_dir = dir;
+    }
+
+    /// The score a pass seeds from: the picked corpus tab, or — when none is
+    /// picked (or the pick is stale) — the displayed score.
+    fn generation_source(&self) -> Result<Score, String> {
+        match self.gen_panel.source_tab() {
+            Some(tab) => import_score_auto(&tab.bytes)
+                .map_err(|err| format!("cannot import {}: {err}", tab.name)),
+            None => self
+                .score
+                .clone()
+                .ok_or_else(|| "no score loaded".to_owned()),
+        }
+    }
+
+    /// Runs the panel's ask through the shared compiler and shows the winner.
+    ///
+    /// The set is `griff generate`'s set: same entry point, same rerank, same
+    /// order — rank 1 is the candidate the CLI would have written.
+    fn do_generate(&mut self) {
+        let ask = self.gen_panel.ask();
+        let outcome = self.generation_source().and_then(|score| {
+            generate_set(&score, self.material.as_ref(), &ask).map_err(|err| format!("{err:?}"))
+        });
+        match outcome {
+            Ok(set) => {
+                let n = set.rows.len();
+                let tones = set.summary.scale_tones;
+                self.gen_panel.set = Some(set);
+                self.gen_panel.status = Some(format!(
+                    "{n} candidates ranked · {tones}-tone scale · seed {}",
+                    ask.seed
+                ));
+                self.show_candidate(0);
+            }
+            Err(err) => {
+                self.gen_panel.set = None;
+                self.gen_panel.selected = None;
+                self.gen_panel.status = Some(format!("generate failed: {err}"));
+            }
+        }
+    }
+
+    /// Paints candidate `i` of the current set into the roll.
+    fn show_candidate(&mut self, i: usize) {
+        let Some(set) = self.gen_panel.set.as_ref() else {
+            return;
+        };
+        let (Some(score), Some(row)) = (set.scores.get(i).cloned(), set.rows.get(i)) else {
+            return;
+        };
+        let title = format!("#{} {} · {:.3}", row.rank, row.strategy, row.aggregate);
+        self.gen_panel.selected = Some(i);
+        self.show_score(score, title);
+    }
+
+    /// Writes candidate `i` as a `.mid` plus a provenance sidecar naming the
+    /// exact ask that reproduces it. Native only — the browser has no
+    /// filesystem (a web keep would download, out of this slice's scope).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_candidate(&mut self, i: usize) {
+        let outcome = self.write_keep(i);
+        self.gen_panel.status = Some(match outcome {
+            Ok(path) => format!("kept {path}"),
+            Err(err) => format!("keep failed: {err}"),
+        });
+    }
+
+    /// Exports candidate `i` and its provenance into the out dir; returns the
+    /// written `.mid` path.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_keep(&self, i: usize) -> Result<String, String> {
+        use std::fs;
+
+        use griff_core::midi::export_score;
+
+        let set = self.gen_panel.set.as_ref().ok_or("nothing generated yet")?;
+        let row = set.rows.get(i).ok_or("no such candidate")?;
+        let score = set.scores.get(i).ok_or("no such candidate")?;
+
+        let source = self
+            .gen_panel
+            .source_tab()
+            .map_or_else(|| self.title.clone(), |tab| tab.name.clone());
+        let provenance = KeptProvenance {
+            source: &source,
+            corpus: self.material.is_some(),
+            seed: self.gen_panel.seed,
+            bars: self.gen_panel.bars,
+            variants_per_strategy: self.gen_panel.variants,
+            gesture: set.summary.gesture.is_some(),
+            strategy: &row.strategy,
+            variant_seed: row.variant_seed,
+            rank: row.rank,
+            aggregate: row.aggregate,
+            axes: row.axes.clone(),
+        };
+
+        fs::create_dir_all(&self.out_dir)
+            .map_err(|e| format!("cannot create {}: {e}", self.out_dir.display()))?;
+        let stem = format!(
+            "seed{}_{}_{:016x}",
+            self.gen_panel.seed, row.strategy, row.variant_seed
+        );
+        let mid = self.out_dir.join(format!("{stem}.mid"));
+        let json = self.out_dir.join(format!("{stem}.json"));
+
+        let bytes = export_score(score).map_err(|err| format!("{err:?}"))?;
+        fs::write(&mid, &bytes).map_err(|e| format!("cannot write {}: {e}", mid.display()))?;
+        let text = serde_json::to_string_pretty(&provenance).map_err(|err| err.to_string())?;
+        fs::write(&json, text).map_err(|e| format!("cannot write {}: {e}", json.display()))?;
+        Ok(mid.display().to_string())
+    }
+
+    /// Hands the last kept `.mid` to the OS default handler — the cheap way to
+    /// *hear* a candidate (a notation editor or DAW is already registered for
+    /// `.mid`). The cockpit does not synthesise audio.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_keep(&mut self, i: usize) {
+        let outcome = self
+            .write_keep(i)
+            .and_then(|path| open_in_default_app(std::path::Path::new(&path)).map(|()| path));
+        self.gen_panel.status = Some(match outcome {
+            Ok(path) => format!("opened {path}"),
+            Err(err) => format!("open failed: {err}"),
+        });
+    }
+
+    /// The Generate panel (S8): the ask, the ranked candidate table, and the
+    /// keep actions. Rank 1 is what `griff generate` would have written.
+    fn generate_window(&mut self, ctx: &egui::Context) {
+        let mut show: Option<usize> = None;
+        let mut keep: Option<usize> = None;
+        let mut open: Option<usize> = None;
+        let mut run = false;
+
+        egui::Window::new("generate · candidates")
+            .default_width(460.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                if !self.gen_panel.sources.is_empty() {
+                    let current = self
+                        .gen_panel
+                        .source_tab()
+                        .map_or("(displayed score)", |t| t.name.as_str())
+                        .to_owned();
+                    egui::ComboBox::from_label("seed tab")
+                        .selected_text(current)
+                        .width(300.0)
+                        .show_ui(ui, |ui| {
+                            for (i, tab) in self.gen_panel.sources.iter().enumerate() {
+                                if ui
+                                    .selectable_label(self.gen_panel.source == Some(i), &tab.name)
+                                    .clicked()
+                                {
+                                    self.gen_panel.source = Some(i);
+                                }
+                            }
+                        });
+                }
+                ui.horizontal(|ui| {
+                    ui.label("seed");
+                    ui.add(egui::DragValue::new(&mut self.gen_panel.seed).speed(1.0));
+                    ui.label("bars");
+                    ui.add(egui::DragValue::new(&mut self.gen_panel.bars).range(1..=64));
+                    ui.label("variants");
+                    ui.add(egui::DragValue::new(&mut self.gen_panel.variants).range(1..=40))
+                        .on_hover_text("per strategy — the set holds this x 5");
+                    ui.checkbox(&mut self.gen_panel.gesture, "gesture")
+                        .on_hover_text("carve the corpus's burst/rest phrasing");
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("⚙ generate").clicked() {
+                        run = true;
+                    }
+                    if ui.button("🎲 next seed").clicked() {
+                        self.gen_panel.seed = self.gen_panel.seed.wrapping_add(1);
+                        run = true;
+                    }
+                    if let Some(status) = &self.gen_panel.status {
+                        ui.weak(status);
+                    }
+                });
+
+                let Some(set) = self.gen_panel.set.as_ref() else {
+                    ui.separator();
+                    ui.weak(match self.material {
+                        Some(_) => "a corpus is loaded — generate to rank a candidate set",
+                        None => "no corpus: the pass will seed from the displayed score alone",
+                    });
+                    return;
+                };
+
+                ui.separator();
+                let gesture = set.summary.gesture.as_ref().map_or_else(
+                    || "off".to_owned(),
+                    |(n, rest)| format!("{n} notes / {rest}"),
+                );
+                ui.weak(format!(
+                    "{} templates · {} references · gesture {} · {}-tone scale{}",
+                    set.summary.templates,
+                    set.summary.references,
+                    gesture,
+                    set.summary.scale_tones,
+                    if set.summary.skipped.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {} records skipped", set.summary.skipped.len())
+                    },
+                ));
+                ui.separator();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (i, row) in set.rows.iter().enumerate() {
+                        let selected = self.gen_panel.selected == Some(i);
+                        let label = format!(
+                            "{:>3}. {:<26} {:.3}  {} notes",
+                            row.rank, row.strategy, row.aggregate, row.note_count,
+                        );
+                        let hover = row
+                            .axes
+                            .iter()
+                            .map(|(name, value)| format!("{name} {value:.2}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if ui
+                            .selectable_label(selected, egui::RichText::new(label).monospace())
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            show = Some(i);
+                        }
+                    }
+                });
+
+                if let Some(i) = self.gen_panel.selected {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("⤓ keep .mid").clicked() {
+                            keep = Some(i);
+                        }
+                        if ui
+                            .button("🔊 open")
+                            .on_hover_text("write it and hand it to your .mid app")
+                            .clicked()
+                        {
+                            open = Some(i);
+                        }
+                    });
+                }
+            });
+
+        if run {
+            self.do_generate();
+        }
+        if let Some(i) = show {
+            self.show_candidate(i);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(i) = keep {
+                self.keep_candidate(i);
+            }
+            if let Some(i) = open {
+                self.open_keep(i);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        if keep.is_some() || open.is_some() {
+            self.gen_panel.status = Some("keep is native-only in this slice".to_owned());
+        }
+    }
+
     /// Captures the focused track of the loaded score as a `chunk.json` string
     /// (ADR-0026), through the shared [`griff_ui_core::capture::build_chunk`] —
     /// byte-compatible with what `griff manifest` reads.
@@ -638,7 +988,10 @@ impl CockpitApp {
     /// # Errors
     /// Returns a message if no score is loaded yet, or if measuring fails.
     pub fn capture_json(&self, inputs: &CaptureInputs<'_>) -> Result<String, String> {
-        let score = self.score.as_ref().ok_or_else(|| "no score loaded".to_owned())?;
+        let score = self
+            .score
+            .as_ref()
+            .ok_or_else(|| "no score loaded".to_owned())?;
         let chunk = build_chunk(score, self.selected_track, inputs)?;
         serde_json::to_string_pretty(&chunk).map_err(|err| err.to_string())
     }
@@ -647,10 +1000,12 @@ impl CockpitApp {
     /// recording the outcome in the form's status line.
     fn do_capture(&mut self) {
         let now = now_rfc3339();
-        let result = self.capture_json(&self.form.inputs(&now, &now)).and_then(|json| {
-            let filename = chunk_filename(&self.form.id);
-            save_chunk(&filename, &json).map(|()| filename)
-        });
+        let result = self
+            .capture_json(&self.form.inputs(&now, &now))
+            .and_then(|json| {
+                let filename = chunk_filename(&self.form.id);
+                save_chunk(&filename, &json).map(|()| filename)
+            });
         self.form.status = Some(match result {
             Ok(filename) => format!("saved {filename}"),
             Err(err) => format!("capture failed: {err}"),
@@ -701,7 +1056,11 @@ impl CockpitApp {
     /// # Errors
     /// A message if the chunk is absent or the op rejects the edit.
     fn curate(&mut self, id: &str, action: &CurationAction) -> Result<String, String> {
-        let idx = self.corpus.iter().position(|c| c.id.0 == id).ok_or("no such chunk")?;
+        let idx = self
+            .corpus
+            .iter()
+            .position(|c| c.id.0 == id)
+            .ok_or("no such chunk")?;
         let json = serde_json::to_string(self.corpus.get(idx).ok_or("no such chunk")?)
             .map_err(|err| err.to_string())?;
         let edited = match action {
@@ -751,67 +1110,74 @@ impl CockpitApp {
     fn corpus_dock(&mut self, ctx: &egui::Context) {
         let mut clicked: Option<String> = None;
         let mut action: Option<(String, CurationAction)> = None;
-        egui::Window::new("corpus").default_width(360.0).show(ctx, |ui| {
-            let stats = CorpusStats::aggregate(&self.corpus);
-            if stats.total == 0 {
-                ui.label("no corpus loaded — capture chunks, then press 📚 Corpus");
-                return;
-            }
-            // ── dashboard ──
-            ui.label(format!(
-                "{} chunks · {} redistributable · {} near-dup · {} rights unset",
-                stats.total, stats.redistributable, stats.duplicates, stats.rights_unset,
-            ));
-            let tags = stats.present_tags();
-            if !tags.is_empty() {
-                let top: Vec<String> =
-                    tags.iter().take(4).map(|(tag, n)| format!("{tag:?}×{n}")).collect();
-                ui.weak(top.join("   "));
-            }
-            ui.separator();
-            // ── filters ──
-            ui.horizontal(|ui| {
-                ui.label("find");
-                ui.text_edit_singleline(&mut self.corpus_filter.query);
-            });
-            ui.horizontal(|ui| {
-                opt_combo(ui, "cohort", &mut self.corpus_filter.cohort, COHORTS);
-                opt_combo(ui, "rights", &mut self.corpus_filter.rights, RIGHTS_STATUS);
-            });
-            ui.horizontal(|ui| {
-                tag_combo(ui, &mut self.corpus_filter.tag);
-                ui.checkbox(&mut self.corpus_filter.redistributable_only, "redist only");
-                ui.checkbox(&mut self.corpus_filter.duplicates_only, "dups only");
-            });
-            ui.separator();
-            // ── filtered list (selectable) ──
-            let kept = filter_chunks(&self.corpus, &self.corpus_filter);
-            ui.label(format!("{} / {} shown", kept.len(), stats.total));
-            egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                for chunk in kept {
-                    let is_sel = self.selected.as_deref() == Some(chunk.id.0.as_str());
-                    if chunk_row(ui, chunk, is_sel) {
-                        clicked = Some(chunk.id.0.clone());
+        egui::Window::new("corpus")
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                let stats = CorpusStats::aggregate(&self.corpus);
+                if stats.total == 0 {
+                    ui.label("no corpus loaded — capture chunks, then press 📚 Corpus");
+                    return;
+                }
+                // ── dashboard ──
+                ui.label(format!(
+                    "{} chunks · {} redistributable · {} near-dup · {} rights unset",
+                    stats.total, stats.redistributable, stats.duplicates, stats.rights_unset,
+                ));
+                let tags = stats.present_tags();
+                if !tags.is_empty() {
+                    let top: Vec<String> = tags
+                        .iter()
+                        .take(4)
+                        .map(|(tag, n)| format!("{tag:?}×{n}"))
+                        .collect();
+                    ui.weak(top.join("   "));
+                }
+                ui.separator();
+                // ── filters ──
+                ui.horizontal(|ui| {
+                    ui.label("find");
+                    ui.text_edit_singleline(&mut self.corpus_filter.query);
+                });
+                ui.horizontal(|ui| {
+                    opt_combo(ui, "cohort", &mut self.corpus_filter.cohort, COHORTS);
+                    opt_combo(ui, "rights", &mut self.corpus_filter.rights, RIGHTS_STATUS);
+                });
+                ui.horizontal(|ui| {
+                    tag_combo(ui, &mut self.corpus_filter.tag);
+                    ui.checkbox(&mut self.corpus_filter.redistributable_only, "redist only");
+                    ui.checkbox(&mut self.corpus_filter.duplicates_only, "dups only");
+                });
+                ui.separator();
+                // ── filtered list (selectable) ──
+                let kept = filter_chunks(&self.corpus, &self.corpus_filter);
+                ui.label(format!("{} / {} shown", kept.len(), stats.total));
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for chunk in kept {
+                            let is_sel = self.selected.as_deref() == Some(chunk.id.0.as_str());
+                            if chunk_row(ui, chunk, is_sel) {
+                                clicked = Some(chunk.id.0.clone());
+                            }
+                        }
+                    });
+                // ── curation inspector (ADR-0027 Slice 6) ──
+                if let Some(id) = self.selected.clone() {
+                    if let Some(chunk) = self.corpus.iter().find(|c| c.id.0 == id) {
+                        ui.separator();
+                        // Bind any edit to *this* chunk's id, so a same-frame row click
+                        // (which changes the selection below) can't redirect it.
+                        let mut pending = None;
+                        inspector(ui, chunk, &mut self.rename_buf, &mut pending);
+                        if let Some(pending) = pending {
+                            action = Some((chunk.id.0.clone(), pending));
+                        }
                     }
                 }
-            });
-            // ── curation inspector (ADR-0027 Slice 6) ──
-            if let Some(id) = self.selected.clone() {
-                if let Some(chunk) = self.corpus.iter().find(|c| c.id.0 == id) {
-                    ui.separator();
-                    // Bind any edit to *this* chunk's id, so a same-frame row click
-                    // (which changes the selection below) can't redirect it.
-                    let mut pending = None;
-                    inspector(ui, chunk, &mut self.rename_buf, &mut pending);
-                    if let Some(pending) = pending {
-                        action = Some((chunk.id.0.clone(), pending));
-                    }
+                if let Some(status) = &self.dock_status {
+                    ui.weak(status);
                 }
-            }
-            if let Some(status) = &self.dock_status {
-                ui.weak(status);
-            }
-        });
+            });
         // Apply the click/curation after the closure releases its borrows.
         if let Some(id) = clicked {
             if self.selected.as_deref() != Some(id.as_str()) {
@@ -836,9 +1202,13 @@ impl CockpitApp {
         if ctx.egui_wants_keyboard_input() {
             return false;
         }
-        // `c` toggles the corpus dock — a shell concern, not a viewport `Intent`.
+        // `c` and `g` toggle the dock and the Generate panel — shell concerns,
+        // not viewport `Intent`s.
         if ctx.input(|i| i.key_pressed(Key::C)) {
             self.show_dock = !self.show_dock;
+        }
+        if ctx.input(|i| i.key_pressed(Key::G)) {
+            self.gen_panel.open = !self.gen_panel.open;
         }
         let intents: Vec<Intent> = ctx.input(|i| {
             i.events
@@ -869,14 +1239,20 @@ impl CockpitApp {
         let rows = total_rows.saturating_sub(1); // the band takes the top row
 
         if !self.fitted && cols > GUTTER {
-            self.vp.fit(u32::from(cols.saturating_sub(GUTTER)), &self.ctx);
+            self.vp
+                .fit(u32::from(cols.saturating_sub(GUTTER)), &self.ctx);
             self.fitted = true;
         }
         if self.vp.playing {
             self.vp.autoscroll(u32::from(cols.saturating_sub(GUTTER)));
         }
 
-        let scene = resolve(&self.view, &self.analysis, &self.vp, GridSize { cols, rows });
+        let scene = resolve(
+            &self.view,
+            &self.analysis,
+            &self.vp,
+            GridSize { cols, rows },
+        );
         let painter = ui.painter();
         for col in 0..scene.cols {
             if let Some(cell) = scene.band_cell(col) {
@@ -899,18 +1275,29 @@ impl CockpitApp {
         let mut focus: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
             if self.track_names.len() > 1 {
-                let current =
-                    self.track_names.get(self.selected_track).map_or("—", String::as_str);
-                egui::ComboBox::from_label("track").selected_text(current).show_ui(ui, |ui| {
-                    for (i, name) in self.track_names.iter().enumerate() {
-                        if ui.selectable_label(i == self.selected_track, name).clicked() {
-                            focus = Some(i);
+                let current = self
+                    .track_names
+                    .get(self.selected_track)
+                    .map_or("—", String::as_str);
+                egui::ComboBox::from_label("track")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in self.track_names.iter().enumerate() {
+                            if ui
+                                .selectable_label(i == self.selected_track, name)
+                                .clicked()
+                            {
+                                focus = Some(i);
+                            }
                         }
-                    }
-                });
+                    });
                 ui.separator();
             }
-            let play = if self.vp.playing { "⏸ pause" } else { "▶ play" };
+            let play = if self.vp.playing {
+                "⏸ pause"
+            } else {
+                "▶ play"
+            };
             if ui.button(play).on_hover_text("space").clicked() {
                 self.vp.playing = !self.vp.playing;
             }
@@ -921,8 +1308,19 @@ impl CockpitApp {
             {
                 self.vp.show_inspector = !self.vp.show_inspector;
             }
-            if ui.button("📚 corpus").on_hover_text("browse the captured corpus (c)").clicked() {
+            if ui
+                .button("📚 corpus")
+                .on_hover_text("browse the captured corpus (c)")
+                .clicked()
+            {
                 self.show_dock = !self.show_dock;
+            }
+            if ui
+                .button("⚙ generate")
+                .on_hover_text("rank a candidate set from the corpus (g)")
+                .clicked()
+            {
+                self.gen_panel.open = !self.gen_panel.open;
             }
             if !self.track_names.is_empty() {
                 ui.separator();
@@ -939,7 +1337,13 @@ impl CockpitApp {
 }
 
 /// Paints one placed cell at grid position (`col`, `vis_row`).
-fn paint_cell(painter: &egui::Painter, origin: egui::Pos2, col: u16, vis_row: u16, cell: SceneCell) {
+fn paint_cell(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    col: u16,
+    vis_row: u16,
+    cell: SceneCell,
+) {
     let x = origin.x + f32::from(col) * CELL_W;
     let y = origin.y + f32::from(vis_row) * CELL_H;
     let rect = Rect::from_min_size(egui::pos2(x, y), egui::vec2(CELL_W, CELL_H));
@@ -989,7 +1393,37 @@ impl eframe::App for CockpitApp {
         if self.show_dock {
             self.corpus_dock(&ctx);
         }
+        if self.gen_panel.open {
+            self.generate_window(&ctx);
+        }
     }
+}
+
+/// Hands `path` to the OS's default handler for its type. The cockpit does not
+/// synthesise audio: hearing a kept `.mid` means opening it in whatever the user
+/// already has registered (a notation editor, a DAW).
+///
+/// # Errors
+/// A message when the handler cannot be spawned.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_in_default_app(path: &std::path::Path) -> Result<(), String> {
+    use std::process::Command;
+
+    let mut cmd = if cfg!(target_os = "windows") {
+        // `start` is a cmd builtin, not an executable; the empty "" is its
+        // window-title argument, which a quoted path would otherwise be taken as.
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    } else if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else {
+        Command::new("xdg-open")
+    };
+    cmd.arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("cannot open {}: {err}", path.display()))
 }
 
 /// The browser (wasm) entry point — ADR-0027 Slice 2.
@@ -1110,14 +1544,19 @@ pub mod web {
     /// Returns a message if the DOM/Blob/URL plumbing is unavailable.
     pub(crate) fn download(filename: &str, contents: &str) -> Result<(), String> {
         use wasm_bindgen::JsCast as _;
-        let document = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+        let document = web_sys::window()
+            .and_then(|w| w.document())
+            .ok_or("no document")?;
         let parts = js_sys::Array::of1(&JsValue::from_str(contents));
         let blob = web_sys::Blob::new_with_str_sequence(&parts).map_err(|_| "blob".to_owned())?;
-        let url =
-            web_sys::Url::create_object_url_with_blob(&blob).map_err(|_| "object url".to_owned())?;
+        let url = web_sys::Url::create_object_url_with_blob(&blob)
+            .map_err(|_| "object url".to_owned())?;
         let anchor = document
             .create_element("a")
-            .and_then(|el| el.dyn_into::<web_sys::HtmlAnchorElement>().map_err(Into::into))
+            .and_then(|el| {
+                el.dyn_into::<web_sys::HtmlAnchorElement>()
+                    .map_err(Into::into)
+            })
             .map_err(|_| "anchor".to_owned())?;
         anchor.set_href(&url);
         anchor.set_download(filename);
@@ -1202,7 +1641,12 @@ pub mod web {
 mod tests {
     // Tests build views from known-good fixtures, `expect`/`unwrap` on them,
     // panic on impossible cases, and index fixed in-range arrays.
-    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
 
     use super::*;
     use eframe::egui;
@@ -1218,7 +1662,11 @@ mod tests {
         ];
         for (i, a) in classes.iter().enumerate() {
             for b in classes.iter().skip(i + 1) {
-                assert_ne!(class_color(*a), class_color(*b), "{a:?}/{b:?} share a colour");
+                assert_ne!(
+                    class_color(*a),
+                    class_color(*b),
+                    "{a:?}/{b:?} share a colour"
+                );
             }
         }
     }
@@ -1289,7 +1737,11 @@ mod tests {
             (Key::Escape, Quit),
         ];
         for (key, intent) in mapped {
-            assert_eq!(key_to_intent(key), Some(intent), "{key:?} should map to {intent:?}");
+            assert_eq!(
+                key_to_intent(key),
+                Some(intent),
+                "{key:?} should map to {intent:?}"
+            );
         }
         for key in [Key::F1, Key::A, Key::Tab, Key::Enter] {
             assert_eq!(key_to_intent(key), None, "{key:?} should be inert");
@@ -1312,8 +1764,16 @@ mod tests {
             lanes: vec![Lane {
                 name: "lead".to_owned(),
                 notes: vec![
-                    NoteRect { onset: 0, end: 480, pitch: 60 },
-                    NoteRect { onset: 960, end: 1440, pitch: 64 },
+                    NoteRect {
+                        onset: 0,
+                        end: 480,
+                        pitch: 60,
+                    },
+                    NoteRect {
+                        onset: 960,
+                        end: 1440,
+                        pitch: 64,
+                    },
                 ],
             }],
             tempo_bpm: 120.0,
@@ -1397,7 +1857,10 @@ mod tests {
     #[allow(deprecated)] // egui 0.34 flags `Context::run`; it still drives a CPU frame.
     fn press(app: &mut CockpitApp, key: Key) -> bool {
         let ctx = egui::Context::default();
-        let raw = egui::RawInput { events: vec![key_event(key)], ..Default::default() };
+        let raw = egui::RawInput {
+            events: vec![key_event(key)],
+            ..Default::default()
+        };
         let mut quit = false;
         let _frame = ctx.run(raw, |ctx| quit = app.handle_input(ctx));
         quit
@@ -1407,6 +1870,64 @@ mod tests {
         use griff_core::import::import_score_auto;
         let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
         CockpitApp::from_score(score, "demo".to_owned())
+    }
+
+    #[test]
+    fn generating_ranks_a_set_and_shows_its_winner() {
+        let mut app = demo_app();
+        let before = app.title.clone();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+
+        let set = app
+            .gen_panel
+            .set
+            .as_ref()
+            .expect("the demo seeds a request");
+        assert!(
+            !set.rows.is_empty(),
+            "five strategies contribute candidates"
+        );
+        assert_eq!(set.rows[0].rank, 1, "the table is rank-ordered");
+        assert_eq!(
+            app.gen_panel.selected,
+            Some(0),
+            "generating shows the winner — the candidate `griff generate` writes",
+        );
+        assert_ne!(app.title, before, "the roll now shows the candidate");
+        assert!(
+            app.title.contains(&set.rows[0].strategy),
+            "the title names the shown candidate's strategy: {}",
+            app.title,
+        );
+    }
+
+    #[test]
+    fn selecting_a_candidate_paints_that_candidate() {
+        let mut app = demo_app();
+        app.do_generate();
+        let n = app.gen_panel.set.as_ref().expect("generated").rows.len();
+        assert!(n > 1, "more than one candidate to choose between");
+
+        app.show_candidate(n - 1);
+        assert_eq!(app.gen_panel.selected, Some(n - 1));
+        let last = &app.gen_panel.set.as_ref().expect("generated").rows[n - 1];
+        assert!(
+            app.title.contains(&last.strategy),
+            "the roll follows the selection: {}",
+            app.title,
+        );
+    }
+
+    #[test]
+    fn a_stale_source_pick_falls_back_to_the_displayed_score() {
+        let mut app = demo_app();
+        app.gen_panel.source = Some(3); // no sources loaded — an impossible pick
+        app.do_generate();
+        assert!(
+            app.gen_panel.set.is_some(),
+            "an out-of-range pick seeds from the displayed score, it does not fail",
+        );
     }
 
     /// A hand-built view with two adjacent sections, so section navigation has
@@ -1423,8 +1944,16 @@ mod tests {
             lanes: vec![Lane {
                 name: "lead".to_owned(),
                 notes: vec![
-                    NoteRect { onset: 0, end: 480, pitch: 60 },
-                    NoteRect { onset: 3840, end: 4320, pitch: 64 },
+                    NoteRect {
+                        onset: 0,
+                        end: 480,
+                        pitch: 60,
+                    },
+                    NoteRect {
+                        onset: 3840,
+                        end: 4320,
+                        pitch: 64,
+                    },
                 ],
             }],
             tempo_bpm: 120.0,
@@ -1433,7 +1962,13 @@ mod tests {
         let analysis = Analysis {
             focus_track: 0,
             sections: vec![
-                Section { class: BarClass::Riff, bar_start: 0, bar_end: 2, tick_start: 0, tick_end: 3840 },
+                Section {
+                    class: BarClass::Riff,
+                    bar_start: 0,
+                    bar_end: 2,
+                    tick_start: 0,
+                    tick_end: 3840,
+                },
                 Section {
                     class: BarClass::Breakdown,
                     bar_start: 2,
@@ -1490,7 +2025,13 @@ mod tests {
         let ctx = egui::Context::default();
         // Sub-gutter, tall-and-thin, and oversized panels all exercise the
         // clamped pixel/grid arithmetic the crate-level lint allow vouches for.
-        for (w, h) in [(1.0, 1.0), (20.0, 8.0), (90.0, 30.0), (4000.0, 40.0), (200.0, 3000.0)] {
+        for (w, h) in [
+            (1.0, 1.0),
+            (20.0, 8.0),
+            (90.0, 30.0),
+            (4000.0, 40.0),
+            (200.0, 3000.0),
+        ] {
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h))),
                 ..Default::default()
@@ -1536,16 +2077,23 @@ mod tests {
             .collect();
         assert_eq!(palette.len(), 6, "the six lanes are distinct");
         for lane in 0u16..=u16::MAX {
-            assert_eq!(lane_color(lane), lane_color(lane % 6), "lane {lane} follows the mod-6 palette");
+            assert_eq!(
+                lane_color(lane),
+                lane_color(lane % 6),
+                "lane {lane} follows the mod-6 palette"
+            );
             let c = lane_color(lane);
-            assert!(palette.contains(&(c.r(), c.g(), c.b())), "lane {lane} is one of the six colours");
+            assert!(
+                palette.contains(&(c.r(), c.g(), c.b())),
+                "lane {lane} is one of the six colours"
+            );
         }
     }
 
     #[test]
     fn multiple_lanes_paint_in_distinct_lane_colours() {
-        use std::collections::HashSet;
         use griff_ui_core::{Lane, NoteRect, Section};
+        use std::collections::HashSet;
         let view = PianoRollView {
             ppq: 480,
             tick_start: 0,
@@ -1554,10 +2102,21 @@ mod tests {
             high_pitch: 72,
             bar_lines: vec![0, 1920],
             lanes: vec![
-                Lane { name: "lead".to_owned(), notes: vec![NoteRect { onset: 0, end: 480, pitch: 60 }] },
+                Lane {
+                    name: "lead".to_owned(),
+                    notes: vec![NoteRect {
+                        onset: 0,
+                        end: 480,
+                        pitch: 60,
+                    }],
+                },
                 Lane {
                     name: "harmony".to_owned(),
-                    notes: vec![NoteRect { onset: 0, end: 480, pitch: 67 }],
+                    notes: vec![NoteRect {
+                        onset: 0,
+                        end: 480,
+                        pitch: 67,
+                    }],
                 },
             ],
             tempo_bpm: 120.0,
@@ -1577,13 +2136,20 @@ mod tests {
             boundaries: vec![],
         };
         let app = CockpitApp::new(view, analysis, "multi".to_owned());
-        let scene = resolve(&app.view, &app.analysis, &app.vp, GridSize { cols: 60, rows: 24 });
+        let scene = resolve(
+            &app.view,
+            &app.analysis,
+            &app.vp,
+            GridSize { cols: 60, rows: 24 },
+        );
 
         let lane_colours: HashSet<(u8, u8, u8)> = scene
             .plane
             .iter()
             .filter_map(|cell| match cell.role {
-                CellRole::Note(_) => role_color(cell.role, cell.shade).map(|c| (c.r(), c.g(), c.b())),
+                CellRole::Note(_) => {
+                    role_color(cell.role, cell.shade).map(|c| (c.r(), c.g(), c.b()))
+                }
                 _ => None,
             })
             .collect();
@@ -1598,11 +2164,22 @@ mod tests {
     fn load_swaps_the_displayed_score() {
         let mut app = demo_app();
         let demo_title = app.title().to_owned();
-        app.load("multi.mid".to_owned(), include_bytes!("../assets/multi_track.mid"))
-            .expect("multi_track.mid imports");
-        assert_eq!(app.title(), "multi.mid", "the title follows the loaded source");
+        app.load(
+            "multi.mid".to_owned(),
+            include_bytes!("../assets/multi_track.mid"),
+        )
+        .expect("multi_track.mid imports");
+        assert_eq!(
+            app.title(),
+            "multi.mid",
+            "the title follows the loaded source"
+        );
         assert_ne!(app.title(), demo_title, "the source changed");
-        assert_eq!(app.view.lanes.len(), 1, "the roll shows one track at a time");
+        assert_eq!(
+            app.view.lanes.len(),
+            1,
+            "the roll shows one track at a time"
+        );
         assert!(
             app.track_names.len() >= 2,
             "the multi-track file fills the track selector, got {}",
@@ -1613,8 +2190,11 @@ mod tests {
     #[test]
     fn focus_on_track_isolates_a_track_and_targets_capture() {
         let mut app = demo_app();
-        app.load("multi.mid".to_owned(), include_bytes!("../assets/multi_track.mid"))
-            .expect("multi_track.mid imports");
+        app.load(
+            "multi.mid".to_owned(),
+            include_bytes!("../assets/multi_track.mid"),
+        )
+        .expect("multi_track.mid imports");
         let tracks = app.track_names.len();
         assert!(tracks >= 2, "needs a multi-track file");
         // Loading focuses the auto-picked track: one lane shown, not all overlaid.
@@ -1624,20 +2204,36 @@ mod tests {
         // that index, and switching tracks changes the result.
         app.focus_on_track(0);
         assert_eq!(app.selected_track, 0);
-        assert_eq!(app.view.lanes.len(), 1, "still a single lane after the switch");
-        let inputs =
-            CaptureInputs { id: "t", created_at: "t", updated_at: "t", ..Default::default() };
+        assert_eq!(
+            app.view.lanes.len(),
+            1,
+            "still a single lane after the switch"
+        );
+        let inputs = CaptureInputs {
+            id: "t",
+            created_at: "t",
+            updated_at: "t",
+            ..Default::default()
+        };
         let score = app.score.clone().expect("score loaded");
         let expected0 =
             serde_json::to_string_pretty(&build_chunk(&score, 0, &inputs).expect("track 0"))
                 .expect("json");
-        assert_eq!(app.capture_json(&inputs).expect("captures"), expected0, "targets track 0");
+        assert_eq!(
+            app.capture_json(&inputs).expect("captures"),
+            expected0,
+            "targets track 0"
+        );
 
         app.focus_on_track(1);
         let expected1 =
             serde_json::to_string_pretty(&build_chunk(&score, 1, &inputs).expect("track 1"))
                 .expect("json");
-        assert_eq!(app.capture_json(&inputs).expect("captures"), expected1, "targets track 1");
+        assert_eq!(
+            app.capture_json(&inputs).expect("captures"),
+            expected1,
+            "targets track 1"
+        );
 
         // Out-of-range is a no-op, not a panic.
         app.focus_on_track(tracks + 9);
@@ -1651,8 +2247,15 @@ mod tests {
         let err = app
             .load("junk.mid".to_owned(), b"definitely not a score")
             .expect_err("garbage must not import");
-        assert!(err.contains("junk.mid"), "the error names the bad source: {err}");
-        assert_eq!(app.view.lanes.len(), kept, "a failed load leaves the current score intact");
+        assert!(
+            err.contains("junk.mid"),
+            "the error names the bad source: {err}"
+        );
+        assert_eq!(
+            app.view.lanes.len(),
+            kept,
+            "a failed load leaves the current score intact"
+        );
     }
 
     #[test]
@@ -1668,7 +2271,9 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z",
             ..CaptureInputs::default()
         };
-        let json = app.capture_json(&inputs).expect("captures the displayed score");
+        let json = app
+            .capture_json(&inputs)
+            .expect("captures the displayed score");
         assert!(json.contains("demo_001"), "the chunk carries its id");
         assert!(json.contains("\"rights\""), "rights are recorded");
     }
@@ -1685,15 +2290,26 @@ mod tests {
     #[test]
     fn loading_seeds_the_capture_form() {
         let mut app = demo_app();
-        app.load("path/to/Cool Riff.mid".to_owned(), include_bytes!("../assets/demo.mid"))
-            .expect("loads");
-        assert_eq!(app.form.id, "cool_riff", "the id is a slug of the file stem");
+        app.load(
+            "path/to/Cool Riff.mid".to_owned(),
+            include_bytes!("../assets/demo.mid"),
+        )
+        .expect("loads");
+        assert_eq!(
+            app.form.id, "cool_riff",
+            "the id is a slug of the file stem"
+        );
         assert_eq!(app.form.title, "Cool Riff");
         assert_eq!(app.form.filename, "Cool Riff.mid");
 
         let now = "2026-01-01T00:00:00Z";
-        let json = app.capture_json(&app.form.inputs(now, now)).expect("captures from the form");
-        assert!(json.contains("cool_riff"), "the captured chunk uses the form id");
+        let json = app
+            .capture_json(&app.form.inputs(now, now))
+            .expect("captures from the form");
+        assert!(
+            json.contains("cool_riff"),
+            "the captured chunk uses the form id"
+        );
     }
 
     #[test]
@@ -1703,15 +2319,27 @@ mod tests {
         use griff_ui_core::{build_chunk, CaptureInputs};
         let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
         let chunk_json = |id: &str| {
-            let inputs =
-                CaptureInputs { id, created_at: "t", updated_at: "t", ..CaptureInputs::default() };
+            let inputs = CaptureInputs {
+                id,
+                created_at: "t",
+                updated_at: "t",
+                ..CaptureInputs::default()
+            };
             serde_json::to_string(&build_chunk(&score, 0, &inputs).expect("builds")).expect("json")
         };
 
         let mut app = demo_app();
         assert!(!app.show_dock, "the dock starts hidden");
-        app.load_corpus(&[chunk_json("riff_a"), chunk_json("riff_b"), "not json".to_owned()]);
-        assert_eq!(app.corpus.len(), 2, "valid chunks parse; the bad entry is skipped");
+        app.load_corpus(&[
+            chunk_json("riff_a"),
+            chunk_json("riff_b"),
+            "not json".to_owned(),
+        ]);
+        assert_eq!(
+            app.corpus.len(),
+            2,
+            "valid chunks parse; the bad entry is skipped"
+        );
         assert!(app.show_dock, "loading a corpus opens the dock");
 
         // The dock draws a CPU frame without panicking, with a filter applied.
@@ -1727,8 +2355,12 @@ mod tests {
         use griff_ui_core::{build_chunk, CaptureInputs};
         let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
         let chunk_json = |id: &str| {
-            let inputs =
-                CaptureInputs { id, created_at: "t", updated_at: "t", ..CaptureInputs::default() };
+            let inputs = CaptureInputs {
+                id,
+                created_at: "t",
+                updated_at: "t",
+                ..CaptureInputs::default()
+            };
             serde_json::to_string(&build_chunk(&score, 0, &inputs).expect("builds")).expect("json")
         };
 
@@ -1737,15 +2369,24 @@ mod tests {
         app.selected = Some("riff_a".to_owned());
 
         // approve → reviewer decision; rename → title; retag → exact tag set.
-        app.curate("riff_a", &CurationAction::Decide(CurationDecision::Approve)).expect("approves");
+        app.curate("riff_a", &CurationAction::Decide(CurationDecision::Approve))
+            .expect("approves");
         assert_eq!(
             app.corpus.first().expect("chunk").reviewer,
             Some(ReviewerDecision::Accepted),
         );
-        app.curate("riff_a", &CurationAction::Rename("My Riff".to_owned())).expect("renames");
+        app.curate("riff_a", &CurationAction::Rename("My Riff".to_owned()))
+            .expect("renames");
         assert_eq!(app.corpus.first().expect("chunk").title, "My Riff");
-        app.curate("riff_a", &CurationAction::Retag(vec!["clean_riff".to_owned()])).expect("retags");
-        assert_eq!(app.corpus.first().expect("chunk").tags, vec![SwancoreTag::CleanRiff]);
+        app.curate(
+            "riff_a",
+            &CurationAction::Retag(vec!["clean_riff".to_owned()]),
+        )
+        .expect("retags");
+        assert_eq!(
+            app.corpus.first().expect("chunk").tags,
+            vec![SwancoreTag::CleanRiff]
+        );
 
         // an unknown id is rejected, not a panic.
         app.curate("ghost", &CurationAction::Decide(CurationDecision::Reject))

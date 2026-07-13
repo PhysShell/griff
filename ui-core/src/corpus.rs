@@ -42,19 +42,28 @@ mod tests {
     fn chunk_json(id: &str) -> String {
         let score = import_score_auto(include_bytes!("../../cli/tests/fixtures/two_phrases.mid"))
             .expect("two_phrases.mid imports");
-        let input = CaptureInputs { id, created_at: "t", updated_at: "t", ..CaptureInputs::default() };
+        let input = CaptureInputs {
+            id,
+            created_at: "t",
+            updated_at: "t",
+            ..CaptureInputs::default()
+        };
         let chunk = build_chunk(&score, 0, &input).expect("builds a chunk");
         serde_json::to_string(&chunk).expect("serializes")
     }
 
     #[test]
     fn manifest_folds_and_sorts_chunks() {
-        let manifest = manifest_from_jsons(&[chunk_json("zeta"), chunk_json("alpha")]).expect("folds");
+        let manifest =
+            manifest_from_jsons(&[chunk_json("zeta"), chunk_json("alpha")]).expect("folds");
         assert_eq!(manifest.schema_version, SCHEMA_VERSION);
         assert_eq!(manifest.chunks.len(), 2);
         assert_eq!(manifest.chunks[0].id.0, "alpha", "chunks are sorted by id");
         assert_eq!(manifest.chunks[1].id.0, "zeta");
-        assert!(manifest.groups.is_empty(), "no ensemble groups from single-track capture");
+        assert!(
+            manifest.groups.is_empty(),
+            "no ensemble groups from single-track capture"
+        );
 
         // Byte-compatible with what `griff` reads back.
         let json = serde_json::to_string(&manifest).expect("serializes");

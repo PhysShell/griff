@@ -14,6 +14,7 @@ pub mod event;
 pub mod feature;
 pub mod fretboard;
 pub mod generate;
+pub mod generation_input;
 pub mod gesture;
 #[cfg(feature = "gp")]
 pub mod gp;

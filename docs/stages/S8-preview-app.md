@@ -53,16 +53,28 @@ front-ends and audio build on them:
 - [x] Interactive `ratatui` front-end: scroll, zoom, named sections, metrics
       inspector, playhead, headless snapshot. (Live terminal-resize is handled by
       `ratatui` redraw; follow-cursor autoscroll is implemented for playback.)
-- [ ] `eframe`/`egui` native window — the canonical desktop target (piano-roll
-      canvas, pan/zoom), reusing the same `PianoRollView`.
-- [ ] MIDI playback via `midir`, with a playhead overlay.
+- [x] `eframe`/`egui` native window — the canonical desktop target (piano-roll
+      canvas, pan/zoom), reusing the same `PianoRollView` (the cockpit, ADR-0027).
+- [ ] MIDI playback via `midir`, with a playhead overlay. Until then the cockpit
+      **does not synthesise audio**: the Generate panel's `open` hands a kept
+      `.mid` to whatever the OS has registered for it (a notation editor, a DAW).
+      The playhead is visual only.
 - [ ] **Griff textual playground** — editable request/constraint text with live
       parse diagnostics and immediate candidate refresh. Future S15 harmonic
       fixture scripts may be edited here, but typed core structures remain the
       source of truth.
-- [ ] **Candidate/provenance inspector** — candidate scores, novelty, register,
-      playability, tonal hypotheses, S7 path/transition explanations, and stable
-      ids sufficient for S9 feedback.
+- [~] **Candidate/provenance inspector** — **generation slice landed 2026-07-13**:
+      the cockpit's **Generate panel** (`g`) asks for a candidate set over the
+      loaded corpus (seed tab, seed, bars, variants/strategy, gesture) and browses
+      the **reranked set** — rank, strategy, aggregate, the six rerank axes on
+      hover, note count — with a click painting that candidate into the roll and
+      **keep** writing its `.mid` plus a provenance sidecar (source, ask,
+      strategy, variant seed, rank, aggregate, axes) that reproduces it exactly.
+      Rank 1 is the candidate `griff generate` writes: the panel enters the same
+      `griff_core::generation_input::ranked_candidates` the CLI does — the
+      compiler moved into `griff-core` for exactly this, and the move is proven
+      output-identical (30/30 byte-identical `griff generate` runs).
+      Remaining: register/playability/tonal hypotheses, S7 path explanations.
 - [ ] **Feedback/evolution surface** — like/dislike/favorite controls first;
       parent/child lineage and generation history when the S9 Evolution Lab is
       active. S8 displays and edits; S9 owns preference/evolution semantics.

@@ -18,7 +18,36 @@ behind a hotkey: a **track selector** (the roll shows one part at a time, not
 every track overlaid — the selector switches it, and capture targets it),
 play/pause, and toggles for the capture form and the corpus dock. The same keys
 still work: `space` play/pause, `←`/`→` scroll, `↑`/`↓` pitch, `+`/`−` zoom,
-`[`/`]` section, `Home` reset, `i` inspector, `c` corpus dock, `q`/`Esc` quit.
+`[`/`]` section, `Home` reset, `i` inspector, `c` corpus dock, `g` generate
+panel, `q`/`Esc` quit.
+
+## Generate (S8)
+
+```sh
+cargo run --release -p griff-cockpit -- --corpus path/to/corpus --out keeps
+```
+
+With `--corpus DIR` the cockpit loads the curated corpus — the chunks supply the
+rhythm templates, novelty references and burst/rest gesture ask, their source
+tabs become the **seed pick-list** — and opens on its first tab. The **Generate**
+panel (toolbar, or `g`) then runs a whole session without the CLI:
+
+- pick a seed tab, set **seed / bars / variants-per-strategy / gesture**, hit
+  **generate** (or **next seed** to bump and re-roll);
+- browse the **reranked candidate set** — rank, strategy, aggregate, note count,
+  with the six rerank axes on hover. Clicking one paints it into the roll;
+- **keep** writes `<out>/seed<N>_<Strategy>_<variant-seed>.mid` plus a `.json`
+  sidecar naming the exact ask, so the candidate reproduces byte-for-byte;
+- **open** hands that `.mid` to whatever the OS has registered for it. The
+  cockpit **does not synthesise audio** — its playhead is visual.
+
+Rank 1 is the candidate `griff generate` would have written: the panel enters the
+same `griff_core::generation_input::ranked_candidates` the CLI does, so the two
+cannot drift.
+
+Without `--corpus` the panel still generates, seeding from the displayed score
+alone (no corpus rhythms, no novelty references, no gesture) — the browser build
+works this way today.
 
 ## Web (wasm) — ADR-0027 Slice 2
 
