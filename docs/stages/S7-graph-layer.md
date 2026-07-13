@@ -21,6 +21,13 @@ multi-technique with evidence; supersedes ADR-0014)
 > idea (a)). Nodes, transition / co-occurrence edges, complement hyperedges,
 > and the DP/Viterbi traversal remain gated on S6 acceptance and corpus
 > scale.
+>
+> Research update (2026-07): `ekzhang/harmony` and `napulen/romanyh` reinforce
+> the stage's existing architecture: enumerate feasible states per layer,
+> calculate explainable local/transition costs, optimise globally, reconstruct
+> the path, and later return deterministic k-best alternatives. The algorithmic
+> form is adopted as roadmap input; their classical SATB rules and runtime code
+> are not.
 
 ## Goal
 
@@ -33,7 +40,8 @@ connected / possible); DP/Viterbi is the *route* (which sequence is best).
 - In: corpus chunks + features (≥ ~100 phrases recommended before this pays
   off).
 - Out: a (hyper)graph (nodes + edges) and a DP/Viterbi traversal producing the
-  optimal candidate chain.
+  optimal candidate chain and, after the first path is validated, ranked k-best
+  alternatives.
 
 ## Approach
 
@@ -48,10 +56,46 @@ connected / possible); DP/Viterbi is the *route* (which sequence is best).
   approximation for graphs too large for exact DP.
 - DP state carries running context: current candidate, fretboard position and
   last technique (ADR-0018 — the rich note model makes both expressible),
-  `EnergyState`, rhythmic similarity to part A.
+  `EnergyState`, rhythmic similarity to part A, and optional S15 harmonic state
+  once that contract is calibrated.
 - Cost function (inspectable, the same weights S9 later tunes):
   `harmonic_fit + rhythm_complement + style_fit + playability + phrase_continuity
   − mud_penalty − repetition_penalty − fret_jump_penalty`.
+
+## Planned slices
+
+### Slice A — concrete layered-path contract
+
+Extract the smallest reusable path contract from a real multi-bar client, not
+from a speculative universal framework. A layer exposes feasible states; the
+client supplies local and transition costs plus explanations; the engine returns
+the deterministic best path.
+
+The first preferred client is a multi-bar `GenerationCandidate` chain. The
+already-accepted register track is **not** reopened merely to manufacture a
+first generic client.
+
+### Slice B — multi-bar global candidate chain
+
+For each bar/phrase layer, enumerate candidate states and optimise the whole
+sequence using continuity, rhythm, register, technique, playability, style, and
+available harmonic costs. Compare against S6's locally ranked output.
+
+### Slice C — deterministic k-best alternatives
+
+Return several ranked global paths with:
+
+- fixed tie-breaking;
+- complete total/local/transition explanations;
+- an explicit diversity rule so alternatives are not path clones;
+- stable provenance for S8 display and S9 feedback.
+
+### Slice D — specialised clients
+
+After the engine and first client are accepted, consider complementary-guitar,
+harmonic, and cadence planners. Reuse existing fretboard DP rather than rewrite
+it only for abstraction symmetry. Register planning requires new measured
+counterevidence before reopening.
 
 ## Acceptance criteria
 
@@ -60,15 +104,22 @@ connected / possible); DP/Viterbi is the *route* (which sequence is best).
   by a fixed documented rule).
 - Multi-bar output shows a global arc (e.g. no 4 identical-technique bars in a
   row), not a chain of locally-best fragments.
+- Every selected path exposes local and transition-cost explanations.
+- k-best alternatives are deterministic and measurably distinct under the
+  documented diversity rule.
 
 ## Open questions
 
 - Minimum corpus size before the graph beats rule-based v0.
 - Exact cost-term weights (calibrated on the corpus; later tuned by S9).
 - State-size vs exactness trade-off before beam search is needed.
+- Which multi-bar client produces enough value to justify the first reusable
+  path contract.
 
 ## See also
 
+- [`../audit/2026-07-symbolic-harmony-and-evolution-research.md`](../audit/2026-07-symbolic-harmony-and-evolution-research.md)
+- [`S15-tonal-context-and-harmonic-control.md`](S15-tonal-context-and-harmonic-control.md)
 - [`../glossary.md`](../glossary.md) §9
 - [`../adr/0013-dp-viterbi-traversal.md`](../adr/0013-dp-viterbi-traversal.md)
 - [`../adr/0018-rich-note-model-fretboard-and-techniques.md`](../adr/0018-rich-note-model-fretboard-and-techniques.md)

@@ -10,9 +10,21 @@ ADRs: ADR-0005, ADR-0010
 > policy (ADR-0017; melodic-closure note §7.2/§7.3). `griff generate` uses it
 > by default, and `--corpus <dir>` feeds rhythm templates, novelty
 > references, and the burst/rest gesture ask from curated chunks
-> (decisions.log 2026-07-11). Still open from the list below: cadence-aware
-> endings inside the strategies, anchor preservation, the string/fret
-> playability filter, and the density/syncopation corpus gates.
+> (decisions.log 2026-07-11).
+>
+> Post-acceptance hardening (2026-07-12): the register track is **accepted and
+> closed**. `ScaleLadder` provides full-range reachability; Shuffle uses an
+> unbiased ≤-octave `LadderWindow`; RhythmCopy traverses reflectively without
+> wrapping; RepeatVariation chooses an endpoint local to the bar's actual
+> penultimate degree. Focused corpus/synthetic validation found no remaining
+> target-strategy >12-semitone jumps. A generic register rerank axis and global
+> `RegisterPlan` were not justified and remain rejected/not started.
+>
+> Remaining follow-ups from the list below: anchor preservation, the string/fret
+> playability filter, and the density/syncopation corpus gates. Cadence-aware
+> endings are no longer owned as an unscoped S6 patch: they move to **S15 Phase
+> 6**, after explicit tonal context, scope/confidence calibration, and an
+> abstention path exist.
 
 ## Goal
 
@@ -33,7 +45,8 @@ swancore-like riffs.
    off-style density).
 4. Shuffle motifs grouped by tags.
 5. Repeat + variation (call/response — replace last beat).
-- Cadence-aware endings; anchor preservation; string/fret playability filter.
+- Anchor preservation; string/fret playability filter.
+- Cadence-aware endings are deferred to S15 Phase 6.
 
 ## Acceptance criteria
 
@@ -50,5 +63,6 @@ swancore-like riffs.
 
 ## See also
 
+- [`S15-tonal-context-and-harmonic-control.md`](S15-tonal-context-and-harmonic-control.md)
 - [`../glossary.md`](../glossary.md) §8
 - [`../fuzzing.md`](../fuzzing.md) (`generation_request`, P2)

@@ -22,6 +22,13 @@ ADRs: ADR-0012, ADR-0011
 > `ConstrainedRandomWalk` line over a request derived from A; typed
 > `NonUniformTimeline` on mid-score meter changes). `ModeNotImplemented` is
 > gone — every `RelationMode` arranges.
+>
+> Ownership update (2026-07): the original private winner-only key estimate was
+> generalised into the accepted shared `core::tonal` layer. S13 keeps the
+> backwards-compatible `PartProfile::harmony` projection and complement-specific
+> use of it; **S15** owns scoped tonal evidence, uncertainty, calibration,
+> harmonic fixtures, and future soft harmonic/cadence policy. **S7** owns any
+> later multi-bar global optimisation or k-best complementary trajectories.
 
 ## Remaining work (follow-up increments)
 
@@ -42,7 +49,8 @@ ADRs: ADR-0012, ADR-0011
       `PartProfile::harmony` (tonic, major/natural minor, `scale_fit` as a
       fact); B's substitution material becomes A's literal pitch classes
       *plus* the inferred key's scale, so a sparse part no longer collapses
-      B onto one pitch per band (2026-06-11).
+      B onto one pitch per band (2026-06-11). The estimator now delegates to
+      S15's shared `core::tonal` implementation.
 
 > Roadmap note: appended as the next free stage number (append-only, per the
 > stage-label audit). Logically it sits between the single-part generator (S6)
@@ -103,7 +111,7 @@ Generative-first: B is derived from A by rule; no corpus pair mining. `ChunkMeta
 ## Open questions
 
 - Harmonic-compatibility thresholds (allowed coincident intervals) — calibrate
-  on the corpus.
+  on the corpus and S15 labelled fixtures.
 - Default per-axis ratios (e.g. support-layer density factor) before S9 feedback
   exists to tune them.
 - Where the part profile lives: extend the feature layer vs a dedicated
@@ -111,6 +119,8 @@ Generative-first: B is derived from A by rule; no corpus pair mining. `ChunkMeta
 
 ## See also
 
+- [`S15-tonal-context-and-harmonic-control.md`](S15-tonal-context-and-harmonic-control.md)
+- [`../audit/2026-07-symbolic-harmony-and-evolution-research.md`](../audit/2026-07-symbolic-harmony-and-evolution-research.md)
 - [`../glossary.md`](../glossary.md) §8 (Complementary part, Complement relation,
   Relation mode), §9 (Complement hyperedge), §10 (Relation preference)
 - [`../adr/0012-complementary-part-generation.md`](../adr/0012-complementary-part-generation.md)

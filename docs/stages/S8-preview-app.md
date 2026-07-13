@@ -20,6 +20,12 @@ ADRs: —
 >
 > The `griff-preview` binary launches the TUI, or prints one headless frame with
 > `--snapshot=WxH`.
+>
+> Research update (2026-07): the future cockpit/playground should borrow the
+> **editable text + immediate visual/audio feedback** shape from symbolic music
+> editors, without adopting their notation format as Griff's domain model. S8
+> owns the surface for S7 path alternatives, S9 feedback/evolution lineage, and
+> S15 tonal/harmonic provenance; those stages retain their own semantics.
 
 ## UI design reference
 
@@ -50,6 +56,16 @@ front-ends and audio build on them:
 - [ ] `eframe`/`egui` native window — the canonical desktop target (piano-roll
       canvas, pan/zoom), reusing the same `PianoRollView`.
 - [ ] MIDI playback via `midir`, with a playhead overlay.
+- [ ] **Griff textual playground** — editable request/constraint text with live
+      parse diagnostics and immediate candidate refresh. Future S15 harmonic
+      fixture scripts may be edited here, but typed core structures remain the
+      source of truth.
+- [ ] **Candidate/provenance inspector** — candidate scores, novelty, register,
+      playability, tonal hypotheses, S7 path/transition explanations, and stable
+      ids sufficient for S9 feedback.
+- [ ] **Feedback/evolution surface** — like/dislike/favorite controls first;
+      parent/child lineage and generation history when the S9 Evolution Lab is
+      active. S8 displays and edits; S9 owns preference/evolution semantics.
 - [ ] Curation actions feeding the S5 corpus schema — **first slice landed
       2026-06-11**: approve/reject intents in the interaction core
       (`Viewport::decision`, ADR-0016 — repeat to undo), 'a'/'x' keys and a
@@ -95,24 +111,36 @@ the CLAP plugin, to debug transport/slicing/graph without DAW quirks.
 ## Inputs / Outputs
 
 - In: `.mid` / corpus chunks / candidates.
-- Out: piano-roll view, MIDI playback, boundary overlays, history,
-  approve/reject/split/merge/rename/tag actions feeding the corpus.
+- Out: piano-roll/tab view, MIDI playback, boundary overlays, candidate history,
+  score/provenance inspectors, and approve/reject/split/merge/rename/tag actions
+  feeding the corpus.
 
 ## Approach
 
 - New workspace member `preview/` using `eframe`/`egui` (immediate-mode,
   native; not Tauri — IPC/HTML overhead for an offline MIDI tool).
 - Playback via `midir`. Headless fallback: a `ratatui` TUI.
+- Text is an editable request/fixture surface, not a replacement for the typed
+  canonical model.
 
 ## Acceptance criteria
 
 - Loads a `.mid`, shows a piano-roll, plays it back.
 - Curation actions persist into the S5 corpus schema.
+- Candidate and provenance views use stable ids and headless-testable view
+  models.
+- S7/S9/S15 data is displayed without reimplementing their inference or policy
+  in the UI.
 
 ## Open questions
 
 - Playback engine details on each OS.
+- Minimal textual request syntax before the S15 fixture DSL exists.
 
 ## See also
 
+- [`../audit/2026-07-symbolic-harmony-and-evolution-research.md`](../audit/2026-07-symbolic-harmony-and-evolution-research.md)
+- [`S7-graph-layer.md`](S7-graph-layer.md)
+- [`S9-feedback-layer.md`](S9-feedback-layer.md)
+- [`S15-tonal-context-and-harmonic-control.md`](S15-tonal-context-and-harmonic-control.md)
 - [`../glossary.md`](../glossary.md) §11
