@@ -9,7 +9,9 @@
     clippy::indexing_slicing,
     clippy::missing_assert_message,
     clippy::absolute_paths,
-    clippy::missing_const_for_fn
+    clippy::missing_const_for_fn,
+    clippy::arithmetic_side_effects,
+    clippy::str_to_string
 )]
 
 use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};

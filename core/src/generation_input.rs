@@ -208,23 +208,27 @@ pub fn ranked_candidates(
     // Rhythm precedence (ADR-0029 §7): explicit pattern > corpus > source
     // first bar. Novelty references and gesture stay corpus-based either way.
     let explicit: Option<Vec<generate::RhythmTemplate>> = rhythm_override.map(<[_]>::to_vec);
-    let (source_rhythms, gesture) = match &explicit {
-        Some(palette) => (
-            palette.clone(),
-            material.and_then(|m| if ask.gesture { m.gesture } else { None }),
-        ),
-        None => material.map_or_else(
-            || (base.source_rhythms.clone(), None),
-            |m| {
-                let rhythms = if m.rhythms.is_empty() {
-                    base.source_rhythms.clone()
-                } else {
-                    m.rhythms.clone()
-                };
-                (rhythms, if ask.gesture { m.gesture } else { None })
-            },
-        ),
-    };
+    let (source_rhythms, gesture) = explicit.as_ref().map_or_else(
+        || {
+            material.map_or_else(
+                || (base.source_rhythms.clone(), None),
+                |m| {
+                    let rhythms = if m.rhythms.is_empty() {
+                        base.source_rhythms.clone()
+                    } else {
+                        m.rhythms.clone()
+                    };
+                    (rhythms, if ask.gesture { m.gesture } else { None })
+                },
+            )
+        },
+        |palette| {
+            (
+                palette.clone(),
+                material.and_then(|m| if ask.gesture { m.gesture } else { None }),
+            )
+        },
+    );
     let references: &[Score] = material.map_or(&[], |m| &m.references);
 
     let set = rerank::generate_candidate_set(&rerank::SetRequest {

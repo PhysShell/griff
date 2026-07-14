@@ -139,8 +139,14 @@ pub fn generate_candidate_set(request: &SetRequest) -> Result<Vec<SetCandidate>,
         return Err(SetError::VariantCountZero);
     }
 
-    let templates: Vec<&RhythmTemplate> = request
-        .source_rhythms
+    // Rhythm-copy needs at least one sounding template in whichever palette
+    // is active: the explicit one when set (honored verbatim by the explicit
+    // scheduler), the automatic one otherwise.
+    let active_palette: &[RhythmTemplate] = request
+        .explicit_rhythms
+        .as_deref()
+        .unwrap_or(&request.source_rhythms);
+    let templates: Vec<&RhythmTemplate> = active_palette
         .iter()
         .filter(|t| !t.notes.is_empty())
         .collect();

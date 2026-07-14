@@ -112,21 +112,29 @@ fn effective_grids(templates: &[RhythmTemplate], bar_duration: Ticks) -> Vec<Vec
 /// is no quarter fallback. This is deliberately not `effective_grids` with
 /// an `if`: the two schedulers answer to different laws.
 fn explicit_grids(palette: &[RhythmTemplate], bar_duration: Ticks) -> Vec<Vec<TemplateNote>> {
-    let _ = (palette, bar_duration);
-    unimplemented!("red phase: S16 Phase 2 — the explicit scheduler (ADR-0029 §7)")
+    palette
+        .iter()
+        .map(|template| clamp_template(template, bar_duration))
+        .collect()
 }
 
-/// Reports how an **explicit** palette resolves: nothing is filtered, so
-/// `loaded == effective == fingerprints.len()` and a silent template
-/// fingerprints as itself — the palette is never compressed (#114 review,
-/// law 4).
+/// Reports how an **explicit** palette resolves.
+///
+/// Nothing is filtered, so `loaded == effective == fingerprints.len()` and a
+/// silent template fingerprints as itself — the palette is never compressed
+/// (#114 review, law 4).
 #[must_use]
 pub fn explicit_rhythm_diagnostics(
     palette: &[RhythmTemplate],
     bar_duration: Ticks,
 ) -> RhythmDiagnostics {
-    let _ = (palette, bar_duration);
-    unimplemented!("red phase: S16 Phase 2 — explicit diagnostics (ADR-0029 §7)")
+    let grids = explicit_grids(palette, bar_duration);
+    let fingerprints = grids.iter().map(|g| grid_fingerprint(g)).collect();
+    RhythmDiagnostics {
+        loaded: palette.len(),
+        effective: grids.len(),
+        fingerprints,
+    }
 }
 
 /// The per-bar placement grids: the effective grids, or a single quarter-note
@@ -349,8 +357,12 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
     if request.constraints.bar_count == 0 {
         return Err(GenerationError::BarCountZero);
     }
+    let active_palette: &[RhythmTemplate] = request
+        .explicit_rhythms
+        .as_deref()
+        .unwrap_or(&request.source_rhythms);
     if request.strategy == GenerationStrategy::RhythmCopyPitchSubstitute
-        && !request.source_rhythms.iter().any(|t| !t.notes.is_empty())
+        && !active_palette.iter().any(|t| !t.notes.is_empty())
     {
         return Err(GenerationError::RhythmTemplateMissing);
     }
@@ -373,10 +385,10 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
 
     let mut prng = Xorshift64::new(request.seed.0);
     let c = &request.constraints;
-    let grids = match &request.explicit_rhythms {
-        Some(palette) => explicit_grids(palette, bar_duration),
-        None => bar_grids(&request.source_rhythms, bar_duration, c.ticks_per_quarter),
-    };
+    let grids = request.explicit_rhythms.as_ref().map_or_else(
+        || bar_grids(&request.source_rhythms, bar_duration, c.ticks_per_quarter),
+        |palette| explicit_grids(palette, bar_duration),
+    );
     // The single degree→pitch mapper: the full in-range, in-class ladder, so
     // strategies span `[pitch_lo, pitch_hi]` rather than one octave above the
     // palette anchor (register increment).

@@ -617,9 +617,9 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
         ranked,
         base,
         source_rhythms,
-        rhythm_explicit: _,
         gesture,
         policy,
+        ..
     } = &set;
 
     print_rhythm_diagnostics(source_rhythms, &base.constraints, gesture.is_some());
