@@ -62,7 +62,10 @@ const BOUNDARY: Color32 = Color32::from_rgb(0xff, 0x5d, 0x6c);
 const PLAYHEAD: Color32 = Color32::from_rgb(0xff, 0xcf, 0x4d);
 const PANEL: Color32 = Color32::from_rgb(0x24, 0x24, 0x27);
 const LABEL_DIM: Color32 = Color32::from_rgb(0x9a, 0x9a, 0xa2);
-const LABEL_FAINT: Color32 = Color32::from_rgb(0x6e, 0x6e, 0x76);
+/// Ink for pale fills — the design mock's `--bg` family, not pure black.
+const INK: Color32 = Color32::from_rgb(0x11, 0x11, 0x14);
+/// How far the selected section's fill is lifted toward white.
+const SELECTED_LIFT: f32 = 0.35;
 
 /// Colour for a bar classification (section marks and the section band).
 const fn class_color(class: BarClass) -> Color32 {
@@ -72,6 +75,33 @@ const fn class_color(class: BarClass) -> Color32 {
         BarClass::Solo => Color32::from_rgb(0xd4, 0x88, 0x06),
         BarClass::Clean => Color32::from_rgb(0x38, 0x9e, 0x0d),
         BarClass::Unknown => Color32::from_rgb(0x6e, 0x6e, 0x76),
+    }
+}
+
+/// Lifts a colour toward white by `t` — the band's de-emphasis runs this way
+/// round, not by dimming. The class hues are dark enough on this surface
+/// (Breakdown clears the 3:1 floor for meaningful graphics by 0.09) that dimming
+/// the *unselected* sections, as this renderer used to, pushed them under the
+/// floor and left the selection darker — quieter — than its neighbours. Lifting
+/// the selection instead keeps every section legible and makes the active one
+/// the brightest thing in the band.
+fn lift(c: Color32, t: f32) -> Color32 {
+    let toward_white = |v: u8| f32::from(v) + (255.0 - f32::from(v)) * t;
+    Color32::from_rgb(
+        toward_white(c.r()) as u8,
+        toward_white(c.g()) as u8,
+        toward_white(c.b()) as u8,
+    )
+}
+
+/// The ink a section's class label is drawn in, against its own fill: white on
+/// the deep hues, [`INK`] on the bright ones. Every pairing clears 4.5:1, so the
+/// label — not the colour — is what carries the classification (WCAG 1.4.1: the
+/// Breakdown/Clean red-green pair is invisible to a deuteranope).
+const fn on_class_color(class: BarClass) -> Color32 {
+    match class {
+        BarClass::Riff | BarClass::Breakdown | BarClass::Unknown => Color32::WHITE,
+        BarClass::Solo | BarClass::Clean => INK,
     }
 }
 
@@ -102,9 +132,9 @@ fn role_color(role: CellRole, shade: bool) -> Option<Color32> {
         CellRole::BandFill { class, selected } => {
             let base = class_color(class);
             Some(if selected {
-                base
+                lift(base, SELECTED_LIFT)
             } else {
-                base.gamma_multiply(0.55)
+                base
             })
         }
         CellRole::BandHeader => Some(PANEL),
@@ -113,10 +143,20 @@ fn role_color(role: CellRole, shade: bool) -> Option<Color32> {
 
 /// The glyph colour for a textual cell, or `None` when the cell draws as a
 /// solid block (no glyph).
+///
+/// The band is textual: `scene::resolve_band` centres each section's class name
+/// in its span, and dropping that glyph would leave the cockpit encoding the
+/// class by colour alone — and showing less than the `ratatui` preview does off
+/// the same `Scene` (ADR-0016).
 const fn glyph_color(role: CellRole) -> Option<Color32> {
     match role {
-        CellRole::PitchLabel => Some(LABEL_DIM),
-        CellRole::BandHeader => Some(LABEL_FAINT),
+        // The header shared the gutter's dim label colour once the old faint one
+        // (3.06:1 on the panel) was dropped for reading under the 4.5:1 floor.
+        CellRole::PitchLabel | CellRole::BandHeader => Some(LABEL_DIM),
+        // The selected fill is the lifted, pale one, so it takes ink either way.
+        CellRole::BandFill { class, selected } => {
+            Some(if selected { INK } else { on_class_color(class) })
+        }
         _ => None,
     }
 }
