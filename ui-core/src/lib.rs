@@ -40,5 +40,6 @@ pub use corpus::{build_manifest, manifest_from_jsons};
 pub use dock::{filter_chunks, CorpusFilter, CorpusStats};
 pub use generate::{generate_set, CandidateRow, CandidateSet, SetSummary};
 pub use scene::{resolve, CellRole, GridSize, Scene, SceneCell};
+pub use theme::{cell_style, contrast_ratio, CellStyle, Rgb, Theme};
 pub use view::{build_view, Lane, NoteRect, PianoRollView};
 pub use viewport::{Intent, Step, ViewContext, Viewport};

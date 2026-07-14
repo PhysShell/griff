@@ -41,9 +41,21 @@ impl Rgb {
     }
 
     /// Relative luminance, per WCAG 2.1.
+    // The coefficients are quoted from the spec; folding them into a `mul_add`
+    // chain buys precision no colour comparison needs, and costs a reader the
+    // ability to check them against WCAG at a glance.
+    #[allow(clippy::suboptimal_flops)]
     #[must_use]
     pub fn luminance(self) -> f64 {
-        unimplemented!("ADR-0028")
+        fn channel(v: u8) -> f64 {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(self.r) + 0.7152 * channel(self.g) + 0.0722 * channel(self.b)
     }
 }
 
@@ -54,8 +66,10 @@ impl Rgb {
 /// playhead). Grid lines are decoration and are exempt by design — they are
 /// meant to sit under the data, not compete with it.
 #[must_use]
-pub fn contrast_ratio(_a: Rgb, _b: Rgb) -> f64 {
-    unimplemented!("ADR-0028")
+pub fn contrast_ratio(a: Rgb, b: Rgb) -> f64 {
+    let (la, lb) = (a.luminance(), b.luminance());
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
 }
 
 /// How a placed cell draws: a fill behind it, an ink for its glyph, or both.
@@ -109,42 +123,185 @@ pub struct Theme {
     lanes: [Rgb; 6],
 }
 
+/// How many lanes the note palette cycles through.
+const LANES: u16 = 6;
+
 impl Theme {
     /// The dark mode — the cockpit's and the preview's default.
+    ///
+    /// Chrome is the design mock's dark token set verbatim. The section fills
+    /// are the deep hues; **selection lifts** them toward white rather than
+    /// dimming the rest, because these hues sit low on this surface (Breakdown
+    /// clears the 3:1 floor by 0.09) and dimming drove the unselected sections
+    /// under it while leaving the selected one the quietest thing in the band.
     #[must_use]
-    pub fn dark() -> Self {
-        unimplemented!("ADR-0028")
+    pub const fn dark() -> Self {
+        Self {
+            surface: Rgb::new(0x1c, 0x1c, 0x1e),
+            panel: Rgb::new(0x24, 0x24, 0x27),
+            text: Rgb::new(0xdc, 0xdc, 0xde),
+            text_dim: Rgb::new(0x9a, 0x9a, 0xa2),
+            stroke: Rgb::new(0x46, 0x46, 0x4d),
+            grid_bar: Rgb::new(0x45, 0x45, 0x4e),
+            row_shade: Rgb::new(0x20, 0x20, 0x24),
+            accent: Rgb::new(0x3b, 0x9d, 0xff),
+            playhead: Rgb::new(0xff, 0xcf, 0x4d),
+            boundary: Rgb::new(0xff, 0x5d, 0x6c),
+            ink_on_light: Rgb::new(0x11, 0x11, 0x14),
+            ink_on_dark: Rgb::new(0xff, 0xff, 0xff),
+            classes: [
+                Rgb::new(0x16, 0x68, 0xdc), // Riff
+                Rgb::new(0xcf, 0x13, 0x22), // Breakdown
+                Rgb::new(0xd4, 0x88, 0x06), // Solo
+                Rgb::new(0x38, 0x9e, 0x0d), // Clean
+                Rgb::new(0x6e, 0x6e, 0x76), // Unknown
+            ],
+            classes_selected: [
+                Rgb::new(0x68, 0x9d, 0xe8),
+                Rgb::new(0xe0, 0x66, 0x6f),
+                Rgb::new(0xe3, 0xb2, 0x5d),
+                Rgb::new(0x7e, 0xc0, 0x62),
+                Rgb::new(0xa1, 0xa1, 0xa6),
+            ],
+            lanes: [
+                Rgb::new(0xff, 0x7a, 0x45),
+                Rgb::new(0x36, 0xcf, 0xc9),
+                Rgb::new(0x92, 0x54, 0xde),
+                Rgb::new(0x40, 0x96, 0xff),
+                Rgb::new(0x73, 0xd1, 0x3d),
+                Rgb::new(0xf7, 0x59, 0xab),
+            ],
+        }
     }
 
     /// The light mode.
+    ///
+    /// Not a mirror of the dark one: on a light surface the deep hues carry and
+    /// the bright ones vanish, so the section and lane palettes are their own
+    /// values, and **selection deepens** instead of lifting. Two of the mock's
+    /// light tokens did not survive the contrast floors — `--playhead`
+    /// (`#d48806`) read at 2.32:1 and is darkened here to `#ad6800` — which is
+    /// what the tests are for.
     #[must_use]
-    pub fn light() -> Self {
-        unimplemented!("ADR-0028")
+    pub const fn light() -> Self {
+        Self {
+            surface: Rgb::new(0xe7, 0xe7, 0xea),
+            panel: Rgb::new(0xf3, 0xf3, 0xf5),
+            text: Rgb::new(0x1f, 0x1f, 0x24),
+            text_dim: Rgb::new(0x5a, 0x5a, 0x63),
+            stroke: Rgb::new(0xc2, 0xc2, 0xc9),
+            grid_bar: Rgb::new(0xbc, 0xbc, 0xc4),
+            row_shade: Rgb::new(0xde, 0xde, 0xe3),
+            accent: Rgb::new(0x16, 0x77, 0xff),
+            playhead: Rgb::new(0xad, 0x68, 0x00),
+            boundary: Rgb::new(0xf5, 0x22, 0x2d),
+            ink_on_light: Rgb::new(0x11, 0x11, 0x14),
+            ink_on_dark: Rgb::new(0xff, 0xff, 0xff),
+            classes: [
+                Rgb::new(0x09, 0x58, 0xd9), // Riff
+                Rgb::new(0xa8, 0x07, 0x1a), // Breakdown
+                Rgb::new(0x87, 0x4d, 0x00), // Solo
+                Rgb::new(0x23, 0x78, 0x04), // Clean
+                Rgb::new(0x59, 0x59, 0x59), // Unknown
+            ],
+            classes_selected: [
+                Rgb::new(0x00, 0x2c, 0x8c),
+                Rgb::new(0x5c, 0x00, 0x11),
+                Rgb::new(0x61, 0x34, 0x00),
+                Rgb::new(0x09, 0x2b, 0x00),
+                Rgb::new(0x26, 0x26, 0x26),
+            ],
+            lanes: [
+                Rgb::new(0xd4, 0x38, 0x0d),
+                Rgb::new(0x00, 0x6d, 0x75),
+                Rgb::new(0x53, 0x1d, 0xab),
+                Rgb::new(0x1d, 0x39, 0xc4),
+                Rgb::new(0x3f, 0x66, 0x00),
+                Rgb::new(0xc4, 0x1d, 0x7f),
+            ],
+        }
     }
 
     /// The fill a section of `class` draws with.
     #[must_use]
-    pub fn class_fill(&self, _class: BarClass, _selected: bool) -> Rgb {
-        unimplemented!("ADR-0028")
+    pub fn class_fill(&self, class: BarClass, selected: bool) -> Rgb {
+        let table = if selected {
+            &self.classes_selected
+        } else {
+            &self.classes
+        };
+        table
+            .get(class_index(class))
+            .copied()
+            .unwrap_or(self.text_dim)
     }
 
     /// The ink a section's class label draws in, against [`Self::class_fill`].
+    ///
+    /// Picked per fill, not per class: whichever of the two inks reads on it.
     #[must_use]
-    pub fn class_ink(&self, _class: BarClass, _selected: bool) -> Rgb {
-        unimplemented!("ADR-0028")
+    pub fn class_ink(&self, class: BarClass, selected: bool) -> Rgb {
+        let fill = self.class_fill(class, selected);
+        if contrast_ratio(self.ink_on_dark, fill) >= contrast_ratio(self.ink_on_light, fill) {
+            self.ink_on_dark
+        } else {
+            self.ink_on_light
+        }
     }
 
     /// The colour of note lane `lane`; the palette cycles.
     #[must_use]
-    pub fn lane(&self, _lane: u16) -> Rgb {
-        unimplemented!("ADR-0028")
+    pub fn lane(&self, lane: u16) -> Rgb {
+        let index = usize::from(lane.checked_rem(LANES).unwrap_or(0));
+        self.lanes.get(index).copied().unwrap_or(self.text_dim)
+    }
+}
+
+/// Where a classification sits in the palette tables.
+const fn class_index(class: BarClass) -> usize {
+    match class {
+        BarClass::Riff => 0,
+        BarClass::Breakdown => 1,
+        BarClass::Solo => 2,
+        BarClass::Clean => 3,
+        BarClass::Unknown => 4,
     }
 }
 
 /// What a placed cell looks like — the one answer both renderers blit.
+///
+/// A role that carries a glyph answers with an ink. That is the whole point:
+/// the band's class name is not decoration a renderer may drop.
 #[must_use]
-pub fn cell_style(_cell: SceneCell, _theme: &Theme) -> CellStyle {
-    unimplemented!("ADR-0028")
+pub fn cell_style(cell: SceneCell, theme: &Theme) -> CellStyle {
+    let block = |fill: Rgb| CellStyle {
+        fill: Some(fill),
+        ink: None,
+    };
+    match cell.role {
+        CellRole::Empty => CellStyle {
+            fill: cell.shade.then_some(theme.row_shade),
+            ink: None,
+        },
+        CellRole::Separator => block(theme.stroke),
+        CellRole::GridLine => block(theme.grid_bar),
+        CellRole::SectionMark(class) => block(theme.class_fill(class, false)),
+        CellRole::BoundaryMark => block(theme.boundary),
+        CellRole::Note(lane) => block(theme.lane(lane)),
+        CellRole::Playhead => block(theme.playhead),
+        CellRole::PitchLabel => CellStyle {
+            fill: None,
+            ink: Some(theme.text_dim),
+        },
+        CellRole::BandFill { class, selected } => CellStyle {
+            fill: Some(theme.class_fill(class, selected)),
+            ink: Some(theme.class_ink(class, selected)),
+        },
+        CellRole::BandHeader => CellStyle {
+            fill: Some(theme.panel),
+            ink: Some(theme.text_dim),
+        },
+    }
 }
 
 #[cfg(test)]
