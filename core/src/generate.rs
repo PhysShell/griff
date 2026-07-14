@@ -106,6 +106,29 @@ fn effective_grids(templates: &[RhythmTemplate], bar_duration: Ticks) -> Vec<Vec
         .collect()
 }
 
+/// The explicit scheduler (ADR-0029 §7): one grid per template, **in the
+/// palette's own order and count** — an empty template stays an empty grid
+/// (a silent bar in the rotation), notes still clamp to the bar, and there
+/// is no quarter fallback. This is deliberately not `effective_grids` with
+/// an `if`: the two schedulers answer to different laws.
+fn explicit_grids(palette: &[RhythmTemplate], bar_duration: Ticks) -> Vec<Vec<TemplateNote>> {
+    let _ = (palette, bar_duration);
+    unimplemented!("red phase: S16 Phase 2 — the explicit scheduler (ADR-0029 §7)")
+}
+
+/// Reports how an **explicit** palette resolves: nothing is filtered, so
+/// `loaded == effective == fingerprints.len()` and a silent template
+/// fingerprints as itself — the palette is never compressed (#114 review,
+/// law 4).
+#[must_use]
+pub fn explicit_rhythm_diagnostics(
+    palette: &[RhythmTemplate],
+    bar_duration: Ticks,
+) -> RhythmDiagnostics {
+    let _ = (palette, bar_duration);
+    unimplemented!("red phase: S16 Phase 2 — explicit diagnostics (ADR-0029 §7)")
+}
+
 /// The per-bar placement grids: the effective grids, or a single quarter-note
 /// grid when none is usable — the no-corpus case keeps today's wall-to-wall
 /// quarter behaviour. Never empty.
@@ -284,6 +307,11 @@ pub struct RuleGenerationRequest {
     /// generation carries the corpus's rhythmic variety across its bars.
     /// Empty or all-unusable → the quarter-note fallback grid.
     pub source_rhythms: Vec<RhythmTemplate>,
+    /// A caller-supplied palette honored **verbatim** by a separate scheduler
+    /// (ADR-0029 §7): silent templates stay in the rotation as silent bars,
+    /// nothing is filtered, and there is no quarter fallback. When set, it
+    /// wins over `source_rhythms` outright.
+    pub explicit_rhythms: Option<Vec<RhythmTemplate>>,
     /// Strategy to apply.
     pub strategy: GenerationStrategy,
 }
@@ -345,7 +373,10 @@ pub fn generate(request: &RuleGenerationRequest) -> Result<GenerationCandidate, 
 
     let mut prng = Xorshift64::new(request.seed.0);
     let c = &request.constraints;
-    let grids = bar_grids(&request.source_rhythms, bar_duration, c.ticks_per_quarter);
+    let grids = match &request.explicit_rhythms {
+        Some(palette) => explicit_grids(palette, bar_duration),
+        None => bar_grids(&request.source_rhythms, bar_duration, c.ticks_per_quarter),
+    };
     // The single degree→pitch mapper: the full in-range, in-class ladder, so
     // strategies span `[pitch_lo, pitch_hi]` rather than one octave above the
     // palette anchor (register increment).

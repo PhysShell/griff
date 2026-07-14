@@ -742,6 +742,7 @@ fn run_s6(request: &StructuredRequest, bar_count: usize) -> Result<Score, Struct
             ..request.constraints
         },
         source_rhythms: request.source_rhythms.clone(),
+        explicit_rhythms: None,
         strategy: request.strategy,
     })
     .map_err(StructureGenError::Generation)?;

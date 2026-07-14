@@ -177,6 +177,7 @@ fn request(strategy: GenerationStrategy, seed: u64) -> RuleGenerationRequest {
         constraints: wide(8),
         // A quarter template so RhythmCopyPitchSubstitute has one; the pitch
         // contract is about degrees, not rhythm.
+        explicit_rhythms: None,
         source_rhythms: vec![RhythmTemplate::from_durations(&[Ticks(480); 4])],
         strategy,
     }
@@ -211,6 +212,7 @@ fn candidate_set_reaches_beyond_the_first_octave() {
         seed: GenerationSeed(7),
         pitch_material: pentatonic(),
         constraints: wide(8),
+        explicit_rhythms: None,
         source_rhythms: Vec::new(),
         variants_per_strategy: 3,
         gesture: None,

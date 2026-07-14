@@ -67,6 +67,7 @@ fn request(strategy: GenerationStrategy, templates: Vec<RhythmTemplate>) -> Rule
         seed: GenerationSeed(42),
         pitch_material: material(),
         constraints: constraints(),
+        explicit_rhythms: None,
         source_rhythms: templates,
         strategy,
     }

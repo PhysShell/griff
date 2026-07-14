@@ -611,11 +611,13 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
             variants_per_strategy: candidates,
             gesture: !no_gesture,
         },
+        None,
     )?;
     let RankedSet {
         ranked,
         base,
         source_rhythms,
+        rhythm_explicit: _,
         gesture,
         policy,
     } = &set;

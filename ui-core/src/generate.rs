@@ -82,7 +82,7 @@ pub fn generate_set(
     material: Option<&CorpusMaterial>,
     ask: &GenerationAsk,
 ) -> Result<CandidateSet, GenerationInputError> {
-    let set = ranked_candidates(source, material, ask)?;
+    let set = ranked_candidates(source, material, ask, None)?;
 
     let rows = set
         .ranked

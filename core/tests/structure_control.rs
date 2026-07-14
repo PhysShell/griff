@@ -209,6 +209,7 @@ fn through_composed_control_delegates_to_s6() {
         seed: GenerationSeed(7),
         pitch_material: c_major(),
         constraints: constraints(4),
+        explicit_rhythms: None,
         source_rhythms: vec![RhythmTemplate::from_durations(&[Ticks(480); 4])],
         strategy: GenerationStrategy::ConstrainedRandomWalk,
     })
