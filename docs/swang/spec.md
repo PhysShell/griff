@@ -4,31 +4,50 @@ Decision: [ADR-0029](../adr/0029-swang-authoring-and-verified-lifting.md).
 Delivery plan: [S16](../stages/S16-swang-language-and-verified-lifting.md).
 
 This document is normative. It is split by stability, and the split is the
-point: the **semantic core** below is frozen — changing anything in it
-requires a new language level — while the surface grammar is explicitly
-unstable until S16 Phase 3 closes, and the transport syntax is a temporary
-experiment contract, not early grammar.
+point: the **semantic core** below freezes when S16 Phase 0 is accepted —
+from that point, changing anything in it requires a new language level —
+while the surface grammar stays explicitly unstable until S16 Phase 3
+closes, and the transport syntax is a temporary experiment contract, not
+early grammar.
 
 Status of each section:
 
 | Section | Stability |
 |---|---|
-| 1. Stable semantic core | **Frozen.** Changes require a new language level. |
+| 1. Proposed semantic core | **Proposed; freezes at Phase 0 acceptance.** After that, changes require a new language level. |
 | 2. Experimental transport syntax | Temporary Phase-2 contract; may be replaced by the grammar. |
 | 3. Deferred research | No promised names, no promised semantics. |
 
-## 1. Stable semantic core
+## 1. Proposed semantic core
 
-### 1.1 Language level
+### 1.1 Language level and the header line
 
-Every Swang script pins a **monotonic integer language level** on its first
-line. Nothing executes without it.
+Every Swang script begins with a header line pinning a **monotonic integer
+language level**. Nothing executes without it.
 
-- The level check is **lexically trivial**: a frozen pre-parser reads only
-  the first line and never changes across releases, so any interpreter can
-  reject a newer file with an intelligible error even when the rest of the
-  grammar is unparseable to it. This first-line syntax is the one piece of
-  surface syntax frozen forever.
+The header syntax is the one piece of surface syntax that freezes forever
+(at Phase 0 acceptance), byte-exactly:
+
+```text
+header = "swang" SP level EOL
+SP     = exactly one U+0020 space
+level  = a nonzero decimal digit followed by up to eight decimal digits
+         (no sign, no leading zeros, no separators)
+EOL    = LF, optionally preceded by exactly one CR
+```
+
+- The file is UTF-8. A byte-order mark is a typed error (`SWG0003`), never
+  silently skipped.
+- The header is the very first line: no leading blank lines, no leading
+  whitespace, no comments before it; `swang` is lowercase.
+- The pre-parser reads at most 64 bytes of the first line; a longer first
+  line, a missing header, or a malformed header is `SWG0002`.
+- Only the first line is the header. Later lines beginning with `swang` are
+  ordinary content for the grammar to judge.
+- The pre-parser implementing exactly these rules never changes across
+  releases, so any interpreter can reject a newer file with an intelligible
+  error (`SWG0001`, reporting its supported range) even when the rest of the
+  grammar is unparseable to it.
 - An unknown or newer level is a hard typed error before any evaluation.
 - Levels are **additive-only**: a new level may add syntax and builtins; it
   never changes the meaning of anything that parsed at an older level. Old
@@ -83,10 +102,27 @@ meaningful:
 
 ### 1.5 Diagnostics
 
-Every diagnostic carries a stable typed code (`SWG____`), a source location
-(a `NodePath` before the grammar exists; a source span after), and a
-message. Codes are never reused. The compiler core emits diagnostics as pure
-data; rendering happens only at the frontend edge.
+Every diagnostic carries a stable typed code, a source location (a
+`NodePath` before the grammar exists; a source span after), and a message.
+Codes are never reused; the registry is append-only. The compiler core emits
+diagnostics as pure data; rendering happens only at the frontend edge.
+
+Initial registry:
+
+| Code | Meaning |
+|---|---|
+| `SWG0001` | unsupported language level (newer than this build supports) |
+| `SWG0002` | missing or malformed header line |
+| `SWG0003` | byte-order mark before the header |
+| `SWG0101` | ragged kernel: rows of unequal length |
+| `SWG0102` | invalid kernel character (only `X` and `.` are cells) |
+| `SWG0103` | whitespace inside a kernel literal |
+| `SWG0201` | expansion exceeds `max_cells` (carries the offending `NodePath`) |
+| `SWG0202` | expansion exceeds `max_depth` |
+| `SWG0301` | rhythm unit does not divide the bar exactly |
+| `SWG0302` | incomplete final bar under tail policy `reject` |
+| `SWG0303` | density decay given without a rhythm seed |
+| `SWG0304` | meter change inside the mapped span (v0.1 requires a constant meter) |
 
 ### 1.6 Kernel semantics
 
@@ -103,7 +139,7 @@ X X .
   Neither denotes a note, rest, voice, pitch, or time position until an
   explicit lowering assigns that meaning.
 - A kernel must be rectangular. Ragged rows are rejected before any
-  allocation: `SWG____: ragged kernel: row 1 has 2 cells, expected 3`.
+  allocation: `SWG0101: ragged kernel: row 1 has 2 cells, expected 3`.
 - Only `X` and `.` are cell characters.
 - The drum-machine interpretation (columns = time, rows = simultaneous
   voices) is **not a traversal**; it is a separate future lowering with a
@@ -112,7 +148,7 @@ X X .
 
 ### 1.7 `fractalize`
 
-`fractalize(depth, density_decay, budget)` expands each active cell into a
+`fractalize(depth, density_bps, budget)` expands each active cell into a
 scaled copy of the kernel and each inactive cell into an equally-sized empty
 subtree. It chooses no pitches, strings, techniques, dynamics, or fingerings.
 
@@ -124,35 +160,66 @@ subtree. It chooses no pitches, strings, techniques, dynamics, or fingerings.
 
 ### 1.8 Deterministic pruning — `swang-prune-hash-v1`
 
-`density_decay` is a **path-addressed hash test**, not a stream of random
-draws — the survival of a cell is a pure function of the pruning seed and the
-cell's path, independent of evaluation order and of every other cell:
+`density_bps` prunes by a **path-addressed hash test**, not a stream of
+random draws: whether a cell survives is a pure function of the pruning seed
+and the cell's path, independent of evaluation order and of every other
+cell.
+
+**Serialization and hash are two layers, honestly separated.** A node's
+canonical *path* is the sequence of its child indices from the root, each a
+`u32` in **structural order** — `row × kernel_width + column` within the
+parent's kernel copy — fixed by the kernel's own geometry and independent of
+any traversal. That serialization is injective. The 64-bit key fold over it
+is a *hash*, not an encoding: distinct paths may collide, and the only
+consequence of a collision is that two cells share one keep/prune decision —
+a correlated coin, never a crash, never an out-of-budget expansion.
+
+**The algorithm.** `mix64` is the splitmix64 finalizer (Stafford Mix13;
+public domain — Steele–Lea–Flood OOPSLA '14; Vigna's reference C):
 
 ```text
-keep(path, depth) =
-    swang_prune_hash_v1(rhythm_seed, path) < threshold(decay_bps, depth)
+mix64(z):
+    z = (z XOR (z >> 30)) × 0xbf58476d1ce4e5b9    (wrapping, mod 2^64)
+    z = (z XOR (z >> 27)) × 0x94d049bb133111eb    (wrapping, mod 2^64)
+    return z XOR (z >> 31)
+
+DOMAIN = u64::from_le_bytes(*b"swangpr1") = 0x3172_7067_6e61_7773
+GAMMA  = 0x9e37_79b9_7f4a_7c15
+
+key(root)     = mix64(DOMAIN XOR rhythm_seed)
+key(node · c) = mix64(key(node) XOR (u64(c) + GAMMA))    (wrapping add)
+hash(path)    = the key at the end of the fold
 ```
 
-- **Mixer.** `swang-prune-hash-v1` is the splitmix64 finalizer (Stafford
-  Mix13 constants: `0xbf58476d1ce4e5b9`, `0x94d049bb133111eb`, shifts
-  30/27/31 — public domain; prior art: Steele–Lea–Flood OOPSLA'14, Vigna's
-  reference C), applied as an incremental fold down the tree:
-  `key_child = mix(key_parent XOR encode(child_index))`, with
-  `key_root = mix(domain_tag XOR rhythm_seed)`. No cryptographic properties
-  are promised or required.
-- **Path encoding** is injective and fixed-width little-endian: a domain
-  separator, the algorithm version, the seed (`u64`), then each child index
-  (`u32`) folded in order. `[1, 23]` and `[12, 3]` cannot collide because
-  indices are folded stepwise, not concatenated as digits.
-- **Decay** is carried as basis points (`DensityBps(u16)`, `0..=10000`),
-  never a float. `threshold(decay_bps, depth)` is computed in integer
-  arithmetic with `u128` intermediates and documented rounding
-  (floor). Edge laws: `10000` keeps every cell at every depth; `0` keeps
-  none below the root.
-- **Golden vectors.** The implementation ships CI-checked
-  `(seed, path) -> u64` vectors and `(seed, kernel, decay, depth) ->
-  activity` vectors. Changing the mixer, encoding, or rounding is a new
-  algorithm version and a new language level.
+All arithmetic is wrapping `u64`; child indices are folded one at a time,
+never concatenated as digits, so `[1, 23]` and `[12, 3]` cannot merge. No
+cryptographic properties are promised or required.
+
+**The test.** Pruning applies to expansion levels `1..=depth`; the kernel's
+own cells (level 0) are given, not tested. Every node is tested once,
+against a **constant per-node threshold**:
+
+```text
+threshold = floor(decay_bps × 2^64 / 10000)      (exact, computed in u128)
+keep(node) = hash(path(node)) < threshold
+```
+
+Cumulative decay is emergent, not encoded: a pruned parent already yields an
+entirely empty subtree (§1.7), so a level-`d` cell survives only if its
+whole ancestor chain does — survival probability `(decay_bps / 10000)^d`
+with no depth term in the formula.
+
+Edge laws: `decay_bps = 10000` keeps every cell unconditionally (the test is
+skipped — `2^64` is not representable as a `u64` threshold);
+`decay_bps = 0` keeps nothing below level 0. Decay is carried as
+`DensityBps(u16)`, range `0..=10000`; floats never appear anywhere in the
+computation or its transport.
+
+**Golden vectors** — CI-checked `(seed, path) -> u64` and
+`(seed, kernel, decay_bps, depth) -> activity` fixtures — *illustrate* the
+algorithm; the algorithm above, not the vectors, is normative. Changing the
+mixer, the fold, the serialization order, or the threshold arithmetic is a
+new algorithm version and a new language level.
 
 ### 1.9 Traversals
 
@@ -202,18 +269,28 @@ Consequences, all normative:
 ### 1.11 `map_rhythm` and the S6 seam
 
 ```text
-map_rhythm(unit = 1/16, ...) : ActivitySequence -> Vec<RhythmTemplate>
+map_rhythm(unit = 1/16) : ActivitySequence -> Vec<RhythmTemplate>
 ```
 
 - The time unit is **mandatory** — a sequence has no temporal meaning until
   it is declared. (No default unit exists anywhere, including frontends.)
+- **Bar geometry comes from the canonical master timeline** of the score the
+  generation pass was seeded with: the score's PPQN and the time signature
+  in effect at the start of the mapped span define `bar_duration` in ticks.
+  v0.1 requires a **constant meter** across the mapped span; a meter change
+  inside it is a typed error (`SWG0304`).
+- `slots_per_bar = bar_duration / unit_ticks` must divide **exactly**;
+  a unit that does not divide the bar is a typed error (`SWG0301`). A slot
+  therefore never crosses a bar boundary, and the one-bar template cut is
+  unambiguous.
 - The sequence is cut into one-bar `RhythmTemplate` values. `X` at slot `i`
-  becomes `TemplateNote { offset: i × unit, duration: unit }` within its
-  bar; `.` contributes no note — the existing seam already represents rests
-  as gaps between offsets, so the bar keeps its length.
+  becomes `TemplateNote { offset: (i mod slots_per_bar) × unit_ticks,
+  duration: unit_ticks }` in bar `i div slots_per_bar`; `.` contributes no
+  note — the existing seam already represents rests as gaps between offsets,
+  so the bar keeps its length.
 - An incomplete final bar is governed by an explicit **tail policy**:
-  `reject` (default — a typed error) or `rest_pad` (pad the tail with timed
-  rests). `truncate` and any stretch/fit are deferred.
+  `reject` (default — a typed error, `SWG0302`) or `rest_pad` (pad the tail
+  with timed rests). `truncate` and any stretch/fit are deferred.
 - **Cycle semantics.** The S6 scheduler rotates the produced palette
   round-robin across bars (`bar_index mod templates`). A request for more
   bars than the palette holds repeats the cycle; structure longer than the
@@ -243,7 +320,7 @@ The generation seed (candidate/pitch variation) and the rhythm seed
 - changing the rhythm seed leaves pitch material and the candidate seed
   sequence untouched.
 
-Wherever `density_decay` is in effect, a rhythm seed is **required** — there
+Wherever `density_bps` is in effect, a rhythm seed is **required** — there
 is no implicit default seed.
 
 ### 1.14 Expansion artifact
@@ -252,8 +329,9 @@ Every expansion can be emitted as a normalized artifact: versioned schema
 (`griff.pattern-expansion`, `version: 1`), canonical field order,
 byte-stable serialization, complete enough to reproduce the expansion
 (kernel, depth, decay bps, rhythm seed, traversal, unit, tail policy,
-budgets, activity, per-bar templates), and produced **before** pitch
-generation so that structural deltas are visible in isolation. Template
+budgets, **bar geometry — PPQN, meter, `bar_duration` in ticks,
+`slots_per_bar`** — activity, per-bar templates), and produced **before**
+pitch generation so that structural deltas are visible in isolation. Template
 fingerprints are taken from the public `rhythm_diagnostics` (FNV-1a over
 `(offset, duration)` pairs) — the hashing is not reimplemented, and the
 fingerprint is a within-context check, **not** a durable content-addressed
@@ -286,7 +364,7 @@ griff generate seed.gp5 out.mid \
   --seed 42 \
   --rhythm-kernel 'X.X/XX./.XX' \
   --rhythm-fractal-depth 2 \
-  --rhythm-density-decay 0.8 \
+  --rhythm-density-bps 8000 \
   --rhythm-seed 17 \
   --rhythm-traversal snake \
   --rhythm-unit 1/16 \
@@ -295,8 +373,20 @@ griff generate seed.gp5 out.mid \
   --emit-rhythm-expansion expansion.json
 ```
 
-- `--rhythm-unit` is required (per §1.11);
-- `--rhythm-density-decay` requires `--rhythm-seed` (per §1.13);
+- `--rhythm-unit` and `--rhythm-traversal` are required (per §1.9/§1.11);
+- `--rhythm-fractal-depth` is required alongside the kernel — the requested
+  depth is exact, so it doubles as the structural `max_depth`;
+- `--rhythm-density-bps` takes an **integer** `0..=10000` (basis points, per
+  §1.8 — no decimal transport, no float-to-bps conversion exists) and
+  requires `--rhythm-seed` (per §1.13);
+- `--rhythm-max-cells` is optional with the CLI's documented default of
+  4096 — a *frontend* default (the pattern library still has none, per
+  §1.4);
+- the time-domain limits need no Phase-2 flags because the lowering
+  satisfies them by construction: the sequence is monophonic
+  (`max_polyphony = 1`), every slot lasts exactly one unit
+  (`min_duration = unit`), and `max_events ≤ max_cells`. They become flags
+  only when an operator can violate them;
 - `--rhythm-tail` defaults to `reject`;
 - `--emit-rhythm-expansion` takes a **path** (the artifact never mixes into
   stdout's human-facing summaries);

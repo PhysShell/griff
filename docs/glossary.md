@@ -123,7 +123,8 @@ Swang language and verified lifting stage. A deterministic, versioned musical
 DSL over the canonical model: bounded pattern algebra (`fractalize`,
 traversals, budgets), recipes, exact canonical escape hatches, and verified
 lifting of imported scores into executable programs with explicit residuals
-(ADR-0029; normative semantics in `docs/swang/spec.md`). Depends on S1/S3/S6;
+(ADR-0029; normative semantics in `docs/swang/spec.md`). Depends on
+S1/S2/S3/S4/S6, building on S13/S14 and on S15 contracts once accepted;
 appended as the next free number.
 
 ## 1. Architecture and data model

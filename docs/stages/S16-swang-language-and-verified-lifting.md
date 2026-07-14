@@ -99,24 +99,35 @@ pattern seed = ascii {
 }
 
 rhythm r = seed
-    |> fractalize(depth = 2, density_decay = 0.8, budget = 512)
+    |> fractalize(depth = 2, density_bps = 8000, budget = 512)
     |> linearize(snake)
-    |> map_rhythm(unit = 1/16, bars = 4)
+    |> map_rhythm(unit = 1/16)
 ```
 
-The v0.1 operator roster speaks **onsets and durations only** (ADR-0029 §7):
+(The produced palette's bar count is a property of the expansion; how many
+bars are *generated* from it is `--bars`, which rotates the palette and
+never stretches it — see the spec §1.11.)
+
+The v0.1 operators speak **onsets and durations only** (ADR-0029 §7).
+Specified and scheduled, with semantics in the spec:
+
+```text
+fractalize
+linearize
+map_rhythm
+thin
+```
+
+Candidate roster — names under consideration, with **no promised semantics
+and no assigned delivery phase** until each earns its spec section:
 
 ```text
 repeat
 rotate
 mirror
 mask
-thin
 quantize
 euclid
-fractalize
-linearize
-map_rhythm
 ```
 
 `accent` and dynamics are deferred — the S6 seam has no landing place for
@@ -250,9 +261,11 @@ set of rewrite rules makes it useful.
 
 ### Phase 0 — design contract and golden fixture
 
-- accept or revise ADR-0029; land `docs/swang/spec.md` with the frozen
-  semantic core and the explicitly unstable sections;
-- define typed units, diagnostics (stable `SWG____` codes), limits, and the
+- accept or revise ADR-0029; land `docs/swang/spec.md` and **freeze its
+  semantic core by this phase's acceptance** — until then it is Proposed,
+  like the ADR — keeping the other sections explicitly unstable;
+- define typed units, diagnostics (the `SWG0001`-style registry the spec
+  opens with), limits, and the
   `swang-prune-hash-v1` function with its golden `(seed, path) -> u64`
   vectors;
 - select one legally safe 4–8 bar Guitar Pro fixture from the corpus plus a
@@ -306,7 +319,7 @@ griff generate seed.gp5 out.mid \
   --seed 42 \
   --rhythm-kernel 'X.X/XX./.XX' \
   --rhythm-fractal-depth 2 \
-  --rhythm-density-decay 0.8 \
+  --rhythm-density-bps 8000 \
   --rhythm-seed 17 \
   --rhythm-traversal snake \
   --rhythm-unit 1/16 \
@@ -318,8 +331,8 @@ griff generate seed.gp5 out.mid \
 Acceptance (the full list lives in the spec):
 
 - without pattern flags, generation is byte-identical to baseline;
-- `--rhythm-unit` is required; `--rhythm-density-decay` requires
-  `--rhythm-seed`;
+- `--rhythm-unit` is required; `--rhythm-density-bps` is an integer
+  `0..=10000` and requires `--rhythm-seed`;
 - `.` produces a gap in offsets, adjacent `X` stay two short notes, tail
   policy `reject` (default) / `rest-pad` behaves exactly as specified,
   `--bars` rotates the palette and never stretches the pattern;

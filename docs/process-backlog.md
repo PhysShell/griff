@@ -15,5 +15,6 @@ short; delete them when done.
   `fuzz/` per ADR-0010 — with bounded harnesses for the budget invariant
   ("expansion never exceeds `max_cells`") and the empty-subtree law
   ("a pruned parent yields no active descendants"). Verus rejected for now:
-  its toolchain cost outweighs proofs about semantics that proptest already
-  pins (see decisions log 2026-07-14).
+  its toolchain cost outweighs machine-checked proofs while proptest and the
+  golden vectors merely *exercise* those invariants — Kani is the cheaper
+  step up when the semantics freeze (see decisions log 2026-07-14).

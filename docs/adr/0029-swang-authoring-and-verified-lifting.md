@@ -15,11 +15,13 @@ repairs, or the provenance of a generated result.
 
 A plain textual score dump would be useful for diagnostics but would not
 recover the musical structure lost when a program is rendered into events.
-MIDI and Guitar Pro do not contain source-level constructs such as `repeat`,
-`motif`, `transpose`, `fractalize`, or `complement`; recovering those
-constructs is program synthesis, not syntax conversion. A recovered program
-must be verified by executing it back into the canonical model and comparing
-the result with the source.
+MIDI carries no structural constructs at all; Guitar Pro preserves *notated*
+repeats and alternate endings — imported and unfolded per ADR-0022, so they
+lift as recorded facts, not guesses — but nothing above them: `motif`,
+`transpose`, `fractalize`, and `complement` exist in neither format.
+Recovering those higher constructs is program synthesis, not syntax
+conversion. A recovered program must be verified by executing it back into
+the canonical model and comparing the result with the source.
 
 The same structural operators are useful to generators: instead of emitting
 only a final `Score`, a generator can emit an inspectable program which the
@@ -32,8 +34,9 @@ sampling.
 
 Per the repository's prior-art rule, four surveys were run before this
 decision (pattern DSLs; notation/score-text languages; structure lifting/MDL;
-bounded-DSL design). Scoped findings — "no direct equivalent found in the
-surveyed systems", not "nothing exists":
+bounded-DSL design and seeded determinism). The findings below are grouped
+by theme, not one bullet per survey. All claims are scoped — "no direct
+equivalent found in the surveyed systems", not "nothing exists":
 
 - **TidalCycles / Strudel** (pattern algebra for live coding). The algebra —
   `Time = Rational`, an event's `whole`/`part` split, pattern as a
@@ -82,9 +85,10 @@ surveyed systems", not "nothing exists":
   mapping assign meaning.
 - **Euclidean rhythms (Toussaint/Bjorklund; closed form per
   Clough–Douthett)** — the one bounded rhythm algorithm with unambiguous
-  musical adoption; it enters the operator roster as `euclid` with rotation
-  as a first-class parameter (the named world-music timelines are rotations,
-  and son clave is *not* Euclidean — the docs must not claim otherwise).
+  musical adoption; it enters the **candidate** operator roster as `euclid`,
+  with rotation as a first-class parameter when it is specified (the named
+  world-music timelines are rotations, and son clave is *not* Euclidean —
+  the docs must not claim otherwise).
 
 ## Decision
 
@@ -141,9 +145,11 @@ in [`../swang/spec.md`](../swang/spec.md); the delivery plan in
    `griff-swang`. A breach is a typed error carrying the offending
    `NodePath`. Deterministic pruning is explicit and reported; the compiler
    never silently truncates. Density decay is a **path-addressed hash test**
-   (`swang-prune-hash-v1`: a named, documented integer mixer over a
-   domain-separated, injective path encoding; decay carried in basis points;
-   thresholds computed in integer arithmetic) — a removed parent yields an
+   (`swang-prune-hash-v1`: a named, documented integer mixer folded over an
+   injective canonical path serialization — the 64-bit hash itself may
+   collide, and a collision's only consequence is a shared keep/prune
+   decision; decay carried in basis points; thresholds computed in integer
+   arithmetic) — a removed parent yields an
    entirely empty subtree, and the pruning seed is independent of the
    generation seed so structure and pitch remain separately reproducible
    experiment axes.
