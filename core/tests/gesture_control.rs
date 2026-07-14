@@ -76,6 +76,7 @@ fn walk_request() -> RuleGenerationRequest {
             pitch_lo: Pitch(36), // C2
             pitch_hi: Pitch(72), // C5
         },
+        explicit_rhythms: None,
         source_rhythms: Vec::new(),
         strategy: GenerationStrategy::ConstrainedRandomWalk,
     }

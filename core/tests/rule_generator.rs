@@ -51,6 +51,7 @@ fn request(strategy: GenerationStrategy) -> RuleGenerationRequest {
         seed: GenerationSeed(42),
         pitch_material: e_minor_pentatonic(),
         constraints: constraints_2_bars_4_4(),
+        explicit_rhythms: None,
         source_rhythms: vec![quarter_rhythm()],
         strategy,
     }
@@ -313,6 +314,7 @@ fn zero_bar_count_returns_error() {
 #[test]
 fn rhythm_copy_without_source_rhythms_returns_error() {
     let req = RuleGenerationRequest {
+        explicit_rhythms: None,
         source_rhythms: Vec::new(),
         ..request(GenerationStrategy::RhythmCopyPitchSubstitute)
     };

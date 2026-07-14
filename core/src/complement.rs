@@ -769,6 +769,7 @@ fn arrange_counter_melody(
         // rhythm-grid change would otherwise silently re-rhythm part B onto
         // A's bar durations. Feeding `profile.bar_rhythms` (as onset-aware
         // templates) into the grid is its own increment with its own goldens.
+        explicit_rhythms: None,
         source_rhythms: Vec::new(),
         strategy: GenerationStrategy::ConstrainedRandomWalk,
     };

@@ -75,6 +75,7 @@ fn request(
         seed: GenerationSeed(seed),
         pitch_material: pm,
         constraints,
+        explicit_rhythms: None,
         source_rhythms: vec![RhythmTemplate::from_durations(&[Ticks(480); 4])],
         strategy,
     }

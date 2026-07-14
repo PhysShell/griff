@@ -611,6 +611,7 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
             variants_per_strategy: candidates,
             gesture: !no_gesture,
         },
+        None,
     )?;
     let RankedSet {
         ranked,
@@ -618,6 +619,7 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
         source_rhythms,
         gesture,
         policy,
+        ..
     } = &set;
 
     print_rhythm_diagnostics(source_rhythms, &base.constraints, gesture.is_some());

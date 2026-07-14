@@ -87,6 +87,7 @@ fn set_request(
         seed: GenerationSeed(seed),
         pitch_material: material(),
         constraints: constraints(4),
+        explicit_rhythms: None,
         source_rhythms,
         variants_per_strategy,
         gesture,

@@ -167,9 +167,15 @@ pub struct RankedSet {
     pub ranked: Vec<Scored<rerank::SetCandidate>>,
     /// The tab-seeded base request: pitch material, meter, tempo, range.
     pub base: generate::RuleGenerationRequest,
-    /// The rhythm templates the pass actually rotated (corpus palette, or the
-    /// source's first sounding bar as the fallback).
+    /// The rhythm templates the pass actually rotated (explicit palette,
+    /// corpus palette, or the source's first sounding bar as the fallback).
+    /// For an explicit palette this is the caller's vector **verbatim**,
+    /// silent templates included — provenance is never compressed.
     pub source_rhythms: Vec<generate::RhythmTemplate>,
+    /// Whether `source_rhythms` is an explicit palette (ADR-0029 §7) — the
+    /// separate scheduler that keeps silent bars in rotation — rather than
+    /// the automatic corpus/source path.
+    pub rhythm_explicit: bool,
     /// The gesture ask the pass carved against, when it carved.
     pub gesture: Option<GestureControl>,
     /// The rerank policy the aggregates were scored under.
@@ -196,17 +202,31 @@ pub fn ranked_candidates(
     score: &Score,
     material: Option<&CorpusMaterial>,
     ask: &GenerationAsk,
+    rhythm_override: Option<&[generate::RhythmTemplate]>,
 ) -> Result<RankedSet, GenerationInputError> {
     let base = generation_request_from_score(score, ask.seed, ask.bars)?;
-    let (source_rhythms, gesture) = material.map_or_else(
-        || (base.source_rhythms.clone(), None),
-        |m| {
-            let rhythms = if m.rhythms.is_empty() {
-                base.source_rhythms.clone()
-            } else {
-                m.rhythms.clone()
-            };
-            (rhythms, if ask.gesture { m.gesture } else { None })
+    // Rhythm precedence (ADR-0029 §7): explicit pattern > corpus > source
+    // first bar. Novelty references and gesture stay corpus-based either way.
+    let explicit: Option<Vec<generate::RhythmTemplate>> = rhythm_override.map(<[_]>::to_vec);
+    let (source_rhythms, gesture) = explicit.as_ref().map_or_else(
+        || {
+            material.map_or_else(
+                || (base.source_rhythms.clone(), None),
+                |m| {
+                    let rhythms = if m.rhythms.is_empty() {
+                        base.source_rhythms.clone()
+                    } else {
+                        m.rhythms.clone()
+                    };
+                    (rhythms, if ask.gesture { m.gesture } else { None })
+                },
+            )
+        },
+        |palette| {
+            (
+                palette.clone(),
+                material.and_then(|m| if ask.gesture { m.gesture } else { None }),
+            )
         },
     );
     let references: &[Score] = material.map_or(&[], |m| &m.references);
@@ -216,6 +236,7 @@ pub fn ranked_candidates(
         pitch_material: base.pitch_material.clone(),
         constraints: base.constraints,
         source_rhythms: source_rhythms.clone(),
+        explicit_rhythms: explicit.clone(),
         variants_per_strategy: ask.variants_per_strategy,
         gesture,
     })?;
@@ -226,6 +247,7 @@ pub fn ranked_candidates(
         ranked,
         base,
         source_rhythms,
+        rhythm_explicit: explicit.is_some(),
         gesture,
         policy,
     })
@@ -264,6 +286,7 @@ pub fn generation_request_from_score(
         seed: generate::GenerationSeed(seed),
         pitch_material: pitch_material_from(lo, &pitches),
         constraints,
+        explicit_rhythms: None,
         source_rhythms: vec![generate::RhythmTemplate::from_durations(&first_bar_rhythm(
             score,
         ))],

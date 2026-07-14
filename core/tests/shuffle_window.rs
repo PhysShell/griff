@@ -259,6 +259,7 @@ fn shuffle_request(seed: u64, constraints: GenerationConstraints) -> RuleGenerat
         seed: GenerationSeed(seed),
         pitch_material: chromatic(),
         constraints,
+        explicit_rhythms: None,
         source_rhythms: Vec::new(),
         strategy: GenerationStrategy::ShuffleMotifs,
     }

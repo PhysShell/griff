@@ -84,6 +84,9 @@ pub struct SetRequest {
     /// from corpus chunks. Empty templates are ignored; with none usable,
     /// `RhythmCopyPitchSubstitute` is skipped.
     pub source_rhythms: Vec<RhythmTemplate>,
+    /// A caller-supplied palette honored verbatim by the explicit scheduler
+    /// (ADR-0029 §7); wins over `source_rhythms` when set.
+    pub explicit_rhythms: Option<Vec<RhythmTemplate>>,
     /// Seed variants generated per strategy (must be ≥ 1).
     pub variants_per_strategy: usize,
     /// When set, every candidate is carved through the gesture compiler.
@@ -136,8 +139,14 @@ pub fn generate_candidate_set(request: &SetRequest) -> Result<Vec<SetCandidate>,
         return Err(SetError::VariantCountZero);
     }
 
-    let templates: Vec<&RhythmTemplate> = request
-        .source_rhythms
+    // Rhythm-copy needs at least one sounding template in whichever palette
+    // is active: the explicit one when set (honored verbatim by the explicit
+    // scheduler), the automatic one otherwise.
+    let active_palette: &[RhythmTemplate] = request
+        .explicit_rhythms
+        .as_deref()
+        .unwrap_or(&request.source_rhythms);
+    let templates: Vec<&RhythmTemplate> = active_palette
         .iter()
         .filter(|t| !t.notes.is_empty())
         .collect();
@@ -161,6 +170,7 @@ pub fn generate_candidate_set(request: &SetRequest) -> Result<Vec<SetCandidate>,
                 pitch_material: request.pitch_material.clone(),
                 constraints: request.constraints,
                 source_rhythms: source_rhythms.clone(),
+                explicit_rhythms: request.explicit_rhythms.clone(),
                 strategy: *strategy,
             };
             let (score, gesture) = match request.gesture {
