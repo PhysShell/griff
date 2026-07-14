@@ -26,6 +26,9 @@
     clippy::suboptimal_flops
 )]
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
+
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
 use griff_core::classify::BarClass;
@@ -553,7 +556,7 @@ pub struct CockpitApp {
     material: Option<CorpusMaterial>,
     /// Where a kept candidate is written (native only).
     #[cfg(not(target_arch = "wasm32"))]
-    out_dir: std::path::PathBuf,
+    out_dir: PathBuf,
 }
 
 /// A single-track view of `score`: just `track`, so the roll shows one part
@@ -609,7 +612,7 @@ impl CockpitApp {
             gen_panel: GeneratePanel::new(),
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
-            out_dir: std::path::PathBuf::from("keeps"),
+            out_dir: PathBuf::from("keeps"),
         }
     }
 
@@ -706,21 +709,24 @@ impl CockpitApp {
 
     /// Where kept candidates are written.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_out_dir(&mut self, dir: std::path::PathBuf) {
+    pub fn set_out_dir(&mut self, dir: PathBuf) {
         self.out_dir = dir;
     }
 
     /// The score a pass seeds from: the picked corpus tab, or — when none is
     /// picked (or the pick is stale) — the displayed score.
     fn generation_source(&self) -> Result<Score, String> {
-        match self.gen_panel.source_tab() {
-            Some(tab) => import_score_auto(&tab.bytes)
-                .map_err(|err| format!("cannot import {}: {err}", tab.name)),
-            None => self
-                .score
-                .clone()
-                .ok_or_else(|| "no score loaded".to_owned()),
-        }
+        self.gen_panel.source_tab().map_or_else(
+            || {
+                self.score
+                    .clone()
+                    .ok_or_else(|| "no score loaded".to_owned())
+            },
+            |tab| {
+                import_score_auto(&tab.bytes)
+                    .map_err(|err| format!("cannot import {}: {err}", tab.name))
+            },
+        )
     }
 
     /// Runs the panel's ask through the shared compiler and shows the winner.
@@ -829,7 +835,7 @@ impl CockpitApp {
     fn open_keep(&mut self, i: usize) {
         let outcome = self
             .write_keep(i)
-            .and_then(|path| open_in_default_app(std::path::Path::new(&path)).map(|()| path));
+            .and_then(|path| open_in_default_app(Path::new(&path)).map(|()| path));
         self.gen_panel.status = Some(match outcome {
             Ok(path) => format!("opened {path}"),
             Err(err) => format!("open failed: {err}"),
@@ -892,72 +898,7 @@ impl CockpitApp {
                     }
                 });
 
-                let Some(set) = self.gen_panel.set.as_ref() else {
-                    ui.separator();
-                    ui.weak(match self.material {
-                        Some(_) => "a corpus is loaded — generate to rank a candidate set",
-                        None => "no corpus: the pass will seed from the displayed score alone",
-                    });
-                    return;
-                };
-
-                ui.separator();
-                let gesture = set.summary.gesture.as_ref().map_or_else(
-                    || "off".to_owned(),
-                    |(n, rest)| format!("{n} notes / {rest}"),
-                );
-                ui.weak(format!(
-                    "{} templates · {} references · gesture {} · {}-tone scale{}",
-                    set.summary.templates,
-                    set.summary.references,
-                    gesture,
-                    set.summary.scale_tones,
-                    if set.summary.skipped.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · {} records skipped", set.summary.skipped.len())
-                    },
-                ));
-                ui.separator();
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (i, row) in set.rows.iter().enumerate() {
-                        let selected = self.gen_panel.selected == Some(i);
-                        let label = format!(
-                            "{:>3}. {:<26} {:.3}  {} notes",
-                            row.rank, row.strategy, row.aggregate, row.note_count,
-                        );
-                        let hover = row
-                            .axes
-                            .iter()
-                            .map(|(name, value)| format!("{name} {value:.2}"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if ui
-                            .selectable_label(selected, egui::RichText::new(label).monospace())
-                            .on_hover_text(hover)
-                            .clicked()
-                        {
-                            show = Some(i);
-                        }
-                    }
-                });
-
-                if let Some(i) = self.gen_panel.selected {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("⤓ keep .mid").clicked() {
-                            keep = Some(i);
-                        }
-                        if ui
-                            .button("🔊 open")
-                            .on_hover_text("write it and hand it to your .mid app")
-                            .clicked()
-                        {
-                            open = Some(i);
-                        }
-                    });
-                }
+                self.generate_candidates(ui, &mut show, &mut keep, &mut open);
             });
 
         if run {
@@ -978,6 +919,85 @@ impl CockpitApp {
         #[cfg(target_arch = "wasm32")]
         if keep.is_some() || open.is_some() {
             self.gen_panel.status = Some("keep is native-only in this slice".to_owned());
+        }
+    }
+
+    /// The Generate panel's lower half: the set's provenance line, the ranked
+    /// rows, and the keep actions for the selected one. Reports what the user
+    /// asked for through `show` / `keep` / `open`, so the window applies every
+    /// action after the panel closes its borrow of the panel state.
+    fn generate_candidates(
+        &self,
+        ui: &mut egui::Ui,
+        show: &mut Option<usize>,
+        keep: &mut Option<usize>,
+        open: &mut Option<usize>,
+    ) {
+        let Some(set) = self.gen_panel.set.as_ref() else {
+            ui.separator();
+            ui.weak(match self.material {
+                Some(_) => "a corpus is loaded — generate to rank a candidate set",
+                None => "no corpus: the pass will seed from the displayed score alone",
+            });
+            return;
+        };
+
+        ui.separator();
+        let gesture = set.summary.gesture.as_ref().map_or_else(
+            || "off".to_owned(),
+            |(n, rest)| format!("{n} notes / {rest}"),
+        );
+        ui.weak(format!(
+            "{} templates · {} references · gesture {} · {}-tone scale{}",
+            set.summary.templates,
+            set.summary.references,
+            gesture,
+            set.summary.scale_tones,
+            if set.summary.skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" · {} records skipped", set.summary.skipped.len())
+            },
+        ));
+        ui.separator();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (i, row) in set.rows.iter().enumerate() {
+                let selected = self.gen_panel.selected == Some(i);
+                let label = format!(
+                    "{:>3}. {:<26} {:.3}  {} notes",
+                    row.rank, row.strategy, row.aggregate, row.note_count,
+                );
+                let hover = row
+                    .axes
+                    .iter()
+                    .map(|(name, value)| format!("{name} {value:.2}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if ui
+                    .selectable_label(selected, egui::RichText::new(label).monospace())
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    *show = Some(i);
+                }
+            }
+        });
+
+        if let Some(i) = self.gen_panel.selected {
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("⤓ keep .mid").clicked() {
+                    *keep = Some(i);
+                }
+                if ui
+                    .button("🔊 open")
+                    .on_hover_text("write it and hand it to your .mid app")
+                    .clicked()
+                {
+                    *open = Some(i);
+                }
+            });
         }
     }
 
@@ -1406,7 +1426,7 @@ impl eframe::App for CockpitApp {
 /// # Errors
 /// A message when the handler cannot be spawned.
 #[cfg(not(target_arch = "wasm32"))]
-fn open_in_default_app(path: &std::path::Path) -> Result<(), String> {
+fn open_in_default_app(path: &Path) -> Result<(), String> {
     use std::process::Command;
 
     let mut cmd = if cfg!(target_os = "windows") {
