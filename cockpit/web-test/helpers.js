@@ -13,10 +13,16 @@ export const LAUNCH_ARGS = [
 
 // Signature solid fills from cockpit/src/lib.rs (role -> colour). Flat fills
 // match near-exactly; anti-aliased edges are noise.
+//
+// The demo's first section classifies as Breakdown, and the band boots with
+// section 0 selected — whose fill is *lifted* toward white, not the base red
+// (the selection reads by lift, not by dimming the rest). So the red the boot
+// frame actually paints is the lifted one; the tolerance also covers the
+// theme's `--sec-breakdown-selected` token (#e0666f), one step away.
 export const SIGNATURE = {
   'note lane-0 (orange)': [0xff, 0x7a, 0x45],
   'Riff band (blue)': [0x16, 0x68, 0xdc],
-  'Breakdown band (red)': [0xcf, 0x13, 0x22],
+  'Breakdown band (red, selected/lifted)': [0xdf, 0x65, 0x6f],
   'playhead (yellow)': [0xff, 0xcf, 0x4d],
 };
 export const BG = [0x1b, 0x1b, 0x1f]; // index.html body background

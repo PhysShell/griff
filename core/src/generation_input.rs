@@ -433,6 +433,6 @@ fn median(mut values: Vec<f64>) -> f64 {
     } else {
         let hi = values.get(mid).copied().unwrap_or(0.0);
         let lo = values.get(mid.saturating_sub(1)).copied().unwrap_or(0.0);
-        (lo + hi) / 2.0
+        f64::midpoint(lo, hi)
     }
 }

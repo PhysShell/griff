@@ -11,6 +11,8 @@
 //! `griff_cockpit::web::start` (see `lib.rs`, Slice 2).
 
 #[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::ExitCode;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -19,41 +21,63 @@ const USAGE: &str = "usage: griff-cockpit [file.mid|.gp3|.gp4|.gp5|.gpx] \
                      a file, a corpus, or both — with only a corpus the cockpit \
                      opens on its first tab";
 
+/// The command line: a file to open, a corpus to rank against, a keep directory.
+#[cfg(not(target_arch = "wasm32"))]
+struct Args {
+    /// The score to open on; `None` falls back to the corpus's first tab.
+    input: Option<String>,
+    /// The curated corpus the Generate panel draws its material from.
+    corpus: Option<PathBuf>,
+    /// Where kept candidates are written.
+    out: Option<PathBuf>,
+}
+
+/// Parses the three flags. `Err` carries the code to exit with — the usage was
+/// asked for, or a flag came without its directory.
+///
+/// A hand-rolled parse: the cockpit is a window, not a CLI, and a clap
+/// dependency here would be the tail wagging the dog.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_args() -> Result<Args, ExitCode> {
+    use std::env;
+
+    let (mut input, mut corpus, mut out) = (None::<String>, None::<PathBuf>, None::<PathBuf>);
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--corpus" | "--out" => {
+                let Some(dir) = args.next() else {
+                    eprintln!("{arg} needs a directory\n{USAGE}");
+                    return Err(ExitCode::FAILURE);
+                };
+                if arg == "--corpus" {
+                    corpus = Some(PathBuf::from(dir));
+                } else {
+                    out = Some(PathBuf::from(dir));
+                }
+            }
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Err(ExitCode::SUCCESS);
+            }
+            other => input = Some(other.to_owned()),
+        }
+    }
+    Ok(Args { input, corpus, out })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
-    use std::{env, fs, path::PathBuf};
+    use std::fs;
 
     use griff_cockpit::generation::load_corpus_dir;
     use griff_cockpit::CockpitApp;
     use griff_core::import::import_score_auto;
 
-    // A three-flag hand-rolled parse: the cockpit is a window, not a CLI, and a
-    // clap dependency here would be the tail wagging the dog.
-    let (mut input, mut corpus, mut out) = (None::<String>, None::<PathBuf>, None::<PathBuf>);
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--corpus" => match args.next() {
-                Some(dir) => corpus = Some(PathBuf::from(dir)),
-                None => {
-                    eprintln!("--corpus needs a directory\n{USAGE}");
-                    return ExitCode::FAILURE;
-                }
-            },
-            "--out" => match args.next() {
-                Some(dir) => out = Some(PathBuf::from(dir)),
-                None => {
-                    eprintln!("--out needs a directory\n{USAGE}");
-                    return ExitCode::FAILURE;
-                }
-            },
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return ExitCode::SUCCESS;
-            }
-            other => input = Some(other.to_owned()),
-        }
-    }
+    let Args { input, corpus, out } = match parse_args() {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
     let loaded = match corpus.as_deref().map(load_corpus_dir).transpose() {
         Ok(loaded) => loaded,

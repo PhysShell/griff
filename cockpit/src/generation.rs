@@ -9,6 +9,13 @@
 //! I/O the native app owns (the web app reads the same records out of OPFS), and
 //! the provenance a kept candidate is stamped with.
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+
+#[cfg(not(target_arch = "wasm32"))]
+use griff_core::corpus::ChunkMeta;
+#[cfg(not(target_arch = "wasm32"))]
+use griff_core::generation_input::CorpusMaterial;
 use griff_core::generation_input::GenerationAsk;
 use griff_ui_core::generate::CandidateSet;
 
@@ -53,7 +60,7 @@ impl GeneratePanel {
     /// A panel with the CLI's defaults (`griff generate`: seed 0, 8 bars,
     /// 2 variants per strategy, gesture on).
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             open: false,
             sources: Vec::new(),
@@ -92,14 +99,16 @@ impl GeneratePanel {
 #[derive(Debug)]
 pub struct LoadedCorpus {
     /// The rhythm/novelty/gesture material.
-    pub material: griff_core::generation_input::CorpusMaterial,
+    pub material: CorpusMaterial,
     /// The distinct source tabs the records point at, by first-seen order.
     pub sources: Vec<SourceTab>,
 }
 
-/// Reads a corpus *directory* — the native app's I/O half, mirroring what the
-/// CLI's `load_corpus_material` does and what the web app does over OPFS. Every
-/// musical decision (slicing, rhythm extraction, gesture aggregation) is core's.
+/// Reads a corpus *directory* — the native app's I/O half.
+///
+/// Mirrors what the CLI's `load_corpus_material` does and what the web app does
+/// over OPFS. Every musical decision (slicing, rhythm extraction, gesture
+/// aggregation) is core's.
 ///
 /// Records are visited in sorted order, so the rhythm-template palette is
 /// deterministic. A record whose source is missing, unreadable, unimportable, or
@@ -108,7 +117,7 @@ pub struct LoadedCorpus {
 /// # Errors
 /// A message when `dir` cannot be read.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_corpus_dir(dir: &std::path::Path) -> Result<LoadedCorpus, String> {
+pub fn load_corpus_dir(dir: &Path) -> Result<LoadedCorpus, String> {
     use std::fs;
 
     use griff_core::generation_input::{corpus_material, prepare_chunk};
@@ -159,14 +168,10 @@ pub fn load_corpus_dir(dir: &std::path::Path) -> Result<LoadedCorpus, String> {
 /// Reads one record and the bytes of the tab it names. `None` when either is
 /// missing or unparseable.
 #[cfg(not(target_arch = "wasm32"))]
-fn read_record(
-    dir: &std::path::Path,
-    record: &str,
-) -> Option<(griff_core::corpus::ChunkMeta, Vec<u8>)> {
+fn read_record(dir: &Path, record: &str) -> Option<(ChunkMeta, Vec<u8>)> {
     use std::fs;
 
-    let meta: griff_core::corpus::ChunkMeta =
-        serde_json::from_str(&fs::read_to_string(dir.join(record)).ok()?).ok()?;
+    let meta: ChunkMeta = serde_json::from_str(&fs::read_to_string(dir.join(record)).ok()?).ok()?;
     let bytes = fs::read(dir.join(&meta.source.filename)).ok()?;
     Some((meta, bytes))
 }

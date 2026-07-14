@@ -11,9 +11,14 @@ after Will Swan / Dance Gavin Dance / Hail The Sun.
 - `core/`    — library: event model, MIDI I/O, slicing, features, generator
 - `cli/`     — binary `griff` (`import` / `inspect` / `export` / `classify` /
   `curate`)
-- `preview/` — headless-testable ratatui preview: view-model, analysis
-  (sections + structure metrics), interaction core (ADR-0016); usage in
-  [`docs/preview-guide.md`](docs/preview-guide.md)
+- `ui-core/` — renderer-agnostic UI core (ADR-0016): view-model, analysis,
+  interaction core (`Intent` + reducer), `scene` (what is placed where), and
+  `theme` (what it looks like — semantic tokens, both modes, WCAG contrast
+  asserted; ADR-0028). Both frontends resolve through it; neither invents a
+  colour or a layout
+- `preview/` — headless-testable ratatui preview: renderer #1 over the shared
+  core; usage in [`docs/preview-guide.md`](docs/preview-guide.md)
+- `cockpit/` — egui cockpit: renderer #2, native + wasm (ADR-0024/0027)
 - `plugin/`  — CLAP plugin via nih-plug (S10+, not yet)
 - `fuzz/`    — isolated nightly cargo-fuzz crate (ADR-0010; not a workspace
   member); policy in [`docs/fuzzing.md`](docs/fuzzing.md)

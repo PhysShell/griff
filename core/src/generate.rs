@@ -467,7 +467,7 @@ impl Xorshift64 {
         })
     }
 
-    fn next_u64(&mut self) -> u64 {
+    const fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x.wrapping_shl(13);
         x ^= x.wrapping_shr(7);

@@ -26,16 +26,19 @@
     clippy::suboptimal_flops
 )]
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
+
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
-use griff_core::classify::BarClass;
 use griff_core::corpus::{ChunkMeta, ReviewerDecision, RightsStatus, StyleCohort, SwancoreTag};
 use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
 use griff_ui_core::generate::generate_set;
-use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
+use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
+use griff_ui_core::theme::{cell_style, Rgb, Theme};
 use griff_ui_core::viewport::CurationDecision;
 use griff_ui_core::{
     analyze, build_chunk, build_view, filter_chunks, Analysis, CaptureInputs, CorpusFilter,
@@ -51,71 +54,16 @@ const CELL_W: f32 = 9.0;
 /// Pixel height of one grid cell (also the section-band row height).
 const CELL_H: f32 = 16.0;
 
-// ── palette (mirrors preview/design/index.html) ─────────────────────────────
-const BG_BLACK_ROW: Color32 = Color32::from_rgb(0x20, 0x20, 0x24);
-const STROKE: Color32 = Color32::from_rgb(0x46, 0x46, 0x4d);
-const GRID_BAR: Color32 = Color32::from_rgb(0x45, 0x45, 0x4e);
-const BOUNDARY: Color32 = Color32::from_rgb(0xff, 0x5d, 0x6c);
-const PLAYHEAD: Color32 = Color32::from_rgb(0xff, 0xcf, 0x4d);
-const PANEL: Color32 = Color32::from_rgb(0x24, 0x24, 0x27);
-const LABEL_DIM: Color32 = Color32::from_rgb(0x9a, 0x9a, 0xa2);
-const LABEL_FAINT: Color32 = Color32::from_rgb(0x6e, 0x6e, 0x76);
+// ── palette ─────────────────────────────────────────────────────────────────
+// There is none here. The semantic palette lives in `griff_ui_core::theme`
+// (ADR-0028), so this renderer and the ratatui preview cannot drift apart the
+// way they did when the cockpit painted the section band as a bare colour
+// block while the preview printed the class name. All this crate owns is the
+// conversion into egui's colour type.
 
-/// Colour for a bar classification (section marks and the section band).
-const fn class_color(class: BarClass) -> Color32 {
-    match class {
-        BarClass::Riff => Color32::from_rgb(0x16, 0x68, 0xdc),
-        BarClass::Breakdown => Color32::from_rgb(0xcf, 0x13, 0x22),
-        BarClass::Solo => Color32::from_rgb(0xd4, 0x88, 0x06),
-        BarClass::Clean => Color32::from_rgb(0x38, 0x9e, 0x0d),
-        BarClass::Unknown => Color32::from_rgb(0x6e, 0x6e, 0x76),
-    }
-}
-
-/// Note-lane colour, cycled by lane index (six lanes, then it wraps).
-const fn lane_color(lane: u16) -> Color32 {
-    match lane % 6 {
-        0 => Color32::from_rgb(0xff, 0x7a, 0x45),
-        1 => Color32::from_rgb(0x36, 0xcf, 0xc9),
-        2 => Color32::from_rgb(0x92, 0x54, 0xde),
-        3 => Color32::from_rgb(0x40, 0x96, 0xff),
-        4 => Color32::from_rgb(0x73, 0xd1, 0x3d),
-        _ => Color32::from_rgb(0xf7, 0x59, 0xab),
-    }
-}
-
-/// The fill colour for a placed cell, or `None` to leave the panel background
-/// showing (text-only or truly empty cells).
-fn role_color(role: CellRole, shade: bool) -> Option<Color32> {
-    match role {
-        CellRole::Empty => shade.then_some(BG_BLACK_ROW),
-        CellRole::Separator => Some(STROKE),
-        CellRole::GridLine => Some(GRID_BAR),
-        CellRole::SectionMark(class) => Some(class_color(class)),
-        CellRole::BoundaryMark => Some(BOUNDARY),
-        CellRole::Note(lane) => Some(lane_color(lane)),
-        CellRole::Playhead => Some(PLAYHEAD),
-        CellRole::PitchLabel => None,
-        CellRole::BandFill { class, selected } => {
-            let base = class_color(class);
-            Some(if selected {
-                base
-            } else {
-                base.gamma_multiply(0.55)
-            })
-        }
-        CellRole::BandHeader => Some(PANEL),
-    }
-}
-
-/// The glyph colour for a textual cell, or `None` when the cell draws as a
-/// solid block (no glyph).
-const fn glyph_color(role: CellRole) -> Option<Color32> {
-    match role {
-        CellRole::PitchLabel => Some(LABEL_DIM),
-        CellRole::BandHeader => Some(LABEL_FAINT),
-        _ => None,
-    }
+/// The core's colour, in egui's terms.
+const fn color32(c: Rgb) -> Color32 {
+    Color32::from_rgb(c.r, c.g, c.b)
 }
 
 /// Maps an egui key to the core's semantic [`Intent`], for the navigation and
@@ -553,7 +501,10 @@ pub struct CockpitApp {
     material: Option<CorpusMaterial>,
     /// Where a kept candidate is written (native only).
     #[cfg(not(target_arch = "wasm32"))]
-    out_dir: std::path::PathBuf,
+    out_dir: PathBuf,
+    /// The palette every cell — and the egui chrome around it — resolves through
+    /// (ADR-0028). Owned, not global: the renderer never invents a colour.
+    theme: Theme,
 }
 
 /// A single-track view of `score`: just `track`, so the roll shows one part
@@ -609,7 +560,8 @@ impl CockpitApp {
             gen_panel: GeneratePanel::new(),
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
-            out_dir: std::path::PathBuf::from("keeps"),
+            out_dir: PathBuf::from("keeps"),
+            theme: Theme::dark(),
         }
     }
 
@@ -706,21 +658,24 @@ impl CockpitApp {
 
     /// Where kept candidates are written.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_out_dir(&mut self, dir: std::path::PathBuf) {
+    pub fn set_out_dir(&mut self, dir: PathBuf) {
         self.out_dir = dir;
     }
 
     /// The score a pass seeds from: the picked corpus tab, or — when none is
     /// picked (or the pick is stale) — the displayed score.
     fn generation_source(&self) -> Result<Score, String> {
-        match self.gen_panel.source_tab() {
-            Some(tab) => import_score_auto(&tab.bytes)
-                .map_err(|err| format!("cannot import {}: {err}", tab.name)),
-            None => self
-                .score
-                .clone()
-                .ok_or_else(|| "no score loaded".to_owned()),
-        }
+        self.gen_panel.source_tab().map_or_else(
+            || {
+                self.score
+                    .clone()
+                    .ok_or_else(|| "no score loaded".to_owned())
+            },
+            |tab| {
+                import_score_auto(&tab.bytes)
+                    .map_err(|err| format!("cannot import {}: {err}", tab.name))
+            },
+        )
     }
 
     /// Runs the panel's ask through the shared compiler and shows the winner.
@@ -829,7 +784,7 @@ impl CockpitApp {
     fn open_keep(&mut self, i: usize) {
         let outcome = self
             .write_keep(i)
-            .and_then(|path| open_in_default_app(std::path::Path::new(&path)).map(|()| path));
+            .and_then(|path| open_in_default_app(Path::new(&path)).map(|()| path));
         self.gen_panel.status = Some(match outcome {
             Ok(path) => format!("opened {path}"),
             Err(err) => format!("open failed: {err}"),
@@ -892,72 +847,7 @@ impl CockpitApp {
                     }
                 });
 
-                let Some(set) = self.gen_panel.set.as_ref() else {
-                    ui.separator();
-                    ui.weak(match self.material {
-                        Some(_) => "a corpus is loaded — generate to rank a candidate set",
-                        None => "no corpus: the pass will seed from the displayed score alone",
-                    });
-                    return;
-                };
-
-                ui.separator();
-                let gesture = set.summary.gesture.as_ref().map_or_else(
-                    || "off".to_owned(),
-                    |(n, rest)| format!("{n} notes / {rest}"),
-                );
-                ui.weak(format!(
-                    "{} templates · {} references · gesture {} · {}-tone scale{}",
-                    set.summary.templates,
-                    set.summary.references,
-                    gesture,
-                    set.summary.scale_tones,
-                    if set.summary.skipped.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · {} records skipped", set.summary.skipped.len())
-                    },
-                ));
-                ui.separator();
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (i, row) in set.rows.iter().enumerate() {
-                        let selected = self.gen_panel.selected == Some(i);
-                        let label = format!(
-                            "{:>3}. {:<26} {:.3}  {} notes",
-                            row.rank, row.strategy, row.aggregate, row.note_count,
-                        );
-                        let hover = row
-                            .axes
-                            .iter()
-                            .map(|(name, value)| format!("{name} {value:.2}"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if ui
-                            .selectable_label(selected, egui::RichText::new(label).monospace())
-                            .on_hover_text(hover)
-                            .clicked()
-                        {
-                            show = Some(i);
-                        }
-                    }
-                });
-
-                if let Some(i) = self.gen_panel.selected {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("⤓ keep .mid").clicked() {
-                            keep = Some(i);
-                        }
-                        if ui
-                            .button("🔊 open")
-                            .on_hover_text("write it and hand it to your .mid app")
-                            .clicked()
-                        {
-                            open = Some(i);
-                        }
-                    });
-                }
+                self.generate_candidates(ui, &mut show, &mut keep, &mut open);
             });
 
         if run {
@@ -978,6 +868,85 @@ impl CockpitApp {
         #[cfg(target_arch = "wasm32")]
         if keep.is_some() || open.is_some() {
             self.gen_panel.status = Some("keep is native-only in this slice".to_owned());
+        }
+    }
+
+    /// The Generate panel's lower half: the set's provenance line, the ranked
+    /// rows, and the keep actions for the selected one. Reports what the user
+    /// asked for through `show` / `keep` / `open`, so the window applies every
+    /// action after the panel closes its borrow of the panel state.
+    fn generate_candidates(
+        &self,
+        ui: &mut egui::Ui,
+        show: &mut Option<usize>,
+        keep: &mut Option<usize>,
+        open: &mut Option<usize>,
+    ) {
+        let Some(set) = self.gen_panel.set.as_ref() else {
+            ui.separator();
+            ui.weak(match self.material {
+                Some(_) => "a corpus is loaded — generate to rank a candidate set",
+                None => "no corpus: the pass will seed from the displayed score alone",
+            });
+            return;
+        };
+
+        ui.separator();
+        let gesture = set.summary.gesture.as_ref().map_or_else(
+            || "off".to_owned(),
+            |(n, rest)| format!("{n} notes / {rest}"),
+        );
+        ui.weak(format!(
+            "{} templates · {} references · gesture {} · {}-tone scale{}",
+            set.summary.templates,
+            set.summary.references,
+            gesture,
+            set.summary.scale_tones,
+            if set.summary.skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" · {} records skipped", set.summary.skipped.len())
+            },
+        ));
+        ui.separator();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (i, row) in set.rows.iter().enumerate() {
+                let selected = self.gen_panel.selected == Some(i);
+                let label = format!(
+                    "{:>3}. {:<26} {:.3}  {} notes",
+                    row.rank, row.strategy, row.aggregate, row.note_count,
+                );
+                let hover = row
+                    .axes
+                    .iter()
+                    .map(|(name, value)| format!("{name} {value:.2}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if ui
+                    .selectable_label(selected, egui::RichText::new(label).monospace())
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    *show = Some(i);
+                }
+            }
+        });
+
+        if let Some(i) = self.gen_panel.selected {
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("⤓ keep .mid").clicked() {
+                    *keep = Some(i);
+                }
+                if ui
+                    .button("🔊 open")
+                    .on_hover_text("write it and hand it to your .mid app")
+                    .clicked()
+                {
+                    *open = Some(i);
+                }
+            });
         }
     }
 
@@ -1202,13 +1171,18 @@ impl CockpitApp {
         if ctx.egui_wants_keyboard_input() {
             return false;
         }
-        // `c` and `g` toggle the dock and the Generate panel — shell concerns,
-        // not viewport `Intent`s.
+        // `c`, `g` and `t` toggle the dock, the Generate panel and the palette —
+        // shell concerns, not viewport `Intent`s. The palette especially: which
+        // colours a renderer wears is not something the shared reducer should
+        // have an opinion about.
         if ctx.input(|i| i.key_pressed(Key::C)) {
             self.show_dock = !self.show_dock;
         }
         if ctx.input(|i| i.key_pressed(Key::G)) {
             self.gen_panel.open = !self.gen_panel.open;
+        }
+        if ctx.input(|i| i.key_pressed(Key::T)) {
+            self.toggle_theme();
         }
         let intents: Vec<Intent> = ctx.input(|i| {
             i.events
@@ -1256,16 +1230,59 @@ impl CockpitApp {
         let painter = ui.painter();
         for col in 0..scene.cols {
             if let Some(cell) = scene.band_cell(col) {
-                paint_cell(painter, origin, col, 0, *cell);
+                paint_cell(painter, cell_rect(origin, col, 0), *cell, &self.theme);
             }
         }
         for row in 0..scene.rows {
             for col in 0..scene.cols {
                 if let Some(cell) = scene.plane_cell(row, col) {
-                    paint_cell(painter, origin, col, row.saturating_add(1), *cell);
+                    paint_cell(
+                        painter,
+                        cell_rect(origin, col, row.saturating_add(1)),
+                        *cell,
+                        &self.theme,
+                    );
                 }
             }
         }
+    }
+
+    /// Switches the cockpit between the theme's two modes.
+    ///
+    /// Everything downstream — the plane, the band, and egui's own chrome via
+    /// [`Self::install_visuals`] — reads the theme every frame, so there is
+    /// nothing else to repaint.
+    pub fn toggle_theme(&mut self) {
+        self.theme = if self.is_dark() {
+            Theme::light()
+        } else {
+            Theme::dark()
+        };
+    }
+
+    /// Whether the cockpit is currently in the theme's dark mode.
+    fn is_dark(&self) -> bool {
+        self.theme.surface.luminance() < 0.5
+    }
+
+    /// Paints egui's own chrome from the theme, so the widgets around the plane
+    /// come from the same palette the plane does — before this, the plane was the
+    /// design mock's and the chrome was stock egui.
+    ///
+    /// Text colours stay egui's: it derives weak / strong / disabled from its
+    /// base, and overriding the base flattens those distinctions into one.
+    fn install_visuals(&self, ctx: &egui::Context) {
+        let mut visuals = if self.is_dark() {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+        visuals.panel_fill = color32(self.theme.surface);
+        visuals.window_fill = color32(self.theme.panel);
+        visuals.window_stroke = egui::Stroke::new(1.0, color32(self.theme.stroke));
+        visuals.selection.bg_fill = color32(self.theme.accent);
+        visuals.hyperlink_color = color32(self.theme.accent);
+        ctx.set_visuals(visuals);
     }
 
     /// The top toolbar — the discoverable surface, so the controls aren't hidden
@@ -1322,6 +1339,18 @@ impl CockpitApp {
             {
                 self.gen_panel.open = !self.gen_panel.open;
             }
+            let mode = if self.is_dark() {
+                "◑ light"
+            } else {
+                "◐ dark"
+            };
+            if ui
+                .button(mode)
+                .on_hover_text("switch the palette (t)")
+                .clicked()
+            {
+                self.toggle_theme();
+            }
             if !self.track_names.is_empty() {
                 ui.separator();
                 ui.weak(format!(
@@ -1336,28 +1365,27 @@ impl CockpitApp {
     }
 }
 
-/// Paints one placed cell at grid position (`col`, `vis_row`).
-fn paint_cell(
-    painter: &egui::Painter,
-    origin: egui::Pos2,
-    col: u16,
-    vis_row: u16,
-    cell: SceneCell,
-) {
+/// The pixel rect of grid position (`col`, `vis_row`).
+fn cell_rect(origin: egui::Pos2, col: u16, vis_row: u16) -> Rect {
     let x = origin.x + f32::from(col) * CELL_W;
     let y = origin.y + f32::from(vis_row) * CELL_H;
-    let rect = Rect::from_min_size(egui::pos2(x, y), egui::vec2(CELL_W, CELL_H));
-    if let Some(bg) = role_color(cell.role, cell.shade) {
-        painter.rect_filled(rect, CornerRadius::ZERO, bg);
+    Rect::from_min_size(egui::pos2(x, y), egui::vec2(CELL_W, CELL_H))
+}
+
+/// Paints one placed cell — the theme says what it looks like, this draws it.
+fn paint_cell(painter: &egui::Painter, rect: Rect, cell: SceneCell, theme: &Theme) {
+    let style = cell_style(cell, theme);
+    if let Some(fill) = style.fill {
+        painter.rect_filled(rect, CornerRadius::ZERO, color32(fill));
     }
     if cell.glyph != ' ' {
-        if let Some(fg) = glyph_color(cell.role) {
+        if let Some(ink) = style.ink {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
                 cell.glyph,
                 FontId::monospace(CELL_H * 0.8),
-                fg,
+                color32(ink),
             );
         }
     }
@@ -1372,6 +1400,7 @@ impl eframe::App for CockpitApp {
         #[cfg(target_arch = "wasm32")]
         web::drain(self);
         let ctx = ui.ctx().clone();
+        self.install_visuals(&ctx);
         if self.handle_input(&ctx) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -1406,7 +1435,7 @@ impl eframe::App for CockpitApp {
 /// # Errors
 /// A message when the handler cannot be spawned.
 #[cfg(not(target_arch = "wasm32"))]
-fn open_in_default_app(path: &std::path::Path) -> Result<(), String> {
+fn open_in_default_app(path: &Path) -> Result<(), String> {
     use std::process::Command;
 
     let mut cmd = if cfg!(target_os = "windows") {
@@ -1649,68 +1678,210 @@ mod tests {
     )]
 
     use super::*;
-    use eframe::egui;
+    use std::collections::HashSet;
 
-    #[test]
-    fn every_bar_class_has_a_distinct_colour() {
-        let classes = [
+    use eframe::egui;
+    use eframe::egui::epaint::ClippedShape;
+    use eframe::egui::Shape;
+    use griff_core::classify::BarClass;
+    use griff_ui_core::scene::CellRole;
+
+    /// Every fill the painter emitted in one frame.
+    fn painted_fills(shapes: &[ClippedShape]) -> HashSet<(u8, u8, u8)> {
+        fn walk(shape: &Shape, out: &mut HashSet<(u8, u8, u8)>) {
+            match shape {
+                Shape::Rect(rect) => {
+                    let c = rect.fill;
+                    if c.a() > 0 {
+                        out.insert((c.r(), c.g(), c.b()));
+                    }
+                }
+                Shape::Vec(shapes) => {
+                    for s in shapes {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = HashSet::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Every colour the theme allows a cell to be painted in.
+    fn theme_palette(theme: &Theme) -> HashSet<(u8, u8, u8)> {
+        let rgb = |c: Rgb| (c.r, c.g, c.b);
+        let mut allowed: HashSet<(u8, u8, u8)> = [
+            theme.surface,
+            theme.panel,
+            theme.stroke,
+            theme.grid_bar,
+            theme.row_shade,
+            theme.playhead,
+            theme.boundary,
+        ]
+        .into_iter()
+        .map(rgb)
+        .collect();
+        for class in [
             BarClass::Riff,
             BarClass::Breakdown,
             BarClass::Solo,
             BarClass::Clean,
             BarClass::Unknown,
-        ];
-        for (i, a) in classes.iter().enumerate() {
-            for b in classes.iter().skip(i + 1) {
-                assert_ne!(
-                    class_color(*a),
-                    class_color(*b),
-                    "{a:?}/{b:?} share a colour"
-                );
+        ] {
+            for selected in [true, false] {
+                allowed.insert(rgb(theme.class_fill(class, selected)));
             }
+        }
+        for lane in 0..6 {
+            allowed.insert(rgb(theme.lane(lane)));
+        }
+        allowed
+    }
+
+    #[test]
+    // egui 0.34 flags `Context::run` / `CentralPanel::show`; they still drive a
+    // CPU frame, which is what this needs.
+    #[allow(deprecated)]
+    fn every_colour_the_cockpit_paints_comes_from_the_theme() {
+        // This crate's whole job is the conversion from the core's `Rgb`. A
+        // colour it mixed itself is a colour the preview does not have, and a
+        // place the two renderers can drift apart again (ADR-0028).
+        let mut app = demo_app();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1200.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            // What `App::ui` does before it paints: without it the surface is
+            // stock egui's #1b1b1b, not the theme's — which is the drift this
+            // whole exercise is about.
+            app.install_visuals(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+        });
+
+        let allowed = theme_palette(&app.theme);
+        for painted in painted_fills(&output.shapes) {
+            assert!(
+                allowed.contains(&painted),
+                "the cockpit painted #{:02x}{:02x}{:02x}, which is in no token of the theme",
+                painted.0,
+                painted.1,
+                painted.2
+            );
         }
     }
 
-    #[test]
-    fn lane_colour_cycles_and_never_panics() {
-        assert_eq!(lane_color(0), lane_color(6), "the six-lane palette wraps");
-        assert_ne!(lane_color(0), lane_color(1));
-        let _ = lane_color(u16::MAX); // index math stays in range
+    /// Every glyph the painter emitted in one frame, in paint order.
+    fn painted_glyphs(shapes: &[ClippedShape]) -> String {
+        fn walk(shape: &Shape, out: &mut String) {
+            match shape {
+                Shape::Text(text) => out.push_str(text.galley.text()),
+                Shape::Vec(shapes) => {
+                    for s in shapes {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = String::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
     }
 
     #[test]
-    fn notes_fill_but_text_labels_do_not() {
-        assert!(role_color(CellRole::Note(0), false).is_some());
-        assert!(role_color(CellRole::Playhead, false).is_some());
+    // egui 0.34 flags `Context::run` / `CentralPanel::show`; they still drive a
+    // CPU frame, which is what this needs.
+    #[allow(deprecated)]
+    fn the_light_palette_is_reachable_and_paints_the_whole_frame() {
+        // The core has carried a light mode since ADR-0028; until the cockpit
+        // could switch to it, it was a palette nobody could see. Toggling must
+        // repaint *everything* from it — a half-switched frame (light plane,
+        // dark chrome) is the drift in miniature.
+        let mut app = demo_app();
+        assert_eq!(app.theme, Theme::dark(), "the cockpit opens dark");
+
+        app.toggle_theme();
+        assert_eq!(app.theme, Theme::light(), "and toggles to light");
+
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1200.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            app.install_visuals(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+        });
+
+        let light = theme_palette(&Theme::light());
+        let dark = theme_palette(&Theme::dark());
+        let painted = painted_fills(&output.shapes);
+        for fill in &painted {
+            assert!(
+                light.contains(fill),
+                "in light mode the cockpit painted #{:02x}{:02x}{:02x}, \
+                 which is in no light token",
+                fill.0,
+                fill.1,
+                fill.2
+            );
+        }
         assert!(
-            role_color(CellRole::PitchLabel, false).is_none(),
-            "labels draw as text, not a filled block"
-        );
-        assert_eq!(role_color(CellRole::Empty, false), None);
-        assert_eq!(
-            role_color(CellRole::Empty, true),
-            Some(BG_BLACK_ROW),
-            "black-key rows shade"
+            !painted
+                .iter()
+                .any(|fill| dark.contains(fill) && !light.contains(fill)),
+            "the frame still carries a colour only the dark palette has"
         );
     }
 
     #[test]
-    fn selected_band_differs_from_unselected() {
-        let sel = role_color(
-            CellRole::BandFill {
-                class: BarClass::Riff,
-                selected: true,
-            },
-            false,
+    // egui 0.34 flags `Context::run` / `CentralPanel::show`; they still drive a
+    // CPU frame, which is exactly what this test needs (as the paint tests
+    // above do).
+    #[allow(deprecated)]
+    fn the_painted_band_spells_out_the_section_class() {
+        // The end of the path the unit tests only cover in pieces: resolve a
+        // real scene, run one CPU frame, and read back what the painter actually
+        // drew. A colour mapping that returns the right ink is worth nothing if
+        // the glyph never reaches a shape.
+        let mut app = demo_app();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1200.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+        });
+
+        let painted = painted_glyphs(&output.shapes);
+        assert!(
+            painted.contains("SEC"),
+            "the band's gutter header never reached the painter: {painted:?}"
         );
-        let unsel = role_color(
-            CellRole::BandFill {
-                class: BarClass::Riff,
-                selected: false,
-            },
-            false,
+        let classes = ["Riff", "Breakdown", "Solo", "Clean", "Unknown"];
+        assert!(
+            classes.iter().any(|class| painted.contains(class)),
+            "the band painted no class label at all: {painted:?}"
         );
-        assert_ne!(sel, unsel);
     }
 
     #[test]
@@ -2067,30 +2238,6 @@ mod tests {
     }
 
     #[test]
-    fn lane_colour_is_periodic_and_six_valued_for_every_index() {
-        use std::collections::HashSet;
-        let palette: HashSet<(u8, u8, u8)> = (0u16..6)
-            .map(|lane| {
-                let c = lane_color(lane);
-                (c.r(), c.g(), c.b())
-            })
-            .collect();
-        assert_eq!(palette.len(), 6, "the six lanes are distinct");
-        for lane in 0u16..=u16::MAX {
-            assert_eq!(
-                lane_color(lane),
-                lane_color(lane % 6),
-                "lane {lane} follows the mod-6 palette"
-            );
-            let c = lane_color(lane);
-            assert!(
-                palette.contains(&(c.r(), c.g(), c.b())),
-                "lane {lane} is one of the six colours"
-            );
-        }
-    }
-
-    #[test]
     fn multiple_lanes_paint_in_distinct_lane_colours() {
         use griff_ui_core::{Lane, NoteRect, Section};
         use std::collections::HashSet;
@@ -2147,9 +2294,7 @@ mod tests {
             .plane
             .iter()
             .filter_map(|cell| match cell.role {
-                CellRole::Note(_) => {
-                    role_color(cell.role, cell.shade).map(|c| (c.r(), c.g(), c.b()))
-                }
+                CellRole::Note(_) => cell_style(*cell, &app.theme).fill.map(|c| (c.r, c.g, c.b)),
                 _ => None,
             })
             .collect();
