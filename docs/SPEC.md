@@ -30,12 +30,13 @@ human-in-the-loop curation.
 
 ## Delivery shape
 
-Strict staged delivery, `S0 … S16`, defined canonically in
-[`glossary.md`](glossary.md) §0 and detailed in [`stages/`](stages/). Each
-stage is a vertical slice with a measurable acceptance criterion. Stages are
-implemented in order; library groundwork may land earlier but does not "close"
-a later stage until its acceptance criterion is met and documented. The
-roadmap is extended by appending the next free stage number (see
+Strict staged delivery, `S0 … S16`, detailed canonically in
+[`stages/`](stages/); shared terminology lives in
+[`glossary.md`](glossary.md). Each stage is a vertical slice with a measurable
+acceptance criterion. Stages are implemented in order; library groundwork may
+land earlier but does not "close" a later stage until its acceptance criterion
+is met and documented. The roadmap is extended by appending the next free stage
+number (see
 [`audit/2026-05-s13-complementary-arranger.md`](audit/2026-05-s13-complementary-arranger.md)),
 never by renumbering existing stages.
 
