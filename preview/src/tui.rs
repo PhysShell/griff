@@ -30,11 +30,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame, Terminal};
 
-use griff_core::classify::BarClass;
-
 use crate::analysis::Analysis;
 use crate::curation::{tag_palette, RecordSummary};
 use crate::scene::{resolve, CellRole, GridSize, Scene, SceneCell, GUTTER};
+use crate::theme::{cell_style, Rgb, Theme};
 use crate::view::PianoRollView;
 use crate::viewport::{CurationDecision, Intent, Step, ViewContext, Viewport};
 
@@ -43,32 +42,14 @@ const INSPECTOR_W: u16 = 32;
 /// Width of a metric meter bar in the inspector.
 const METER_W: usize = 22;
 
-/// Distinct lane colours, cycled by lane index (mirrors the HTML mockup).
-const LANE_COLORS: [Color; 6] = [
-    Color::Rgb(255, 122, 69),
-    Color::Rgb(54, 207, 201),
-    Color::Rgb(146, 84, 222),
-    Color::Rgb(255, 196, 77),
-    Color::Rgb(110, 180, 255),
-    Color::Rgb(245, 93, 108),
-];
+// The palette is the core's (ADR-0028). This renderer had its own — and it did
+// not even agree with the cockpit's: lane 3 was amber here and blue there, and
+// Unknown a different grey in each. Two renderers, one `Scene`, two palettes.
+// All that is left here is the conversion into ratatui's colour type.
 
-fn lane_color(i: usize) -> Color {
-    LANE_COLORS
-        .get(i % LANE_COLORS.len())
-        .copied()
-        .unwrap_or(Color::White)
-}
-
-/// Section colour by classification (matches the mockup's section bands).
-const fn class_color(c: BarClass) -> Color {
-    match c {
-        BarClass::Riff => Color::Rgb(22, 104, 220),
-        BarClass::Breakdown => Color::Rgb(207, 19, 34),
-        BarClass::Solo => Color::Rgb(212, 136, 6),
-        BarClass::Clean => Color::Rgb(56, 158, 13),
-        BarClass::Unknown => Color::Rgb(90, 90, 100),
-    }
+/// The core's colour, in ratatui's terms.
+const fn color(c: Rgb) -> Color {
+    Color::Rgb(c.r, c.g, c.b)
 }
 
 /// Interactive piano-roll application.
@@ -94,6 +75,9 @@ pub struct App {
     merge_partner: Option<String>,
     vp: Viewport,
     ctx: ViewContext,
+    /// The palette every cell resolves through (ADR-0028) — the same one the
+    /// egui cockpit paints from.
+    theme: Theme,
 }
 
 impl App {
@@ -133,6 +117,7 @@ impl App {
             merge_partner: None,
             vp,
             ctx,
+            theme: Theme::dark(),
         }
     }
 
@@ -361,8 +346,8 @@ impl App {
             },
         );
         let buf = frame.buffer_mut();
-        paint_band(&scene, roll.x, sections.y, buf);
-        paint_plane(&scene, roll, buf);
+        paint_band(&scene, roll.x, sections.y, buf, &self.theme);
+        paint_plane(&scene, roll, buf, &self.theme);
 
         // The help overlay paints last so it sits above the roll, inspector,
         // and footer (it is modal; any key dismisses it).
@@ -476,8 +461,10 @@ impl App {
             lines.push(Line::from(Span::styled(
                 format!(" {} ", s.class),
                 Style::new()
-                    .bg(class_color(s.class))
-                    .fg(Color::White)
+                    // The chip is the selected section, so it wears the selected
+                    // fill — and the ink the theme guarantees reads on it.
+                    .bg(color(self.theme.class_fill(s.class, true)))
+                    .fg(color(self.theme.class_ink(s.class, true)))
                     .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(format!(
@@ -743,16 +730,16 @@ fn meter(value: f64, width: usize) -> String {
 
 /// Blits the section band of `scene` onto `buf`, with the band's left edge at
 /// `x0` (the roll's left edge) on row `y` (the sections row).
-fn paint_band(scene: &Scene, x0: u16, y: u16, buf: &mut Buffer) {
+fn paint_band(scene: &Scene, x0: u16, y: u16, buf: &mut Buffer, theme: &Theme) {
     for col in 0..scene.cols {
         if let Some(cell) = scene.band_cell(col) {
-            paint_cell(buf, x0.saturating_add(col), y, cell);
+            paint_cell(buf, x0.saturating_add(col), y, cell, theme);
         }
     }
 }
 
 /// Blits the roll plane of `scene` onto `buf`, anchored at `area`'s top-left.
-fn paint_plane(scene: &Scene, area: Rect, buf: &mut Buffer) {
+fn paint_plane(scene: &Scene, area: Rect, buf: &mut Buffer, theme: &Theme) {
     for r in 0..scene.rows {
         for col in 0..scene.cols {
             if let Some(cell) = scene.plane_cell(r, col) {
@@ -761,6 +748,7 @@ fn paint_plane(scene: &Scene, area: Rect, buf: &mut Buffer) {
                     area.x.saturating_add(col),
                     area.y.saturating_add(r),
                     cell,
+                    theme,
                 );
             }
         }
@@ -770,51 +758,50 @@ fn paint_plane(scene: &Scene, area: Rect, buf: &mut Buffer) {
 /// Maps one placed [`SceneCell`] to ratatui glyph + styling. This is the only
 /// place semantic roles become concrete colours; `set_fg`/`set_style` carry no
 /// background so a note keeps the black-key shade laid down underneath it.
-fn paint_cell(buf: &mut Buffer, x: u16, y: u16, cell: &SceneCell) {
+fn paint_cell(buf: &mut Buffer, x: u16, y: u16, cell: &SceneCell, theme: &Theme) {
     let Some(c) = buf.cell_mut((x, y)) else {
         return;
     };
+    let style = cell_style(*cell, theme);
     if cell.shade {
-        c.set_bg(Color::Rgb(38, 38, 44));
+        c.set_bg(color(theme.row_shade));
     }
-    let dim = Style::new().fg(Color::Rgb(70, 70, 80));
     match cell.role {
         CellRole::Empty => {}
-        CellRole::Separator | CellRole::GridLine => {
-            c.set_char(cell.glyph).set_style(dim);
-        }
-        CellRole::BoundaryMark => {
-            c.set_char(cell.glyph)
-                .set_style(Style::new().fg(Color::Rgb(212, 177, 96)));
-        }
-        CellRole::SectionMark(class) => {
-            c.set_char(cell.glyph)
-                .set_style(Style::new().fg(class_color(class)));
-        }
-        CellRole::Note(lane) => {
-            c.set_char(cell.glyph).set_fg(lane_color(usize::from(lane)));
+        // The band is the one role that fills: its cell is a coloured block with
+        // the section's class name written across it, so it takes the theme's
+        // fill as a background and its ink as the text on top. Selection is
+        // already the brighter fill; bold and underline are what a terminal can
+        // add on top of that.
+        CellRole::BandFill { selected, .. } => {
+            let mut band = Style::new()
+                .fg(style.ink.map_or(Color::White, color))
+                .bg(style.fill.map_or(Color::Reset, color));
+            if selected {
+                band = band.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+            }
+            c.set_char(cell.glyph).set_style(band);
         }
         CellRole::Playhead => {
-            c.set_char(cell.glyph).set_style(
-                Style::new()
-                    .fg(Color::Rgb(255, 207, 77))
-                    .add_modifier(Modifier::BOLD),
-            );
-        }
-        CellRole::PitchLabel => {
-            c.set_char(cell.glyph)
-                .set_style(Style::new().fg(Color::Rgb(150, 150, 158)));
-        }
-        CellRole::BandHeader => {
-            c.set_char(cell.glyph)
-                .set_style(Style::new().fg(Color::Rgb(110, 110, 118)));
-        }
-        CellRole::BandFill { class, selected } => {
-            let mut style = Style::new().bg(class_color(class)).fg(Color::White);
-            if selected {
-                style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+            let mut head = Style::new().add_modifier(Modifier::BOLD);
+            if let Some(fill) = style.fill {
+                head = head.fg(color(fill));
             }
-            c.set_char(cell.glyph).set_style(style);
+            c.set_char(cell.glyph).set_style(head);
+        }
+        // Everything else is drawn, not filled: in a terminal a cell's colour is
+        // its glyph's, and no background is set so a note keeps the black-key
+        // shade laid down underneath it.
+        CellRole::Separator
+        | CellRole::GridLine
+        | CellRole::BoundaryMark
+        | CellRole::SectionMark(_)
+        | CellRole::Note(_)
+        | CellRole::PitchLabel
+        | CellRole::BandHeader => {
+            if let Some(fg) = style.ink.or(style.fill) {
+                c.set_char(cell.glyph).set_style(Style::new().fg(color(fg)));
+            }
         }
     }
 }
@@ -904,6 +891,7 @@ mod tests {
     use super::*;
     use crate::analysis::Section;
     use crate::view::{Lane, NoteRect};
+    use griff_core::classify::BarClass;
     use griff_core::structure::{ComplexityProfile, StructureMetrics};
 
     /// Compare `actual` to the stored golden frame, or write it when
