@@ -24,10 +24,13 @@ human-in-the-loop curation.
   rule-based baseline exist (glossary §17.5).
 - Not a Guitar-Pro-articulation oracle reconstructed from plain MIDI
   (glossary §17.3).
+- Not a general-purpose programming language. Swang (S16) is a bounded,
+  deterministic musical DSL over the canonical model, not arbitrary host-code
+  execution (ADR-0029).
 
 ## Delivery shape
 
-Strict staged delivery, `S0 … S14`, defined canonically in
+Strict staged delivery, `S0 … S16`, defined canonically in
 [`glossary.md`](glossary.md) §0 and detailed in [`stages/`](stages/). Each
 stage is a vertical slice with a measurable acceptance criterion. Stages are
 implemented in order; library groundwork may land earlier but does not "close"
@@ -62,6 +65,9 @@ never by renumbering existing stages.
     fuzz targets per ADR-0010 and [`fuzzing.md`](fuzzing.md). Bounded smoke
     fuzzing plus the regression corpus is a blocking CI gate; deep fuzzing
     runs scheduled and non-blocking.
+12. **Executable musical text lowers into the canonical model.** Swang ASTs
+    and execution plans are programs/provenance, never a second score hierarchy;
+    lifted programs must be verified by re-execution (ADR-0029).
 
 ## Current state
 
@@ -74,8 +80,9 @@ baseline), phrase-boundary detection (S4), the ComplementArranger first slice
 (`rhythm_lock`, S13), structure metrics (S14 Phase 0), a headless-testable
 ratatui preview, and the shared scoring vocabulary (ADR-0017). Not yet:
 string/fret positions and richer techniques (ADR-0018), the graph layer / DP
-traversal (S7), neural assistance (S12), and the CLAP plugin (S10). Earlier
-commit stage labels predate this spec and are reconciled in
+traversal (S7), neural assistance (S12), the CLAP plugin (S10), or the Swang
+compiler and verified lifting pipeline (S16). Earlier commit stage labels
+predate this spec and are reconciled in
 [`audit/2026-05-stage-label-reconciliation.md`](audit/2026-05-stage-label-reconciliation.md).
 
 ## See also
@@ -83,5 +90,5 @@ commit stage labels predate this spec and are reconciled in
 - [`glossary.md`](glossary.md) — the constitution.
 - [`adr/README.md`](adr/README.md) — decision index.
 - [`fuzzing.md`](fuzzing.md) — fuzz-testing policy (ADR-0010).
-- [`stages/`](stages/) — S0 … S14.
+- [`stages/`](stages/) — S0 … S16.
 - [`decisions.log.md`](decisions.log.md) — small decisions, append-only.

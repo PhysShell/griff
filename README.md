@@ -19,7 +19,7 @@ human-in-the-loop curation.
 - [`docs/glossary.md`](docs/glossary.md) — the constitution (terms)
 - [`docs/preview-guide.md`](docs/preview-guide.md) — using the interactive
   preview TUI (keys, inspector, curation, complexity)
-- [`docs/stages/`](docs/stages/) — canonical roadmap S0…S14
+- [`docs/stages/`](docs/stages/) — canonical roadmap S0…S16
 - [`docs/adr/`](docs/adr/README.md) — architecture decisions
 - [`AGENTS.md`](AGENTS.md) — guide for AI agents
 
