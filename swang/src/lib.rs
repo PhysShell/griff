@@ -219,8 +219,8 @@ mod tests {
 
     #[test]
     fn slots_cut_into_bars_most_significant_first() {
-        // 18 slots at 8 slots per bar (2/4 at 1/16): bars of 8, 8, then a
-        // 2-slot tail. Slot 16 lands at bar 2, offset 0; slot 17 at 120.
+        // 16 slots at 8 slots per bar (2/4 at 1/16): two full bars. Slot 8
+        // lands in bar 1 at offset 0 — the cut is by whole bars, in order.
         let kernel = Kernel::from_rows(&["XX"]).expect("kernel");
         let expansion = fractalize(
             &kernel,

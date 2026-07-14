@@ -14,8 +14,5 @@ categories.workspace   = true
 griff-core    = { path = "../core", default-features = false }
 griff-pattern = { path = "../pattern" }
 
-[dev-dependencies]
-proptest = { workspace = true }
-
 [lints]
 workspace = true
