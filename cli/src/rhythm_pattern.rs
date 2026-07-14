@@ -1,15 +1,16 @@
-//! The `--rhythm-*` adapter: kernel literal → `griff-pattern` expansion →
-//! `griff-swang` lowering → an explicit palette for the shared generation
-//! compiler, plus the versioned expansion artifact (spec §2).
+//! The `--rhythm-*` adapter (spec §2).
 //!
-//! This is the **temporary transport syntax** of S16 Phase 2, not early Swang
-//! grammar. Errors leave as [`PatternDiagnostic`]s — a stable `SWG____` code,
-//! the offending flag, and a message — per the spec's §1.5 registry.
+//! Kernel literal → `griff-pattern` expansion → `griff-swang` lowering → an
+//! explicit palette for the shared generation compiler, plus the versioned
+//! expansion artifact. This is the **temporary transport syntax** of S16
+//! Phase 2, not early Swang grammar. Errors leave as [`PatternDiagnostic`]s —
+//! a stable `SWG____` code, the offending flag, and a message — per the
+//! spec's §1.5 registry.
 
 use std::fmt;
 
-use griff_core::event::Ticks;
-use griff_core::generate::RhythmTemplate;
+use griff_core::event::{Ticks, TimeSignature};
+use griff_core::generate::{explicit_rhythm_diagnostics, RhythmTemplate};
 use griff_core::score::Score;
 
 /// How the expansion is read into a line (spec §1.9). Mirrors
@@ -97,8 +98,300 @@ pub fn compile_pattern(
     args: &RhythmPatternArgs,
     score: &Score,
 ) -> Result<PatternPlan, PatternDiagnostic> {
-    let _ = (args, score);
-    unimplemented!("red phase: S16 Phase 2 — the CLI adapter (spec §2)")
+    // Defense in depth behind clap's `requires`: no caller smuggles an
+    // unseeded pruning through (spec §1.13).
+    if args.density_bps.is_some() && args.rhythm_seed.is_none() {
+        return Err(PatternDiagnostic {
+            code: "SWG0303",
+            flag: "--rhythm-seed",
+            message: "density decay was given without a rhythm seed; pruning must be \
+                      explicitly seeded"
+                .to_owned(),
+        });
+    }
+
+    let kernel = parse_kernel_literal(&args.kernel)?;
+    let geometry = resolve_geometry(score)?;
+    let unit = parse_unit(&args.unit, geometry.ppqn)?;
+    let bar_duration = geometry.bar_duration;
+
+    let prune = match (args.density_bps, args.rhythm_seed) {
+        (Some(bps), Some(seed)) => Some(griff_pattern::PruneSpec {
+            seed,
+            density: griff_pattern::DensityBps::new(bps).map_err(|_| PatternDiagnostic {
+                code: "SWG0308",
+                flag: "--rhythm-density-bps",
+                message: format!("density {bps} bps is outside 0..=10000"),
+            })?,
+        }),
+        _ => None,
+    };
+    let budget = griff_pattern::ExpansionBudget {
+        max_depth: args.fractal_depth,
+        max_cells: args.max_cells,
+    };
+    let expansion = griff_pattern::fractalize(&kernel, args.fractal_depth, prune, budget)
+        .map_err(map_pattern_error)?;
+
+    let traversal = match args.traversal {
+        TraversalChoice::RowMajor => griff_pattern::Traversal::RowMajor,
+        TraversalChoice::Snake => griff_pattern::Traversal::Snake,
+    };
+    let sequence = griff_pattern::linearize(&expansion, traversal);
+    if sequence.onsets().is_empty() {
+        return Err(PatternDiagnostic {
+            code: "SWG0306",
+            flag: "--rhythm-kernel",
+            message: "the expansion produced no onsets — nothing to generate (change the \
+                      kernel, depth, density, or rhythm seed)"
+                .to_owned(),
+        });
+    }
+
+    let tail = match args.tail {
+        TailChoice::Reject => griff_swang::TailPolicy::Reject,
+        TailChoice::RestPad => griff_swang::TailPolicy::RestPad,
+    };
+    let templates =
+        griff_swang::map_rhythm(&sequence, bar_duration, unit, tail).map_err(map_lower_error)?;
+
+    let artifact_json = render_artifact(&ArtifactContext {
+        args,
+        geometry: &geometry,
+        kernel: &kernel,
+        sequence: &sequence,
+        templates: &templates,
+        unit,
+    });
+
+    Ok(PatternPlan {
+        templates,
+        artifact_json,
+    })
+}
+
+/// Bar geometry resolved from the seed score's master timeline (spec §1.11).
+#[derive(Debug, Clone, Copy)]
+struct BarGeometry {
+    meter: TimeSignature,
+    ppqn: u16,
+    bar_duration: Ticks,
+}
+
+/// PPQN plus the first master bar's meter, constant across the score in
+/// v0.1: a meter change is `SWG0304`, a zero/unrepresentable bar `SWG0305`.
+#[allow(
+    clippy::arithmetic_side_effects,
+    // The multiply is u64 over u16/u8 inputs and the divisor is validated
+    // non-zero before use.
+    reason = "geometry math over validated non-zero inputs"
+)]
+fn resolve_geometry(score: &Score) -> Result<BarGeometry, PatternDiagnostic> {
+    let Some(first) = score.master_bars.first() else {
+        return Err(PatternDiagnostic {
+            code: "SWG0305",
+            flag: "INPUT",
+            message: "the source has no master bars; there is no bar to map onto".to_owned(),
+        });
+    };
+    let meter = first.time_signature;
+    if let Some(changed) = score
+        .master_bars
+        .iter()
+        .find(|mb| mb.time_signature != meter)
+    {
+        return Err(PatternDiagnostic {
+            code: "SWG0304",
+            flag: "INPUT",
+            message: format!(
+                "the meter changes at bar {} ({}/{} after {}/{}); v0.1 maps onto a \
+                 constant meter",
+                changed.index,
+                changed.time_signature.numerator,
+                changed.time_signature.denominator,
+                meter.numerator,
+                meter.denominator,
+            ),
+        });
+    }
+    let ppqn = score.ticks_per_quarter;
+    let whole_bar = u64::from(ppqn) * 4 * u64::from(meter.numerator);
+    let denominator = u64::from(meter.denominator);
+    if denominator == 0 || !whole_bar.is_multiple_of(denominator) || whole_bar / denominator == 0 {
+        return Err(PatternDiagnostic {
+            code: "SWG0305",
+            flag: "INPUT",
+            message: format!(
+                "a {}/{} bar at PPQN {ppqn} has no whole-tick duration",
+                meter.numerator, meter.denominator,
+            ),
+        });
+    }
+    Ok(BarGeometry {
+        meter,
+        ppqn,
+        bar_duration: Ticks(u32::try_from(whole_bar / denominator).unwrap_or(u32::MAX)),
+    })
+}
+
+/// Maps a pattern-core error to its registry code at the offending flag.
+fn map_pattern_error(e: griff_pattern::PatternError) -> PatternDiagnostic {
+    match e {
+        griff_pattern::PatternError::MaxCellsExceeded {
+            needed, max_cells, ..
+        } => PatternDiagnostic {
+            code: "SWG0201",
+            flag: "--rhythm-max-cells",
+            message: format!("the expansion needs {needed} cells, over the budget's {max_cells}"),
+        },
+        griff_pattern::PatternError::MaxDepthExceeded {
+            depth, max_depth, ..
+        } => PatternDiagnostic {
+            code: "SWG0202",
+            flag: "--rhythm-fractal-depth",
+            message: format!("depth {depth} exceeds the budget's max_depth {max_depth}"),
+        },
+        other => PatternDiagnostic {
+            code: "SWG0101",
+            flag: "--rhythm-kernel",
+            message: other.to_string(),
+        },
+    }
+}
+
+/// Maps a lowering error to its registry code at the offending flag.
+fn map_lower_error(e: griff_swang::LowerError) -> PatternDiagnostic {
+    match e {
+        griff_swang::LowerError::UnitDoesNotDivideBar { bar_duration, unit } => PatternDiagnostic {
+            code: "SWG0301",
+            flag: "--rhythm-unit",
+            message: format!(
+                "unit {} does not divide the {}-tick bar exactly",
+                unit.0, bar_duration.0
+            ),
+        },
+        griff_swang::LowerError::ZeroUnit => PatternDiagnostic {
+            code: "SWG0301",
+            flag: "--rhythm-unit",
+            message: "the rhythm unit is zero ticks".to_owned(),
+        },
+        griff_swang::LowerError::IncompleteFinalBar {
+            have_slots,
+            slots_per_bar,
+        } => PatternDiagnostic {
+            code: "SWG0302",
+            flag: "--rhythm-tail",
+            message: format!(
+                "the final bar holds {have_slots} of {slots_per_bar} slots; pass \
+                 rest-pad to pad the tail with timed rests"
+            ),
+        },
+    }
+}
+
+/// Everything the artifact serializer needs, in one place.
+struct ArtifactContext<'a> {
+    args: &'a RhythmPatternArgs,
+    geometry: &'a BarGeometry,
+    kernel: &'a griff_pattern::Kernel,
+    sequence: &'a griff_pattern::ActivitySequence,
+    templates: &'a [RhythmTemplate],
+    unit: Ticks,
+}
+
+/// Serializes the versioned expansion artifact (spec §1.14).
+///
+/// Alphabetical key order (`serde_json`'s map order — a canonical order),
+/// pretty-printed, newline-terminated, produced before pitch generation.
+/// Fingerprints come from the public explicit diagnostics — no duplicated
+/// hashing.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "slot arithmetic over already-validated non-zero unit and bar"
+)]
+fn render_artifact(ctx: &ArtifactContext<'_>) -> String {
+    let ArtifactContext {
+        args,
+        geometry,
+        kernel,
+        sequence,
+        templates,
+        unit,
+    } = *ctx;
+    let bar_duration = geometry.bar_duration;
+    let meter = format!(
+        "{}/{}",
+        geometry.meter.numerator, geometry.meter.denominator
+    );
+    let activity: String = sequence
+        .cells()
+        .iter()
+        .map(|&active| if active { 'X' } else { '.' })
+        .collect();
+    let diagnostics = explicit_rhythm_diagnostics(templates, bar_duration);
+    let fingerprints: Vec<String> = diagnostics
+        .fingerprints
+        .iter()
+        .map(|fp| format!("{fp:016x}"))
+        .collect();
+    let bars: Vec<serde_json::Value> = templates
+        .iter()
+        .enumerate()
+        .map(|(bar, template)| {
+            serde_json::json!({
+                "bar": bar,
+                "notes": template
+                    .notes
+                    .iter()
+                    .map(|n| serde_json::json!({"offset": n.offset.0, "duration": n.duration.0}))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let artifact = serde_json::json!({
+        "schema": "griff.pattern-expansion",
+        "version": 1,
+        "kernel": {
+            "width": kernel.width(),
+            "height": kernel.height(),
+            "cells": args.kernel,
+        },
+        "fractal_depth": args.fractal_depth,
+        "density_bps": args.density_bps,
+        "rhythm_seed": args.rhythm_seed,
+        "traversal": match args.traversal {
+            TraversalChoice::RowMajor => "row_major",
+            TraversalChoice::Snake => "snake",
+        },
+        "unit": args.unit,
+        "unit_ticks": unit.0,
+        "ppqn": geometry.ppqn,
+        "meter": meter,
+        "bar_duration_ticks": bar_duration.0,
+        "slots_per_bar": bar_duration.0 / unit.0,
+        "tail_policy": match args.tail {
+            TailChoice::Reject => "reject",
+            TailChoice::RestPad => "rest-pad",
+        },
+        "max_cells": args.max_cells,
+        "expanded_width": expansion_dim(kernel.width(), args.fractal_depth),
+        "expanded_height": expansion_dim(kernel.height(), args.fractal_depth),
+        "activity": activity,
+        "templates": bars,
+        "fingerprints": fingerprints,
+    });
+    let mut text = serde_json::to_string_pretty(&artifact).unwrap_or_else(|_| String::from("{}"));
+    text.push('\n');
+    text
+}
+
+/// `base ^ (depth + 1)` — depth 0 is the kernel itself.
+fn expansion_dim(base: usize, depth: u8) -> u64 {
+    u64::try_from(base)
+        .unwrap_or(u64::MAX)
+        .checked_pow(u32::from(depth).saturating_add(1))
+        .unwrap_or(u64::MAX)
 }
 
 /// Parses the transport kernel literal: `/` separates rows, only `X` and `.`
@@ -108,8 +401,47 @@ pub fn compile_pattern(
 /// `SWG0101` (ragged), `SWG0102` (foreign cell), `SWG0103` (whitespace),
 /// `SWG0307` (empty literal or empty row).
 pub fn parse_kernel_literal(literal: &str) -> Result<griff_pattern::Kernel, PatternDiagnostic> {
-    let _ = literal;
-    unimplemented!("red phase: S16 Phase 2 — the CLI adapter (spec §2)")
+    const FLAG: &str = "--rhythm-kernel";
+    if literal.chars().any(char::is_whitespace) {
+        return Err(PatternDiagnostic {
+            code: "SWG0103",
+            flag: FLAG,
+            message: "whitespace inside the kernel literal; rows are separated by `/` alone"
+                .to_owned(),
+        });
+    }
+    let rows: Vec<&str> = literal.split('/').collect();
+    if rows.iter().any(|row| row.is_empty()) {
+        return Err(PatternDiagnostic {
+            code: "SWG0307",
+            flag: FLAG,
+            message: "empty kernel literal or empty row".to_owned(),
+        });
+    }
+    griff_pattern::Kernel::from_rows(&rows).map_err(|e| match e {
+        griff_pattern::PatternError::RaggedKernel { row, expected, got } => PatternDiagnostic {
+            code: "SWG0101",
+            flag: FLAG,
+            message: format!("ragged kernel: row {row} has {got} cells, expected {expected}"),
+        },
+        griff_pattern::PatternError::InvalidCell { row, col, cell } => PatternDiagnostic {
+            code: "SWG0102",
+            flag: FLAG,
+            message: format!(
+                "invalid kernel cell {cell:?} at row {row}, col {col}: only `X` and `.`"
+            ),
+        },
+        griff_pattern::PatternError::EmptyKernel => PatternDiagnostic {
+            code: "SWG0307",
+            flag: FLAG,
+            message: "empty kernel literal or empty row".to_owned(),
+        },
+        other => PatternDiagnostic {
+            code: "SWG0101",
+            flag: FLAG,
+            message: other.to_string(),
+        },
+    })
 }
 
 /// Parses a unit literal (`1/16`) into ticks at `ppqn`, checking whole-tick
@@ -118,9 +450,53 @@ pub fn parse_kernel_literal(literal: &str) -> Result<griff_pattern::Kernel, Patt
 /// # Errors
 /// `SWG0301` with a message naming the PPQN when the unit is malformed, zero,
 /// or not representable in whole ticks.
+#[allow(
+    clippy::arithmetic_side_effects,
+    // ppqn, numerator and denominator are all validated non-zero before the
+    // u64 multiply/divide.
+    reason = "unit math over validated non-zero inputs"
+)]
 pub fn parse_unit(literal: &str, ppqn: u16) -> Result<Ticks, PatternDiagnostic> {
-    let _ = (literal, ppqn);
-    unimplemented!("red phase: S16 Phase 2 — the CLI adapter (spec §2)")
+    const FLAG: &str = "--rhythm-unit";
+    let malformed = |message: String| PatternDiagnostic {
+        code: "SWG0301",
+        flag: FLAG,
+        message,
+    };
+    let Some((numerator, denominator)) = literal.split_once('/') else {
+        return Err(malformed(format!(
+            "malformed unit {literal:?}: expected a note value like 1/16"
+        )));
+    };
+    let numerator: u64 = numerator.parse().map_err(|_| {
+        malformed(format!(
+            "malformed unit {literal:?}: expected a note value like 1/16"
+        ))
+    })?;
+    let denominator: u64 = denominator.parse().map_err(|_| {
+        malformed(format!(
+            "malformed unit {literal:?}: expected a note value like 1/16"
+        ))
+    })?;
+    if numerator == 0 || denominator == 0 {
+        return Err(malformed(format!("unit {literal} has a zero part")));
+    }
+    let whole = u64::from(ppqn) * 4 * numerator;
+    if !whole.is_multiple_of(denominator) {
+        return Err(malformed(format!(
+            "unit {literal} is not representable in whole ticks at PPQN {ppqn}"
+        )));
+    }
+    let ticks = whole / denominator;
+    u32::try_from(ticks)
+        .ok()
+        .filter(|&t| t > 0)
+        .map(Ticks)
+        .ok_or_else(|| {
+            malformed(format!(
+                "unit {literal} leaves no whole tick at PPQN {ppqn}"
+            ))
+        })
 }
 
 #[cfg(test)]

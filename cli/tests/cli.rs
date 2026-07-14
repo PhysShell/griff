@@ -13,7 +13,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::missing_assert_message
+    clippy::missing_assert_message,
+    clippy::str_to_string
 )]
 
 mod common;
@@ -230,4 +231,109 @@ fn missing_file_golden() {
     let missing = fixture_path("does_not_exist");
     let out = griff(&["import", missing.to_str().unwrap()], missing.to_str());
     assert_golden("error__missing_file", &out);
+}
+
+/// S16 Phase 2: the `--rhythm-*` transport syntax drives the explicit
+/// scheduler end to end, and the expansion artifact is byte-stable and
+/// seed-independent on the generation axis.
+#[test]
+fn rhythm_pattern_generate_golden() {
+    let src = fixture_path("simple_4_4");
+    let dst = env::temp_dir().join("griff_s16_pattern_generate.mid");
+    let art = env::temp_dir().join("griff_s16_pattern_expansion.json");
+    fs::remove_file(&dst).ok();
+    fs::remove_file(&art).ok();
+
+    let args = |seed: &'static str, rhythm_seed: &'static str| {
+        vec![
+            "generate".to_string(),
+            src.to_str().unwrap().to_string(),
+            dst.to_str().unwrap().to_string(),
+            "--bars".to_string(),
+            "4".to_string(),
+            "--seed".to_string(),
+            seed.to_string(),
+            "--rhythm-kernel".to_string(),
+            "X.X/XX./.XX".to_string(),
+            "--rhythm-fractal-depth".to_string(),
+            "1".to_string(),
+            "--rhythm-density-bps".to_string(),
+            "8000".to_string(),
+            "--rhythm-seed".to_string(),
+            rhythm_seed.to_string(),
+            "--rhythm-traversal".to_string(),
+            "snake".to_string(),
+            "--rhythm-unit".to_string(),
+            "1/16".to_string(),
+            "--rhythm-tail".to_string(),
+            "rest-pad".to_string(),
+            "--emit-rhythm-expansion".to_string(),
+            art.to_str().unwrap().to_string(),
+        ]
+    };
+
+    let run = |seed: &'static str, rhythm_seed: &'static str| -> (String, String) {
+        let argv_owned = args(seed, rhythm_seed);
+        let refs: Vec<&str> = argv_owned.iter().map(String::as_str).collect();
+        let out = griff(&refs, dst.to_str());
+        let artifact = fs::read_to_string(&art).expect("artifact written");
+        (out, artifact)
+    };
+
+    let (out, artifact_first) = run("42", "17");
+    let out = out.replace(src.to_str().unwrap(), "<SRC>");
+    let out = out.replace(art.to_str().unwrap(), "<ART>");
+    assert_golden("generate__rhythm_pattern", &out);
+    assert!(dst.exists(), "the riff must be written");
+
+    // Byte-stable across identical runs.
+    let (_, artifact_second) = run("42", "17");
+    assert_eq!(
+        artifact_first, artifact_second,
+        "the artifact must be byte-stable"
+    );
+
+    // The generation seed never touches the expansion artifact…
+    let (_, artifact_other_seed) = run("7", "17");
+    assert_eq!(
+        artifact_first, artifact_other_seed,
+        "--seed must not change the expansion artifact"
+    );
+
+    // …while the rhythm seed changes the structure.
+    let (_, artifact_other_rhythm_seed) = run("42", "99");
+    assert_ne!(
+        artifact_first, artifact_other_rhythm_seed,
+        "--rhythm-seed must change the pruning"
+    );
+
+    fs::remove_file(&dst).ok();
+    fs::remove_file(&art).ok();
+}
+
+/// A broken kernel literal leaves as its registry code at the offending flag.
+#[test]
+fn rhythm_pattern_ragged_kernel_golden() {
+    let src = fixture_path("simple_4_4");
+    let dst = env::temp_dir().join("griff_s16_pattern_ragged.mid");
+
+    let out = griff(
+        &[
+            "generate",
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+            "--rhythm-kernel",
+            "X.X/XX",
+            "--rhythm-fractal-depth",
+            "0",
+            "--rhythm-traversal",
+            "row-major",
+            "--rhythm-unit",
+            "1/16",
+        ],
+        dst.to_str(),
+    );
+    let out = out.replace(src.to_str().unwrap(), "<SRC>");
+    assert_golden("generate__rhythm_pattern_ragged", &out);
+    assert!(!dst.exists(), "no riff may be written on a broken kernel");
 }

@@ -126,6 +126,7 @@ Initial registry:
 | `SWG0305` | the mapped span's bar duration is zero or its meter is unrepresentable |
 | `SWG0306` | the expansion produced no onsets — nothing to generate (a fully silent kernel or a pruned-to-silence expansion is a deliberate typed error, not an empty candidate set) |
 | `SWG0307` | empty kernel literal (no rows, or a row with no cells) |
+| `SWG0308` | density outside `0..=10000` basis points |
 
 ### 1.6 Kernel semantics
 

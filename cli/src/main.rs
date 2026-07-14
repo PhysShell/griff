@@ -9,6 +9,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use griff_cli::generation_input::{load_corpus_material, CorpusMaterial, GenerationInputError};
 use griff_cli::primary_voice_note_count;
+use griff_cli::rhythm_pattern;
 use griff_core::generation_input::{ranked_candidates, GenerationAsk, RankedSet};
 use griff_core::{
     boundary,
@@ -123,6 +124,46 @@ enum Command {
         /// gesture statistics (wall-to-wall writing).
         #[arg(long)]
         no_gesture: bool,
+        /// ASCII kernel literal (S16 transport syntax): rows of `X`/`.`
+        /// separated by `/`, e.g. `X.X/XX./.XX`. Compiles into an explicit
+        /// rhythm palette that overrides corpus and source rhythms.
+        #[arg(
+            long,
+            value_name = "KERNEL",
+            requires = "rhythm_fractal_depth",
+            requires = "rhythm_traversal",
+            requires = "rhythm_unit"
+        )]
+        rhythm_kernel: Option<String>,
+        /// Exact fractal expansion depth (depth 0 is the kernel itself).
+        #[arg(long, value_name = "DEPTH", requires = "rhythm_kernel")]
+        rhythm_fractal_depth: Option<u8>,
+        /// Density decay in basis points (0..=10000); requires --rhythm-seed.
+        #[arg(
+            long,
+            value_name = "BPS",
+            requires = "rhythm_kernel",
+            requires = "rhythm_seed"
+        )]
+        rhythm_density_bps: Option<u16>,
+        /// Structural pruning seed — independent of --seed by law.
+        #[arg(long, value_name = "SEED", requires = "rhythm_kernel")]
+        rhythm_seed: Option<u64>,
+        /// How the expansion reads into a line: row-major or snake.
+        #[arg(long, value_name = "ORDER", requires = "rhythm_kernel")]
+        rhythm_traversal: Option<rhythm_pattern::TraversalChoice>,
+        /// Time unit per pattern slot, e.g. 1/16.
+        #[arg(long, value_name = "NOTE", requires = "rhythm_kernel")]
+        rhythm_unit: Option<String>,
+        /// Cell budget for the expansion (CLI default: 4096).
+        #[arg(long, value_name = "CELLS", requires = "rhythm_kernel")]
+        rhythm_max_cells: Option<u64>,
+        /// Incomplete-final-bar policy: reject (default) or rest-pad.
+        #[arg(long, value_name = "POLICY", requires = "rhythm_kernel")]
+        rhythm_tail: Option<rhythm_pattern::TailChoice>,
+        /// Write the versioned expansion artifact (JSON) to this path.
+        #[arg(long, value_name = "PATH", requires = "rhythm_kernel")]
+        emit_rhythm_expansion: Option<PathBuf>,
     },
 
     /// Arrange a complementary part (S13) for a tab's primary track — a second
@@ -209,17 +250,42 @@ fn run() -> Result<(), CliError> {
             corpus,
             candidates,
             no_gesture,
-        } => cmd_generate(
-            &input,
-            &output,
-            &GenerateOpts {
-                seed,
-                bars,
-                corpus: corpus.as_deref(),
-                candidates,
-                no_gesture,
-            },
-        ),
+            rhythm_kernel,
+            rhythm_fractal_depth,
+            rhythm_density_bps,
+            rhythm_seed,
+            rhythm_traversal,
+            rhythm_unit,
+            rhythm_max_cells,
+            rhythm_tail,
+            emit_rhythm_expansion,
+        } => {
+            // clap's `requires` guarantees depth/traversal/unit accompany the
+            // kernel; the unwraps below never fire without it.
+            let rhythm = rhythm_kernel.map(|kernel| rhythm_pattern::RhythmPatternArgs {
+                kernel,
+                fractal_depth: rhythm_fractal_depth.unwrap_or(0),
+                density_bps: rhythm_density_bps,
+                rhythm_seed,
+                traversal: rhythm_traversal.unwrap_or(rhythm_pattern::TraversalChoice::RowMajor),
+                unit: rhythm_unit.unwrap_or_else(|| "1/16".to_owned()),
+                max_cells: rhythm_max_cells.unwrap_or(4096),
+                tail: rhythm_tail.unwrap_or(rhythm_pattern::TailChoice::Reject),
+            });
+            cmd_generate(
+                &input,
+                &output,
+                &GenerateOpts {
+                    seed,
+                    bars,
+                    corpus: corpus.as_deref(),
+                    candidates,
+                    no_gesture,
+                    rhythm: rhythm.as_ref(),
+                    emit_rhythm_expansion: emit_rhythm_expansion.as_deref(),
+                },
+            )
+        }
         Command::Complement {
             input,
             output,
@@ -591,6 +657,8 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
         corpus,
         candidates,
         no_gesture,
+        rhythm,
+        emit_rhythm_expansion,
     } = *opts;
     let data = fs::read(input)?;
     let score = import::import_score_auto(&data)?;
@@ -598,6 +666,15 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
 
     if let Some(m) = &material {
         print_corpus_summary(m, no_gesture);
+    }
+
+    // The pattern plan compiles before any pitch generation, so the artifact
+    // shows the structural delta in isolation (spec §1.14).
+    let plan = rhythm
+        .map(|args| rhythm_pattern::compile_pattern(args, &score))
+        .transpose()?;
+    if let (Some(plan), Some(path)) = (&plan, emit_rhythm_expansion) {
+        fs::write(path, &plan.artifact_json)?;
     }
 
     // The shared compiler: the cockpit's Generate panel enters here too, so the
@@ -611,18 +688,22 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
             variants_per_strategy: candidates,
             gesture: !no_gesture,
         },
-        None,
+        plan.as_ref().map(|p| p.templates.as_slice()),
     )?;
     let RankedSet {
         ranked,
         base,
         source_rhythms,
+        rhythm_explicit,
         gesture,
         policy,
-        ..
     } = &set;
 
-    print_rhythm_diagnostics(source_rhythms, &base.constraints, gesture.is_some());
+    if *rhythm_explicit {
+        print_explicit_rhythm_diagnostics(source_rhythms, &base.constraints);
+    } else {
+        print_rhythm_diagnostics(source_rhythms, &base.constraints, gesture.is_some());
+    }
 
     let winner = ranked
         .first()
@@ -679,6 +760,27 @@ fn print_corpus_summary(m: &CorpusMaterial, no_gesture: bool) {
 /// no corpus, `source_rhythms` is the input's own first-bar rhythm (one
 /// template, so `1 loaded / 1 effective`), so the two A/B legs are directly
 /// comparable. `effective == 0` means the quarter fallback was used.
+/// Prints the explicit palette's diagnostics — uncompressed by law (ADR-0029
+/// §7): every template counts, silent bars included, no quarter fallback.
+fn print_explicit_rhythm_diagnostics(
+    palette: &[generate::RhythmTemplate],
+    constraints: &generate::GenerationConstraints,
+) {
+    let Ok(bar_duration) =
+        generate::bar_duration_ticks(constraints.time_signature, constraints.ticks_per_quarter)
+    else {
+        return;
+    };
+    let diag = generate::explicit_rhythm_diagnostics(palette, bar_duration);
+    let hexes: Vec<String> = diag.fingerprints.iter().map(|h| format!("{h:x}")).collect();
+    println!(
+        "rhythm: explicit palette, {count} templates rotated verbatim over {bars} bars; grids[{count}] {fps}",
+        count = diag.effective,
+        bars = constraints.bar_count,
+        fps = hexes.join(" "),
+    );
+}
+
 fn print_rhythm_diagnostics(
     source_rhythms: &[generate::RhythmTemplate],
     constraints: &generate::GenerationConstraints,
@@ -745,6 +847,10 @@ struct GenerateOpts<'a> {
     candidates: usize,
     /// Skip gesture carving even when the corpus provides stats.
     no_gesture: bool,
+    /// The compiled `--rhythm-*` ask, when a kernel was given.
+    rhythm: Option<&'a rhythm_pattern::RhythmPatternArgs>,
+    /// Where to write the expansion artifact, when asked.
+    emit_rhythm_expansion: Option<&'a Path>,
 }
 
 /// Arranges a complementary part B (S13) for the primary track of `input` and
@@ -1495,6 +1601,7 @@ enum CliError {
     Set(rerank::SetError),
     Corpus(String),
     Complement(complement::ComplementError),
+    Pattern(rhythm_pattern::PatternDiagnostic),
 }
 
 impl fmt::Display for CliError {
@@ -1511,6 +1618,7 @@ impl fmt::Display for CliError {
             Self::Set(e) => write!(f, "candidate set error: {e:?}"),
             Self::Corpus(msg) => write!(f, "corpus error: {msg}"),
             Self::Complement(e) => write!(f, "complement error: {e:?}"),
+            Self::Pattern(d) => write!(f, "{d}"),
         }
     }
 }
@@ -1563,6 +1671,12 @@ impl From<GenerationInputError> for CliError {
 impl From<complement::ComplementError> for CliError {
     fn from(e: complement::ComplementError) -> Self {
         Self::Complement(e)
+    }
+}
+
+impl From<rhythm_pattern::PatternDiagnostic> for CliError {
+    fn from(d: rhythm_pattern::PatternDiagnostic) -> Self {
+        Self::Pattern(d)
     }
 }
 
