@@ -1710,6 +1710,8 @@ mod tests {
 
     use super::*;
     use eframe::egui;
+    use eframe::egui::epaint::ClippedShape;
+    use eframe::egui::Shape;
 
     #[test]
     fn every_bar_class_has_a_distinct_colour() {
@@ -1871,6 +1873,61 @@ mod tests {
         assert!(
             ratio >= 4.5,
             "the SEC header reads at {ratio:.2}:1, under the 4.5:1 text floor"
+        );
+    }
+
+    /// Every glyph the painter emitted in one frame, in paint order.
+    fn painted_glyphs(shapes: &[ClippedShape]) -> String {
+        fn walk(shape: &Shape, out: &mut String) {
+            match shape {
+                Shape::Text(text) => out.push_str(text.galley.text()),
+                Shape::Vec(shapes) => {
+                    for s in shapes {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = String::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    // egui 0.34 flags `Context::run` / `CentralPanel::show`; they still drive a
+    // CPU frame, which is exactly what this test needs (as the paint tests
+    // above do).
+    #[allow(deprecated)]
+    fn the_painted_band_spells_out_the_section_class() {
+        // The end of the path the unit tests only cover in pieces: resolve a
+        // real scene, run one CPU frame, and read back what the painter actually
+        // drew. A colour mapping that returns the right ink is worth nothing if
+        // the glyph never reaches a shape.
+        let mut app = demo_app();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1200.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+        });
+
+        let painted = painted_glyphs(&output.shapes);
+        assert!(
+            painted.contains("SEC"),
+            "the band's gutter header never reached the painter: {painted:?}"
+        );
+        let classes = ["Riff", "Breakdown", "Solo", "Clean", "Unknown"];
+        assert!(
+            classes.iter().any(|class| painted.contains(class)),
+            "the band painted no class label at all: {painted:?}"
         );
     }
 
