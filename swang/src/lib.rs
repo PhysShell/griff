@@ -7,6 +7,9 @@
 //! (`docs/swang/spec.md` §1.11). The AST, parser, and formatter arrive in
 //! later phases; nothing here is grammar.
 
+use std::error::Error;
+use std::fmt;
+
 use griff_core::event::Ticks;
 use griff_core::generate::{RhythmTemplate, TemplateNote};
 use griff_pattern::ActivitySequence;
@@ -23,9 +26,10 @@ pub enum TailPolicy {
     RestPad,
 }
 
-/// Everything the pattern-to-rhythm lowering can reject. Codes per
-/// `docs/swang/spec.md` §1.5.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Everything the pattern-to-rhythm lowering can reject.
+///
+/// Codes per `docs/swang/spec.md` §1.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LowerError {
     /// The unit is zero ticks — no slot can have no duration.
     ZeroUnit,
@@ -46,19 +50,35 @@ pub enum LowerError {
     },
 }
 
-impl std::fmt::Display for LowerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let _ = f;
-        unimplemented!("red phase: S16 Phase 2 (ADR-0029)")
+impl fmt::Display for LowerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroUnit => write!(f, "the rhythm unit is zero ticks"),
+            Self::UnitDoesNotDivideBar { bar_duration, unit } => write!(
+                f,
+                "unit {} does not divide the bar of {} ticks exactly",
+                unit.0, bar_duration.0
+            ),
+            Self::IncompleteFinalBar {
+                have_slots,
+                slots_per_bar,
+            } => write!(
+                f,
+                "the final bar holds {have_slots} of {slots_per_bar} slots; \
+                 pass rest-pad to pad the tail with timed rests"
+            ),
+        }
     }
 }
 
-impl std::error::Error for LowerError {}
+impl Error for LowerError {}
 
-/// Cuts `sequence` into one-bar placed-onset templates: `X` at slot `i`
-/// becomes a note of one `unit` at offset `(i mod slots_per_bar) × unit` in
-/// bar `i div slots_per_bar`; `.` contributes no note, and the bar keeps its
-/// length because offsets are absolute (spec §1.11).
+/// Cuts `sequence` into one-bar placed-onset templates.
+///
+/// `X` at slot `i` becomes a note of one `unit` at offset
+/// `(i mod slots_per_bar) × unit` in bar `i div slots_per_bar`; `.`
+/// contributes no note, and the bar keeps its length because offsets are
+/// absolute (spec §1.11).
 ///
 /// An all-silent bar yields an **empty template at its position** — the
 /// lowering is faithful; what the S6 seam's empty-template filtering then
@@ -68,14 +88,50 @@ impl std::error::Error for LowerError {}
 /// [`LowerError::ZeroUnit`], [`LowerError::UnitDoesNotDivideBar`]
 /// (`SWG0301`), and [`LowerError::IncompleteFinalBar`] (`SWG0302` under
 /// [`TailPolicy::Reject`]).
+#[allow(
+    clippy::arithmetic_side_effects,
+    // The unit is verified non-zero before any division, and every offset is
+    // slot × unit with slot < slots_per_bar = bar/unit, so the product stays
+    // within the u32 bar by construction.
+    reason = "division by a verified non-zero unit; offsets bounded by the bar"
+)]
 pub fn map_rhythm(
     sequence: &ActivitySequence,
     bar_duration: Ticks,
     unit: Ticks,
     tail: TailPolicy,
 ) -> Result<Vec<RhythmTemplate>, LowerError> {
-    let _ = (sequence, bar_duration, unit, tail);
-    unimplemented!("red phase: S16 Phase 2 (ADR-0029)")
+    if unit.0 == 0 {
+        return Err(LowerError::ZeroUnit);
+    }
+    if bar_duration.0 == 0 || !bar_duration.0.is_multiple_of(unit.0) {
+        return Err(LowerError::UnitDoesNotDivideBar { bar_duration, unit });
+    }
+    let slots_per_bar = usize::try_from(bar_duration.0 / unit.0).unwrap_or(usize::MAX);
+
+    let cells = sequence.cells();
+    let tail_slots = cells.len() % slots_per_bar;
+    if tail_slots != 0 && matches!(tail, TailPolicy::Reject) {
+        return Err(LowerError::IncompleteFinalBar {
+            have_slots: tail_slots,
+            slots_per_bar,
+        });
+    }
+
+    Ok(cells
+        .chunks(slots_per_bar)
+        .map(|bar| RhythmTemplate {
+            notes: bar
+                .iter()
+                .enumerate()
+                .filter(|&(_, &active)| active)
+                .map(|(slot, _)| TemplateNote {
+                    offset: Ticks(u32::try_from(slot).unwrap_or(u32::MAX) * unit.0),
+                    duration: unit,
+                })
+                .collect(),
+        })
+        .collect())
 }
 
 #[cfg(test)]
