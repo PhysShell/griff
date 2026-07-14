@@ -299,7 +299,7 @@ impl GestureControl {
     /// callers wanting wall-to-wall writing skip the compiler entirely.
     #[must_use]
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rounded, clamped ≥ 1
-    pub fn from_stats(stats: &GestureStats) -> Self {
+    pub const fn from_stats(stats: &GestureStats) -> Self {
         let burst = if stats.mean_burst_notes.is_finite() {
             stats.mean_burst_notes.round().max(1.0)
         } else {

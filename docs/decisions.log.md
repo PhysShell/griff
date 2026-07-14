@@ -1642,3 +1642,14 @@ Architectural decisions go to [`adr/`](adr/) instead.
   confidence thresholds **not calibrated**; automatic scope selection **not
   approved**; generation integration **frozen**; cadence **frozen**; Phase 2
   **not started**.
+
+- 2026-07-14 — In the context of an MSRV that no longer described reality,
+  facing `rust-version = "1.74"` in a workspace whose `egui`/`eframe` 0.34
+  dependencies demand 1.92 (so no 1.74 user could ever have built the cockpit),
+  we decided for **raising the MSRV to 1.92** — the true floor the graph
+  imposes — and against both leaving the stale claim and jumping to current
+  stable, to achieve an MSRV that is honest and minimal rather than decorative,
+  accepting that the cockpit's dependency tree now dictates the number for every
+  crate in the workspace. Verified by building `--workspace --all-targets` on
+  1.92; a CI job keeps the claim from rotting again. The original 1.74 was the
+  maintainer's own toolchain, a reason this log already recorded as spent.

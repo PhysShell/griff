@@ -1173,8 +1173,9 @@ lints.
 Pins the toolchain and components: stable, rustfmt, clippy.
 
 ### MSRV
-Minimum Supported Rust Version. `griff` targets Rust 1.74; do not use newer
-syntax/features without a decision.
+Minimum Supported Rust Version. `griff` targets Rust 1.92 — the floor `egui` /
+`eframe` 0.34 impose on the cockpit, verified by a CI job that builds the
+workspace on it. Do not use newer syntax/features without a decision.
 
 ### clippy
 The Rust linter, configured strictly in `griff`.

@@ -26,6 +26,9 @@
     clippy::suboptimal_flops
 )]
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
+
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
 use griff_core::classify::BarClass;
@@ -59,7 +62,10 @@ const BOUNDARY: Color32 = Color32::from_rgb(0xff, 0x5d, 0x6c);
 const PLAYHEAD: Color32 = Color32::from_rgb(0xff, 0xcf, 0x4d);
 const PANEL: Color32 = Color32::from_rgb(0x24, 0x24, 0x27);
 const LABEL_DIM: Color32 = Color32::from_rgb(0x9a, 0x9a, 0xa2);
-const LABEL_FAINT: Color32 = Color32::from_rgb(0x6e, 0x6e, 0x76);
+/// Ink for pale fills — the design mock's `--bg` family, not pure black.
+const INK: Color32 = Color32::from_rgb(0x11, 0x11, 0x14);
+/// How far the selected section's fill is lifted toward white.
+const SELECTED_LIFT: f32 = 0.35;
 
 /// Colour for a bar classification (section marks and the section band).
 const fn class_color(class: BarClass) -> Color32 {
@@ -69,6 +75,33 @@ const fn class_color(class: BarClass) -> Color32 {
         BarClass::Solo => Color32::from_rgb(0xd4, 0x88, 0x06),
         BarClass::Clean => Color32::from_rgb(0x38, 0x9e, 0x0d),
         BarClass::Unknown => Color32::from_rgb(0x6e, 0x6e, 0x76),
+    }
+}
+
+/// Lifts a colour toward white by `t` — the band's de-emphasis runs this way
+/// round, not by dimming. The class hues are dark enough on this surface
+/// (Breakdown clears the 3:1 floor for meaningful graphics by 0.09) that dimming
+/// the *unselected* sections, as this renderer used to, pushed them under the
+/// floor and left the selection darker — quieter — than its neighbours. Lifting
+/// the selection instead keeps every section legible and makes the active one
+/// the brightest thing in the band.
+fn lift(c: Color32, t: f32) -> Color32 {
+    let toward_white = |v: u8| f32::from(v) + (255.0 - f32::from(v)) * t;
+    Color32::from_rgb(
+        toward_white(c.r()) as u8,
+        toward_white(c.g()) as u8,
+        toward_white(c.b()) as u8,
+    )
+}
+
+/// The ink a section's class label is drawn in, against its own fill: white on
+/// the deep hues, [`INK`] on the bright ones. Every pairing clears 4.5:1, so the
+/// label — not the colour — is what carries the classification (WCAG 1.4.1: the
+/// Breakdown/Clean red-green pair is invisible to a deuteranope).
+const fn on_class_color(class: BarClass) -> Color32 {
+    match class {
+        BarClass::Riff | BarClass::Breakdown | BarClass::Unknown => Color32::WHITE,
+        BarClass::Solo | BarClass::Clean => INK,
     }
 }
 
@@ -99,9 +132,9 @@ fn role_color(role: CellRole, shade: bool) -> Option<Color32> {
         CellRole::BandFill { class, selected } => {
             let base = class_color(class);
             Some(if selected {
-                base
+                lift(base, SELECTED_LIFT)
             } else {
-                base.gamma_multiply(0.55)
+                base
             })
         }
         CellRole::BandHeader => Some(PANEL),
@@ -110,10 +143,20 @@ fn role_color(role: CellRole, shade: bool) -> Option<Color32> {
 
 /// The glyph colour for a textual cell, or `None` when the cell draws as a
 /// solid block (no glyph).
+///
+/// The band is textual: `scene::resolve_band` centres each section's class name
+/// in its span, and dropping that glyph would leave the cockpit encoding the
+/// class by colour alone — and showing less than the `ratatui` preview does off
+/// the same `Scene` (ADR-0016).
 const fn glyph_color(role: CellRole) -> Option<Color32> {
     match role {
-        CellRole::PitchLabel => Some(LABEL_DIM),
-        CellRole::BandHeader => Some(LABEL_FAINT),
+        // The header shared the gutter's dim label colour once the old faint one
+        // (3.06:1 on the panel) was dropped for reading under the 4.5:1 floor.
+        CellRole::PitchLabel | CellRole::BandHeader => Some(LABEL_DIM),
+        // The selected fill is the lifted, pale one, so it takes ink either way.
+        CellRole::BandFill { class, selected } => {
+            Some(if selected { INK } else { on_class_color(class) })
+        }
         _ => None,
     }
 }
@@ -553,7 +596,7 @@ pub struct CockpitApp {
     material: Option<CorpusMaterial>,
     /// Where a kept candidate is written (native only).
     #[cfg(not(target_arch = "wasm32"))]
-    out_dir: std::path::PathBuf,
+    out_dir: PathBuf,
 }
 
 /// A single-track view of `score`: just `track`, so the roll shows one part
@@ -609,7 +652,7 @@ impl CockpitApp {
             gen_panel: GeneratePanel::new(),
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
-            out_dir: std::path::PathBuf::from("keeps"),
+            out_dir: PathBuf::from("keeps"),
         }
     }
 
@@ -706,21 +749,24 @@ impl CockpitApp {
 
     /// Where kept candidates are written.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_out_dir(&mut self, dir: std::path::PathBuf) {
+    pub fn set_out_dir(&mut self, dir: PathBuf) {
         self.out_dir = dir;
     }
 
     /// The score a pass seeds from: the picked corpus tab, or — when none is
     /// picked (or the pick is stale) — the displayed score.
     fn generation_source(&self) -> Result<Score, String> {
-        match self.gen_panel.source_tab() {
-            Some(tab) => import_score_auto(&tab.bytes)
-                .map_err(|err| format!("cannot import {}: {err}", tab.name)),
-            None => self
-                .score
-                .clone()
-                .ok_or_else(|| "no score loaded".to_owned()),
-        }
+        self.gen_panel.source_tab().map_or_else(
+            || {
+                self.score
+                    .clone()
+                    .ok_or_else(|| "no score loaded".to_owned())
+            },
+            |tab| {
+                import_score_auto(&tab.bytes)
+                    .map_err(|err| format!("cannot import {}: {err}", tab.name))
+            },
+        )
     }
 
     /// Runs the panel's ask through the shared compiler and shows the winner.
@@ -829,7 +875,7 @@ impl CockpitApp {
     fn open_keep(&mut self, i: usize) {
         let outcome = self
             .write_keep(i)
-            .and_then(|path| open_in_default_app(std::path::Path::new(&path)).map(|()| path));
+            .and_then(|path| open_in_default_app(Path::new(&path)).map(|()| path));
         self.gen_panel.status = Some(match outcome {
             Ok(path) => format!("opened {path}"),
             Err(err) => format!("open failed: {err}"),
@@ -892,72 +938,7 @@ impl CockpitApp {
                     }
                 });
 
-                let Some(set) = self.gen_panel.set.as_ref() else {
-                    ui.separator();
-                    ui.weak(match self.material {
-                        Some(_) => "a corpus is loaded — generate to rank a candidate set",
-                        None => "no corpus: the pass will seed from the displayed score alone",
-                    });
-                    return;
-                };
-
-                ui.separator();
-                let gesture = set.summary.gesture.as_ref().map_or_else(
-                    || "off".to_owned(),
-                    |(n, rest)| format!("{n} notes / {rest}"),
-                );
-                ui.weak(format!(
-                    "{} templates · {} references · gesture {} · {}-tone scale{}",
-                    set.summary.templates,
-                    set.summary.references,
-                    gesture,
-                    set.summary.scale_tones,
-                    if set.summary.skipped.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · {} records skipped", set.summary.skipped.len())
-                    },
-                ));
-                ui.separator();
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (i, row) in set.rows.iter().enumerate() {
-                        let selected = self.gen_panel.selected == Some(i);
-                        let label = format!(
-                            "{:>3}. {:<26} {:.3}  {} notes",
-                            row.rank, row.strategy, row.aggregate, row.note_count,
-                        );
-                        let hover = row
-                            .axes
-                            .iter()
-                            .map(|(name, value)| format!("{name} {value:.2}"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if ui
-                            .selectable_label(selected, egui::RichText::new(label).monospace())
-                            .on_hover_text(hover)
-                            .clicked()
-                        {
-                            show = Some(i);
-                        }
-                    }
-                });
-
-                if let Some(i) = self.gen_panel.selected {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("⤓ keep .mid").clicked() {
-                            keep = Some(i);
-                        }
-                        if ui
-                            .button("🔊 open")
-                            .on_hover_text("write it and hand it to your .mid app")
-                            .clicked()
-                        {
-                            open = Some(i);
-                        }
-                    });
-                }
+                self.generate_candidates(ui, &mut show, &mut keep, &mut open);
             });
 
         if run {
@@ -978,6 +959,85 @@ impl CockpitApp {
         #[cfg(target_arch = "wasm32")]
         if keep.is_some() || open.is_some() {
             self.gen_panel.status = Some("keep is native-only in this slice".to_owned());
+        }
+    }
+
+    /// The Generate panel's lower half: the set's provenance line, the ranked
+    /// rows, and the keep actions for the selected one. Reports what the user
+    /// asked for through `show` / `keep` / `open`, so the window applies every
+    /// action after the panel closes its borrow of the panel state.
+    fn generate_candidates(
+        &self,
+        ui: &mut egui::Ui,
+        show: &mut Option<usize>,
+        keep: &mut Option<usize>,
+        open: &mut Option<usize>,
+    ) {
+        let Some(set) = self.gen_panel.set.as_ref() else {
+            ui.separator();
+            ui.weak(match self.material {
+                Some(_) => "a corpus is loaded — generate to rank a candidate set",
+                None => "no corpus: the pass will seed from the displayed score alone",
+            });
+            return;
+        };
+
+        ui.separator();
+        let gesture = set.summary.gesture.as_ref().map_or_else(
+            || "off".to_owned(),
+            |(n, rest)| format!("{n} notes / {rest}"),
+        );
+        ui.weak(format!(
+            "{} templates · {} references · gesture {} · {}-tone scale{}",
+            set.summary.templates,
+            set.summary.references,
+            gesture,
+            set.summary.scale_tones,
+            if set.summary.skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" · {} records skipped", set.summary.skipped.len())
+            },
+        ));
+        ui.separator();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (i, row) in set.rows.iter().enumerate() {
+                let selected = self.gen_panel.selected == Some(i);
+                let label = format!(
+                    "{:>3}. {:<26} {:.3}  {} notes",
+                    row.rank, row.strategy, row.aggregate, row.note_count,
+                );
+                let hover = row
+                    .axes
+                    .iter()
+                    .map(|(name, value)| format!("{name} {value:.2}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if ui
+                    .selectable_label(selected, egui::RichText::new(label).monospace())
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    *show = Some(i);
+                }
+            }
+        });
+
+        if let Some(i) = self.gen_panel.selected {
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("⤓ keep .mid").clicked() {
+                    *keep = Some(i);
+                }
+                if ui
+                    .button("🔊 open")
+                    .on_hover_text("write it and hand it to your .mid app")
+                    .clicked()
+                {
+                    *open = Some(i);
+                }
+            });
         }
     }
 
@@ -1406,7 +1466,7 @@ impl eframe::App for CockpitApp {
 /// # Errors
 /// A message when the handler cannot be spawned.
 #[cfg(not(target_arch = "wasm32"))]
-fn open_in_default_app(path: &std::path::Path) -> Result<(), String> {
+fn open_in_default_app(path: &Path) -> Result<(), String> {
     use std::process::Command;
 
     let mut cmd = if cfg!(target_os = "windows") {
@@ -1650,6 +1710,8 @@ mod tests {
 
     use super::*;
     use eframe::egui;
+    use eframe::egui::epaint::ClippedShape;
+    use eframe::egui::Shape;
 
     #[test]
     fn every_bar_class_has_a_distinct_colour() {
@@ -1711,6 +1773,162 @@ mod tests {
             false,
         );
         assert_ne!(sel, unsel);
+    }
+
+    /// Every bar classification, in `BarClass` declaration order.
+    const CLASSES: [BarClass; 5] = [
+        BarClass::Riff,
+        BarClass::Breakdown,
+        BarClass::Solo,
+        BarClass::Clean,
+        BarClass::Unknown,
+    ];
+
+    /// The surface the scene is painted onto — `CentralPanel` fills with it.
+    fn surface() -> Color32 {
+        egui::Visuals::dark().panel_fill
+    }
+
+    /// Relative luminance of an opaque colour (WCAG 2.1 §1.4.3).
+    fn luminance(c: Color32) -> f64 {
+        let channel = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    }
+
+    /// The WCAG contrast ratio between two opaque colours, in `1.0..=21.0`.
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn the_section_band_labels_its_class_it_does_not_only_colour_it() {
+        // `scene::resolve_band` centres the class name in each section's span,
+        // and the ratatui preview draws it. A renderer that drops the glyph
+        // encodes the class by colour alone — which WCAG 1.4.1 forbids, and
+        // which Breakdown (red) against Clean (green) makes unreadable to a
+        // deuteranope — and silently diverges from the other frontend (ADR-0016).
+        for class in CLASSES {
+            for selected in [true, false] {
+                assert!(
+                    glyph_color(CellRole::BandFill { class, selected }).is_some(),
+                    "{class:?} (selected={selected}) paints a block with no label"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_band_class_label_is_legible_on_its_own_fill() {
+        for class in CLASSES {
+            for selected in [true, false] {
+                let role = CellRole::BandFill { class, selected };
+                let fill = role_color(role, false).expect("the band fills");
+                let label = glyph_color(role).expect("the band labels");
+                let ratio = contrast(fill, label);
+                assert!(
+                    ratio >= 4.5,
+                    "{class:?} (selected={selected}) label at {ratio:.2}:1, \
+                     under the 4.5:1 text floor"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unselected_band_section_keeps_its_class_visible() {
+        // Dimming the fill is how the band de-emphasises the sections the
+        // viewport has not selected; dimming it below the 3:1 floor for
+        // meaningful graphics erases the classification instead.
+        for class in CLASSES {
+            let fill = role_color(
+                CellRole::BandFill {
+                    class,
+                    selected: false,
+                },
+                false,
+            )
+            .expect("the band fills");
+            let ratio = contrast(fill, surface());
+            assert!(
+                ratio >= 3.0,
+                "unselected {class:?} at {ratio:.2}:1 against the surface"
+            );
+        }
+    }
+
+    #[test]
+    fn the_band_header_meets_the_text_contrast_floor() {
+        let fill = role_color(CellRole::BandHeader, false).expect("the header fills");
+        let glyph = glyph_color(CellRole::BandHeader).expect("the header is text");
+        let ratio = contrast(fill, glyph);
+        assert!(
+            ratio >= 4.5,
+            "the SEC header reads at {ratio:.2}:1, under the 4.5:1 text floor"
+        );
+    }
+
+    /// Every glyph the painter emitted in one frame, in paint order.
+    fn painted_glyphs(shapes: &[ClippedShape]) -> String {
+        fn walk(shape: &Shape, out: &mut String) {
+            match shape {
+                Shape::Text(text) => out.push_str(text.galley.text()),
+                Shape::Vec(shapes) => {
+                    for s in shapes {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = String::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    // egui 0.34 flags `Context::run` / `CentralPanel::show`; they still drive a
+    // CPU frame, which is exactly what this test needs (as the paint tests
+    // above do).
+    #[allow(deprecated)]
+    fn the_painted_band_spells_out_the_section_class() {
+        // The end of the path the unit tests only cover in pieces: resolve a
+        // real scene, run one CPU frame, and read back what the painter actually
+        // drew. A colour mapping that returns the right ink is worth nothing if
+        // the glyph never reaches a shape.
+        let mut app = demo_app();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1200.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+        });
+
+        let painted = painted_glyphs(&output.shapes);
+        assert!(
+            painted.contains("SEC"),
+            "the band's gutter header never reached the painter: {painted:?}"
+        );
+        let classes = ["Riff", "Breakdown", "Solo", "Clean", "Unknown"];
+        assert!(
+            classes.iter().any(|class| painted.contains(class)),
+            "the band painted no class label at all: {painted:?}"
+        );
     }
 
     #[test]

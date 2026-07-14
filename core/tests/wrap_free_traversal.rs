@@ -193,7 +193,7 @@ fn rhythm_copy_union_reaches_low_middle_high() {
         .expect("generate");
         union.extend(pitches(&c.score));
     }
-    let mid = (u16::from(lo) + u16::from(hi)) / 2;
+    let mid = u16::midpoint(u16::from(lo), u16::from(hi));
     assert!(
         union.iter().any(|&p| p <= lo + 4),
         "reaches the low register"

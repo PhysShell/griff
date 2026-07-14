@@ -1,0 +1,98 @@
+# The gate AGENTS.md already documents — format, lint, test, doc — enforced.
+# Until now nothing ran `cargo clippy -D warnings` or `cargo test --workspace`
+# in CI, so lint regressions landed on `main` unnoticed (14 of them in the
+# cockpit alone). The wasm render is checked separately by cockpit-web-test.
+#
+# `fuzz/` is a nightly, non-member crate (ADR-0010), so `--workspace` never
+# reaches it; the fuzz gate stays its own concern.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # persist-credentials: false — later steps compile and run PR-authored
+      # code (build scripts, tests), so don't leave the token in .git/config
+      # for them to read (zizmor: artipacked).
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the channel and pulls in rustfmt + clippy.
+      - name: Show toolchain
+        run: rustc --version && cargo clippy --version && cargo fmt --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+
+      # eframe needs a windowing/GL stack to *link* the cockpit's native target.
+      - name: Install native deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      # Not yet `-D warnings`: rustdoc flags five pre-existing findings in
+      # griff-core (an unresolved `AtomRest` link, public docs linking to
+      # private items). Deny once those are cleared.
+      - name: Doc
+        run: cargo doc --no-deps --workspace
+
+  # The MSRV is a promise; build on it or it rots. It sat at 1.74 for a year
+  # while egui/eframe 0.34 already demanded 1.92 — nobody on 1.74 could have
+  # built the cockpit.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read the MSRV from the workspace manifest
+        id: msrv
+        run: |
+          v=$(grep -m1 -E '^rust-version' Cargo.toml | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "workspace MSRV: $v"
+      - name: Install the MSRV toolchain
+        run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: msrv-${{ steps.msrv.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install native deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      - name: Build on the MSRV
+        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-targets

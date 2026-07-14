@@ -269,9 +269,8 @@ fn apply_min_gap(boundaries: Vec<PhraseBoundary>, min_gap: Ticks) -> Vec<PhraseB
     let mut last_kept_tick: Option<u32> = None;
 
     for b in boundaries {
-        let accept = last_kept_tick.map_or(true, |last| {
-            b.start_tick.0.saturating_sub(last) >= min_gap.0
-        });
+        let accept =
+            last_kept_tick.is_none_or(|last| b.start_tick.0.saturating_sub(last) >= min_gap.0);
         if accept {
             last_kept_tick = Some(b.start_tick.0);
             kept.push(b);

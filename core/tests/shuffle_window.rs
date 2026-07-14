@@ -44,7 +44,7 @@ fn octave_window_spans_at_most_one_octave() {
     let ladder = ScaleLadder::build(&PitchRange::new(Pitch(28), Pitch(64)), &classes).expect("ok");
     for selector in 0..64 {
         let w = ladder.octave_window(selector);
-        assert!(w.len() >= 1, "selector {selector}: window never empty");
+        assert!(!w.is_empty(), "selector {selector}: window never empty");
         let ps: Vec<u8> = w.pitches().iter().map(|p| p.0).collect();
         assert!(
             ps.last().unwrap() - ps.first().unwrap() <= 12,
@@ -184,7 +184,7 @@ fn every_anchor_index_is_a_nonempty_octave_window() {
     let ladder = ScaleLadder::build(&PitchRange::new(Pitch(28), Pitch(64)), &classes).expect("ok");
     for anchor in 0..ladder.octave_window_count() {
         let w = ladder.octave_window(anchor);
-        assert!(w.len() >= 1, "anchor {anchor}: window never empty");
+        assert!(!w.is_empty(), "anchor {anchor}: window never empty");
         let ps: Vec<u8> = w.pitches().iter().map(|p| p.0).collect();
         assert!(
             ps.last().unwrap() - ps.first().unwrap() <= 12,

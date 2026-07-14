@@ -152,7 +152,12 @@ fn notes(score: &Score) -> impl Iterator<Item = u8> + '_ {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+    // Fixture arithmetic runs over a fixed `0..4`, so it cannot overflow.
+    #![allow(
+        clippy::arithmetic_side_effects,
+        clippy::expect_used,
+        clippy::indexing_slicing
+    )]
 
     use super::*;
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
