@@ -62,9 +62,22 @@ impl Kernel {
         if width == 0 {
             return Err(PatternError::EmptyKernel);
         }
+        // Pass 1: the rectangle. Nothing allocates until every row's shape
+        // checks out (spec §1.6: ragged rows are rejected before any
+        // allocation), so the shape verdict always beats a cell verdict.
+        for (row, text) in rows.iter().enumerate() {
+            let got = text.chars().count();
+            if got != width {
+                return Err(PatternError::RaggedKernel {
+                    row,
+                    expected: width,
+                    got,
+                });
+            }
+        }
+        // Pass 2: the cells.
         let mut cells = Vec::with_capacity(rows.len().saturating_mul(width));
         for (row, text) in rows.iter().enumerate() {
-            let mut got = 0_usize;
             for (col, cell) in text.chars().enumerate() {
                 match cell {
                     'X' => cells.push(true),
@@ -77,14 +90,6 @@ impl Kernel {
                         })
                     }
                 }
-                got = got.saturating_add(1);
-            }
-            if got != width {
-                return Err(PatternError::RaggedKernel {
-                    row,
-                    expected: width,
-                    got,
-                });
             }
         }
         Ok(Self {
@@ -255,7 +260,7 @@ pub fn fractalize(
 ) -> Result<Expansion, PatternError> {
     if depth > budget.max_depth {
         return Err(PatternError::MaxDepthExceeded {
-            path: unimplemented!("red phase: every budget breach carries its path"),
+            path: NodePath::default(),
             depth,
             max_depth: budget.max_depth,
         });
@@ -441,7 +446,8 @@ pub fn linearize(expansion: &Expansion, traversal: Traversal) -> ActivitySequenc
 /// `swang-prune-hash-v1`: the path-addressed key of spec §1.8.
 ///
 /// A splitmix64 finalizer folded down the tree from `mix64(DOMAIN ^ seed)`,
-/// one child index at a time. Deterministic, order-independent,
+/// one child index at a time. Deterministic, evaluation-order-independent
+/// (the order of the path's own elements is of course significant),
 /// non-cryptographic.
 #[must_use]
 pub fn prune_hash_v1(seed: u64, path: &[u32]) -> u64 {
