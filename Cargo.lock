@@ -1783,6 +1783,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "griff-core",
+ "griff-pattern",
+ "griff-swang",
  "midly",
  "serde_json",
 ]
