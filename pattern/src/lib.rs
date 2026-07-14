@@ -255,6 +255,7 @@ pub fn fractalize(
 ) -> Result<Expansion, PatternError> {
     if depth > budget.max_depth {
         return Err(PatternError::MaxDepthExceeded {
+            path: unimplemented!("red phase: every budget breach carries its path"),
             depth,
             max_depth: budget.max_depth,
         });
@@ -496,6 +497,9 @@ pub enum PatternError {
     },
     /// The requested depth exceeds the budget.
     MaxDepthExceeded {
+        /// The subtree that broke the budget (the root for the up-front
+        /// whole-expansion check).
+        path: NodePath,
         /// The depth asked for.
         depth: u8,
         /// The budget's ceiling.
@@ -533,12 +537,15 @@ impl fmt::Display for PatternError {
                 f,
                 "invalid kernel cell {cell:?} at row {row}, col {col}: only `X` and `.`"
             ),
-            Self::MaxDepthExceeded { depth, max_depth } => {
-                write!(
-                    f,
-                    "depth {depth} exceeds the budget's max_depth {max_depth}"
-                )
-            }
+            Self::MaxDepthExceeded {
+                path,
+                depth,
+                max_depth,
+            } => write!(
+                f,
+                "depth {depth} at path {:?} exceeds the budget's max_depth {max_depth}",
+                path.as_slice()
+            ),
             Self::MaxCellsExceeded {
                 path,
                 needed,
@@ -594,6 +601,23 @@ mod tests {
     #[test]
     fn a_ragged_kernel_is_rejected() {
         let err = Kernel::from_rows(&["X.X", "XX"]).expect_err("ragged must fail");
+        assert_eq!(
+            err,
+            PatternError::RaggedKernel {
+                row: 1,
+                expected: 3,
+                got: 2
+            }
+        );
+    }
+
+    #[test]
+    fn shape_is_validated_before_cells() {
+        // Row 1 is both ragged and carries a foreign character. The shape
+        // verdict must win: rows are validated before any cell decodes, so
+        // nothing allocates for a kernel whose rectangle is already broken
+        // (spec §1.6: ragged rows are rejected before any allocation).
+        let err = Kernel::from_rows(&["X.X", "XO"]).expect_err("ragged wins");
         assert_eq!(
             err,
             PatternError::RaggedKernel {
@@ -697,6 +721,7 @@ mod tests {
         assert_eq!(
             err,
             PatternError::MaxDepthExceeded {
+                path: NodePath::default(),
                 depth: 3,
                 max_depth: 2
             }
