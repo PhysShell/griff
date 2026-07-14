@@ -30,6 +30,7 @@ pub mod curation;
 pub mod dock;
 pub mod generate;
 pub mod scene;
+pub mod theme;
 pub mod view;
 pub mod viewport;
 
