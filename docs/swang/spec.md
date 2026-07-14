@@ -263,6 +263,9 @@ Consequences, all normative:
 
 - `thin : Pattern2D -> Pattern2D` may only flip `X -> .`. It preserves
   dimensions, cell count, coordinates, and post-`linearize` sequence length.
+  Only this type contract is fixed: the cell-selection rule is deliberately
+  unspecified, and `thin` ships in no phase until that rule earns its own
+  spec section.
 - Compaction (removing cells, shortening the sequence) is a **separate,
   deferred operator with a distinct output type** — returning a plain
   `ActivitySequence` from it would be a type-system lie.
@@ -403,7 +406,8 @@ griff generate seed.gp5 out.mid \
 3. A ragged kernel is rejected before expansion.
 4. `.` creates a gap in offsets; it does not disappear.
 5. Two adjacent `X` create two short notes.
-6. `thin` preserves cell count and sequence duration.
+6. The expansion artifact records the bar geometry (PPQN, meter,
+   `bar_duration`, `slots_per_bar`).
 7. `rest-pad` pads only the tail of the final bar.
 8. `reject` refuses an incomplete final bar.
 9. Pattern rhythm overrides corpus rhythm but not corpus novelty/gesture.

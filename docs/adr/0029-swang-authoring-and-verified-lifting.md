@@ -105,8 +105,11 @@ in [`../swang/spec.md`](../swang/spec.md); the delivery plan in
 
 2. **Two crates, one dependency direction.** `griff-pattern` is the pure
    structural algebra — **std-only: zero external dependencies, no
-   `griff-core`, no MIDI, no serde, no time types** — holding `Pattern`,
-   `PatternTree`, traversals, budgets, and deterministic pruning.
+   `griff-core`, no MIDI, no serde, no time types** — holding `Kernel`,
+   `Expansion`, `NodePath`, traversals, budgets, and deterministic pruning.
+   No materialized pattern tree exists: the expansion is answered per cell
+   from coordinate digits, and the tree stays implicit in the `NodePath`
+   addressing; the pruning semantics are unaffected.
    `griff-swang` holds the AST, parser/formatter (later phases), and the
    lowering into `griff-core` types. Serialization of artifacts lives in
    `griff-swang` or an adapter, never in `griff-pattern`.

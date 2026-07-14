@@ -1,0 +1,22 @@
+[package]
+name         = "griff-pattern"
+description  = "Pure structural pattern algebra: kernels, bounded fractal expansion, traversals (S16)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+# Deliberately empty: this crate is std-only by contract (ADR-0029 §2).
+# No serde, no griff-core, no time types — serialization and musical meaning
+# live in griff-swang and the frontends.
+[dependencies]
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
