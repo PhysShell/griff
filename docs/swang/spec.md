@@ -204,10 +204,14 @@ threshold = floor(decay_bps × 2^64 / 10000)      (exact, computed in u128)
 keep(node) = hash(path(node)) < threshold
 ```
 
-Cumulative decay is emergent, not encoded: a pruned parent already yields an
-entirely empty subtree (§1.7), so a level-`d` cell survives only if its
-whole ancestor chain does — survival probability `(decay_bps / 10000)^d`
-with no depth term in the formula.
+Cumulative decay is emergent, not encoded. The normative statement is
+exact: **a level-`d` cell is active iff the hash test passes for the cell
+itself and for every tested ancestor** (a pruned parent already yields an
+entirely empty subtree, §1.7). Under the *nominal model* — treating the
+hash values as independent uniform draws, which the deterministic fold
+approximates but does not prove — expected survival is
+`(decay_bps / 10000)^d`; that is a design intuition for choosing `decay`,
+not a guarantee of the algorithm.
 
 Edge laws: `decay_bps = 10000` keeps every cell unconditionally (the test is
 skipped — `2^64` is not representable as a `u64` threshold);
