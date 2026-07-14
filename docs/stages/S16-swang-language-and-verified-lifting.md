@@ -115,8 +115,12 @@ Specified and scheduled, with semantics in the spec:
 fractalize
 linearize
 map_rhythm
-thin
 ```
+
+`thin` sits between the tiers: its **type contract** is fixed (spec §1.10 —
+it may only flip `X -> .`, preserving dimensions and sequence length), but
+its cell-selection rule is deliberately unspecified and it ships in no phase
+until that rule earns its own spec section.
 
 Candidate roster — names under consideration, with **no promised semantics
 and no assigned delivery phase** until each earns its spec section:
@@ -279,12 +283,19 @@ No generation behavior changes.
 Add domain-neutral primitives, std-only:
 
 ```text
-Pattern / Cell
-PatternTree / NodePath
+Kernel / NodePath
+Expansion
 Traversal (row_major | snake)
 ActivitySequence
-FractalSpec / ExpansionBudget
+PruneSpec / DensityBps / ExpansionBudget
 ```
+
+There is deliberately **no materialized `PatternTree`**: `fractalize`
+answers each cell of the final `Expansion` grid from its coordinate digits
+(most-significant first — the digits *are* the implicit tree path), so the
+tree exists in the addressing scheme rather than in memory. The normative
+pruning semantics are unchanged; the intermediate representation of the
+first draft is simply not needed (decisions log 2026-07-14).
 
 Implement deterministic `fractalize`, traversal, and path-addressed pruning
 without MIDI, tonal, fretboard, UI, serde, or generator dependencies.
@@ -292,10 +303,9 @@ without MIDI, tonal, fretboard, UI, serde, or generator dependencies.
 Acceptance:
 
 - empty parents produce empty descendants;
-- expansion never exceeds the declared budget, and the breach error carries
-  the offending `NodePath`;
-- transforms are deterministic and compositional; `thin` preserves cell
-  count and sequence length;
+- expansion never exceeds the declared budget, and every breach error —
+  depth or cells — carries the offending `NodePath`;
+- transforms are deterministic and compositional;
 - two-dimensional kernels require explicit traversal; ragged kernels are
   rejected before allocation;
 - golden coordinate/activity vectors for both traversals; golden

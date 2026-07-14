@@ -1688,3 +1688,16 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Verus toolchain in CI, to achieve verification effort proportional to
   frozen semantics, accepting that no machine-checked functional proofs
   exist for v0.1. Logged in `process-backlog.md`.
+
+- 2026-07-14 — In the context of the `griff-pattern` Phase 1 review (#113),
+  facing a stage plan that promised a materialized `PatternTree` while the
+  implementation answers each cell of the final `Expansion` grid from its
+  coordinate digits, we decided for **recognizing the coordinate-digit
+  evaluator as the v0.1 representation** — the tree stays implicit in the
+  `NodePath` addressing — and against building the intermediate tree to match
+  the document, to achieve the same normative pruning semantics without the
+  exponential intermediate allocation, accepting that a future phase needing
+  the explicit tree (recognizers, lifting) must introduce it then. `thin` is
+  likewise deferred out of Phase 1: spec §1.10 fixes its type contract, but
+  its cell-selection rule is unspecified, and inventing one to satisfy an
+  acceptance checkbox would freeze semantics nobody designed.
