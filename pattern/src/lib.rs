@@ -14,6 +14,32 @@
 //! semantics live in `docs/swang/spec.md`; the golden vectors in this module's
 //! tests were computed by an independent implementation of that spec.
 
+use std::error::Error;
+use std::fmt;
+
+/// `u64::from_le_bytes(*b"swangpr1")` — the domain separator of
+/// `swang-prune-hash-v1` (spec §1.8).
+const DOMAIN: u64 = u64::from_le_bytes(*b"swangpr1");
+
+/// The golden gamma, folded onto each child index before mixing.
+const GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// Basis points in a whole: densities live in `0..=BPS_SCALE`.
+const BPS_SCALE: u16 = 10_000;
+
+/// The splitmix64 finalizer (Stafford Mix13) — the mixer of
+/// `swang-prune-hash-v1`. Non-cryptographic on purpose.
+const fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Flat index of (`row`, `col`) in a `width`-wide grid, `None` on overflow.
+fn cell_index(width: usize, row: usize, col: usize) -> Option<usize> {
+    row.checked_mul(width)?.checked_add(col)
+}
+
 /// A rectangular occupancy grid: the structural seed of an expansion.
 ///
 /// `X` marks an active cell, `.` an inactive one; nothing here is a note.
@@ -32,33 +58,70 @@ impl Kernel {
     /// [`PatternError::RaggedKernel`] when row lengths differ, and
     /// [`PatternError::InvalidCell`] for any character other than `X` / `.`.
     pub fn from_rows(rows: &[&str]) -> Result<Self, PatternError> {
-        let _ = rows;
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+        let width = rows.first().map_or(0, |first| first.chars().count());
+        if width == 0 {
+            return Err(PatternError::EmptyKernel);
+        }
+        let mut cells = Vec::with_capacity(rows.len().saturating_mul(width));
+        for (row, text) in rows.iter().enumerate() {
+            let mut got = 0_usize;
+            for (col, cell) in text.chars().enumerate() {
+                match cell {
+                    'X' => cells.push(true),
+                    '.' => cells.push(false),
+                    other => {
+                        return Err(PatternError::InvalidCell {
+                            row,
+                            col,
+                            cell: other,
+                        })
+                    }
+                }
+                got = got.saturating_add(1);
+            }
+            if got != width {
+                return Err(PatternError::RaggedKernel {
+                    row,
+                    expected: width,
+                    got,
+                });
+            }
+        }
+        Ok(Self {
+            width,
+            height: rows.len(),
+            cells,
+        })
     }
 
     /// Grid width in cells.
     #[must_use]
-    pub fn width(&self) -> usize {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    pub const fn width(&self) -> usize {
+        self.width
     }
 
     /// Grid height in cells.
     #[must_use]
-    pub fn height(&self) -> usize {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    pub const fn height(&self) -> usize {
+        self.height
     }
 
     /// Whether the cell at (`row`, `col`) is active; out of range is inactive.
     #[must_use]
     pub fn is_active(&self, row: usize, col: usize) -> bool {
-        let _ = (row, col);
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+        if col >= self.width {
+            return false;
+        }
+        cell_index(self.width, row, col)
+            .and_then(|index| self.cells.get(index))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// How many cells are active.
     #[must_use]
     pub fn active_count(&self) -> usize {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+        self.cells.iter().filter(|&&cell| cell).count()
     }
 }
 
@@ -101,14 +164,16 @@ impl DensityBps {
     ///
     /// # Errors
     /// [`PatternError::InvalidDensity`] above 10000.
-    pub fn new(bps: u16) -> Result<Self, PatternError> {
-        let _ = bps;
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    pub const fn new(bps: u16) -> Result<Self, PatternError> {
+        if bps > BPS_SCALE {
+            return Err(PatternError::InvalidDensity { bps });
+        }
+        Ok(Self(bps))
     }
 
     /// The raw basis points.
     #[must_use]
-    pub fn get(self) -> u16 {
+    pub const fn get(self) -> u16 {
         self.0
     }
 }
@@ -135,42 +200,48 @@ impl Expansion {
     /// Grid width in cells — `kernel_width ^ (depth + 1)`, since depth 0 is
     /// the kernel itself.
     #[must_use]
-    pub fn width(&self) -> usize {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    pub const fn width(&self) -> usize {
+        self.width
     }
 
     /// Grid height in cells — `kernel_height ^ (depth + 1)`.
     #[must_use]
-    pub fn height(&self) -> usize {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    pub const fn height(&self) -> usize {
+        self.height
     }
 
     /// The expansion level this grid materializes.
     #[must_use]
-    pub fn depth(&self) -> u8 {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    pub const fn depth(&self) -> u8 {
+        self.depth
     }
 
     /// Whether the cell at (`row`, `col`) is active; out of range is inactive.
     #[must_use]
     pub fn is_active(&self, row: usize, col: usize) -> bool {
-        let _ = (row, col);
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+        if col >= self.width {
+            return false;
+        }
+        cell_index(self.width, row, col)
+            .and_then(|index| self.cells.get(index))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// How many cells are active.
     #[must_use]
     pub fn active_count(&self) -> usize {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+        self.cells.iter().filter(|&&cell| cell).count()
     }
 }
 
-/// Expands `kernel` to `depth`: active cells become scaled kernel copies,
-/// inactive cells become empty blocks, and pruning (when given) removes whole
-/// subtrees by the path-addressed hash test of `docs/swang/spec.md` §1.8.
+/// Expands `kernel` to `depth`.
 ///
-/// Pruning applies to levels `1..=depth`; the kernel's own cells are given.
-/// A pruned parent yields an entirely empty subtree.
+/// Active cells become scaled kernel copies, inactive cells become empty
+/// blocks, and pruning (when given) removes whole subtrees by the
+/// path-addressed hash test of `docs/swang/spec.md` §1.8. Pruning applies to
+/// levels `1..=depth`; the kernel's own cells are given. A pruned parent
+/// yields an entirely empty subtree.
 ///
 /// # Errors
 /// [`PatternError::MaxDepthExceeded`] when `depth > budget.max_depth`, and
@@ -182,8 +253,125 @@ pub fn fractalize(
     prune: Option<PruneSpec>,
     budget: ExpansionBudget,
 ) -> Result<Expansion, PatternError> {
-    let _ = (kernel, depth, prune, budget);
-    unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    if depth > budget.max_depth {
+        return Err(PatternError::MaxDepthExceeded {
+            depth,
+            max_depth: budget.max_depth,
+        });
+    }
+
+    // The whole-grid cell count, checked in u128 before anything allocates.
+    // Depth 0 is the kernel itself, so a depth-d grid carries d + 1 factors.
+    let levels = u32::from(depth).saturating_add(1);
+    let per_level = u128::try_from(kernel.width)
+        .ok()
+        .zip(u128::try_from(kernel.height).ok())
+        .and_then(|(w, h)| w.checked_mul(h))
+        .unwrap_or(u128::MAX);
+    let needed = per_level.checked_pow(levels).unwrap_or(u128::MAX);
+    let over_budget = || PatternError::MaxCellsExceeded {
+        path: NodePath::default(),
+        needed: u64::try_from(needed).unwrap_or(u64::MAX),
+        max_cells: budget.max_cells,
+    };
+    if needed > u128::from(budget.max_cells) {
+        return Err(over_budget());
+    }
+
+    let out_width = kernel.width.checked_pow(levels).ok_or_else(over_budget)?;
+    let out_height = kernel.height.checked_pow(levels).ok_or_else(over_budget)?;
+    let total = out_width.checked_mul(out_height).ok_or_else(over_budget)?;
+
+    // Row and column strides, most-significant digit first: digit j of a
+    // coordinate selects the kernel position chosen at substitution level j.
+    let strides = |base: usize| -> Vec<usize> {
+        (0..=u32::from(depth))
+            .rev()
+            .map(|level| base.checked_pow(level).unwrap_or(usize::MAX))
+            .collect()
+    };
+    let row_strides = strides(kernel.height);
+    let col_strides = strides(kernel.width);
+
+    let expander = Expander {
+        kernel,
+        depth,
+        row_strides,
+        col_strides,
+        keyed: prune.map(|spec| (mix64(DOMAIN ^ spec.seed), prune_threshold(spec.density))),
+    };
+
+    let mut cells = Vec::with_capacity(total);
+    for row in 0..out_height {
+        for col in 0..out_width {
+            cells.push(expander.cell_survives(row, col));
+        }
+    }
+
+    Ok(Expansion {
+        width: out_width,
+        height: out_height,
+        depth,
+        cells,
+    })
+}
+
+/// The per-cell context of one expansion pass: the kernel, the digit strides,
+/// and (when pruning) the pre-mixed root key with the survival threshold
+/// (`None` = density 10000, keep all).
+struct Expander<'a> {
+    kernel: &'a Kernel,
+    depth: u8,
+    row_strides: Vec<usize>,
+    col_strides: Vec<usize>,
+    keyed: Option<(u64, Option<u64>)>,
+}
+
+impl Expander<'_> {
+    /// Whether one grid cell of the level-`depth` expansion is active.
+    ///
+    /// Every coordinate digit must land on an active kernel cell, and (when
+    /// pruning) every proper path prefix — the levels `1..=depth` — must
+    /// pass the hash test of spec §1.8.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        // The strides are >= 1 by construction (checked_pow of a non-zero
+        // base, saturating at usize::MAX) and the kernel dimensions are
+        // non-zero, so the digit division and modulo cannot panic.
+        reason = "division and modulo by construction-guaranteed non-zero values"
+    )]
+    fn cell_survives(&self, row: usize, col: usize) -> bool {
+        let mut key = self.keyed.map(|(root, _)| root);
+        for level in 0..=usize::from(self.depth) {
+            let row_stride = self.row_strides.get(level).copied().unwrap_or(1).max(1);
+            let col_stride = self.col_strides.get(level).copied().unwrap_or(1).max(1);
+            let kernel_row = (row / row_stride) % self.kernel.height.max(1);
+            let kernel_col = (col / col_stride) % self.kernel.width.max(1);
+            if !self.kernel.is_active(kernel_row, kernel_col) {
+                return false;
+            }
+            // Digits 0..depth (all but the last) are the path prefixes of
+            // the levels 1..=depth — the ones the spec prunes.
+            if level < usize::from(self.depth) {
+                if let Some((_, threshold)) = self.keyed {
+                    let child = kernel_row
+                        .saturating_mul(self.kernel.width)
+                        .saturating_add(kernel_col);
+                    let folded = mix64(
+                        key.unwrap_or_default()
+                            ^ u64::try_from(child).unwrap_or(u64::MAX).wrapping_add(GAMMA),
+                    );
+                    key = Some(folded);
+                    if let Some(limit) = threshold {
+                        if folded >= limit {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
 }
 
 /// How a two-dimensional expansion becomes a one-dimensional sequence.
@@ -205,14 +393,14 @@ pub struct ActivitySequence(Vec<bool>);
 impl ActivitySequence {
     /// Total cells, active and inactive alike.
     #[must_use]
-    pub fn len(&self) -> usize {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    pub const fn len(&self) -> usize {
+        self.0.len()
     }
 
     /// Whether the sequence holds no cells at all.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     /// Every cell in traversal order.
@@ -224,7 +412,11 @@ impl ActivitySequence {
     /// The slot indices of the active cells, ascending.
     #[must_use]
     pub fn onsets(&self) -> Vec<usize> {
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, &active)| active.then_some(slot))
+            .collect()
     }
 }
 
@@ -232,26 +424,50 @@ impl ActivitySequence {
 /// cell.
 #[must_use]
 pub fn linearize(expansion: &Expansion, traversal: Traversal) -> ActivitySequence {
-    let _ = (expansion, traversal);
-    unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    let width = expansion.width.max(1);
+    let mut cells = Vec::with_capacity(expansion.cells.len());
+    for (row, chunk) in expansion.cells.chunks(width).enumerate() {
+        let reversed = matches!(traversal, Traversal::Snake) && row & 1 == 1;
+        if reversed {
+            cells.extend(chunk.iter().rev().copied());
+        } else {
+            cells.extend_from_slice(chunk);
+        }
+    }
+    ActivitySequence(cells)
 }
 
-/// `swang-prune-hash-v1`: the path-addressed key of spec §1.8 — a splitmix64
-/// finalizer folded down the tree from `mix64(DOMAIN ^ seed)`, one child
-/// index at a time. Deterministic, order-independent, non-cryptographic.
+/// `swang-prune-hash-v1`: the path-addressed key of spec §1.8.
+///
+/// A splitmix64 finalizer folded down the tree from `mix64(DOMAIN ^ seed)`,
+/// one child index at a time. Deterministic, order-independent,
+/// non-cryptographic.
 #[must_use]
 pub fn prune_hash_v1(seed: u64, path: &[u32]) -> u64 {
-    let _ = (seed, path);
-    unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    let mut key = mix64(DOMAIN ^ seed);
+    for &child in path {
+        key = mix64(key ^ u64::from(child).wrapping_add(GAMMA));
+    }
+    key
 }
 
 /// The constant per-node survival threshold: `floor(bps × 2^64 / 10000)`
 /// computed in `u128`. `None` means density 10000 — keep everything, no test
 /// (2^64 is not representable as a `u64` threshold).
 #[must_use]
+#[allow(
+    clippy::arithmetic_side_effects,
+    // bps <= 9999 needs 78 bits after the shift — no u128 overflow — and the
+    // divisor is a non-zero constant.
+    reason = "exact by construction"
+)]
 pub fn prune_threshold(density: DensityBps) -> Option<u64> {
-    let _ = density;
-    unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+    let bps = density.get();
+    if bps >= BPS_SCALE {
+        return None;
+    }
+    let scaled = u128::from(bps) << 64_u32;
+    u64::try_from(scaled / u128::from(BPS_SCALE)).ok()
 }
 
 /// Everything that can go wrong in the pattern core. Every budget breach
@@ -303,21 +519,51 @@ pub enum PatternError {
     },
 }
 
-impl std::fmt::Display for PatternError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let _ = f;
-        unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
+impl fmt::Display for PatternError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyKernel => {
+                write!(f, "empty kernel: no rows, or no cells in the first row")
+            }
+            Self::RaggedKernel { row, expected, got } => write!(
+                f,
+                "ragged kernel: row {row} has {got} cells, expected {expected}"
+            ),
+            Self::InvalidCell { row, col, cell } => write!(
+                f,
+                "invalid kernel cell {cell:?} at row {row}, col {col}: only `X` and `.`"
+            ),
+            Self::MaxDepthExceeded { depth, max_depth } => {
+                write!(
+                    f,
+                    "depth {depth} exceeds the budget's max_depth {max_depth}"
+                )
+            }
+            Self::MaxCellsExceeded {
+                path,
+                needed,
+                max_cells,
+            } => write!(
+                f,
+                "expansion at path {:?} needs {needed} cells, over the budget's {max_cells}",
+                path.as_slice()
+            ),
+            Self::InvalidDensity { bps } => {
+                write!(f, "density {bps} bps is outside 0..=10000")
+            }
+        }
     }
 }
 
-impl std::error::Error for PatternError {}
+impl Error for PatternError {}
 
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    clippy::missing_assert_message
+    clippy::missing_assert_message,
+    clippy::arithmetic_side_effects
 )]
 mod tests {
     use proptest::prelude::*;
@@ -590,10 +836,13 @@ mod tests {
 
     /// Random small kernels as row strings: 1..=3 rows of 1..=3 cells.
     fn kernel_rows() -> impl Strategy<Value = Vec<String>> {
+        use proptest::bool::ANY;
+        use proptest::collection::vec;
+
         let width = 1..=3_usize;
         width.prop_flat_map(|w| {
-            proptest::collection::vec(
-                proptest::collection::vec(proptest::bool::ANY, w..=w).prop_map(|cells| {
+            vec(
+                vec(ANY, w..=w).prop_map(|cells| {
                     cells
                         .into_iter()
                         .map(|active| if active { 'X' } else { '.' })
