@@ -1242,6 +1242,11 @@ impl CockpitApp {
         }
     }
 
+    /// Switches the cockpit between the theme's two modes.
+    pub fn toggle_theme(&mut self) {
+        unimplemented!("ADR-0028")
+    }
+
     /// Paints egui's own chrome from the theme, so the widgets around the plane
     /// come from the same palette the plane does — before this, the plane was the
     /// design mock's and the chrome was stock egui.
@@ -1763,6 +1768,55 @@ mod tests {
             walk(&clipped.shape, &mut out);
         }
         out
+    }
+
+    #[test]
+    // egui 0.34 flags `Context::run` / `CentralPanel::show`; they still drive a
+    // CPU frame, which is what this needs.
+    #[allow(deprecated)]
+    fn the_light_palette_is_reachable_and_paints_the_whole_frame() {
+        // The core has carried a light mode since ADR-0028; until the cockpit
+        // could switch to it, it was a palette nobody could see. Toggling must
+        // repaint *everything* from it — a half-switched frame (light plane,
+        // dark chrome) is the drift in miniature.
+        let mut app = demo_app();
+        assert_eq!(app.theme, Theme::dark(), "the cockpit opens dark");
+
+        app.toggle_theme();
+        assert_eq!(app.theme, Theme::light(), "and toggles to light");
+
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1200.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            app.install_visuals(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+        });
+
+        let light = theme_palette(&Theme::light());
+        let dark = theme_palette(&Theme::dark());
+        let painted = painted_fills(&output.shapes);
+        for fill in &painted {
+            assert!(
+                light.contains(fill),
+                "in light mode the cockpit painted #{:02x}{:02x}{:02x}, \
+                 which is in no light token",
+                fill.0,
+                fill.1,
+                fill.2
+            );
+        }
+        assert!(
+            !painted
+                .iter()
+                .any(|fill| dark.contains(fill) && !light.contains(fill)),
+            "the frame still carries a colour only the dark palette has"
+        );
     }
 
     #[test]
