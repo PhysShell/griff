@@ -1653,3 +1653,16 @@ Architectural decisions go to [`adr/`](adr/) instead.
   crate in the workspace. Verified by building `--workspace --all-targets` on
   1.92; a CI job keeps the claim from rotting again. The original 1.74 was the
   maintainer's own toolchain, a reason this log already recorded as spent.
+
+- 2026-07-14 — In the context of the section-band bug (the cockpit painted a
+  colour block where the preview printed the class name), facing a palette
+  copied by hand into three places — `preview/design/index.html`, the cockpit's
+  `Color32` constants, and the preview's `ratatui` colours, which did not even
+  agree with each other (lane 3 amber in one and blue in the other) — we decided
+  for **a `theme` module in `griff-ui-core`** (ADR-0028) and against a
+  cockpit-local palette, to achieve one seam where a `CellRole`'s appearance is
+  answered once and the WCAG floors are asserted as tests, accepting that the
+  core's remit widens from "what is placed where" to "and what it looks like".
+  The light mode gained from it is genuinely new: it had never been reachable
+  from the cockpit, and two of the mock's light tokens failed the contrast tests
+  on the way in (`--playhead` at 2.32:1).
