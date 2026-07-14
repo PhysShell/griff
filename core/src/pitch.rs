@@ -56,7 +56,7 @@ impl PitchClassSet {
 
     /// `true` when the set holds no classes.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.classes.is_empty()
     }
 
@@ -118,13 +118,13 @@ impl ScaleLadder {
 
     /// Number of rungs (always ≥ 1).
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.pitches.len()
     }
 
     /// Always `false` — the ladder is never empty; present for lint parity.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.pitches.is_empty()
     }
 

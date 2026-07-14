@@ -441,7 +441,7 @@ fn loopability(notes: &[NoteRef], score: &Score) -> f64 {
         1.0 - f64::from(seam_gap.min(bar_ticks)) / f64::from(bar_ticks)
     };
 
-    (pitch_seam + timing_seam) / 2.0
+    f64::midpoint(pitch_seam, timing_seam)
 }
 
 // ── ComplexityProfile: the per-axis complexity vector (ADR-0015, glossary §7) ─

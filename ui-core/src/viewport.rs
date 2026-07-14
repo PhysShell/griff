@@ -314,7 +314,7 @@ impl Viewport {
 
     /// Toggles the pending merge with the attached partner record; arming it
     /// disarms a pending split (the same one-rewrite-per-pass rule).
-    fn toggle_merge(&mut self, ctx: &ViewContext) {
+    const fn toggle_merge(&mut self, ctx: &ViewContext) {
         if ctx.can_merge {
             self.merging = !self.merging;
             if self.merging {
@@ -361,7 +361,7 @@ impl Viewport {
 
     /// Recenters the scroll on the playhead when it leaves the visible window of
     /// `plot_cols` columns. A no-op when paused.
-    pub fn autoscroll(&mut self, plot_cols: u32) {
+    pub const fn autoscroll(&mut self, plot_cols: u32) {
         if !self.playing || plot_cols == 0 {
             return;
         }

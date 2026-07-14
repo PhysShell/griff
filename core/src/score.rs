@@ -63,7 +63,7 @@ impl LossReport {
     }
 
     /// Returns `true` when no losses were recorded.
-    pub fn is_clean(&self) -> bool {
+    pub const fn is_clean(&self) -> bool {
         self.warnings.is_empty()
     }
 
