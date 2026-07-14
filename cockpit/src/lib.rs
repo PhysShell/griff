@@ -1171,13 +1171,18 @@ impl CockpitApp {
         if ctx.egui_wants_keyboard_input() {
             return false;
         }
-        // `c` and `g` toggle the dock and the Generate panel — shell concerns,
-        // not viewport `Intent`s.
+        // `c`, `g` and `t` toggle the dock, the Generate panel and the palette —
+        // shell concerns, not viewport `Intent`s. The palette especially: which
+        // colours a renderer wears is not something the shared reducer should
+        // have an opinion about.
         if ctx.input(|i| i.key_pressed(Key::C)) {
             self.show_dock = !self.show_dock;
         }
         if ctx.input(|i| i.key_pressed(Key::G)) {
             self.gen_panel.open = !self.gen_panel.open;
+        }
+        if ctx.input(|i| i.key_pressed(Key::T)) {
+            self.toggle_theme();
         }
         let intents: Vec<Intent> = ctx.input(|i| {
             i.events
@@ -1243,8 +1248,21 @@ impl CockpitApp {
     }
 
     /// Switches the cockpit between the theme's two modes.
+    ///
+    /// Everything downstream — the plane, the band, and egui's own chrome via
+    /// [`Self::install_visuals`] — reads the theme every frame, so there is
+    /// nothing else to repaint.
     pub fn toggle_theme(&mut self) {
-        unimplemented!("ADR-0028")
+        self.theme = if self.is_dark() {
+            Theme::light()
+        } else {
+            Theme::dark()
+        };
+    }
+
+    /// Whether the cockpit is currently in the theme's dark mode.
+    fn is_dark(&self) -> bool {
+        self.theme.surface.luminance() < 0.5
     }
 
     /// Paints egui's own chrome from the theme, so the widgets around the plane
@@ -1254,7 +1272,7 @@ impl CockpitApp {
     /// Text colours stay egui's: it derives weak / strong / disabled from its
     /// base, and overriding the base flattens those distinctions into one.
     fn install_visuals(&self, ctx: &egui::Context) {
-        let mut visuals = if self.theme.surface.luminance() < 0.5 {
+        let mut visuals = if self.is_dark() {
             egui::Visuals::dark()
         } else {
             egui::Visuals::light()
@@ -1320,6 +1338,18 @@ impl CockpitApp {
                 .clicked()
             {
                 self.gen_panel.open = !self.gen_panel.open;
+            }
+            let mode = if self.is_dark() {
+                "◑ light"
+            } else {
+                "◐ dark"
+            };
+            if ui
+                .button(mode)
+                .on_hover_text("switch the palette (t)")
+                .clicked()
+            {
+                self.toggle_theme();
             }
             if !self.track_names.is_empty() {
                 ui.separator();
