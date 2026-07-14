@@ -59,3 +59,40 @@ jobs:
       # private items). Deny once those are cleared.
       - name: Doc
         run: cargo doc --no-deps --workspace
+
+  # The MSRV is a promise; build on it or it rots. It sat at 1.74 for a year
+  # while egui/eframe 0.34 already demanded 1.92 — nobody on 1.74 could have
+  # built the cockpit.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read the MSRV from the workspace manifest
+        id: msrv
+        run: |
+          v=$(grep -m1 -E '^rust-version' Cargo.toml | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "workspace MSRV: $v"
+      - name: Install the MSRV toolchain
+        run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: msrv-${{ steps.msrv.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install native deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      - name: Build on the MSRV
+        run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-targets
