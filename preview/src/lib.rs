@@ -25,6 +25,7 @@ pub mod tui;
 pub use griff_ui_core::analysis::{self, analyze, Analysis, Section};
 pub use griff_ui_core::curation;
 pub use griff_ui_core::scene::{self, resolve, CellRole, GridSize, Scene, SceneCell};
+pub use griff_ui_core::theme::{self, cell_style, CellStyle, Rgb, Theme};
 pub use griff_ui_core::view::{self, build_view, Lane, NoteRect, PianoRollView};
 pub use griff_ui_core::viewport::{self, Intent, Step, ViewContext, Viewport};
 

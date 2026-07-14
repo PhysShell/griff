@@ -19,7 +19,11 @@ every track overlaid — the selector switches it, and capture targets it),
 play/pause, and toggles for the capture form and the corpus dock. The same keys
 still work: `space` play/pause, `←`/`→` scroll, `↑`/`↓` pitch, `+`/`−` zoom,
 `[`/`]` section, `Home` reset, `i` inspector, `c` corpus dock, `g` generate
-panel, `q`/`Esc` quit.
+panel, `t` light/dark palette, `q`/`Esc` quit.
+
+The palette is not this crate's: every cell — and egui's own chrome — resolves
+through `griff_ui_core::theme` (ADR-0028), the same tokens the `ratatui` preview
+paints from, with the WCAG contrast floors asserted in the core's tests.
 
 ## Generate (S8)
 
