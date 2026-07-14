@@ -31,14 +31,14 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Rect};
 
-use griff_core::classify::BarClass;
 use griff_core::corpus::{ChunkMeta, ReviewerDecision, RightsStatus, StyleCohort, SwancoreTag};
 use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
 use griff_ui_core::generate::generate_set;
-use griff_ui_core::scene::{resolve, CellRole, GridSize, SceneCell, GUTTER};
+use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
+use griff_ui_core::theme::{cell_style, Rgb, Theme};
 use griff_ui_core::viewport::CurationDecision;
 use griff_ui_core::{
     analyze, build_chunk, build_view, filter_chunks, Analysis, CaptureInputs, CorpusFilter,
@@ -54,111 +54,16 @@ const CELL_W: f32 = 9.0;
 /// Pixel height of one grid cell (also the section-band row height).
 const CELL_H: f32 = 16.0;
 
-// ── palette (mirrors preview/design/index.html) ─────────────────────────────
-const BG_BLACK_ROW: Color32 = Color32::from_rgb(0x20, 0x20, 0x24);
-const STROKE: Color32 = Color32::from_rgb(0x46, 0x46, 0x4d);
-const GRID_BAR: Color32 = Color32::from_rgb(0x45, 0x45, 0x4e);
-const BOUNDARY: Color32 = Color32::from_rgb(0xff, 0x5d, 0x6c);
-const PLAYHEAD: Color32 = Color32::from_rgb(0xff, 0xcf, 0x4d);
-const PANEL: Color32 = Color32::from_rgb(0x24, 0x24, 0x27);
-const LABEL_DIM: Color32 = Color32::from_rgb(0x9a, 0x9a, 0xa2);
-/// Ink for pale fills — the design mock's `--bg` family, not pure black.
-const INK: Color32 = Color32::from_rgb(0x11, 0x11, 0x14);
-/// How far the selected section's fill is lifted toward white.
-const SELECTED_LIFT: f32 = 0.35;
+// ── palette ─────────────────────────────────────────────────────────────────
+// There is none here. The semantic palette lives in `griff_ui_core::theme`
+// (ADR-0028), so this renderer and the ratatui preview cannot drift apart the
+// way they did when the cockpit painted the section band as a bare colour
+// block while the preview printed the class name. All this crate owns is the
+// conversion into egui's colour type.
 
-/// Colour for a bar classification (section marks and the section band).
-const fn class_color(class: BarClass) -> Color32 {
-    match class {
-        BarClass::Riff => Color32::from_rgb(0x16, 0x68, 0xdc),
-        BarClass::Breakdown => Color32::from_rgb(0xcf, 0x13, 0x22),
-        BarClass::Solo => Color32::from_rgb(0xd4, 0x88, 0x06),
-        BarClass::Clean => Color32::from_rgb(0x38, 0x9e, 0x0d),
-        BarClass::Unknown => Color32::from_rgb(0x6e, 0x6e, 0x76),
-    }
-}
-
-/// Lifts a colour toward white by `t` — the band's de-emphasis runs this way
-/// round, not by dimming. The class hues are dark enough on this surface
-/// (Breakdown clears the 3:1 floor for meaningful graphics by 0.09) that dimming
-/// the *unselected* sections, as this renderer used to, pushed them under the
-/// floor and left the selection darker — quieter — than its neighbours. Lifting
-/// the selection instead keeps every section legible and makes the active one
-/// the brightest thing in the band.
-fn lift(c: Color32, t: f32) -> Color32 {
-    let toward_white = |v: u8| f32::from(v) + (255.0 - f32::from(v)) * t;
-    Color32::from_rgb(
-        toward_white(c.r()) as u8,
-        toward_white(c.g()) as u8,
-        toward_white(c.b()) as u8,
-    )
-}
-
-/// The ink a section's class label is drawn in, against its own fill: white on
-/// the deep hues, [`INK`] on the bright ones. Every pairing clears 4.5:1, so the
-/// label — not the colour — is what carries the classification (WCAG 1.4.1: the
-/// Breakdown/Clean red-green pair is invisible to a deuteranope).
-const fn on_class_color(class: BarClass) -> Color32 {
-    match class {
-        BarClass::Riff | BarClass::Breakdown | BarClass::Unknown => Color32::WHITE,
-        BarClass::Solo | BarClass::Clean => INK,
-    }
-}
-
-/// Note-lane colour, cycled by lane index (six lanes, then it wraps).
-const fn lane_color(lane: u16) -> Color32 {
-    match lane % 6 {
-        0 => Color32::from_rgb(0xff, 0x7a, 0x45),
-        1 => Color32::from_rgb(0x36, 0xcf, 0xc9),
-        2 => Color32::from_rgb(0x92, 0x54, 0xde),
-        3 => Color32::from_rgb(0x40, 0x96, 0xff),
-        4 => Color32::from_rgb(0x73, 0xd1, 0x3d),
-        _ => Color32::from_rgb(0xf7, 0x59, 0xab),
-    }
-}
-
-/// The fill colour for a placed cell, or `None` to leave the panel background
-/// showing (text-only or truly empty cells).
-fn role_color(role: CellRole, shade: bool) -> Option<Color32> {
-    match role {
-        CellRole::Empty => shade.then_some(BG_BLACK_ROW),
-        CellRole::Separator => Some(STROKE),
-        CellRole::GridLine => Some(GRID_BAR),
-        CellRole::SectionMark(class) => Some(class_color(class)),
-        CellRole::BoundaryMark => Some(BOUNDARY),
-        CellRole::Note(lane) => Some(lane_color(lane)),
-        CellRole::Playhead => Some(PLAYHEAD),
-        CellRole::PitchLabel => None,
-        CellRole::BandFill { class, selected } => {
-            let base = class_color(class);
-            Some(if selected {
-                lift(base, SELECTED_LIFT)
-            } else {
-                base
-            })
-        }
-        CellRole::BandHeader => Some(PANEL),
-    }
-}
-
-/// The glyph colour for a textual cell, or `None` when the cell draws as a
-/// solid block (no glyph).
-///
-/// The band is textual: `scene::resolve_band` centres each section's class name
-/// in its span, and dropping that glyph would leave the cockpit encoding the
-/// class by colour alone — and showing less than the `ratatui` preview does off
-/// the same `Scene` (ADR-0016).
-const fn glyph_color(role: CellRole) -> Option<Color32> {
-    match role {
-        // The header shared the gutter's dim label colour once the old faint one
-        // (3.06:1 on the panel) was dropped for reading under the 4.5:1 floor.
-        CellRole::PitchLabel | CellRole::BandHeader => Some(LABEL_DIM),
-        // The selected fill is the lifted, pale one, so it takes ink either way.
-        CellRole::BandFill { class, selected } => {
-            Some(if selected { INK } else { on_class_color(class) })
-        }
-        _ => None,
-    }
+/// The core's colour, in egui's terms.
+const fn color32(c: Rgb) -> Color32 {
+    Color32::from_rgb(c.r, c.g, c.b)
 }
 
 /// Maps an egui key to the core's semantic [`Intent`], for the navigation and
@@ -597,6 +502,9 @@ pub struct CockpitApp {
     /// Where a kept candidate is written (native only).
     #[cfg(not(target_arch = "wasm32"))]
     out_dir: PathBuf,
+    /// The palette every cell — and the egui chrome around it — resolves through
+    /// (ADR-0028). Owned, not global: the renderer never invents a colour.
+    theme: Theme,
 }
 
 /// A single-track view of `score`: just `track`, so the roll shows one part
@@ -653,6 +561,7 @@ impl CockpitApp {
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
             out_dir: PathBuf::from("keeps"),
+            theme: Theme::dark(),
         }
     }
 
@@ -1316,16 +1225,41 @@ impl CockpitApp {
         let painter = ui.painter();
         for col in 0..scene.cols {
             if let Some(cell) = scene.band_cell(col) {
-                paint_cell(painter, origin, col, 0, *cell);
+                paint_cell(painter, cell_rect(origin, col, 0), *cell, &self.theme);
             }
         }
         for row in 0..scene.rows {
             for col in 0..scene.cols {
                 if let Some(cell) = scene.plane_cell(row, col) {
-                    paint_cell(painter, origin, col, row.saturating_add(1), *cell);
+                    paint_cell(
+                        painter,
+                        cell_rect(origin, col, row.saturating_add(1)),
+                        *cell,
+                        &self.theme,
+                    );
                 }
             }
         }
+    }
+
+    /// Paints egui's own chrome from the theme, so the widgets around the plane
+    /// come from the same palette the plane does — before this, the plane was the
+    /// design mock's and the chrome was stock egui.
+    ///
+    /// Text colours stay egui's: it derives weak / strong / disabled from its
+    /// base, and overriding the base flattens those distinctions into one.
+    fn install_visuals(&self, ctx: &egui::Context) {
+        let mut visuals = if self.theme.surface.luminance() < 0.5 {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+        visuals.panel_fill = color32(self.theme.surface);
+        visuals.window_fill = color32(self.theme.panel);
+        visuals.window_stroke = egui::Stroke::new(1.0, color32(self.theme.stroke));
+        visuals.selection.bg_fill = color32(self.theme.accent);
+        visuals.hyperlink_color = color32(self.theme.accent);
+        ctx.set_visuals(visuals);
     }
 
     /// The top toolbar — the discoverable surface, so the controls aren't hidden
@@ -1396,28 +1330,27 @@ impl CockpitApp {
     }
 }
 
-/// Paints one placed cell at grid position (`col`, `vis_row`).
-fn paint_cell(
-    painter: &egui::Painter,
-    origin: egui::Pos2,
-    col: u16,
-    vis_row: u16,
-    cell: SceneCell,
-) {
+/// The pixel rect of grid position (`col`, `vis_row`).
+fn cell_rect(origin: egui::Pos2, col: u16, vis_row: u16) -> Rect {
     let x = origin.x + f32::from(col) * CELL_W;
     let y = origin.y + f32::from(vis_row) * CELL_H;
-    let rect = Rect::from_min_size(egui::pos2(x, y), egui::vec2(CELL_W, CELL_H));
-    if let Some(bg) = role_color(cell.role, cell.shade) {
-        painter.rect_filled(rect, CornerRadius::ZERO, bg);
+    Rect::from_min_size(egui::pos2(x, y), egui::vec2(CELL_W, CELL_H))
+}
+
+/// Paints one placed cell — the theme says what it looks like, this draws it.
+fn paint_cell(painter: &egui::Painter, rect: Rect, cell: SceneCell, theme: &Theme) {
+    let style = cell_style(cell, theme);
+    if let Some(fill) = style.fill {
+        painter.rect_filled(rect, CornerRadius::ZERO, color32(fill));
     }
     if cell.glyph != ' ' {
-        if let Some(fg) = glyph_color(cell.role) {
+        if let Some(ink) = style.ink {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
                 cell.glyph,
                 FontId::monospace(CELL_H * 0.8),
-                fg,
+                color32(ink),
             );
         }
     }
@@ -1432,6 +1365,7 @@ impl eframe::App for CockpitApp {
         #[cfg(target_arch = "wasm32")]
         web::drain(self);
         let ctx = ui.ctx().clone();
+        self.install_visuals(&ctx);
         if self.handle_input(&ctx) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -1709,171 +1643,106 @@ mod tests {
     )]
 
     use super::*;
+    use std::collections::HashSet;
+
     use eframe::egui;
     use eframe::egui::epaint::ClippedShape;
     use eframe::egui::Shape;
+    use griff_core::classify::BarClass;
+    use griff_ui_core::scene::CellRole;
 
-    #[test]
-    fn every_bar_class_has_a_distinct_colour() {
-        let classes = [
+    /// Every fill the painter emitted in one frame.
+    fn painted_fills(shapes: &[ClippedShape]) -> HashSet<(u8, u8, u8)> {
+        fn walk(shape: &Shape, out: &mut HashSet<(u8, u8, u8)>) {
+            match shape {
+                Shape::Rect(rect) => {
+                    let c = rect.fill;
+                    if c.a() > 0 {
+                        out.insert((c.r(), c.g(), c.b()));
+                    }
+                }
+                Shape::Vec(shapes) => {
+                    for s in shapes {
+                        walk(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = HashSet::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Every colour the theme allows a cell to be painted in.
+    fn theme_palette(theme: &Theme) -> HashSet<(u8, u8, u8)> {
+        let rgb = |c: Rgb| (c.r, c.g, c.b);
+        let mut allowed: HashSet<(u8, u8, u8)> = [
+            theme.surface,
+            theme.panel,
+            theme.stroke,
+            theme.grid_bar,
+            theme.row_shade,
+            theme.playhead,
+            theme.boundary,
+        ]
+        .into_iter()
+        .map(rgb)
+        .collect();
+        for class in [
             BarClass::Riff,
             BarClass::Breakdown,
             BarClass::Solo,
             BarClass::Clean,
             BarClass::Unknown,
-        ];
-        for (i, a) in classes.iter().enumerate() {
-            for b in classes.iter().skip(i + 1) {
-                assert_ne!(
-                    class_color(*a),
-                    class_color(*b),
-                    "{a:?}/{b:?} share a colour"
-                );
+        ] {
+            for selected in [true, false] {
+                allowed.insert(rgb(theme.class_fill(class, selected)));
             }
         }
+        for lane in 0..6 {
+            allowed.insert(rgb(theme.lane(lane)));
+        }
+        allowed
     }
 
     #[test]
-    fn lane_colour_cycles_and_never_panics() {
-        assert_eq!(lane_color(0), lane_color(6), "the six-lane palette wraps");
-        assert_ne!(lane_color(0), lane_color(1));
-        let _ = lane_color(u16::MAX); // index math stays in range
-    }
-
-    #[test]
-    fn notes_fill_but_text_labels_do_not() {
-        assert!(role_color(CellRole::Note(0), false).is_some());
-        assert!(role_color(CellRole::Playhead, false).is_some());
-        assert!(
-            role_color(CellRole::PitchLabel, false).is_none(),
-            "labels draw as text, not a filled block"
-        );
-        assert_eq!(role_color(CellRole::Empty, false), None);
-        assert_eq!(
-            role_color(CellRole::Empty, true),
-            Some(BG_BLACK_ROW),
-            "black-key rows shade"
-        );
-    }
-
-    #[test]
-    fn selected_band_differs_from_unselected() {
-        let sel = role_color(
-            CellRole::BandFill {
-                class: BarClass::Riff,
-                selected: true,
-            },
-            false,
-        );
-        let unsel = role_color(
-            CellRole::BandFill {
-                class: BarClass::Riff,
-                selected: false,
-            },
-            false,
-        );
-        assert_ne!(sel, unsel);
-    }
-
-    /// Every bar classification, in `BarClass` declaration order.
-    const CLASSES: [BarClass; 5] = [
-        BarClass::Riff,
-        BarClass::Breakdown,
-        BarClass::Solo,
-        BarClass::Clean,
-        BarClass::Unknown,
-    ];
-
-    /// The surface the scene is painted onto — `CentralPanel` fills with it.
-    fn surface() -> Color32 {
-        egui::Visuals::dark().panel_fill
-    }
-
-    /// Relative luminance of an opaque colour (WCAG 2.1 §1.4.3).
-    fn luminance(c: Color32) -> f64 {
-        let channel = |v: u8| {
-            let v = f64::from(v) / 255.0;
-            if v <= 0.03928 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
+    // egui 0.34 flags `Context::run` / `CentralPanel::show`; they still drive a
+    // CPU frame, which is what this needs.
+    #[allow(deprecated)]
+    fn every_colour_the_cockpit_paints_comes_from_the_theme() {
+        // This crate's whole job is the conversion from the core's `Rgb`. A
+        // colour it mixed itself is a colour the preview does not have, and a
+        // place the two renderers can drift apart again (ADR-0028).
+        let mut app = demo_app();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1200.0, 600.0),
+            )),
+            ..Default::default()
         };
-        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
-    }
+        let output = ctx.run(input, |ctx| {
+            // What `App::ui` does before it paints: without it the surface is
+            // stock egui's #1b1b1b, not the theme's — which is the drift this
+            // whole exercise is about.
+            app.install_visuals(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| app.paint(ui));
+        });
 
-    /// The WCAG contrast ratio between two opaque colours, in `1.0..=21.0`.
-    fn contrast(a: Color32, b: Color32) -> f64 {
-        let (la, lb) = (luminance(a), luminance(b));
-        let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
-        (hi + 0.05) / (lo + 0.05)
-    }
-
-    #[test]
-    fn the_section_band_labels_its_class_it_does_not_only_colour_it() {
-        // `scene::resolve_band` centres the class name in each section's span,
-        // and the ratatui preview draws it. A renderer that drops the glyph
-        // encodes the class by colour alone — which WCAG 1.4.1 forbids, and
-        // which Breakdown (red) against Clean (green) makes unreadable to a
-        // deuteranope — and silently diverges from the other frontend (ADR-0016).
-        for class in CLASSES {
-            for selected in [true, false] {
-                assert!(
-                    glyph_color(CellRole::BandFill { class, selected }).is_some(),
-                    "{class:?} (selected={selected}) paints a block with no label"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_band_class_label_is_legible_on_its_own_fill() {
-        for class in CLASSES {
-            for selected in [true, false] {
-                let role = CellRole::BandFill { class, selected };
-                let fill = role_color(role, false).expect("the band fills");
-                let label = glyph_color(role).expect("the band labels");
-                let ratio = contrast(fill, label);
-                assert!(
-                    ratio >= 4.5,
-                    "{class:?} (selected={selected}) label at {ratio:.2}:1, \
-                     under the 4.5:1 text floor"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn an_unselected_band_section_keeps_its_class_visible() {
-        // Dimming the fill is how the band de-emphasises the sections the
-        // viewport has not selected; dimming it below the 3:1 floor for
-        // meaningful graphics erases the classification instead.
-        for class in CLASSES {
-            let fill = role_color(
-                CellRole::BandFill {
-                    class,
-                    selected: false,
-                },
-                false,
-            )
-            .expect("the band fills");
-            let ratio = contrast(fill, surface());
+        let allowed = theme_palette(&app.theme);
+        for painted in painted_fills(&output.shapes) {
             assert!(
-                ratio >= 3.0,
-                "unselected {class:?} at {ratio:.2}:1 against the surface"
+                allowed.contains(&painted),
+                "the cockpit painted #{:02x}{:02x}{:02x}, which is in no token of the theme",
+                painted.0,
+                painted.1,
+                painted.2
             );
         }
-    }
-
-    #[test]
-    fn the_band_header_meets_the_text_contrast_floor() {
-        let fill = role_color(CellRole::BandHeader, false).expect("the header fills");
-        let glyph = glyph_color(CellRole::BandHeader).expect("the header is text");
-        let ratio = contrast(fill, glyph);
-        assert!(
-            ratio >= 4.5,
-            "the SEC header reads at {ratio:.2}:1, under the 4.5:1 text floor"
-        );
     }
 
     /// Every glyph the painter emitted in one frame, in paint order.
@@ -2285,30 +2154,6 @@ mod tests {
     }
 
     #[test]
-    fn lane_colour_is_periodic_and_six_valued_for_every_index() {
-        use std::collections::HashSet;
-        let palette: HashSet<(u8, u8, u8)> = (0u16..6)
-            .map(|lane| {
-                let c = lane_color(lane);
-                (c.r(), c.g(), c.b())
-            })
-            .collect();
-        assert_eq!(palette.len(), 6, "the six lanes are distinct");
-        for lane in 0u16..=u16::MAX {
-            assert_eq!(
-                lane_color(lane),
-                lane_color(lane % 6),
-                "lane {lane} follows the mod-6 palette"
-            );
-            let c = lane_color(lane);
-            assert!(
-                palette.contains(&(c.r(), c.g(), c.b())),
-                "lane {lane} is one of the six colours"
-            );
-        }
-    }
-
-    #[test]
     fn multiple_lanes_paint_in_distinct_lane_colours() {
         use griff_ui_core::{Lane, NoteRect, Section};
         use std::collections::HashSet;
@@ -2365,9 +2210,7 @@ mod tests {
             .plane
             .iter()
             .filter_map(|cell| match cell.role {
-                CellRole::Note(_) => {
-                    role_color(cell.role, cell.shade).map(|c| (c.r(), c.g(), c.b()))
-                }
+                CellRole::Note(_) => cell_style(*cell, &app.theme).fill.map(|c| (c.r, c.g, c.b)),
                 _ => None,
             })
             .collect();
