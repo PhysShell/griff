@@ -102,8 +102,15 @@ meaningful:
 
 ### 1.5 Diagnostics
 
-Every diagnostic carries a stable typed code, a source location (a
-`NodePath` before the grammar exists; a source span after), and a message.
+Every diagnostic carries a stable typed code, a location, and a message.
+The location is one of three kinds, by layer:
+
+- a **structural `NodePath`** — errors born inside the pattern core, where
+  the tree address is the only location that exists;
+- the **offending CLI flag, or `INPUT`** for score-borne facts — the Phase-2
+  transport boundary, where the user's fix lives in a flag;
+- a **source span** — from Phase 3 on, once a grammar gives text positions.
+
 Codes are never reused; the registry is append-only. The compiler core emits
 diagnostics as pure data; rendering happens only at the frontend edge.
 
