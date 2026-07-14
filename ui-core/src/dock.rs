@@ -6,6 +6,8 @@
 //! filter and dashboard semantics cannot diverge between frontends (ADR-0016).
 //! No I/O — the caller hands in the chunks (read from the OPFS tree on web).
 
+use core::cmp::Reverse;
+
 use griff_core::corpus::{ChunkMeta, RightsStatus, StyleCohort, SwancoreTag};
 
 /// A browse filter over the corpus — every field an optional facet.
@@ -144,7 +146,7 @@ impl CorpusStats {
             .copied()
             .filter(|&(_, n)| n > 0)
             .collect();
-        present.sort_by(|a, b| b.1.cmp(&a.1));
+        present.sort_by_key(|&(_, n)| Reverse(n));
         present
     }
 }

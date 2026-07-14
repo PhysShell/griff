@@ -1713,6 +1713,107 @@ mod tests {
         assert_ne!(sel, unsel);
     }
 
+    /// Every bar classification, in `BarClass` declaration order.
+    const CLASSES: [BarClass; 5] = [
+        BarClass::Riff,
+        BarClass::Breakdown,
+        BarClass::Solo,
+        BarClass::Clean,
+        BarClass::Unknown,
+    ];
+
+    /// The surface the scene is painted onto — `CentralPanel` fills with it.
+    fn surface() -> Color32 {
+        egui::Visuals::dark().panel_fill
+    }
+
+    /// Relative luminance of an opaque colour (WCAG 2.1 §1.4.3).
+    fn luminance(c: Color32) -> f64 {
+        let channel = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    }
+
+    /// The WCAG contrast ratio between two opaque colours, in `1.0..=21.0`.
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn the_section_band_labels_its_class_it_does_not_only_colour_it() {
+        // `scene::resolve_band` centres the class name in each section's span,
+        // and the ratatui preview draws it. A renderer that drops the glyph
+        // encodes the class by colour alone — which WCAG 1.4.1 forbids, and
+        // which Breakdown (red) against Clean (green) makes unreadable to a
+        // deuteranope — and silently diverges from the other frontend (ADR-0016).
+        for class in CLASSES {
+            for selected in [true, false] {
+                assert!(
+                    glyph_color(CellRole::BandFill { class, selected }).is_some(),
+                    "{class:?} (selected={selected}) paints a block with no label"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_band_class_label_is_legible_on_its_own_fill() {
+        for class in CLASSES {
+            for selected in [true, false] {
+                let role = CellRole::BandFill { class, selected };
+                let fill = role_color(role, false).expect("the band fills");
+                let label = glyph_color(role).expect("the band labels");
+                let ratio = contrast(fill, label);
+                assert!(
+                    ratio >= 4.5,
+                    "{class:?} (selected={selected}) label at {ratio:.2}:1, \
+                     under the 4.5:1 text floor"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unselected_band_section_keeps_its_class_visible() {
+        // Dimming the fill is how the band de-emphasises the sections the
+        // viewport has not selected; dimming it below the 3:1 floor for
+        // meaningful graphics erases the classification instead.
+        for class in CLASSES {
+            let fill = role_color(
+                CellRole::BandFill {
+                    class,
+                    selected: false,
+                },
+                false,
+            )
+            .expect("the band fills");
+            let ratio = contrast(fill, surface());
+            assert!(
+                ratio >= 3.0,
+                "unselected {class:?} at {ratio:.2}:1 against the surface"
+            );
+        }
+    }
+
+    #[test]
+    fn the_band_header_meets_the_text_contrast_floor() {
+        let fill = role_color(CellRole::BandHeader, false).expect("the header fills");
+        let glyph = glyph_color(CellRole::BandHeader).expect("the header is text");
+        let ratio = contrast(fill, glyph);
+        assert!(
+            ratio >= 4.5,
+            "the SEC header reads at {ratio:.2}:1, under the 4.5:1 text floor"
+        );
+    }
+
     #[test]
     fn all_mapped_keys_resolve_to_their_intent() {
         use Intent::{

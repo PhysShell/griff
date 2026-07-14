@@ -315,7 +315,7 @@ fn stddev(pitches: &[u8]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::indexing_slicing)]
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
 
     use super::{PitchClassSet, PitchRange, ScaleLadder};
     use crate::event::Pitch;
