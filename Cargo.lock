@@ -1838,6 +1838,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "griff-swang"
+version = "0.1.0"
+dependencies = [
+ "griff-core",
+ "griff-pattern",
+]
+
+[[package]]
 name = "griff-ui-core"
 version = "0.1.0"
 dependencies = [
