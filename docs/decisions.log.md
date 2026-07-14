@@ -1666,3 +1666,25 @@ Architectural decisions go to [`adr/`](adr/) instead.
   The light mode gained from it is genuinely new: it had never been reachable
   from the cockpit, and two of the mock's light tokens failed the contrast tests
   on the way in (`--playhead` at 2.32:1).
+
+- 2026-07-14 — In the context of the Swang roadmap PR discovering that the
+  glossary's §0 stage list stopped at S14 while S15/S16 stage documents
+  already existed, facing an earlier cut of the PR that resolved the tension
+  by declaring the stage documents canonical, we decided for **keeping
+  `glossary.md` §0 canonical and repairing the lag** (S15 and S16 added to
+  §0; SPEC and AGENTS routing updated to S0…S16) and against switching the
+  source of truth to `docs/stages/`, to achieve a constitution that stays
+  where AGENTS.md says it is, accepting that every appended stage must touch
+  the glossary too. Changing the source of truth because the source of truth
+  was stale would have fixed the symptom by amputation. The Swang ADR takes
+  number 0029 — 0028 belongs to the merged ui-core theme, whose missing
+  index row was added on the way.
+
+- 2026-07-14 — In the context of formal verification for the future
+  `griff-pattern` core, facing the temptation to adopt Verus while the
+  semantics are still being specified, we decided for **proptest + golden
+  vectors + fuzz now, a non-blocking Kani harness later, and the spectral
+  radius of the expansion matrix as the static growth check**, and against a
+  Verus toolchain in CI, to achieve verification effort proportional to
+  frozen semantics, accepting that no machine-checked functional proofs
+  exist for v0.1. Logged in `process-backlog.md`.

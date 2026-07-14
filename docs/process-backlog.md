@@ -8,3 +8,12 @@ short; delete them when done.
   usage-limit window around PR #40), re-requesting review with
   `@codex review`. Note: the exact trigger phrase matters — free-form
   variants may spawn a cloud task instead of a review.
+
+- [ ] **Kani harnesses for `griff-pattern`** (deferred 2026-07-14, from the
+  Swang design review): once the pattern core's semantics are frozen and
+  implemented (S16 Phase 1), add a non-blocking CI job — isolated like
+  `fuzz/` per ADR-0010 — with bounded harnesses for the budget invariant
+  ("expansion never exceeds `max_cells`") and the empty-subtree law
+  ("a pruned parent yields no active descendants"). Verus rejected for now:
+  its toolchain cost outweighs proofs about semantics that proptest already
+  pins (see decisions log 2026-07-14).
