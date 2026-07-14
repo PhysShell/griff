@@ -132,13 +132,14 @@ pub struct Expansion {
 }
 
 impl Expansion {
-    /// Grid width in cells (`kernel_width ^ depth`).
+    /// Grid width in cells — `kernel_width ^ (depth + 1)`, since depth 0 is
+    /// the kernel itself.
     #[must_use]
     pub fn width(&self) -> usize {
         unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
     }
 
-    /// Grid height in cells (`kernel_height ^ depth`).
+    /// Grid height in cells — `kernel_height ^ (depth + 1)`.
     #[must_use]
     pub fn height(&self) -> usize {
         unimplemented!("red phase: S16 Phase 1 (ADR-0029)")
@@ -426,9 +427,9 @@ mod tests {
         let k = spec_kernel();
         let tight = ExpansionBudget {
             max_depth: 4,
-            max_cells: 80, // depth 2 needs 81
+            max_cells: 80, // depth 1 needs (3·3)^2 = 81
         };
-        let err = fractalize(&k, 2, None, tight).expect_err("81 > 80");
+        let err = fractalize(&k, 1, None, tight).expect_err("81 > 80");
         assert_eq!(
             err,
             PatternError::MaxCellsExceeded {
@@ -562,12 +563,21 @@ mod tests {
         };
 
         let depth1 = fractalize(&k, 1, Some(prune), roomy()).expect("expands");
-        assert!(!depth1.is_active(0, 0), "child 0 is pruned");
-        assert!(depth1.is_active(0, 2), "child 2 survives and (0,2) is X");
-
-        let depth2 = fractalize(&k, 2, Some(prune), roomy()).expect("expands");
+        // Child 0's block spans rows 0..3 × cols 0..3 — silent throughout.
         for row in 0..3 {
             for col in 0..3 {
+                assert!(!depth1.is_active(row, col), "child 0 is pruned");
+            }
+        }
+        // Child 2's block starts at column 6; kernel (0,0) is X, so the
+        // block's top-left cell sounds.
+        assert!(depth1.is_active(0, 6), "child 2 survives");
+
+        let depth2 = fractalize(&k, 2, Some(prune), roomy()).expect("expands");
+        // At depth 2 the grid is 27×27 and child 0's whole subtree is the
+        // 9×9 block at the origin.
+        for row in 0..9 {
+            for col in 0..9 {
                 assert!(
                     !depth2.is_active(row, col),
                     "the pruned child 0 must have an entirely empty subtree"
@@ -601,8 +611,9 @@ mod tests {
             let k = Kernel::from_rows(&refs).expect("generated kernels are rectangular");
             let e = fractalize(&k, depth, None, roomy()).expect("roomy budget");
             let cells = e.width() * e.height();
-            prop_assert_eq!(e.width(), k.width().pow(u32::from(depth)));
-            prop_assert_eq!(e.height(), k.height().pow(u32::from(depth)));
+            // depth 0 is the kernel itself, so depth d is d + 1 kernel factors.
+            prop_assert_eq!(e.width(), k.width().pow(u32::from(depth) + 1));
+            prop_assert_eq!(e.height(), k.height().pow(u32::from(depth) + 1));
             prop_assert!(e.active_count() <= cells);
             prop_assert_eq!(
                 linearize(&e, Traversal::Snake).len(),
