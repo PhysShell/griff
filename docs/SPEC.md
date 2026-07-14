@@ -26,17 +26,16 @@ human-in-the-loop curation.
   (glossary §17.3).
 - Not a general-purpose programming language. Swang (S16) is a bounded,
   deterministic musical DSL over the canonical model, not arbitrary host-code
-  execution (ADR-0028).
+  execution (ADR-0029).
 
 ## Delivery shape
 
-Strict staged delivery, `S0 … S16`, detailed canonically in
-[`stages/`](stages/); shared terminology lives in
-[`glossary.md`](glossary.md). Each stage is a vertical slice with a measurable
-acceptance criterion. Stages are implemented in order; library groundwork may
-land earlier but does not "close" a later stage until its acceptance criterion
-is met and documented. The roadmap is extended by appending the next free stage
-number (see
+Strict staged delivery, `S0 … S16`, defined canonically in
+[`glossary.md`](glossary.md) §0 and detailed in [`stages/`](stages/). Each
+stage is a vertical slice with a measurable acceptance criterion. Stages are
+implemented in order; library groundwork may land earlier but does not "close"
+a later stage until its acceptance criterion is met and documented. The
+roadmap is extended by appending the next free stage number (see
 [`audit/2026-05-s13-complementary-arranger.md`](audit/2026-05-s13-complementary-arranger.md)),
 never by renumbering existing stages.
 
@@ -68,7 +67,7 @@ never by renumbering existing stages.
     runs scheduled and non-blocking.
 12. **Executable musical text lowers into the canonical model.** Swang ASTs
     and execution plans are programs/provenance, never a second score hierarchy;
-    lifted programs must be verified by re-execution (ADR-0028).
+    lifted programs must be verified by re-execution (ADR-0029).
 
 ## Current state
 

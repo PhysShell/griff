@@ -110,6 +110,22 @@ target span, pattern period, repeatability/variation, complexity profile — as 
 constraint compiler over S6. Depends on S6/S4; appended as the next free number.
 Feeds the graph layer but does not depend on it or on DP/Viterbi (ADR-0015).
 
+### S15
+Tonal context and harmonic control stage. Make tonal/harmonic context
+explicit, uncertain, scoped, and reusable before it may influence generation;
+observed evidence stays distinct from inferred meaning, and abstention is a
+valid result. Phase 0–1 accepted and closed 2026-07-12; confidence thresholds,
+automatic scope selection, and generation integration remain frozen until
+their own acceptance. Depends on S1/S5/S6; appended as the next free number.
+
+### S16
+Swang language and verified lifting stage. A deterministic, versioned musical
+DSL over the canonical model: bounded pattern algebra (`fractalize`,
+traversals, budgets), recipes, exact canonical escape hatches, and verified
+lifting of imported scores into executable programs with explicit residuals
+(ADR-0029; normative semantics in `docs/swang/spec.md`). Depends on S1/S3/S6;
+appended as the next free number.
+
 ## 1. Architecture and data model
 
 ### canonical model
