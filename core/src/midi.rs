@@ -813,6 +813,24 @@ mod tests {
         );
     }
 
+    /// F-002 (`docs/fuzzing.md`): the first smoke run of the fuzz gate found
+    /// that `midly 0.5.3` negates the SMPTE fps byte *before* validating it
+    /// (`Timing::read`, `-(byte as i8)`), which overflows on fps == -128 —
+    /// a debug-profile panic reachable from a 14-byte header whose division
+    /// high byte is `0x80`.
+    ///
+    /// SMPTE timing is unsupported anyway, so the adapter rejects a timecode
+    /// division before midly reads it: the same typed error, earlier.
+    #[test]
+    fn regression_f002_smpte_fps_min_returns_typed_error() {
+        let panic_mid: &[u8] = b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x80\x00";
+        let result = import_score(panic_mid);
+        assert!(
+            matches!(result, Err(MidiError::SmpteTimingUnsupported)),
+            "F-002 input must return SmpteTimingUnsupported, got {result:?}",
+        );
+    }
+
     #[test]
     fn bar_ticks_degenerate_returns_typed_error() {
         let sig = TimeSignature {
