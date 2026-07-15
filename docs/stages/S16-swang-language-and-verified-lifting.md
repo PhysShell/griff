@@ -374,7 +374,7 @@ CLI:
 griff swang check riff.swg
 griff swang fmt riff.swg
 griff swang expand riff.swg
-griff swang build riff.swg --output riff.mid
+griff swang build riff.swg
 ```
 
 Acceptance — Phase 3 adds **no musical semantics** (the seven laws of spec
