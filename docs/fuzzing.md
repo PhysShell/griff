@@ -160,12 +160,16 @@ priority onto canonical stages:
 - **Effect:** a debug-profile panic (fuzz builds carry debug assertions)
   reachable from a 14-byte header. Found by the blocking gate's **first
   ever smoke run**, felling four MIDI targets at once.
-- **Reproducer / regression seed:** `panic_smpte_fps_min.mid`, committed to
-  the corpora of `midi_import`, `midi_roundtrip`, `score_projection`, and
-  `phrase_boundary`. Characterization test:
-  `regression_f002_smpte_fps_min_returns_typed_error` in `core/src/midi.rs`.
-- **Status:** **fixed at S16** — `import_score` rejects any timecode
-  division (`SmpteTimingUnsupported`, the rule that already existed in
+- **Reproducer / regression seeds:** `panic_smpte_fps_min.mid` (corpora of
+  `midi_import`, `midi_roundtrip`, `score_projection`, `phrase_boundary`)
+  and `panic_smpte_second_header.mid` (`midi_import`, `midi_roundtrip`) —
+  the gate's **second** run found that midly parses *every* `MThd` chunk as
+  a header, so a guard on the first header alone guards nothing.
+  Characterization tests: `regression_f002_*` in `core/src/midi.rs`.
+- **Status:** **fixed at S16** — `smpte_division_reachable` in
+  `core/src/midi.rs` walks the chunk boundaries exactly the way midly does
+  and rejects any header chunk with a timecode division
+  (`SmpteTimingUnsupported`, the rule that already existed in
   `extract_ppqn`) before midly reads it.
 
 ### F-003 — guitarpro unvalidated direction index *(open, quarantined)*
