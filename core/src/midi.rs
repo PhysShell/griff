@@ -63,6 +63,14 @@ pub enum MidiError {
         ppqn: u16,
     },
 
+    /// The event span implies more bars than [`MAX_MASTER_BARS`] (F-004).
+    ///
+    /// A structurally valid file — typically a tiny PPQN plus a huge delta —
+    /// whose tick span would materialize an unbounded number of bars. Bounded
+    /// and rejected instead of allocated.
+    #[error("the event span implies over {MAX_MASTER_BARS} bars; the file is degenerate")]
+    TooManyBars,
+
     /// Writing MIDI bytes failed.
     #[error("MIDI write error: {0}")]
     Write(Box<io::Error>),
@@ -91,6 +99,13 @@ impl From<ValidationError> for MidiError {
 /// Pulses per quarter note — the time resolution of a MIDI file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ppqn(pub u16);
+
+/// The most bars any single track or the master timeline may materialize
+/// (F-004). A tiny PPQN plus a large delta can imply billions of bars from a
+/// structurally valid file; this bounds every per-bar loop to a memory
+/// ceiling of tens of megabytes. Generous for real music — a 4/4 piece this
+/// long runs for weeks — so it never rejects a legitimate score.
+const MAX_MASTER_BARS: usize = 1_000_000;
 
 // ── ppqn ──────────────────────────────────────────────────────────────────────
 
@@ -440,6 +455,9 @@ fn build_master_bars(
         });
 
         index = index.checked_add(1).ok_or(MidiError::TickOverflow)?;
+        if index >= MAX_MASTER_BARS {
+            return Err(MidiError::TooManyBars);
+        }
         bar_start = bar_end;
     }
 
@@ -479,9 +497,17 @@ fn build_score_track(
     // Walk bars and assign notes.
     let mut event_groups: Vec<EventGroup> = Vec::new();
     let mut bar_start: u32 = 0;
+    let mut bars_walked: usize = 0;
     let mut note_iter = sorted_notes.iter().peekable();
 
     while bar_start <= end_tick {
+        // F-004: the same unbounded-bar hazard build_master_bars guards. A
+        // huge delta at a tiny PPQN would walk billions of empty bars here
+        // before the master timeline is ever built.
+        if bars_walked >= MAX_MASTER_BARS {
+            return Err(MidiError::TooManyBars);
+        }
+        bars_walked = bars_walked.saturating_add(1);
         let sig = active_time_sig(time_sigs, bar_start);
         let bt = bar_ticks(sig, ppqn)?;
         let bar_end = bar_start.saturating_add(bt);
@@ -882,6 +908,27 @@ mod tests {
         assert!(
             matches!(result, Err(MidiError::SmpteTimingUnsupported)),
             "a later header chunk must meet the same typed error, got {result:?}",
+        );
+    }
+
+    /// F-004 (`docs/fuzzing.md`): the gate's third smoke run drove
+    /// `midi_import` out of memory. A metrical PPQN of 1 plus a ~2-billion-
+    /// tick varlen delta implies ~500 million bars; `build_score_track` (and
+    /// then `build_master_bars`) walked them one allocation at a time. Now
+    /// bounded — a bar count over `MAX_MASTER_BARS` is a typed error, not an
+    /// OOM. The exact 49-byte crasher the gate minimized:
+    #[test]
+    fn regression_f004_tiny_ppqn_huge_delta_is_typed_error_not_oom() {
+        let oom_mid: &[u8] = &[
+            0x4d, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
+            0x4d, 0x54, 0x72, 0x6b, 0x00, 0x00, 0x00, 0x1b, 0x00, 0xd1, 0x58, 0xf6, 0xff, 0xff,
+            0xff, 0x00, 0x00, 0xff, 0x51, 0x03, 0x07, 0x44, 0x20, 0x00, 0x90, 0x3c, 0x64, 0x01,
+            0x80, 0x3c, 0x00, 0x00, 0xff, 0x2f, 0x00,
+        ];
+        let result = import_score(oom_mid);
+        assert!(
+            matches!(result, Err(MidiError::TooManyBars)),
+            "F-004 input must return TooManyBars, got {result:?}",
         );
     }
 
