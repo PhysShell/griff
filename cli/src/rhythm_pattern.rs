@@ -83,6 +83,69 @@ impl fmt::Display for PatternDiagnostic {
     }
 }
 
+/// A compile failure as typed data, named by the vocabulary site that owns
+/// the user's fix.
+///
+/// Spec §1.5: the core emits diagnostics as pure data; rendering happens
+/// only at the frontend edge. The transport renders these through
+/// [`PatternFlaw::into_transport`]; the Swang `expand` frontend renders
+/// them against its program spans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternFlaw {
+    /// The kernel literal itself (already rendered in shared vocabulary).
+    Kernel(PatternDiagnostic),
+    /// The unit literal against the score's PPQN (shared vocabulary).
+    Unit(PatternDiagnostic),
+    /// A score-borne geometry fact — `SWG0304`/`SWG0305` (shared
+    /// vocabulary; the fix lives in the seed score).
+    Score(PatternDiagnostic),
+    /// Density scale or an unseeded pruning — unreachable from a parsed
+    /// Swang program, whose grammar validates both.
+    Density(PatternDiagnostic),
+    /// A structural budget breach — keeps its `NodePath`.
+    Budget(griff_pattern::PatternError),
+    /// A time-domain lowering flaw.
+    Lower(griff_swang::LowerError),
+    /// The whole expansion has no onsets (`SWG0306`).
+    SilentExpansion,
+    /// The bars window rotates only silent templates (`SWG0306`): the first
+    /// `used` templates are empty.
+    SilentWindow {
+        /// Templates the window actually reaches.
+        used: usize,
+    },
+}
+
+impl PatternFlaw {
+    /// Renders the flaw in the Phase-2 transport's dress: registry code at
+    /// the offending flag, byte-for-byte the messages the transport has
+    /// always spoken.
+    #[must_use]
+    pub fn into_transport(self) -> PatternDiagnostic {
+        match self {
+            Self::Kernel(d) | Self::Unit(d) | Self::Score(d) | Self::Density(d) => d,
+            Self::Budget(e) => map_pattern_error(&e),
+            Self::Lower(e) => map_lower_error(e),
+            Self::SilentExpansion => PatternDiagnostic {
+                code: "SWG0306",
+                flag: "--rhythm-kernel",
+                message: "the expansion produced no onsets — nothing to generate (change the \
+                          kernel, depth, density, or rhythm seed)"
+                    .to_owned(),
+            },
+            Self::SilentWindow { used } => PatternDiagnostic {
+                code: "SWG0306",
+                flag: "--rhythm-kernel",
+                message: format!(
+                    "the first {used} template(s) the --bars window rotates over are all \
+                     silent — nothing to generate (raise --bars past the silent prefix, \
+                     or change the kernel, depth, density, or rhythm seed)"
+                ),
+            },
+        }
+    }
+}
+
 /// Compiles the pattern flags against the seed score's master timeline into
 /// an explicit palette plus its expansion artifact.
 ///
@@ -99,21 +162,34 @@ pub fn compile_pattern(
     score: &Score,
     bars: usize,
 ) -> Result<PatternPlan, PatternDiagnostic> {
+    compile_pattern_flaws(args, score, bars).map_err(PatternFlaw::into_transport)
+}
+
+/// [`compile_pattern`] before any rendering: the same pipeline, failing as
+/// typed [`PatternFlaw`] data for whichever frontend is asking.
+///
+/// # Errors
+/// A [`PatternFlaw`] naming the vocabulary site that owns the fix.
+pub fn compile_pattern_flaws(
+    args: &RhythmPatternArgs,
+    score: &Score,
+    bars: usize,
+) -> Result<PatternPlan, PatternFlaw> {
     // Defense in depth behind clap's `requires`: no caller smuggles an
     // unseeded pruning through (spec §1.13).
     if args.density_bps.is_some() && args.rhythm_seed.is_none() {
-        return Err(PatternDiagnostic {
+        return Err(PatternFlaw::Density(PatternDiagnostic {
             code: "SWG0303",
             flag: "--rhythm-seed",
             message: "density decay was given without a rhythm seed; pruning must be \
                       explicitly seeded"
                 .to_owned(),
-        });
+        }));
     }
 
-    let kernel = parse_kernel_literal(&args.kernel)?;
-    let geometry = resolve_geometry(score)?;
-    let unit = parse_unit(&args.unit, geometry.ppqn)?;
+    let kernel = parse_kernel_literal(&args.kernel).map_err(PatternFlaw::Kernel)?;
+    let geometry = resolve_geometry(score).map_err(PatternFlaw::Score)?;
+    let unit = parse_unit(&args.unit, geometry.ppqn).map_err(PatternFlaw::Unit)?;
     let bar_duration = geometry.bar_duration;
 
     // The transport type is deliberately wider than the domain type, so an
@@ -121,10 +197,12 @@ pub fn compile_pattern(
     // range error.
     let prune = match (args.density_bps, args.rhythm_seed) {
         (Some(bps), Some(seed)) => {
-            let out_of_scale = || PatternDiagnostic {
-                code: "SWG0308",
-                flag: "--rhythm-density-bps",
-                message: format!("density {bps} bps is outside 0..=10000"),
+            let out_of_scale = || {
+                PatternFlaw::Density(PatternDiagnostic {
+                    code: "SWG0308",
+                    flag: "--rhythm-density-bps",
+                    message: format!("density {bps} bps is outside 0..=10000"),
+                })
             };
             let narrow = u16::try_from(bps).map_err(|_| out_of_scale())?;
             Some(griff_pattern::PruneSpec {
@@ -139,7 +217,7 @@ pub fn compile_pattern(
         max_cells: args.max_cells,
     };
     let expansion = griff_pattern::fractalize(&kernel, args.fractal_depth, prune, budget)
-        .map_err(map_pattern_error)?;
+        .map_err(PatternFlaw::Budget)?;
 
     let traversal = match args.traversal {
         TraversalChoice::RowMajor => griff_pattern::Traversal::RowMajor,
@@ -147,13 +225,7 @@ pub fn compile_pattern(
     };
     let sequence = griff_pattern::linearize(&expansion, traversal);
     if sequence.onsets().is_empty() {
-        return Err(PatternDiagnostic {
-            code: "SWG0306",
-            flag: "--rhythm-kernel",
-            message: "the expansion produced no onsets — nothing to generate (change the \
-                      kernel, depth, density, or rhythm seed)"
-                .to_owned(),
-        });
+        return Err(PatternFlaw::SilentExpansion);
     }
 
     let tail = match args.tail {
@@ -161,7 +233,7 @@ pub fn compile_pattern(
         TailChoice::RestPad => griff_swang::TailPolicy::RestPad,
     };
     let templates =
-        griff_swang::map_rhythm(&sequence, bar_duration, unit, tail).map_err(map_lower_error)?;
+        griff_swang::map_rhythm(&sequence, bar_duration, unit, tail).map_err(PatternFlaw::Lower)?;
 
     check_bars_window(&templates, bars)?;
 
@@ -185,7 +257,7 @@ pub fn compile_pattern(
 /// templates only a prefix is ever used. A silent prefix would send every
 /// strategy into silence and the reranker into an empty set — *after* the
 /// artifact was written. Stop it at `SWG0306` instead (#116 review).
-fn check_bars_window(templates: &[RhythmTemplate], bars: usize) -> Result<(), PatternDiagnostic> {
+fn check_bars_window(templates: &[RhythmTemplate], bars: usize) -> Result<(), PatternFlaw> {
     if bars == 0 {
         return Ok(()); // the generator's own BarCountZero owns this case
     }
@@ -197,15 +269,7 @@ fn check_bars_window(templates: &[RhythmTemplate], bars: usize) -> Result<(), Pa
     if window_sounds {
         Ok(())
     } else {
-        Err(PatternDiagnostic {
-            code: "SWG0306",
-            flag: "--rhythm-kernel",
-            message: format!(
-                "the first {used} template(s) the --bars window rotates over are all \
-                 silent — nothing to generate (raise --bars past the silent prefix, \
-                 or change the kernel, depth, density, or rhythm seed)"
-            ),
-        })
+        Err(PatternFlaw::SilentWindow { used })
     }
 }
 
@@ -274,7 +338,7 @@ fn resolve_geometry(score: &Score) -> Result<BarGeometry, PatternDiagnostic> {
 }
 
 /// Maps a pattern-core error to its registry code at the offending flag.
-fn map_pattern_error(e: griff_pattern::PatternError) -> PatternDiagnostic {
+fn map_pattern_error(e: &griff_pattern::PatternError) -> PatternDiagnostic {
     match e {
         griff_pattern::PatternError::MaxCellsExceeded {
             needed, max_cells, ..
