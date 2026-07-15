@@ -699,6 +699,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_gigantic_numerator_is_swg0301_not_an_arithmetic_lottery() {
+        // 9607679205057059 × 480 × 4 overflows u64: a syntactically valid
+        // unit must meet its registry code, never a debug panic or a release
+        // wrap (#116 review, comment 4975910403).
+        let d = parse_unit("9607679205057059/13", 480).expect_err("typed, not panicked");
+        assert_eq!(code_and_flag(&d), ("SWG0301", "--rhythm-unit"));
+        assert!(
+            d.message.contains("480") && d.message.contains("9607679205057059/13"),
+            "the message names the unit and the PPQN"
+        );
+    }
+
     // ── geometry from the master timeline ────────────────────────────────────
 
     #[test]
