@@ -1279,7 +1279,7 @@ impl CockpitApp {
         };
         visuals.panel_fill = color32(self.theme.surface);
         visuals.window_fill = color32(self.theme.panel);
-        visuals.window_stroke = egui::Stroke::new(1.0, color32(self.theme.stroke));
+        visuals.window_stroke = egui::Stroke::new(1.0_f32, color32(self.theme.stroke));
         visuals.selection.bg_fill = color32(self.theme.accent);
         visuals.hyperlink_color = color32(self.theme.accent);
         ctx.set_visuals(visuals);
