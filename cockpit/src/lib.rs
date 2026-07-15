@@ -45,9 +45,11 @@ use griff_ui_core::{
     CorpusStats, Intent, PianoRollView, Step, ViewContext, Viewport,
 };
 
+pub mod audio;
 pub mod generation;
 pub mod swang;
 
+use audio::Synth;
 use generation::{GeneratePanel, KeptProvenance};
 use swang::SwangPanel;
 
@@ -510,6 +512,9 @@ pub struct CockpitApp {
     /// The palette every cell — and the egui chrome around it — resolves through
     /// (ADR-0028). Owned, not global: the renderer never invents a colour.
     theme: Theme,
+    /// The playback voice: as the playhead crosses a note's onset it blips that
+    /// pitch. Sounds on the web target only; a native no-op (see [`audio`]).
+    synth: Synth,
 }
 
 /// A single-track view of `score`: just `track`, so the roll shows one part
@@ -520,6 +525,25 @@ fn single_track_score(score: &Score, track: usize) -> Score {
         sub.tracks = vec![one];
     }
     sub
+}
+
+/// The pitches whose onset falls in the half-open tick span `[prev, now)` —
+/// every note the playhead crossed this frame, across all of the view's lanes.
+///
+/// Half-open by design: a frame advances the playhead from `prev` to `now`, and
+/// the next frame's `prev` is this one's `now`, so an onset that lands exactly
+/// on a frame boundary is counted once, not twice or never. Onsets, not spans:
+/// this slice pips each note's start, it does not sustain it (a note's `end` is
+/// ignored). Ordering follows lane then in-lane onset — a lane's notes are
+/// already onset-sorted — which is stable but carries no audible meaning when
+/// several onsets share a tick.
+fn onsets_crossed(view: &PianoRollView, prev: u32, now: u32) -> Vec<u8> {
+    view.lanes
+        .iter()
+        .flat_map(|lane| &lane.notes)
+        .filter(|note| note.onset >= prev && note.onset < now)
+        .map(|note| note.pitch)
+        .collect()
 }
 
 /// Each track's display name (`track N` when unnamed), in order — the labels for
@@ -568,6 +592,7 @@ impl CockpitApp {
             #[cfg(not(target_arch = "wasm32"))]
             out_dir: PathBuf::from("keeps"),
             theme: Theme::dark(),
+            synth: Synth::new(),
         }
     }
 
@@ -784,8 +809,9 @@ impl CockpitApp {
     }
 
     /// Hands the last kept `.mid` to the OS default handler — the cheap way to
-    /// *hear* a candidate (a notation editor or DAW is already registered for
-    /// `.mid`). The cockpit does not synthesise audio.
+    /// *hear a candidate in full* (a notation editor or DAW is already
+    /// registered for `.mid`). The native cockpit's own playback is silent; its
+    /// blip-per-onset voice ([`audio`]) is the web front's (see [`Self::sound_onsets`]).
     #[cfg(not(target_arch = "wasm32"))]
     fn open_keep(&mut self, i: usize) {
         let outcome = self
@@ -1466,6 +1492,18 @@ impl CockpitApp {
         quit
     }
 
+    /// Blips every note whose onset the playhead crossed this frame — the ticks
+    /// in the half-open span `[prev, now)` the last [`Viewport::advance_playback`]
+    /// stepped over.
+    ///
+    /// The displayed view is a single track ([`single_track_score`]), so this
+    /// sounds the part on screen — what the playhead is visibly sweeping.
+    fn sound_onsets(&mut self, prev: u32, now: u32) {
+        for pitch in onsets_crossed(&self.view, prev, now) {
+            self.synth.note_on(pitch);
+        }
+    }
+
     /// Resolves and paints the scene into `ui`.
     fn paint(&mut self, ui: &egui::Ui) {
         let rect = ui.max_rect();
@@ -1675,7 +1713,9 @@ impl eframe::App for CockpitApp {
         }
         if self.vp.playing {
             let dt = f64::from(ctx.input(|i| i.stable_dt)).min(0.1);
+            let prev = self.vp.play_tick;
             self.vp.advance_playback(dt, &self.ctx);
+            self.sound_onsets(prev, self.vp.play_tick);
             ctx.request_repaint();
         }
         let focus = egui::TopBottomPanel::top("toolbar")
@@ -1700,9 +1740,9 @@ impl eframe::App for CockpitApp {
     }
 }
 
-/// Hands `path` to the OS's default handler for its type. The cockpit does not
-/// synthesise audio: hearing a kept `.mid` means opening it in whatever the user
-/// already has registered (a notation editor, a DAW).
+/// Hands `path` to the OS's default handler for its type. The native cockpit
+/// does not synthesise audio, so hearing a kept `.mid` in full means opening it
+/// in whatever the user already has registered (a notation editor, a DAW).
 ///
 /// # Errors
 /// A message when the handler cannot be spawned.
@@ -1957,6 +1997,68 @@ mod tests {
     use eframe::egui::Shape;
     use griff_core::classify::BarClass;
     use griff_ui_core::scene::CellRole;
+    use griff_ui_core::{Lane, NoteRect};
+
+    /// A two-lane view: pitch 60 at tick 0, then pitches 64 and 67 both at tick
+    /// 480 — enough to probe the onset scan's boundaries and its lane order.
+    fn onset_probe_view() -> PianoRollView {
+        PianoRollView {
+            ppq: 480,
+            tick_start: 0,
+            tick_end: 1920,
+            low_pitch: 48,
+            high_pitch: 72,
+            bar_lines: vec![0, 960, 1920],
+            tempo_bpm: 120.0,
+            bar_count: 2,
+            lanes: vec![
+                Lane {
+                    name: "lead".to_owned(),
+                    notes: vec![
+                        NoteRect {
+                            onset: 0,
+                            end: 120,
+                            pitch: 60,
+                        },
+                        NoteRect {
+                            onset: 480,
+                            end: 600,
+                            pitch: 64,
+                        },
+                    ],
+                },
+                Lane {
+                    name: "harmony".to_owned(),
+                    notes: vec![NoteRect {
+                        onset: 480,
+                        end: 560,
+                        pitch: 67,
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn onsets_crossed_span_is_half_open() {
+        let view = onset_probe_view();
+        // `[0, 480)` fires the onset at 0 but not the one at 480 (excluded).
+        assert_eq!(onsets_crossed(&view, 0, 480), vec![60]);
+        // The tick-480 onsets fire on the next frame, in lane order.
+        assert_eq!(onsets_crossed(&view, 480, 960), vec![64, 67]);
+        // A span that steps over no onset is silent.
+        assert!(onsets_crossed(&view, 600, 900).is_empty());
+    }
+
+    #[test]
+    fn adjacent_frames_sound_each_onset_exactly_once() {
+        // Two frames meeting at tick 480 must not double-count the onsets there:
+        // half-open `[prev, now)` makes this frame's `now` next frame's `prev`.
+        let view = onset_probe_view();
+        let mut sounded = onsets_crossed(&view, 0, 480);
+        sounded.extend(onsets_crossed(&view, 480, 1920));
+        assert_eq!(sounded, vec![60, 64, 67]);
+    }
 
     /// Every fill the painter emitted in one frame.
     fn painted_fills(shapes: &[ClippedShape]) -> HashSet<(u8, u8, u8)> {

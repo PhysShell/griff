@@ -52,6 +52,10 @@ js-sys               = "0.3"
 web-sys              = { version = "0.3", features = [
     "Blob", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Navigator",
     "Url", "Window", "console",
+    # Web Audio — the cockpit's basic playback voice (`audio.rs`): a sine blip
+    # per note onset. `BaseAudioContext` carries create_*/current_time/destination.
+    "AudioContext", "BaseAudioContext", "AudioNode", "AudioDestinationNode",
+    "AudioParam", "GainNode", "OscillatorNode", "OscillatorType",
     # OPFS corpus persistence (ADR-0027 §3); the writable stream needs
     # `--cfg=web_sys_unstable_apis` (set in build-web.sh).
     "StorageManager", "FileSystemDirectoryHandle", "FileSystemFileHandle",
