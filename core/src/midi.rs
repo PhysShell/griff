@@ -841,6 +841,23 @@ mod tests {
         );
     }
 
+    /// F-002's second bite, from the gate's second smoke run: midly parses
+    /// **every** `MThd` chunk it meets through `Header::read` (`Chunk::read`
+    /// in `smf.rs`), not only the first — so a second header chunk deeper in
+    /// the stream reaches the same overflowing negate, and a guard on byte
+    /// 12 of the first header guards nothing. The guard now walks chunk
+    /// boundaries exactly the way midly does.
+    #[test]
+    fn regression_f002_smpte_fps_min_in_a_later_header_chunk() {
+        let panic_mid: &[u8] =
+            b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x00\x60MThd\x00\x00\x00\x06\x00\x00\x00\x01\x80\x00";
+        let result = import_score(panic_mid);
+        assert!(
+            matches!(result, Err(MidiError::SmpteTimingUnsupported)),
+            "a later header chunk must meet the same typed error, got {result:?}",
+        );
+    }
+
     #[test]
     fn bar_ticks_degenerate_returns_typed_error() {
         let sig = TimeSignature {
