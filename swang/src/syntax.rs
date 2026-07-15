@@ -126,7 +126,8 @@ impl fmt::Display for AstError {
 
 impl Error for AstError {}
 
-/// A pinned language level: `1..=`[`LANGUAGE_LEVEL`], valid by construction.
+/// A pinned language level, valid by construction: nonzero and at most
+/// [`LANGUAGE_LEVEL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Level(u32);
 
@@ -135,9 +136,11 @@ impl Level {
     ///
     /// # Errors
     /// [`AstError::UnsupportedLevel`] for zero or a newer level.
-    pub fn new(level: u32) -> Result<Self, AstError> {
-        let _ = level;
-        unimplemented!("S16 Phase 3: valid-by-construction AST")
+    pub const fn new(level: u32) -> Result<Self, AstError> {
+        if level == 0 || level > LANGUAGE_LEVEL {
+            return Err(AstError::UnsupportedLevel { level });
+        }
+        Ok(Self(level))
     }
 
     /// The raw level.
@@ -158,8 +161,18 @@ impl Ident {
     /// [`AstError::InvalidIdent`] for anything the lexer would not read as
     /// one word.
     pub fn new(text: &str) -> Result<Self, AstError> {
-        let _ = text;
-        unimplemented!("S16 Phase 3: valid-by-construction AST")
+        let invalid = || AstError::InvalidIdent {
+            text: text.to_owned(),
+        };
+        let mut chars = text.chars();
+        let first = chars.next().ok_or_else(invalid)?;
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            return Err(invalid());
+        }
+        if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(invalid());
+        }
+        Ok(Self(text.to_owned()))
     }
 
     /// The identifier's text.
@@ -180,8 +193,12 @@ impl StringLiteral {
     /// # Errors
     /// [`AstError::InvalidStringLiteral`] for a quote or a line break.
     pub fn new(text: &str) -> Result<Self, AstError> {
-        let _ = text;
-        unimplemented!("S16 Phase 3: valid-by-construction AST")
+        if text.contains('"') || text.contains('\n') {
+            return Err(AstError::InvalidStringLiteral {
+                text: text.to_owned(),
+            });
+        }
+        Ok(Self(text.to_owned()))
     }
 
     /// The literal's content, without quotes.
@@ -203,8 +220,10 @@ impl KernelLiteral {
     /// [`AstError::InvalidKernel`] carrying the registry code the parser
     /// would raise for the same text.
     pub fn new(text: &str) -> Result<Self, AstError> {
-        let _ = text;
-        unimplemented!("S16 Phase 3: valid-by-construction AST")
+        match kernel_flaw(text) {
+            Some((code, message)) => Err(AstError::InvalidKernel { code, message }),
+            None => Ok(Self(text.to_owned())),
+        }
     }
 
     /// The literal's text.
@@ -245,7 +264,7 @@ pub struct Diagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     /// The header's language level.
-    pub level: u32,
+    pub level: Level,
     /// The program's single pattern definition.
     pub pattern: PatternDef,
 }
@@ -258,13 +277,13 @@ pub struct Program {
 /// pipeline shape the demo earned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternDef {
-    /// The pattern's name: ASCII `[A-Za-z_][A-Za-z0-9_]*`.
-    pub name: String,
+    /// The pattern's name.
+    pub name: Ident,
     /// The `ascii` kernel literal, exactly as written between the quotes
-    /// (`X.X/XX./.XX`). Validated at parse time with the transport's own
-    /// codes: `SWG0101` ragged, `SWG0102` foreign cell, `SWG0103`
-    /// whitespace, `SWG0307` empty.
-    pub kernel: String,
+    /// (`X.X/XX./.XX`). Validated with the transport's own codes:
+    /// `SWG0101` ragged, `SWG0102` foreign cell, `SWG0103` whitespace,
+    /// `SWG0307` empty.
+    pub kernel: KernelLiteral,
     /// `|> fractalize ...`
     pub fractalize: Fractalize,
     /// `|> linearize ...`
@@ -327,10 +346,8 @@ pub struct MapRhythm {
 /// the bar geometry lives in the seed score, not in the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unit {
-    /// The note value's numerator.
-    pub numerator: u64,
-    /// The note value's denominator.
-    pub denominator: u64,
+    numerator: u64,
+    denominator: u64,
 }
 
 impl Unit {
@@ -338,9 +355,14 @@ impl Unit {
     ///
     /// # Errors
     /// [`AstError::ZeroUnitPart`] when either side is zero.
-    pub fn new(numerator: u64, denominator: u64) -> Result<Self, AstError> {
-        let _ = (numerator, denominator);
-        unimplemented!("S16 Phase 3: valid-by-construction AST")
+    pub const fn new(numerator: u64, denominator: u64) -> Result<Self, AstError> {
+        if numerator == 0 || denominator == 0 {
+            return Err(AstError::ZeroUnitPart);
+        }
+        Ok(Self {
+            numerator,
+            denominator,
+        })
     }
 
     /// The note value's numerator.
@@ -366,7 +388,7 @@ impl Unit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Generate {
     /// The seed score path.
-    pub source: String,
+    pub source: StringLiteral,
     /// Bars to generate; the palette rotates, never stretches (spec §1.11).
     pub bars: u64,
     /// The generation seed — independent of the pruning seed by law.
@@ -376,7 +398,7 @@ pub struct Generate {
     /// The explicit strategy policy (spec §3.3, §3.5 law 6).
     pub strategy: StrategyPolicy,
     /// The corpus directory, when the program declares one.
-    pub corpus: Option<String>,
+    pub corpus: Option<StringLiteral>,
 }
 
 /// The strategy policy is explicit in the AST (spec §3.3): the audible
@@ -413,7 +435,7 @@ pub struct Export {
     /// The output format.
     pub format: ExportFormat,
     /// The output path.
-    pub path: String,
+    pub path: StringLiteral,
 }
 
 /// The output formats a program may name. One entry so far; an unknown name
@@ -505,7 +527,15 @@ fn span_of(start: usize, end: usize) -> Span {
 /// closed word set, `SWG0403` missing required word, `SWG0404` repeated
 /// word).
 pub fn parse(source: &str) -> Result<Program, Vec<Diagnostic>> {
-    let level = header_level(source).map_err(|d| vec![d])?;
+    // `header_level` already enforced 1..=LANGUAGE_LEVEL; the map_err is
+    // defense in depth, not a reachable path.
+    let level = Level::new(header_level(source).map_err(|d| vec![d])?).map_err(|e| {
+        vec![Diagnostic {
+            code: "SWG0002",
+            span: span_of(0, 0),
+            message: e.to_string(),
+        }]
+    })?;
     let body_from = source
         .as_bytes()
         .iter()
@@ -535,7 +565,7 @@ pub fn format(program: &Program) -> String {
         .corpus
         .as_ref()
         .map_or_else(String::new, |corpus| {
-            format!("        corpus \"{corpus}\"\n")
+            format!("        corpus \"{}\"\n", corpus.as_str())
         });
     format!(
         "swang {level}\n\
@@ -555,22 +585,22 @@ pub fn format(program: &Program) -> String {
          \x20   }}\n\
          \x20   |> export {export} \"{path}\"\n\
          }}\n",
-        level = program.level,
-        name = p.name,
-        kernel = p.kernel,
+        level = program.level.get(),
+        name = p.name.as_str(),
+        kernel = p.kernel.as_str(),
         depth = p.fractalize.depth,
         max_cells = p.fractalize.max_cells,
         traversal = traversal_word(p.linearize.traversal),
-        numerator = p.map_rhythm.unit.numerator,
-        denominator = p.map_rhythm.unit.denominator,
+        numerator = p.map_rhythm.unit.numerator(),
+        denominator = p.map_rhythm.unit.denominator(),
         tail = tail_word(p.map_rhythm.tail),
-        source = p.generate.source,
+        source = p.generate.source.as_str(),
         bars = p.generate.bars,
         seed = p.generate.seed,
         candidates = p.generate.candidates,
         strategy = strategy_word(p.generate.strategy),
         export = export_word(p.export.format),
-        path = p.export.path,
+        path = p.export.path.as_str(),
     )
 }
 
@@ -855,8 +885,15 @@ impl Parser {
         let generate = parse_generate(generate_entry)?;
         let export = parse_export(export_entry)?;
 
+        let name = Ident::new(&name.text).map_err(|e| Diagnostic {
+            // The lexer reads exactly the identifier charset; defensive.
+            code: "SWG0401",
+            span: name.span,
+            message: e.to_string(),
+        })?;
+
         Ok(PatternDef {
-            name: name.text,
+            name,
             kernel: ascii,
             fractalize,
             linearize,
@@ -867,7 +904,7 @@ impl Parser {
     }
 
     /// `ascii "<literal>"` — the block's first element.
-    fn parse_ascii(&mut self) -> Result<String, Diagnostic> {
+    fn parse_ascii(&mut self) -> Result<KernelLiteral, Diagnostic> {
         match self.peek() {
             Some(t) if t.kind == TokenKind::Word && t.text == "ascii" => {
                 self.next();
@@ -882,8 +919,18 @@ impl Parser {
             None => return Err(self.unexpected_end()),
         }
         let literal = self.expect_kind(TokenKind::Str, "a kernel literal")?;
-        validate_kernel(&literal.text, literal.span)?;
-        Ok(literal.text)
+        KernelLiteral::new(&literal.text).map_err(|e| match e {
+            AstError::InvalidKernel { code, message } => Diagnostic {
+                code,
+                span: literal.span,
+                message,
+            },
+            other => Diagnostic {
+                code: "SWG0401",
+                span: literal.span,
+                message: other.to_string(),
+            },
+        })
     }
 
     /// Collects raw `|> word args…` entries up to the pattern's `}`.
@@ -1230,9 +1277,15 @@ fn strategy_value(token: &Token) -> Result<StrategyPolicy, Diagnostic> {
     )
 }
 
-fn string_value(token: &Token, what: &str) -> Result<String, Diagnostic> {
+fn string_value(token: &Token, what: &str) -> Result<StringLiteral, Diagnostic> {
     if token.kind == TokenKind::Str {
-        Ok(token.text.clone())
+        // The lexer cannot produce a quote or a newline inside a literal;
+        // the map_err is defensive.
+        StringLiteral::new(&token.text).map_err(|e| Diagnostic {
+            code: "SWG0401",
+            span: token.span,
+            message: e.to_string(),
+        })
     } else {
         Err(Diagnostic {
             code: "SWG0401",
@@ -1356,47 +1409,35 @@ fn unit_value(token: &Token) -> Result<Unit, Diagnostic> {
     let denominator: u64 = denominator
         .parse()
         .map_err(|_| malformed(format!("unit {} is out of range", token.text)))?;
-    if numerator == 0 || denominator == 0 {
-        return Err(malformed(format!("unit {} has a zero part", token.text)));
-    }
-    Ok(Unit {
-        numerator,
-        denominator,
-    })
+    Unit::new(numerator, denominator)
+        .map_err(|_| malformed(format!("unit {} has a zero part", token.text)))
 }
 
 // ── the kernel literal ───────────────────────────────────────────────────
 
-/// Validates an `ascii` literal with the transport's own codes and order:
+/// The transport's own kernel checks, in the transport's own order:
 /// whitespace (`SWG0103`), empty rows (`SWG0307`), shape (`SWG0101`), cells
-/// (`SWG0102`). The span is the whole quoted literal.
-fn validate_kernel(literal: &str, span: Span) -> Result<(), Diagnostic> {
-    let fail = |code: &'static str, message: String| Diagnostic {
-        code,
-        span,
-        message,
-    };
+/// (`SWG0102`). One validation path serves the parser and
+/// [`KernelLiteral::new`] alike.
+fn kernel_flaw(literal: &str) -> Option<(&'static str, String)> {
     if literal
         .chars()
         .any(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
     {
-        return Err(fail(
+        return Some((
             "SWG0103",
             "whitespace inside the kernel literal; rows are separated by `/` alone".to_owned(),
         ));
     }
     let rows: Vec<&str> = literal.split('/').collect();
     if rows.iter().any(|row| row.is_empty()) {
-        return Err(fail(
-            "SWG0307",
-            "empty kernel literal or empty row".to_owned(),
-        ));
+        return Some(("SWG0307", "empty kernel literal or empty row".to_owned()));
     }
     let expected = rows.first().map_or(0, |row| row.chars().count());
     for (index, row) in rows.iter().enumerate() {
         let got = row.chars().count();
         if got != expected {
-            return Err(fail(
+            return Some((
                 "SWG0101",
                 format!("ragged kernel: row {index} has {got} cells, expected {expected}"),
             ));
@@ -1404,13 +1445,13 @@ fn validate_kernel(literal: &str, span: Span) -> Result<(), Diagnostic> {
     }
     for (index, row) in rows.iter().enumerate() {
         if let Some((col, cell)) = row.chars().enumerate().find(|&(_, c)| c != 'X' && c != '.') {
-            return Err(fail(
+            return Some((
                 "SWG0102",
                 format!("invalid kernel cell {cell:?} at row {index}, col {col}: only `X` and `.`"),
             ));
         }
     }
-    Ok(())
+    None
 }
 
 #[cfg(test)]
@@ -1458,10 +1499,10 @@ pattern dgd_fractal {
     /// The reference program's AST, constructed literally.
     fn reference_ast() -> Program {
         Program {
-            level: 1,
+            level: Level::new(1).expect("this build's level"),
             pattern: PatternDef {
-                name: "dgd_fractal".to_string(),
-                kernel: "X.X/XX./.XX".to_string(),
+                name: Ident::new("dgd_fractal").expect("a name"),
+                kernel: KernelLiteral::new("X.X/XX./.XX").expect("the spec kernel"),
                 fractalize: Fractalize {
                     depth: 1,
                     max_cells: 4096,
@@ -1474,24 +1515,23 @@ pattern dgd_fractal {
                     traversal: Traversal::Snake,
                 },
                 map_rhythm: MapRhythm {
-                    unit: Unit {
-                        numerator: 1,
-                        denominator: 16,
-                    },
+                    unit: Unit::new(1, 16).expect("a sixteenth"),
                     tail: TailPolicy::RestPad,
                 },
                 generate: Generate {
-                    source: "corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5"
-                        .to_string(),
+                    source: StringLiteral::new(
+                        "corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5",
+                    )
+                    .expect("a path"),
                     bars: 8,
                     seed: 42,
                     candidates: 2,
                     strategy: StrategyPolicy::Named(StrategyName::RepeatVariation),
-                    corpus: Some("corpus".to_string()),
+                    corpus: Some(StringLiteral::new("corpus").expect("a path")),
                 },
                 export: Export {
                     format: ExportFormat::Midi,
-                    path: "dgd_fractal_dense.mid".to_string(),
+                    path: StringLiteral::new("dgd_fractal_dense.mid").expect("a path"),
                 },
             },
         }
@@ -1903,8 +1943,14 @@ pattern p {{
     #[test]
     fn the_ast_refuses_values_the_grammar_could_not_reparse() {
         // Accept the canonical forms...
-        assert_eq!(Ident::new("dgd_fractal").expect("valid").as_str(), "dgd_fractal");
-        assert_eq!(Ident::new("_").expect("an underscore is a name").as_str(), "_");
+        assert_eq!(
+            Ident::new("dgd_fractal").expect("valid").as_str(),
+            "dgd_fractal"
+        );
+        assert_eq!(
+            Ident::new("_").expect("an underscore is a name").as_str(),
+            "_"
+        );
         assert_eq!(
             KernelLiteral::new("X.X/XX./.XX").expect("valid").as_str(),
             "X.X/XX./.XX"
@@ -1915,17 +1961,20 @@ pattern p {{
                 .as_str(),
             "with spaces/and slashes.gp5"
         );
-        assert_eq!(StringLiteral::new("").expect("empty is lexable").as_str(), "");
+        assert_eq!(
+            StringLiteral::new("").expect("empty is lexable").as_str(),
+            ""
+        );
         let unit = Unit::new(3, 7).expect("odd but nonzero");
         assert_eq!((unit.numerator(), unit.denominator()), (3, 7));
         assert_eq!(Level::new(1).expect("this build's level").get(), 1);
 
         // ...and bounce everything format() could emit but parse() would
         // refuse or reread differently.
-        assert!(Ident::new("not a name").is_err(), "spaces never lex as one word");
-        assert!(Ident::new("").is_err());
-        assert!(Ident::new("1abc").is_err(), "a digit starts a number, not a name");
-        assert!(Ident::new("имя").is_err(), "ASCII only — the determinism law");
+        Ident::new("not a name").expect_err("spaces never lex as one word");
+        Ident::new("").expect_err("an empty name");
+        Ident::new("1abc").expect_err("a digit starts a number, not a name");
+        Ident::new("имя").expect_err("ASCII only — the determinism law");
         assert_eq!(
             KernelLiteral::new("X.X/XX").expect_err("ragged"),
             AstError::InvalidKernel {
@@ -1934,23 +1983,17 @@ pattern p {{
             },
             "the constructor speaks the parser's own registry"
         );
-        assert!(KernelLiteral::new("X.O").is_err(), "foreign cell");
-        assert!(KernelLiteral::new("").is_err(), "empty literal");
-        assert!(
-            StringLiteral::new("a\"b.gp5").is_err(),
-            "a quote would cut the literal short"
-        );
-        assert!(StringLiteral::new("a\nb").is_err(), "a newline never lexes");
-        assert!(Unit::new(0, 16).is_err());
-        assert!(Unit::new(1, 0).is_err());
+        KernelLiteral::new("X.O").expect_err("foreign cell");
+        KernelLiteral::new("").expect_err("empty literal");
+        StringLiteral::new("a\"b.gp5").expect_err("a quote would cut the literal short");
+        StringLiteral::new("a\nb").expect_err("a newline never lexes");
+        Unit::new(0, 16).expect_err("a zero numerator");
+        Unit::new(1, 0).expect_err("a zero denominator");
         assert_eq!(
             Level::new(0).expect_err("levels are nonzero"),
             AstError::UnsupportedLevel { level: 0 }
         );
-        assert!(
-            Level::new(LANGUAGE_LEVEL + 1).is_err(),
-            "newer than this build supports"
-        );
+        Level::new(LANGUAGE_LEVEL + 1).expect_err("newer than this build supports");
     }
 
     #[test]
@@ -1961,6 +2004,46 @@ pattern p {{
         program.pattern.fractalize.prune = None;
         program.pattern.generate.strategy = StrategyPolicy::Auto;
         program.pattern.generate.corpus = None;
+        let roundtripped = parse(&format(&program)).expect("formatted text parses");
+        assert_eq!(roundtripped, program);
+    }
+
+    #[test]
+    fn parse_format_roundtrips_any_constructible_program() {
+        // The law's whole point (#118 review): it holds for every AST the
+        // types let exist — this one was never near a parser, and it is
+        // deliberately awkward everywhere the types allow awkward.
+        let program = Program {
+            level: Level::new(1).expect("level"),
+            pattern: PatternDef {
+                name: Ident::new("_").expect("an underscore is a name"),
+                kernel: KernelLiteral::new("X").expect("one cell is a kernel"),
+                fractalize: Fractalize {
+                    depth: 0,
+                    max_cells: 1,
+                    prune: None,
+                },
+                linearize: Linearize {
+                    traversal: Traversal::RowMajor,
+                },
+                map_rhythm: MapRhythm {
+                    unit: Unit::new(3, 7).expect("odd but nonzero"),
+                    tail: TailPolicy::Reject,
+                },
+                generate: Generate {
+                    source: StringLiteral::new("").expect("empty is lexable"),
+                    bars: 0,
+                    seed: u64::MAX,
+                    candidates: 0,
+                    strategy: StrategyPolicy::Auto,
+                    corpus: None,
+                },
+                export: Export {
+                    format: ExportFormat::Midi,
+                    path: StringLiteral::new("out with spaces.mid").expect("a path"),
+                },
+            },
+        };
         let roundtripped = parse(&format(&program)).expect("formatted text parses");
         assert_eq!(roundtripped, program);
     }
