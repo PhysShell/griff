@@ -1845,6 +1845,7 @@ version = "0.1.0"
 dependencies = [
  "griff-core",
  "griff-pattern",
+ "serde_json",
 ]
 
 [[package]]

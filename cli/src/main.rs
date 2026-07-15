@@ -153,7 +153,7 @@ enum Command {
         rhythm_seed: Option<u64>,
         /// How the expansion reads into a line: row-major or snake.
         #[arg(long, value_name = "ORDER", requires = "rhythm_kernel")]
-        rhythm_traversal: Option<rhythm_pattern::TraversalChoice>,
+        rhythm_traversal: Option<rhythm_pattern::CliTraversal>,
         /// Time unit per pattern slot, e.g. 1/16.
         #[arg(long, value_name = "NOTE", requires = "rhythm_kernel")]
         rhythm_unit: Option<String>,
@@ -162,7 +162,7 @@ enum Command {
         rhythm_max_cells: Option<u64>,
         /// Incomplete-final-bar policy: reject (default) or rest-pad.
         #[arg(long, value_name = "POLICY", requires = "rhythm_kernel")]
-        rhythm_tail: Option<rhythm_pattern::TailChoice>,
+        rhythm_tail: Option<rhythm_pattern::CliTail>,
         /// Write the versioned expansion artifact (JSON) to this path.
         #[arg(long, value_name = "PATH", requires = "rhythm_kernel")]
         emit_rhythm_expansion: Option<PathBuf>,
@@ -316,10 +316,11 @@ fn run() -> Result<(), CliError> {
                 fractal_depth: rhythm_fractal_depth.unwrap_or(0),
                 density_bps: rhythm_density_bps,
                 rhythm_seed,
-                traversal: rhythm_traversal.unwrap_or(rhythm_pattern::TraversalChoice::RowMajor),
+                traversal: rhythm_traversal
+                    .map_or(rhythm_pattern::TraversalChoice::RowMajor, Into::into),
                 unit: rhythm_unit.unwrap_or_else(|| "1/16".to_owned()),
                 max_cells: rhythm_max_cells.unwrap_or(4096),
-                tail: rhythm_tail.unwrap_or(rhythm_pattern::TailChoice::Reject),
+                tail: rhythm_tail.map_or(rhythm_pattern::TailChoice::Reject, Into::into),
             });
             cmd_generate(
                 &input,
