@@ -77,10 +77,10 @@ differ structurally. Only normalized invariants are checked.
    traversals cover every cell; every lowered note is one unit long, on a
    slot boundary, inside its bar.
 
-Targets are introduced incrementally — only `midi_import` and
-`midi_roundtrip` are implementable today (the rest depend on types that do
-not exist yet) and so are scaffolded in `fuzz/fuzz_targets/` now; the others
-land with their stages.
+All eleven registered targets are implemented in `fuzz/fuzz_targets/`;
+each landed with its stage (see the priority map below). New subsystems
+keep the pattern: the target lands in the same stage as the code it
+fuzzes.
 
 ## Priority and stage mapping
 
@@ -112,11 +112,17 @@ priority onto canonical stages:
 
 ## CI policy
 
-- **Blocking (every PR):** bounded smoke fuzz, ~60 s per implemented
-  target, plus a full replay of the committed regression corpus. Fast and
-  deterministic.
+- **Blocking (every PR):** the `fuzz` job in
+  [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — an
+  eleven-way matrix, one job per implemented target: a `cargo check
+  --bins` under the crate's nightly pin (signature rot is what actually
+  bit first — the crate sat silently broken from S16 Phase 2 until Phase
+  3 tried to compile it), then ~60 s of bounded libFuzzer smoke with the
+  committed corpus replayed, under `-timeout=60 -rss_limit_mb=4096
+  -malloc_limit_mb=2048`.
 - **Non-blocking (scheduled / nightly):** deep fuzzing with a large time
   budget; new crashes are minimized and filed as issues + regression seeds.
+  Not yet wired — the standing prescription.
 - Deep fuzzing is non-deterministic and is deliberately kept off the
   blocking path.
 
