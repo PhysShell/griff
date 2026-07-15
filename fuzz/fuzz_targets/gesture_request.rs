@@ -114,6 +114,10 @@ fuzz_target!(|input: FuzzInput| {
         } else {
             vec![RhythmTemplate::from_durations(&rhythm)]
         },
+        // This target fuzzes the automatic corpus/source path; the explicit
+        // palette has its own scheduler and its own target
+        // (`pattern_expansion`).
+        explicit_rhythms: None,
         strategy,
     };
     let control = GestureControl {

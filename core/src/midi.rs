@@ -63,6 +63,14 @@ pub enum MidiError {
         ppqn: u16,
     },
 
+    /// The event span implies more bars than [`MAX_MASTER_BARS`] (F-004).
+    ///
+    /// A structurally valid file — typically a tiny PPQN plus a huge delta —
+    /// whose tick span would materialize an unbounded number of bars. Bounded
+    /// and rejected instead of allocated.
+    #[error("the event span implies over {MAX_MASTER_BARS} bars; the file is degenerate")]
+    TooManyBars,
+
     /// Writing MIDI bytes failed.
     #[error("MIDI write error: {0}")]
     Write(Box<io::Error>),
@@ -92,7 +100,48 @@ impl From<ValidationError> for MidiError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ppqn(pub u16);
 
+/// The most bars any single track or the master timeline may materialize
+/// (F-004). A tiny PPQN plus a large delta can imply billions of bars from a
+/// structurally valid file; this bounds every per-bar loop to a memory
+/// ceiling of tens of megabytes. Generous for real music — a 4/4 piece this
+/// long runs for weeks — so it never rejects a legitimate score.
+const MAX_MASTER_BARS: usize = 1_000_000;
+
 // ── ppqn ──────────────────────────────────────────────────────────────────────
+
+/// F-002 (`docs/fuzzing.md`): midly 0.5.3 negates the SMPTE fps byte before
+/// validating it — an overflow panic on fps == -128 — and it parses **every**
+/// `MThd` chunk it meets as a header (`Chunk::read`), not only the first.
+/// Walk the chunk boundaries exactly the way midly does and report whether
+/// any header chunk's division carries the timecode bit. SMPTE timing is
+/// unsupported anyway (see [`extract_ppqn`]), so rejecting on this walk is
+/// the same typed error, earlier — before the panicking negate can run.
+///
+/// The walk advances by `4 (magic) + 4 (length) + length` per chunk, so it
+/// always makes progress and never reads inside chunk payloads (a stray
+/// `MThd` in track data is not a chunk boundary — midly never parses it, and
+/// neither does this).
+fn smpte_division_reachable(data: &[u8]) -> bool {
+    let mut at = 0_usize;
+    while let Some(len_bytes) = at
+        .checked_add(4)
+        .and_then(|magic_end| data.get(magic_end..magic_end.saturating_add(4)))
+    {
+        let magic = data.get(at..at.saturating_add(4));
+        let len: [u8; 4] = len_bytes.try_into().unwrap_or([0; 4]);
+        if magic == Some(b"MThd")
+            && data
+                .get(at.saturating_add(12))
+                .is_some_and(|&b| b & 0x80 != 0)
+        {
+            return true;
+        }
+        at = at
+            .saturating_add(8)
+            .saturating_add(usize::try_from(u32::from_be_bytes(len)).unwrap_or(usize::MAX));
+    }
+    false
+}
 
 fn extract_ppqn(header: Header) -> Result<Ppqn, MidiError> {
     match header.timing {
@@ -272,6 +321,9 @@ fn tempo_to_micros(tempo: Tempo) -> Result<u32, MidiError> {
 /// The returned [`Score`] contains a [`LossReport`] describing any data that
 /// could not be preserved exactly.
 pub fn import_score(data: &[u8]) -> Result<Score, MidiError> {
+    if smpte_division_reachable(data) {
+        return Err(MidiError::SmpteTimingUnsupported);
+    }
     let smf = Smf::parse(data)?;
     let ppqn = extract_ppqn(smf.header)?;
     let (tempos, time_sigs) = collect_global_meta(&smf);
@@ -403,6 +455,9 @@ fn build_master_bars(
         });
 
         index = index.checked_add(1).ok_or(MidiError::TickOverflow)?;
+        if index >= MAX_MASTER_BARS {
+            return Err(MidiError::TooManyBars);
+        }
         bar_start = bar_end;
     }
 
@@ -442,9 +497,17 @@ fn build_score_track(
     // Walk bars and assign notes.
     let mut event_groups: Vec<EventGroup> = Vec::new();
     let mut bar_start: u32 = 0;
+    let mut bars_walked: usize = 0;
     let mut note_iter = sorted_notes.iter().peekable();
 
     while bar_start <= end_tick {
+        // F-004: the same unbounded-bar hazard build_master_bars guards. A
+        // huge delta at a tiny PPQN would walk billions of empty bars here
+        // before the master timeline is ever built.
+        if bars_walked >= MAX_MASTER_BARS {
+            return Err(MidiError::TooManyBars);
+        }
+        bars_walked = bars_walked.saturating_add(1);
         let sig = active_time_sig(time_sigs, bar_start);
         let bt = bar_ticks(sig, ppqn)?;
         let bar_end = bar_start.saturating_add(bt);
@@ -810,6 +873,62 @@ mod tests {
                 })
             ),
             "F-001 input must return DegenerateMeter, got {result:?}",
+        );
+    }
+
+    /// F-002 (`docs/fuzzing.md`): the first smoke run of the fuzz gate found
+    /// that `midly 0.5.3` negates the SMPTE fps byte *before* validating it
+    /// (`Timing::read`, `-(byte as i8)`), which overflows on fps == -128 —
+    /// a debug-profile panic reachable from a 14-byte header whose division
+    /// high byte is `0x80`.
+    ///
+    /// SMPTE timing is unsupported anyway, so the adapter rejects a timecode
+    /// division before midly reads it: the same typed error, earlier.
+    #[test]
+    fn regression_f002_smpte_fps_min_returns_typed_error() {
+        let panic_mid: &[u8] = b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x80\x00";
+        let result = import_score(panic_mid);
+        assert!(
+            matches!(result, Err(MidiError::SmpteTimingUnsupported)),
+            "F-002 input must return SmpteTimingUnsupported, got {result:?}",
+        );
+    }
+
+    /// F-002's second bite, from the gate's second smoke run: midly parses
+    /// **every** `MThd` chunk it meets through `Header::read` (`Chunk::read`
+    /// in `smf.rs`), not only the first — so a second header chunk deeper in
+    /// the stream reaches the same overflowing negate, and a guard on byte
+    /// 12 of the first header guards nothing. The guard now walks chunk
+    /// boundaries exactly the way midly does.
+    #[test]
+    fn regression_f002_smpte_fps_min_in_a_later_header_chunk() {
+        let panic_mid: &[u8] =
+            b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x00\x60MThd\x00\x00\x00\x06\x00\x00\x00\x01\x80\x00";
+        let result = import_score(panic_mid);
+        assert!(
+            matches!(result, Err(MidiError::SmpteTimingUnsupported)),
+            "a later header chunk must meet the same typed error, got {result:?}",
+        );
+    }
+
+    /// F-004 (`docs/fuzzing.md`): the gate's third smoke run drove
+    /// `midi_import` out of memory. A metrical PPQN of 1 plus a ~2-billion-
+    /// tick varlen delta implies ~500 million bars; `build_score_track` (and
+    /// then `build_master_bars`) walked them one allocation at a time. Now
+    /// bounded — a bar count over `MAX_MASTER_BARS` is a typed error, not an
+    /// OOM. The exact 49-byte crasher the gate minimized:
+    #[test]
+    fn regression_f004_tiny_ppqn_huge_delta_is_typed_error_not_oom() {
+        let oom_mid: &[u8] = &[
+            0x4d, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
+            0x4d, 0x54, 0x72, 0x6b, 0x00, 0x00, 0x00, 0x1b, 0x00, 0xd1, 0x58, 0xf6, 0xff, 0xff,
+            0xff, 0x00, 0x00, 0xff, 0x51, 0x03, 0x07, 0x44, 0x20, 0x00, 0x90, 0x3c, 0x64, 0x01,
+            0x80, 0x3c, 0x00, 0x00, 0xff, 0x2f, 0x00,
+        ];
+        let result = import_score(oom_mid);
+        assert!(
+            matches!(result, Err(MidiError::TooManyBars)),
+            "F-004 input must return TooManyBars, got {result:?}",
         );
     }
 

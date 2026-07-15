@@ -22,6 +22,12 @@ arbitrary = { version = "1", features = ["derive"] }
 [dependencies.griff-core]
 path = "../core"
 
+[dependencies.griff-pattern]
+path = "../pattern"
+
+[dependencies.griff-swang]
+path = "../swang"
+
 # Standalone workspace root so the parent workspace lint policy is not
 # inherited (it cannot be satisfied here — see the header comment).
 [workspace]
@@ -88,6 +94,20 @@ bench = false
 [[bin]]
 name  = "gesture_request"
 path  = "fuzz_targets/gesture_request.rs"
+test  = false
+doc   = false
+bench = false
+
+[[bin]]
+name  = "swang_parse"
+path  = "fuzz_targets/swang_parse.rs"
+test  = false
+doc   = false
+bench = false
+
+[[bin]]
+name  = "pattern_expansion"
+path  = "fuzz_targets/pattern_expansion.rs"
 test  = false
 doc   = false
 bench = false

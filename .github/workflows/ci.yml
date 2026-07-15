@@ -4,7 +4,9 @@
 # cockpit alone). The wasm render is checked separately by cockpit-web-test.
 #
 # `fuzz/` is a nightly, non-member crate (ADR-0010), so `--workspace` never
-# reaches it; the fuzz gate stays its own concern.
+# reaches it; the `fuzz` job below is its gate — the crate sat silently
+# broken from S16 Phase 2 until Phase 3's final slice tried to compile it,
+# which is the whole argument for a blocking gate in one anecdote.
 name: ci
 on:
   pull_request:
@@ -96,3 +98,81 @@ jobs:
 
       - name: Build on the MSRV
         run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-targets
+
+  # ADR-0010 / docs/fuzzing.md: bounded smoke fuzz plus a replay of the
+  # committed corpus is a *blocking* PR gate (~60 s per implemented target,
+  # matrixed so wall-clock stays one target's worth). libFuzzer enforces the
+  # no-hang / no-unbounded-alloc half of the oracle via -timeout and the
+  # memory limits; the asserts in each target enforce the rest.
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - midi_import
+          - midi_roundtrip
+          - score_projection
+          - guitar_pro_import
+          - phrase_boundary
+          - generation_request
+          - complement_request
+          - structure_metrics
+          - gesture_request
+          - swang_parse
+          - pattern_expansion
+        include:
+          # F-003 (docs/fuzzing.md): guitarpro-0.4.2 indexes measure headers
+          # by an unvalidated direction index — a panic inside the upstream
+          # crate that no adapter-side pre-validation can reach. Quarantined
+          # to signature-check only, *visibly*, with exit criteria in the
+          # findings registry: an upstream fix or a vendored patch turns the
+          # smoke back on.
+          - target: guitar_pro_import
+            smoke: skip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # fuzz/rust-toolchain.toml pins nightly for the crate itself; the
+      # explicit install keeps the first `cargo +nightly` from surprising us.
+      - name: Install nightly
+        run: rustup toolchain install nightly --profile minimal -c rustfmt -c clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            fuzz/target
+          key: fuzz-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.toml', 'Cargo.lock') }}
+
+      - name: Install cargo-fuzz
+        run: command -v cargo-fuzz || cargo install cargo-fuzz --locked
+
+      # The signatures rot first (see the job comment): a plain check under
+      # the nightly pin catches API drift even before the smoke runs.
+      - name: Signatures stay compiled
+        working-directory: fuzz
+        run: cargo check --bins
+
+      - name: Bounded smoke + corpus replay
+        if: matrix.smoke != 'skip'
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=60 -timeout=60 -rss_limit_mb=4096 -malloc_limit_mb=2048
+
+      # A finding nobody can download is a finding nobody can minimize: keep
+      # the crashing inputs when the smoke fails.
+      - name: Keep any finding
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
