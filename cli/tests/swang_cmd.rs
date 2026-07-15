@@ -444,6 +444,134 @@ fn swang_expand_speaks_program_vocabulary_for_the_rejected_tail() {
     );
 }
 
+// ── build: law 5 (spec §3.5) ────────────────────────────────────────────────
+
+/// A program around the strategy policy, exporting to `export`.
+fn build_program(strategy: &str, export: &Path) -> String {
+    let source = fixture_path("simple_4_4");
+    format!(
+        r#"swang 1
+
+pattern p {{
+    ascii "X.X/XX./.XX"
+    |> fractalize depth 1 max_cells 4096 density 9500bps seed 4
+    |> linearize snake
+    |> map_rhythm unit 1/16 tail rest_pad
+    |> generate {{
+        source "{}"
+        bars 4
+        seed 42
+        candidates 2
+        strategy {strategy}
+    }}
+    |> export midi "{}"
+}}
+"#,
+        source.display(),
+        export.display()
+    )
+}
+
+#[test]
+fn swang_build_under_auto_matches_griff_generate_byte_for_byte() {
+    // Law 5, the auto half: under `strategy auto` and the same seeds, build
+    // produces the same result as the existing `griff generate`.
+    let transport_out = env::temp_dir().join("griff_s16_swang_build_transport.mid");
+    let src = fixture_path("simple_4_4");
+    let transport = griff_raw(&[
+        "generate",
+        src.to_str().unwrap(),
+        transport_out.to_str().unwrap(),
+        "--bars",
+        "4",
+        "--seed",
+        "42",
+        "--candidates",
+        "2",
+        "--rhythm-kernel",
+        "X.X/XX./.XX",
+        "--rhythm-fractal-depth",
+        "1",
+        "--rhythm-density-bps",
+        "9500",
+        "--rhythm-seed",
+        "4",
+        "--rhythm-traversal",
+        "snake",
+        "--rhythm-unit",
+        "1/16",
+        "--rhythm-max-cells",
+        "4096",
+        "--rhythm-tail",
+        "rest-pad",
+    ]);
+    assert!(
+        transport.status.success(),
+        "the transport command must succeed: {}",
+        String::from_utf8_lossy(&transport.stderr)
+    );
+    let expected = fs::read(&transport_out).expect("the transport wrote its MIDI");
+    fs::remove_file(&transport_out).ok();
+
+    let export = env::temp_dir().join("griff_s16_swang_build_auto.mid");
+    let path = script("build_auto", &build_program("auto", &export));
+    let built = griff_raw(&["swang", "build", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let bytes = fs::read(&export).expect("build wrote the program's export");
+    fs::remove_file(&export).ok();
+    assert_eq!(bytes, expected, "auto parity, byte for byte");
+}
+
+#[test]
+fn swang_build_selects_the_named_strategy_and_is_deterministic() {
+    // Law 5, the named half at the CLI: the run says which strategy was
+    // selected, and the same program builds the same bytes twice. The
+    // selection-only law itself is pinned at the core seam
+    // (core/tests/strategy_selection.rs).
+    let export = env::temp_dir().join("griff_s16_swang_build_named.mid");
+    let path = script(
+        "build_named",
+        &build_program("repeat_variation", &export),
+    );
+
+    let first = griff_raw(&["swang", "build", path.to_str().unwrap()]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&first.stdout).contains("RepeatVariation"),
+        "the run names the selected strategy: {}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    let first_bytes = fs::read(&export).expect("build wrote the program's export");
+
+    let second = griff_raw(&["swang", "build", path.to_str().unwrap()]);
+    assert!(second.status.success());
+    let second_bytes = fs::read(&export).expect("second build wrote too");
+    fs::remove_file(&path).ok();
+    fs::remove_file(&export).ok();
+    assert_eq!(first_bytes, second_bytes, "deterministic by law");
+}
+
+#[test]
+fn swang_build_takes_no_output_flag() {
+    // The program is the output's single owner (spec §3.2): build has no
+    // output flag to offer, so clap refuses one.
+    let out = griff_raw(&["swang", "build", "riff.swg", "--output", "elsewhere.mid"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an output flag must be a usage error"
+    );
+}
+
 #[test]
 fn swang_fmt_refuses_what_check_refuses() {
     let path = script("fmt_seedless", SEEDLESS_DENSITY);
