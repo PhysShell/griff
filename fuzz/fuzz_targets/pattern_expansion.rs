@@ -71,21 +71,29 @@ fuzz_target!(|input: FuzzInput| {
         Err(_) => return, // typed refusal — the contract working
     };
 
-    let mut lengths = Vec::new();
+    let expected_cells = expansion
+        .width()
+        .checked_mul(expansion.height())
+        .expect("accepted expansion dimensions fit usize");
+    assert!(
+        u64::try_from(expected_cells).unwrap_or(u64::MAX) <= u64::from(input.max_cells),
+        "the budget law: {expected_cells} cells under a {} budget",
+        input.max_cells
+    );
+    let expected_active = expansion.active_count();
     for traversal in [Traversal::RowMajor, Traversal::Snake] {
         let sequence = linearize(&expansion, traversal);
-        let cells = u64::try_from(sequence.cells().len()).unwrap_or(u64::MAX);
-        assert!(
-            cells <= u64::from(input.max_cells),
-            "the budget law: {cells} cells under a {} budget",
-            input.max_cells
+        assert_eq!(
+            sequence.cells().len(),
+            expected_cells,
+            "a traversal covers every cell of the grid — timed rests included"
         );
-        lengths.push(cells);
+        assert_eq!(
+            sequence.cells().iter().filter(|&&cell| cell).count(),
+            expected_active,
+            "a traversal preserves every onset"
+        );
     }
-    assert_eq!(
-        lengths[0], lengths[1],
-        "both traversals cover every cell of the same grid"
-    );
 
     let sequence = linearize(
         &expansion,
@@ -109,12 +117,18 @@ fuzz_target!(|input: FuzzInput| {
         Ok(templates) => {
             for template in &templates {
                 for note in &template.notes {
-                    assert!(
-                        note.offset.0 < input.bar_duration,
-                        "a note stays in its bar"
-                    );
                     assert_eq!(note.offset.0 % input.unit, 0, "a note sits on a slot");
                     assert_eq!(note.duration.0, input.unit, "a note is one unit long");
+                    let end = note
+                        .offset
+                        .0
+                        .checked_add(note.duration.0)
+                        .expect("an accepted note's end does not overflow");
+                    assert!(
+                        end <= input.bar_duration,
+                        "a note ends inside its bar: {end} > {}",
+                        input.bar_duration
+                    );
                 }
             }
         }

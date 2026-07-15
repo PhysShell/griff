@@ -16,19 +16,35 @@
 //!   * On `Ok`: `format` emits canonical text that reparses to the same AST
 //!     (law 3) and is its own fixed point (law 2).
 
-use griff_swang::syntax::{format, header_level, parse, LANGUAGE_LEVEL};
+use griff_swang::syntax::{format, header_level, parse, Diagnostic, LANGUAGE_LEVEL};
 use libfuzzer_sys::fuzz_target;
 
+/// The one diagnostic contract, applied to the header pre-parser and the
+/// parser alike: a stable `SWG` registry code and a span inside the source.
+fn assert_diagnostic(d: &Diagnostic, len: u32) {
+    assert!(
+        d.code.starts_with("SWG"),
+        "stable registry code, never ad hoc: {}",
+        d.code
+    );
+    assert!(
+        d.span.start <= d.span.end && d.span.end <= len,
+        "the span stays inside the source: {:?} in {len}",
+        d.span
+    );
+}
+
 fuzz_target!(|source: &str| {
+    let len = u32::try_from(source.len()).unwrap_or(u32::MAX);
+
     match header_level(source) {
         Ok(level) => assert!(
             (1..=LANGUAGE_LEVEL).contains(&level),
             "an accepted level is in the supported range"
         ),
-        Err(d) => assert!(d.code.starts_with("SWG"), "typed header code: {}", d.code),
+        Err(d) => assert_diagnostic(&d, len),
     }
 
-    let len = u32::try_from(source.len()).unwrap_or(u32::MAX);
     match parse(source) {
         Ok(program) => {
             let canonical = format(&program);
@@ -47,16 +63,7 @@ fuzz_target!(|source: &str| {
                 "a refusal names at least one diagnostic"
             );
             for d in &diagnostics {
-                assert!(
-                    d.code.starts_with("SWG"),
-                    "stable registry code, never ad hoc: {}",
-                    d.code
-                );
-                assert!(
-                    d.span.start <= d.span.end && d.span.end <= len,
-                    "the span stays inside the source: {:?} in {len}",
-                    d.span
-                );
+                assert_diagnostic(d, len);
             }
         }
     }
