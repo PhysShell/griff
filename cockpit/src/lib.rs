@@ -515,6 +515,11 @@ pub struct CockpitApp {
     /// The playback voice: as the playhead crosses a note's onset it blips that
     /// pitch. Sounds on the web target only; a native no-op (see [`audio`]).
     synth: Synth,
+    /// Playback-speed multiplier over the score's own tempo — `1.0` plays at the
+    /// written BPM, `2.0` at double speed. The toolbar edits it; [`Self::playback_bpm`]
+    /// turns it into the BPM the viewport advances the playhead by. Persists
+    /// across a track switch, resets to `1.0` on a fresh load.
+    tempo_scale: f64,
 }
 
 /// A single-track view of `score`: just `track`, so the roll shows one part
@@ -593,6 +598,7 @@ impl CockpitApp {
             out_dir: PathBuf::from("keeps"),
             theme: Theme::dark(),
             synth: Synth::new(),
+            tempo_scale: 1.0,
         }
     }
 
@@ -638,6 +644,7 @@ impl CockpitApp {
         self.vp = vp;
         self.selected_track = track.min(n.saturating_sub(1));
         self.fitted = false;
+        self.apply_tempo(); // the fresh context carries the score's tempo; re-scale it
     }
 
     /// The source label shown in the window title.
@@ -660,6 +667,7 @@ impl CockpitApp {
         self.form.seed_from(&source);
         self.title = source;
         self.vp.show_inspector = false; // a fresh load hides the capture panel
+        self.tempo_scale = 1.0; // a new file plays at its own written tempo
         self.score = Some(score);
         self.focus_on_track(focus); // rebuilds view/analysis/ctx/vp for the focus track
         Ok(())
@@ -1504,6 +1512,28 @@ impl CockpitApp {
         }
     }
 
+    /// The score's own tempo — the unscaled BPM playback multiplies. Floored at
+    /// a positive value so [`Self::tempo_scale`] and the slider never divide by
+    /// or rest on zero (a score always carries a sane tempo; this only guards
+    /// the empty default view).
+    const fn base_bpm(&self) -> f64 {
+        self.view.tempo_bpm.max(1.0)
+    }
+
+    /// The BPM the playhead actually advances at: the score's tempo scaled by
+    /// [`Self::tempo_scale`].
+    const fn playback_bpm(&self) -> f64 {
+        self.base_bpm() * self.tempo_scale
+    }
+
+    /// Pushes the scaled tempo into the context the viewport reads, so a change
+    /// to [`Self::tempo_scale`] takes effect on the next advanced frame. Called
+    /// on every edit and after a rebuild (which resets the context to the score's
+    /// unscaled tempo).
+    const fn apply_tempo(&mut self) {
+        self.ctx.tempo_bpm = self.playback_bpm();
+    }
+
     /// Resolves and paints the scene into `ui`.
     fn paint(&mut self, ui: &egui::Ui) {
         let rect = ui.max_rect();
@@ -1585,9 +1615,74 @@ impl CockpitApp {
         ctx.set_visuals(visuals);
     }
 
+    /// The tempo control: a slider over the playback BPM plus a reset to the
+    /// score's own tempo. Stored as a multiplier ([`Self::tempo_scale`]) of the
+    /// written tempo, so the setting survives a track switch; editing the slider
+    /// recovers the multiplier from the BPM the user dialled in.
+    fn tempo_control(&mut self, ui: &mut egui::Ui) {
+        let base = self.base_bpm();
+        let mut bpm = self.playback_bpm();
+        if ui
+            .add(
+                egui::Slider::new(&mut bpm, 40.0..=240.0)
+                    .suffix(" bpm")
+                    .fixed_decimals(0),
+            )
+            .on_hover_text(format!(
+                "playback tempo — the score is written at {base:.0} bpm"
+            ))
+            .changed()
+        {
+            self.tempo_scale = bpm / base;
+            self.apply_tempo();
+        }
+        if ui
+            .button("1×")
+            .on_hover_text("reset to the score's own tempo")
+            .clicked()
+        {
+            self.tempo_scale = 1.0;
+            self.apply_tempo();
+        }
+    }
+
+    /// The panel toggles — one button per side window (capture form, corpus
+    /// dock, generate, swang), each mirroring its hotkey. Grouped out of the
+    /// toolbar so the bar stays a readable left-to-right sequence.
+    fn panel_toggles(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .button("⤓ capture")
+            .on_hover_text("edit + cut a chunk from the selected track (i)")
+            .clicked()
+        {
+            self.vp.show_inspector = !self.vp.show_inspector;
+        }
+        if ui
+            .button("📚 corpus")
+            .on_hover_text("browse the captured corpus (c)")
+            .clicked()
+        {
+            self.show_dock = !self.show_dock;
+        }
+        if ui
+            .button("⚙ generate")
+            .on_hover_text("rank a candidate set from the corpus (g)")
+            .clicked()
+        {
+            self.gen_panel.open = !self.gen_panel.open;
+        }
+        if ui
+            .button("✎ swang")
+            .on_hover_text("write a Swang program and run it (e)")
+            .clicked()
+        {
+            self.swang.open = !self.swang.open;
+        }
+    }
+
     /// The top toolbar — the discoverable surface, so the controls aren't hidden
     /// behind hotkeys: a track selector (the roll shows one part at a time),
-    /// play/pause, and toggles for the capture form and the corpus dock.
+    /// play/pause, a tempo slider, the panel toggles, and the theme switch.
     fn toolbar_bar(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let mut focus: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
@@ -1618,34 +1713,9 @@ impl CockpitApp {
             if ui.button(play).on_hover_text("space").clicked() {
                 self.vp.playing = !self.vp.playing;
             }
-            if ui
-                .button("⤓ capture")
-                .on_hover_text("edit + cut a chunk from the selected track (i)")
-                .clicked()
-            {
-                self.vp.show_inspector = !self.vp.show_inspector;
-            }
-            if ui
-                .button("📚 corpus")
-                .on_hover_text("browse the captured corpus (c)")
-                .clicked()
-            {
-                self.show_dock = !self.show_dock;
-            }
-            if ui
-                .button("⚙ generate")
-                .on_hover_text("rank a candidate set from the corpus (g)")
-                .clicked()
-            {
-                self.gen_panel.open = !self.gen_panel.open;
-            }
-            if ui
-                .button("✎ swang")
-                .on_hover_text("write a Swang program and run it (e)")
-                .clicked()
-            {
-                self.swang.open = !self.swang.open;
-            }
+            self.tempo_control(ui);
+            ui.separator();
+            self.panel_toggles(ui);
             let mode = if self.is_dark() {
                 "◑ light"
             } else {
@@ -2058,6 +2128,25 @@ mod tests {
         let mut sounded = onsets_crossed(&view, 0, 480);
         sounded.extend(onsets_crossed(&view, 480, 1920));
         assert_eq!(sounded, vec![60, 64, 67]);
+    }
+
+    #[test]
+    fn tempo_scale_multiplies_the_played_bpm_and_survives_a_track_switch() {
+        let mut app = demo_app();
+        let base = app.base_bpm();
+        // A fresh app plays at the score's written tempo (scale 1.0).
+        assert!((app.playback_bpm() - base).abs() < 1e-9);
+        assert!((app.ctx.tempo_bpm - base).abs() < 1e-9);
+
+        // Doubling the scale doubles the BPM the viewport advances by.
+        app.tempo_scale = 2.0;
+        app.apply_tempo();
+        assert!((app.ctx.tempo_bpm - base * 2.0).abs() < 1e-9);
+
+        // Switching tracks rebuilds the context to the score's tempo, but the
+        // multiplier is re-applied — the user's setting is not lost.
+        app.focus_on_track(0);
+        assert!((app.ctx.tempo_bpm - app.base_bpm() * 2.0).abs() < 1e-9);
     }
 
     /// Every fill the painter emitted in one frame.
