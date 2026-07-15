@@ -23,6 +23,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 griff-core    = { path = "../core" }
 griff-ui-core = { path = "../ui-core" }
+# The Swang authoring loop (S8): the cockpit drives the same evaluator the CLI
+# does, never a `griff.exe` subprocess (ADR-0029). Pure + wasm-safe.
+griff-swang   = { path = "../swang" }
 # Serializes the captured `corpus::ChunkMeta` to chunk.json (ADR-0026), so the
 # cockpit's output matches what `griff manifest` reads, and the provenance
 # sidecar a kept candidate is stamped with (S8).
