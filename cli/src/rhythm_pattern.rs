@@ -41,7 +41,7 @@ pub struct RhythmPatternArgs {
     /// Exact expansion depth; doubles as the structural `max_depth`.
     pub fractal_depth: u8,
     /// Density decay in basis points, when pruning is asked for.
-    pub density_bps: Option<u16>,
+    pub density_bps: Option<u32>,
     /// The pruning seed — independent of the generation seed by law.
     pub rhythm_seed: Option<u64>,
     /// The explicit traversal.
@@ -97,6 +97,7 @@ impl fmt::Display for PatternDiagnostic {
 pub fn compile_pattern(
     args: &RhythmPatternArgs,
     score: &Score,
+    bars: usize,
 ) -> Result<PatternPlan, PatternDiagnostic> {
     // Defense in depth behind clap's `requires`: no caller smuggles an
     // unseeded pruning through (spec §1.13).
@@ -115,15 +116,22 @@ pub fn compile_pattern(
     let unit = parse_unit(&args.unit, geometry.ppqn)?;
     let bar_duration = geometry.bar_duration;
 
+    // The transport type is deliberately wider than the domain type, so an
+    // out-of-scale density meets its registry code instead of a bare clap
+    // range error.
     let prune = match (args.density_bps, args.rhythm_seed) {
-        (Some(bps), Some(seed)) => Some(griff_pattern::PruneSpec {
-            seed,
-            density: griff_pattern::DensityBps::new(bps).map_err(|_| PatternDiagnostic {
+        (Some(bps), Some(seed)) => {
+            let out_of_scale = || PatternDiagnostic {
                 code: "SWG0308",
                 flag: "--rhythm-density-bps",
                 message: format!("density {bps} bps is outside 0..=10000"),
-            })?,
-        }),
+            };
+            let narrow = u16::try_from(bps).map_err(|_| out_of_scale())?;
+            Some(griff_pattern::PruneSpec {
+                seed,
+                density: griff_pattern::DensityBps::new(narrow).map_err(|_| out_of_scale())?,
+            })
+        }
         _ => None,
     };
     let budget = griff_pattern::ExpansionBudget {
@@ -665,7 +673,7 @@ mod tests {
     #[test]
     fn a_meter_change_is_swg0304() {
         let score = seed_score_with_meters(&[(4, 4), (7, 8)]);
-        let d = compile_pattern(&args("X.X/XX./.XX"), &score).expect_err("meter changes");
+        let d = compile_pattern(&args("X.X/XX./.XX"), &score, 2).expect_err("meter changes");
         assert_eq!(d.code, "SWG0304");
     }
 
@@ -675,7 +683,7 @@ mod tests {
         let score = seed_score_with_meters(&[(7, 8)]);
         let mut a = args("X.X/XX./.XX");
         a.unit = "1/4".to_string();
-        let d = compile_pattern(&a, &score).expect_err("480 does not divide 1680");
+        let d = compile_pattern(&a, &score, 2).expect_err("480 does not divide 1680");
         assert_eq!(code_and_flag(&d), ("SWG0301", "--rhythm-unit"));
     }
 
@@ -683,8 +691,46 @@ mod tests {
 
     #[test]
     fn a_silent_expansion_is_swg0306_not_an_empty_candidate_set() {
-        let d = compile_pattern(&args("..."), &seed_score(2)).expect_err("no onsets");
+        let d = compile_pattern(&args("..."), &seed_score(2), 2).expect_err("no onsets");
         assert_eq!(d.code, "SWG0306");
+    }
+
+    #[test]
+    fn the_bars_window_guards_swg0306_too() {
+        // 17 cells at 16 slots per bar, rest-padded: template 0 is wholly
+        // silent, template 1 carries the single onset. With --bars 1 only
+        // template 0 is ever used — every strategy would emit silence, the
+        // reranker would drop every candidate, and the user would meet the
+        // old mysterious "no candidate survived scoring" *after* the
+        // artifact was written. The window check stops that at SWG0306.
+        let kernel = "................X";
+        let d = compile_pattern(&args(kernel), &seed_score(2), 1).expect_err("bars 1 is silent");
+        assert_eq!(d.code, "SWG0306");
+        assert!(
+            d.message.contains("--bars"),
+            "the message must name the window"
+        );
+
+        // With two bars the sounding template enters the rotation.
+        assert!(compile_pattern(&args(kernel), &seed_score(2), 2).is_ok());
+    }
+
+    #[test]
+    fn an_empty_score_is_swg0305() {
+        let d = compile_pattern(&args("X.X/XX./.XX"), &seed_score_with_meters(&[]), 2)
+            .expect_err("no master bars");
+        assert_eq!(d.code, "SWG0305");
+    }
+
+    #[test]
+    fn density_above_the_scale_is_swg0308_even_past_u16() {
+        for bps in [10_001_u32, 70_000] {
+            let mut a = args("X.X/XX./.XX");
+            a.density_bps = Some(bps);
+            a.rhythm_seed = Some(17);
+            let d = compile_pattern(&a, &seed_score(2), 2).expect_err("out of scale");
+            assert_eq!(code_and_flag(&d), ("SWG0308", "--rhythm-density-bps"));
+        }
     }
 
     // ── budgets map to their registry codes ──────────────────────────────────
@@ -694,7 +740,7 @@ mod tests {
         let mut a = args("X.X/XX./.XX");
         a.fractal_depth = 2; // 729 cells
         a.max_cells = 80;
-        let d = compile_pattern(&a, &seed_score(2)).expect_err("729 > 80");
+        let d = compile_pattern(&a, &seed_score(2), 2).expect_err("729 > 80");
         assert_eq!(code_and_flag(&d), ("SWG0201", "--rhythm-max-cells"));
     }
 
@@ -702,7 +748,7 @@ mod tests {
 
     #[test]
     fn the_spec_kernel_compiles_into_one_padded_bar() {
-        let plan = compile_pattern(&args("X.X/XX./.XX"), &seed_score(2)).expect("compiles");
+        let plan = compile_pattern(&args("X.X/XX./.XX"), &seed_score(2), 2).expect("compiles");
         assert_eq!(plan.templates.len(), 1, "9 slots rest-pad into one 4/4 bar");
         let offsets: Vec<u32> = plan.templates[0].notes.iter().map(|n| n.offset.0).collect();
         assert_eq!(offsets, vec![0, 240, 360, 480, 840, 960]);
@@ -710,8 +756,8 @@ mod tests {
 
     #[test]
     fn the_artifact_is_byte_stable_and_carries_the_geometry() {
-        let a = compile_pattern(&args("X.X/XX./.XX"), &seed_score(2)).expect("compiles");
-        let b = compile_pattern(&args("X.X/XX./.XX"), &seed_score(2)).expect("compiles");
+        let a = compile_pattern(&args("X.X/XX./.XX"), &seed_score(2), 2).expect("compiles");
+        let b = compile_pattern(&args("X.X/XX./.XX"), &seed_score(2), 2).expect("compiles");
         assert_eq!(a.artifact_json, b.artifact_json, "byte-stable");
         assert!(a.artifact_json.ends_with('\n'));
 
@@ -728,7 +774,7 @@ mod tests {
 
     #[test]
     fn artifact_fingerprints_equal_the_explicit_diagnostics() {
-        let plan = compile_pattern(&args("X.X/XX./.XX"), &seed_score(2)).expect("compiles");
+        let plan = compile_pattern(&args("X.X/XX./.XX"), &seed_score(2), 2).expect("compiles");
         let v: serde_json::Value = serde_json::from_str(&plan.artifact_json).expect("valid JSON");
         let from_artifact: Vec<String> = v["fingerprints"]
             .as_array()
@@ -751,7 +797,7 @@ mod tests {
         // no other caller can smuggle an unseeded pruning through.
         let mut a = args("X.X/XX./.XX");
         a.density_bps = Some(8000);
-        let d = compile_pattern(&a, &seed_score(2)).expect_err("no seed");
+        let d = compile_pattern(&a, &seed_score(2), 2).expect_err("no seed");
         assert_eq!(code_and_flag(&d), ("SWG0303", "--rhythm-seed"));
     }
 }

@@ -145,7 +145,7 @@ enum Command {
             requires = "rhythm_kernel",
             requires = "rhythm_seed"
         )]
-        rhythm_density_bps: Option<u16>,
+        rhythm_density_bps: Option<u32>,
         /// Structural pruning seed — independent of --seed by law.
         #[arg(long, value_name = "SEED", requires = "rhythm_kernel")]
         rhythm_seed: Option<u64>,
@@ -671,7 +671,7 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
     // The pattern plan compiles before any pitch generation, so the artifact
     // shows the structural delta in isolation (spec §1.14).
     let plan = rhythm
-        .map(|args| rhythm_pattern::compile_pattern(args, &score))
+        .map(|args| rhythm_pattern::compile_pattern(args, &score, bars))
         .transpose()?;
     if let (Some(plan), Some(path)) = (&plan, emit_rhythm_expansion) {
         fs::write(path, &plan.artifact_json)?;
