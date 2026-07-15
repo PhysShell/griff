@@ -135,6 +135,15 @@ Initial registry:
 | `SWG0306` | the expansion produced no onsets — nothing to generate (a fully silent kernel or a pruned-to-silence expansion is a deliberate typed error, not an empty candidate set) |
 | `SWG0307` | empty kernel literal (no rows, or a row with no cells) |
 | `SWG0308` | density outside `0..=10000` basis points |
+| `SWG0401` | malformed syntax: unexpected token, structural violation (a step out of pipeline order, a second `pattern` block), or a value that does not fit its word's range |
+| `SWG0402` | unknown name in a closed word set (traversal, tail policy, strategy, export format) |
+| `SWG0403` | required word missing from a construct (including `seed` given without its `density` — the pair is visible or absent, never half-said) |
+| `SWG0404` | word repeated within a construct |
+
+The `04xx` block is the syntax class: born with the Phase 3 grammar, always
+located by a source span. The `03xx` semantic codes keep their numbers when
+the grammar raises them (§3.5 law 4) — `density` without `seed` is `SWG0303`
+in a program exactly as it is at the transport boundary.
 
 ### 1.6 Kernel semantics
 
