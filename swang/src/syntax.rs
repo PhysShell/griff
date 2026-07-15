@@ -1650,9 +1650,29 @@ pattern p {{
 
     #[test]
     fn a_leading_zero_is_swg0401_everywhere_not_only_in_the_header() {
-        let source =
-            program_with("|> fractalize depth 1 max_cells 4096").replace("bars 8", "bars 08");
-        assert_eq!(first_error(&source).code, "SWG0401");
+        // *Everywhere* means everywhere: plain integers, the bps-suffixed
+        // density, and both unit parts — a spelling law, not a value law
+        // (`SWG0301` stays the unit's semantic code). The transport
+        // tolerated 01/16 because u64 parsing normalized it; the grammar
+        // rejects the spelling and claims no parity for it (#118 review).
+        let base = program_with("|> fractalize depth 1 max_cells 4096");
+        let cases = [
+            base.replace("bars 8", "bars 08"),
+            program_with("|> fractalize depth 01 max_cells 4096"),
+            program_with("|> fractalize depth 1 max_cells 04096"),
+            program_with("|> fractalize depth 1 max_cells 4096 density 09500bps seed 4"),
+            program_with("|> fractalize depth 1 max_cells 4096 density 9500bps seed 04"),
+            base.replace("unit 1/16", "unit 01/16"),
+            base.replace("unit 1/16", "unit 1/016"),
+        ];
+        for source in &cases {
+            assert_eq!(first_error(source).code, "SWG0401", "{source}");
+        }
+        // A lone zero is not a leading zero: 0bps is a valid density.
+        parse(&program_with(
+            "|> fractalize depth 1 max_cells 4096 density 0bps seed 4",
+        ))
+        .expect("a zero density prunes everything but spells canonically");
     }
 
     // ── the canonical formatter (spec §3.5 laws 2–3) ────────────────────────
