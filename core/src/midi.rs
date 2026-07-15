@@ -272,6 +272,16 @@ fn tempo_to_micros(tempo: Tempo) -> Result<u32, MidiError> {
 /// The returned [`Score`] contains a [`LossReport`] describing any data that
 /// could not be preserved exactly.
 pub fn import_score(data: &[u8]) -> Result<Score, MidiError> {
+    // F-002 (docs/fuzzing.md): midly 0.5.3 negates the SMPTE fps byte before
+    // validating it, which overflows on fps == -128 — a debug-profile panic
+    // reachable from a 14-byte header. SMPTE timing is unsupported here
+    // anyway (see extract_ppqn), so reject a timecode division before midly
+    // reads it: the same typed error, earlier. The division sits at bytes
+    // 12..14 of a well-formed header; a malformed one fails midly's own
+    // parse with a typed error regardless.
+    if data.get(..4) == Some(b"MThd") && data.get(12).is_some_and(|&b| b & 0x80 != 0) {
+        return Err(MidiError::SmpteTimingUnsupported);
+    }
     let smf = Smf::parse(data)?;
     let ppqn = extract_ppqn(smf.header)?;
     let (tempos, time_sigs) = collect_global_meta(&smf);
