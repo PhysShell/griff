@@ -263,7 +263,17 @@ set of rewrite rules makes it useful.
 
 ## Phases
 
-### Phase 0 — design contract and golden fixture
+**Status:** Phases 0–3 are **shipped, accepted, and frozen** (PRs
+#109–#121). The Swang semantic core (spec §1) and surface grammar (spec §3)
+are frozen — further change requires a new language level. `griff swang
+check | fmt | expand | build` exist and are held to the seven §3.5 laws;
+the parser and pattern core are fuzzed on the blocking CI gate. Phases 4–9
+(exact score text, patches, structural recognizers, optimizing verified
+lift, recipes, script-generating composers, graph/DP recipes) remain future
+work under ADR-0029. The next scope is **S8 Swang Playground** — the
+authoring loop that lets a human actually play these four verbs.
+
+### Phase 0 — design contract and golden fixture *(done)*
 
 - accept or revise ADR-0029; land `docs/swang/spec.md` and **freeze its
   semantic core by this phase's acceptance** — until then it is Proposed,
@@ -278,7 +288,7 @@ set of rewrite rules makes it useful.
 
 No generation behavior changes.
 
-### Phase 1 — pure pattern core (`griff-pattern`)
+### Phase 1 — pure pattern core (`griff-pattern`) *(done)*
 
 Add domain-neutral primitives, std-only:
 
@@ -312,7 +322,7 @@ Acceptance:
   `swang-prune-hash-v1` vectors; property tests over depth, shape, pruning,
   and degenerate inputs.
 
-### Phase 2 — pattern-to-rhythm vertical slice
+### Phase 2 — pattern-to-rhythm vertical slice *(done)*
 
 Map `ActivitySequence` into placed `(offset, duration)` `RhythmTemplate`
 values, cut per bar with an explicit tail policy, and feed them through the
@@ -356,7 +366,7 @@ Acceptance (the full list lives in the spec):
 This is the stage's killer demo: a fractal kernel audibly realized through
 the unchanged generator, reproducible from a one-line delta.
 
-### Phase 3 — minimal Swang parser and canonical formatter
+### Phase 3 — minimal Swang parser and canonical formatter *(done)*
 
 The grammar covers only what the Phase 2 killer demo **audibly earned**
 (spec §3, the closure verdict on #116): `pattern`, `ascii`,

@@ -1,7 +1,7 @@
 # ADR 0029: Adopt Swang as a deterministic authoring and verified lifting language
 
 Date: 2026-07-14
-Status: Proposed
+Status: Accepted (Phases 0–3 shipped and frozen, PRs #109–#121; Phases 4–9 remain future work under this decision)
 
 ## Context
 
