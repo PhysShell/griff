@@ -99,9 +99,9 @@ pattern seed = ascii {
 }
 
 rhythm r = seed
-    |> fractalize(depth = 2, density_bps = 8000, budget = 512)
+    |> fractalize(depth = 2, max_cells = 512, density_bps = 8000, seed = 17)
     |> linearize(snake)
-    |> map_rhythm(unit = 1/16)
+    |> map_rhythm(unit = 1/16, tail = rest_pad)
 ```
 
 (The produced palette's bar count is a property of the expansion; how many
@@ -358,17 +358,21 @@ the unchanged generator, reproducible from a one-line delta.
 
 ### Phase 3 — minimal Swang parser and canonical formatter
 
-The first grammar covers only what Phases 1–2 proved useful:
-
-```text
-pattern
-ascii
-fractalize
-linearize
-map_rhythm
-generate
-export
-```
+The grammar covers only what the Phase 2 killer demo **audibly earned**
+(spec §3, the closure verdict on #116): `pattern`, `ascii`,
+`fractalize(depth, max_cells, density, seed)` — the cell budget is a
+**required word** (the library ships no default and the language invents
+none) and density/seed stay a visible pair — `linearize(traversal)`,
+`map_rhythm(unit, tail)`,
+`generate(source, bars, seed, candidates, strategy, corpus)` — `source`
+(the seed score: pitch material, range, PPQN, meter, tempo) and
+`candidates` are **required words** too; a program names every semantic
+dependency of its run — and `export`, the output's **single owner**
+(`griff swang build` takes no output flag). The **strategy policy is
+explicit in the AST** — the dense demo proved the audible result is decided
+between the expansion and the ear (`repeat_variation` held one template of a
+six-template palette), and a language that hides that choice under-tells.
+`gesture`, `thin`, pitch/fretboard transforms stay out (spec §3.4).
 
 CLI:
 
@@ -376,16 +380,33 @@ CLI:
 griff swang check riff.swg
 griff swang fmt riff.swg
 griff swang expand riff.swg
-griff swang build riff.swg --output riff.mid
+griff swang build riff.swg
 ```
 
-Acceptance:
+Acceptance — Phase 3 adds **no musical semantics** (the seven laws of spec
+§3.5):
 
+- a Swang program equivalent to a Phase-2 CLI command produces a
+  byte-identical expansion JSON (`expand` stops after `map_rhythm`) —
+  scoped to the **canonical transport subset** the grammar can express:
+  the transport's inert `--rhythm-seed` without density is deliberately
+  unexpressible, and no parity is claimed for it;
+- `fmt` is canonical and idempotent: `format(parse(text)) ==
+  canonical_text` and `fmt(fmt(s)) == fmt(s)`; `parse(format(ast)) == ast`;
+- `check` returns the same SWG **codes**, with locations layered per §1.5:
+  syntax- and transport-class errors carry a **source span** (the Phase-2
+  flag location class retires with the transport), structural errors keep
+  their `NodePath`;
+- `build` parity is split by strategy policy: under `strategy auto` and
+  the same seeds it matches the existing `griff generate`; under a named
+  strategy it selects the first ranked candidate of that strategy from
+  the unchanged, already-ranked set — selection only, never a
+  re-generation;
 - hand-written recursive-descent parser (initial strategy per ADR-0029 §11)
   emitting `Vec<Diagnostic>` — pure data with spans and stable codes,
-  rendered only at the CLI edge;
-- `fmt` is canonical and idempotent: `format(parse(text)) == canonical_text`;
-- `expand` emits the same versioned artifact as Phase 2;
+  rendered only at the CLI edge; no defaults invented over the frozen
+  semantics — which is why `max_cells`, `source`, and `candidates` are
+  required words, not optional ones;
 - parser and expansion limits gain fuzz targets (ADR-0010).
 
 ### Phase 4 — exact canonical score text and patches
