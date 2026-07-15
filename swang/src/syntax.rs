@@ -53,6 +53,9 @@
 //! [`SWG0403`]: Diagnostic
 //! [`SWG0404`]: Diagnostic
 
+use std::iter::Peekable;
+use std::str::{from_utf8, CharIndices};
+
 use griff_pattern::{DensityBps, Traversal};
 
 use crate::TailPolicy;
@@ -84,9 +87,11 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-/// A parsed Swang program: the pinned language level and the one pattern
-/// block the grammar covers. A second `pattern` block is `SWG0401` — multiple
-/// patterns have not earned syntax.
+/// A parsed Swang program.
+///
+/// It carries the pinned language level and the one pattern block the
+/// grammar covers; a second `pattern` block is `SWG0401` — multiple patterns
+/// have not earned syntax.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     /// The header's language level.
@@ -95,10 +100,12 @@ pub struct Program {
     pub pattern: PatternDef,
 }
 
-/// One `pattern <name> { ... }` block. The pipeline is a fixed sequence —
-/// every step present, in order; a missing step is `SWG0403`, a step out of
-/// order is `SWG0401`. There is deliberately no step list to reorder: the
-/// grammar records the one pipeline shape the demo earned.
+/// One `pattern <name> { ... }` block.
+///
+/// The pipeline is a fixed sequence — every step present, in order; a
+/// missing step is `SWG0403`, a step out of order is `SWG0401`. There is
+/// deliberately no step list to reorder: the grammar records the one
+/// pipeline shape the demo earned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternDef {
     /// The pattern's name: ASCII `[A-Za-z_][A-Za-z0-9_]*`.
@@ -163,10 +170,11 @@ pub struct MapRhythm {
     pub tail: TailPolicy,
 }
 
-/// A rational note value (`1/16`). Both parts are nonzero by parse
-/// (`SWG0301`, the transport's own code); whether the unit divides the bar
-/// is a build-time question — the bar geometry lives in the seed score, not
-/// in the text.
+/// A rational note value (`1/16`).
+///
+/// Both parts are nonzero by parse (`SWG0301`, the transport's own code);
+/// whether the unit divides the bar is a build-time question — the bar
+/// geometry lives in the seed score, not in the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unit {
     /// The note value's numerator.
@@ -253,8 +261,60 @@ pub enum ExportFormat {
 /// `SWG0001` — naming the supported range — for a level newer than
 /// [`LANGUAGE_LEVEL`].
 pub fn header_level(source: &str) -> Result<u32, Diagnostic> {
-    let _ = source;
-    unimplemented!("S16 Phase 3: the frozen header pre-parser")
+    let bytes = source.as_bytes();
+    if bytes.get(..3) == Some(b"\xef\xbb\xbf") {
+        return Err(Diagnostic {
+            code: "SWG0003",
+            span: span_of(0, 3),
+            message: "byte-order mark before the header; Swang is UTF-8 without a BOM".to_owned(),
+        });
+    }
+    let window = bytes.len().min(HEADER_WINDOW);
+    let malformed = || Diagnostic {
+        code: "SWG0002",
+        span: span_of(0, window),
+        message: "missing or malformed header line; a script begins `swang <level>`".to_owned(),
+    };
+    let Some(lf) = bytes.iter().take(HEADER_WINDOW).position(|&b| b == b'\n') else {
+        return Err(malformed());
+    };
+    let mut line = bytes.get(..lf).unwrap_or_default();
+    if let Some((b'\r', rest)) = line.split_last() {
+        line = rest;
+    }
+    let digits = line.strip_prefix(b"swang ").ok_or_else(malformed)?;
+    let first = digits.first().ok_or_else(malformed)?;
+    if !(b'1'..=b'9').contains(first) || digits.len() > 9 || !digits.iter().all(u8::is_ascii_digit)
+    {
+        return Err(malformed());
+    }
+    let level: u32 = from_utf8(digits)
+        .ok()
+        .and_then(|d| d.parse().ok())
+        .ok_or_else(malformed)?;
+    if level > LANGUAGE_LEVEL {
+        return Err(Diagnostic {
+            code: "SWG0001",
+            span: span_of(6, 6_usize.saturating_add(digits.len())),
+            message: format!(
+                "language level {level} is newer than this build supports (1..={LANGUAGE_LEVEL})"
+            ),
+        });
+    }
+    Ok(level)
+}
+
+/// The pre-parser reads at most this many bytes of the first line (spec
+/// §1.1, frozen).
+const HEADER_WINDOW: usize = 64;
+
+/// Builds a [`Span`] from byte indices, saturating into the fixed-width
+/// offsets the determinism law demands.
+fn span_of(start: usize, end: usize) -> Span {
+    Span {
+        start: u32::try_from(start).unwrap_or(u32::MAX),
+        end: u32::try_from(end).unwrap_or(u32::MAX),
+    }
 }
 
 /// Parses a Swang script into its [`Program`].
@@ -272,16 +332,889 @@ pub fn header_level(source: &str) -> Result<u32, Diagnostic> {
 /// closed word set, `SWG0403` missing required word, `SWG0404` repeated
 /// word).
 pub fn parse(source: &str) -> Result<Program, Vec<Diagnostic>> {
-    let _ = source;
-    unimplemented!("S16 Phase 3: the parser")
+    let level = header_level(source).map_err(|d| vec![d])?;
+    let body_from = source
+        .as_bytes()
+        .iter()
+        .take(HEADER_WINDOW)
+        .position(|&b| b == b'\n')
+        .map_or(source.len(), |lf| lf.saturating_add(1));
+    let tokens = lex(source, body_from).map_err(|d| vec![d])?;
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        eof: span_of(source.len(), source.len()),
+    };
+    let pattern = parser.parse_pattern().map_err(|d| vec![d])?;
+    Ok(Program { level, pattern })
 }
 
 /// Formats a [`Program`] into its canonical text — the unique fixed point of
 /// `format ∘ parse` (spec §3.5 laws 2–3).
 #[must_use]
 pub fn format(program: &Program) -> String {
-    let _ = program;
-    unimplemented!("S16 Phase 3: the canonical formatter")
+    let p = &program.pattern;
+    let prune = p.fractalize.prune.map_or_else(String::new, |prune| {
+        format!(" density {}bps seed {}", prune.density.get(), prune.seed)
+    });
+    let corpus = p
+        .generate
+        .corpus
+        .as_ref()
+        .map_or_else(String::new, |corpus| {
+            format!("        corpus \"{corpus}\"\n")
+        });
+    format!(
+        "swang {level}\n\
+         \n\
+         pattern {name} {{\n\
+         \x20   ascii \"{kernel}\"\n\
+         \x20   |> fractalize depth {depth} max_cells {max_cells}{prune}\n\
+         \x20   |> linearize {traversal}\n\
+         \x20   |> map_rhythm unit {numerator}/{denominator} tail {tail}\n\
+         \x20   |> generate {{\n\
+         \x20       source \"{source}\"\n\
+         \x20       bars {bars}\n\
+         \x20       seed {seed}\n\
+         \x20       candidates {candidates}\n\
+         \x20       strategy {strategy}\n\
+         {corpus}\
+         \x20   }}\n\
+         \x20   |> export {export} \"{path}\"\n\
+         }}\n",
+        level = program.level,
+        name = p.name,
+        kernel = p.kernel,
+        depth = p.fractalize.depth,
+        max_cells = p.fractalize.max_cells,
+        traversal = traversal_word(p.linearize.traversal),
+        numerator = p.map_rhythm.unit.numerator,
+        denominator = p.map_rhythm.unit.denominator,
+        tail = tail_word(p.map_rhythm.tail),
+        source = p.generate.source,
+        bars = p.generate.bars,
+        seed = p.generate.seed,
+        candidates = p.generate.candidates,
+        strategy = strategy_word(p.generate.strategy),
+        export = export_word(p.export.format),
+        path = p.export.path,
+    )
+}
+
+/// The canonical spelling of a traversal.
+const fn traversal_word(traversal: Traversal) -> &'static str {
+    match traversal {
+        Traversal::RowMajor => "row_major",
+        Traversal::Snake => "snake",
+    }
+}
+
+/// The canonical spelling of a tail policy.
+const fn tail_word(tail: TailPolicy) -> &'static str {
+    match tail {
+        TailPolicy::Reject => "reject",
+        TailPolicy::RestPad => "rest_pad",
+    }
+}
+
+/// The canonical spelling of a strategy policy.
+const fn strategy_word(strategy: StrategyPolicy) -> &'static str {
+    match strategy {
+        StrategyPolicy::Auto => "auto",
+        StrategyPolicy::Named(StrategyName::RhythmCopy) => "rhythm_copy",
+        StrategyPolicy::Named(StrategyName::MotifTranspose) => "motif_transpose",
+        StrategyPolicy::Named(StrategyName::ConstrainedWalk) => "constrained_walk",
+        StrategyPolicy::Named(StrategyName::ShuffleMotifs) => "shuffle_motifs",
+        StrategyPolicy::Named(StrategyName::RepeatVariation) => "repeat_variation",
+    }
+}
+
+/// The canonical spelling of an export format.
+const fn export_word(format: ExportFormat) -> &'static str {
+    match format {
+        ExportFormat::Midi => "midi",
+    }
+}
+
+// ── lexing ───────────────────────────────────────────────────────────────
+
+/// One lexeme. `text` is the word/number spelling, or the string literal's
+/// content without its quotes; spans always cover the full source lexeme.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Token {
+    kind: TokenKind,
+    text: String,
+    span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenKind {
+    /// `[A-Za-z_][A-Za-z0-9_]*`
+    Word,
+    /// Digit-initiated: an integer, a `bps`-suffixed density, or a rational
+    /// note value — the construct decides which form it accepts.
+    NumberLike,
+    /// A double-quoted literal, no escapes, single-line.
+    Str,
+    OpenBrace,
+    CloseBrace,
+    /// `|>`
+    Pipe,
+}
+
+/// Lexes `source` from byte `from` on. Whitespace is ASCII only — the
+/// determinism law (spec §1.2) keeps Unicode classification out of anything
+/// semantics can observe, so a non-ASCII space is `SWG0401`, not a
+/// separator.
+fn lex(source: &str, from: usize) -> Result<Vec<Token>, Diagnostic> {
+    let tail = source.get(from..).unwrap_or_default();
+    let mut tokens = Vec::new();
+    let mut chars = tail.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let start = from.saturating_add(at);
+        match c {
+            ' ' | '\t' | '\r' | '\n' => {}
+            '{' | '}' => tokens.push(Token {
+                kind: if c == '{' {
+                    TokenKind::OpenBrace
+                } else {
+                    TokenKind::CloseBrace
+                },
+                text: c.to_string(),
+                span: span_of(start, start.saturating_add(1)),
+            }),
+            '|' => match chars.next() {
+                Some((_, '>')) => tokens.push(Token {
+                    kind: TokenKind::Pipe,
+                    text: "|>".to_owned(),
+                    span: span_of(start, start.saturating_add(2)),
+                }),
+                _ => {
+                    return Err(Diagnostic {
+                        code: "SWG0401",
+                        span: span_of(start, start.saturating_add(1)),
+                        message: "expected `|>`".to_owned(),
+                    })
+                }
+            },
+            '"' => tokens.push(lex_string(tail, from, at, &mut chars)?),
+            'A'..='Z' | 'a'..='z' | '_' => {
+                let end = lex_while(tail, &mut chars, |ch| {
+                    ch.is_ascii_alphanumeric() || ch == '_'
+                });
+                tokens.push(token_from(tail, from, at, end, TokenKind::Word));
+            }
+            '0'..='9' => {
+                let end = lex_while(tail, &mut chars, |ch| {
+                    ch.is_ascii_alphanumeric() || ch == '_' || ch == '/'
+                });
+                tokens.push(token_from(tail, from, at, end, TokenKind::NumberLike));
+            }
+            other => {
+                return Err(Diagnostic {
+                    code: "SWG0401",
+                    span: span_of(start, start.saturating_add(other.len_utf8())),
+                    message: format!("unexpected character {other:?}"),
+                })
+            }
+        }
+    }
+    Ok(tokens)
+}
+
+/// Consumes characters while `keep` holds; returns the end byte offset
+/// (relative to `tail`).
+fn lex_while(
+    tail: &str,
+    chars: &mut Peekable<CharIndices<'_>>,
+    keep: impl Fn(char) -> bool,
+) -> usize {
+    while let Some(&(_, c)) = chars.peek() {
+        if keep(c) {
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    chars.peek().map_or(tail.len(), |&(next, _)| next)
+}
+
+/// Builds a word/number token from `tail[at..end]`.
+fn token_from(tail: &str, from: usize, at: usize, end: usize, kind: TokenKind) -> Token {
+    Token {
+        kind,
+        text: tail.get(at..end).unwrap_or_default().to_owned(),
+        span: span_of(from.saturating_add(at), from.saturating_add(end)),
+    }
+}
+
+/// Lexes a double-quoted string literal starting at `at` (the opening
+/// quote). No escapes; a newline or the end of input before the closing
+/// quote is `SWG0401`.
+fn lex_string(
+    tail: &str,
+    from: usize,
+    at: usize,
+    chars: &mut Peekable<CharIndices<'_>>,
+) -> Result<Token, Diagnostic> {
+    for (i, c) in chars.by_ref() {
+        match c {
+            '"' => {
+                let content_start = at.saturating_add(1);
+                return Ok(Token {
+                    kind: TokenKind::Str,
+                    text: tail.get(content_start..i).unwrap_or_default().to_owned(),
+                    span: span_of(
+                        from.saturating_add(at),
+                        from.saturating_add(i).saturating_add(1),
+                    ),
+                });
+            }
+            '\n' => break,
+            _ => {}
+        }
+    }
+    Err(Diagnostic {
+        code: "SWG0401",
+        span: span_of(from.saturating_add(at), from.saturating_add(tail.len())),
+        message: "unterminated string literal".to_owned(),
+    })
+}
+
+// ── parsing ──────────────────────────────────────────────────────────────
+
+/// The pipeline steps, in the one order the grammar covers (spec §3.1).
+const STEPS: [&str; 5] = [
+    "fractalize",
+    "linearize",
+    "map_rhythm",
+    "generate",
+    "export",
+];
+
+/// One `|> word args...` pipeline entry, args still raw.
+struct PipelineEntry {
+    name: String,
+    name_span: Span,
+    args: Vec<Token>,
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+    eof: Span,
+}
+
+impl Parser {
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.pos)
+    }
+
+    fn next(&mut self) -> Option<Token> {
+        let token = self.tokens.get(self.pos).cloned();
+        if token.is_some() {
+            self.pos = self.pos.saturating_add(1);
+        }
+        token
+    }
+
+    fn unexpected_end(&self) -> Diagnostic {
+        Diagnostic {
+            code: "SWG0401",
+            span: self.eof,
+            message: "unexpected end of input".to_owned(),
+        }
+    }
+
+    fn expect_word(&mut self, word: &str) -> Result<Token, Diagnostic> {
+        let token = self.next().ok_or_else(|| self.unexpected_end())?;
+        if token.kind == TokenKind::Word && token.text == word {
+            Ok(token)
+        } else {
+            Err(Diagnostic {
+                code: "SWG0401",
+                span: token.span,
+                message: format!("expected `{word}`, found `{}`", token.text),
+            })
+        }
+    }
+
+    fn expect_kind(&mut self, kind: TokenKind, what: &str) -> Result<Token, Diagnostic> {
+        let token = self.next().ok_or_else(|| self.unexpected_end())?;
+        if token.kind == kind {
+            Ok(token)
+        } else {
+            Err(Diagnostic {
+                code: "SWG0401",
+                span: token.span,
+                message: format!("expected {what}, found `{}`", token.text),
+            })
+        }
+    }
+
+    /// `pattern <name> { ascii "…" entries* }` and nothing after it.
+    fn parse_pattern(&mut self) -> Result<PatternDef, Diagnostic> {
+        self.expect_word("pattern")?;
+        let name = self.expect_kind(TokenKind::Word, "a pattern name")?;
+        self.expect_kind(TokenKind::OpenBrace, "`{`")?;
+
+        let ascii = self.parse_ascii()?;
+        let entries = self.collect_entries()?;
+        let close = self.expect_kind(TokenKind::CloseBrace, "`}`")?;
+        if let Some(extra) = self.peek() {
+            return Err(Diagnostic {
+                code: "SWG0401",
+                span: extra.span,
+                message: "a program is one pattern block; nothing may follow it".to_owned(),
+            });
+        }
+
+        let steps = order_entries(entries, close.span)?;
+        // `order_entries` proved the canonical order and count.
+        let [fractalize_entry, linearize_entry, map_rhythm_entry, generate_entry, export_entry] =
+            steps.as_slice()
+        else {
+            return Err(self.unexpected_end());
+        };
+        let fractalize = parse_fractalize(fractalize_entry)?;
+        let linearize = parse_linearize(linearize_entry)?;
+        let map_rhythm = parse_map_rhythm(map_rhythm_entry)?;
+        let generate = parse_generate(generate_entry)?;
+        let export = parse_export(export_entry)?;
+
+        Ok(PatternDef {
+            name: name.text,
+            kernel: ascii,
+            fractalize,
+            linearize,
+            map_rhythm,
+            generate,
+            export,
+        })
+    }
+
+    /// `ascii "<literal>"` — the block's first element.
+    fn parse_ascii(&mut self) -> Result<String, Diagnostic> {
+        match self.peek() {
+            Some(t) if t.kind == TokenKind::Word && t.text == "ascii" => {
+                self.next();
+            }
+            Some(t) => {
+                return Err(Diagnostic {
+                    code: "SWG0403",
+                    span: t.span,
+                    message: "the pattern block begins with its `ascii` literal".to_owned(),
+                })
+            }
+            None => return Err(self.unexpected_end()),
+        }
+        let literal = self.expect_kind(TokenKind::Str, "a kernel literal")?;
+        validate_kernel(&literal.text, literal.span)?;
+        Ok(literal.text)
+    }
+
+    /// Collects raw `|> word args…` entries up to the pattern's `}`.
+    fn collect_entries(&mut self) -> Result<Vec<PipelineEntry>, Diagnostic> {
+        let mut entries = Vec::new();
+        while matches!(self.peek(), Some(t) if t.kind == TokenKind::Pipe) {
+            self.next();
+            let name = self.expect_kind(TokenKind::Word, "a pipeline step")?;
+            let mut args = Vec::new();
+            let mut depth = 0_u32;
+            loop {
+                match self.peek() {
+                    None => return Err(self.unexpected_end()),
+                    Some(t) if depth == 0 && t.kind == TokenKind::Pipe => break,
+                    Some(t) if depth == 0 && t.kind == TokenKind::CloseBrace => break,
+                    Some(t) => {
+                        match t.kind {
+                            TokenKind::OpenBrace => depth = depth.saturating_add(1),
+                            TokenKind::CloseBrace => depth = depth.saturating_sub(1),
+                            _ => {}
+                        }
+                        args.push(self.next().ok_or_else(|| self.unexpected_end())?);
+                    }
+                }
+            }
+            entries.push(PipelineEntry {
+                name: name.text,
+                name_span: name.span,
+                args,
+            });
+        }
+        Ok(entries)
+    }
+}
+
+/// Checks the entries against the canonical sequence: unknown steps and
+/// duplicates are `SWG0401`, a missing step is `SWG0403` naming it, a
+/// present-but-misplaced step is `SWG0401`. Returns the entries in canonical
+/// order (which, by then, is the order they arrived in).
+fn order_entries(
+    entries: Vec<PipelineEntry>,
+    close: Span,
+) -> Result<Vec<PipelineEntry>, Diagnostic> {
+    for entry in &entries {
+        if !STEPS.contains(&entry.name.as_str()) {
+            return Err(Diagnostic {
+                code: "SWG0401",
+                span: entry.name_span,
+                message: format!("unknown pipeline step `{}`", entry.name),
+            });
+        }
+    }
+    for step in STEPS {
+        if !entries.iter().any(|e| e.name == step) {
+            return Err(Diagnostic {
+                code: "SWG0403",
+                span: close,
+                message: format!("the pipeline is missing its `{step}` step"),
+            });
+        }
+    }
+    for (i, entry) in entries.iter().enumerate() {
+        match STEPS.get(i) {
+            Some(&expected) if entry.name == expected => {}
+            Some(&expected) => {
+                return Err(Diagnostic {
+                    code: "SWG0401",
+                    span: entry.name_span,
+                    message: format!(
+                        "`{}` arrives out of pipeline order; expected `{expected}`",
+                        entry.name
+                    ),
+                })
+            }
+            None => {
+                return Err(Diagnostic {
+                    code: "SWG0401",
+                    span: entry.name_span,
+                    message: format!("`{}` repeats a pipeline step", entry.name),
+                })
+            }
+        }
+    }
+    Ok(entries)
+}
+
+// ── word-value constructs ────────────────────────────────────────────────
+
+/// A scanned `word value` pair.
+type WordValue = (Token, Token);
+
+/// Scans `word value` pairs: every word from `allowed`, none repeated, every
+/// word carrying exactly one value token.
+fn scan_pairs(
+    args: &[Token],
+    allowed: &[&str],
+    construct: &str,
+) -> Result<Vec<WordValue>, Diagnostic> {
+    let mut pairs: Vec<WordValue> = Vec::new();
+    let mut it = args.iter();
+    while let Some(word) = it.next() {
+        if word.kind != TokenKind::Word || !allowed.contains(&word.text.as_str()) {
+            return Err(Diagnostic {
+                code: "SWG0401",
+                span: word.span,
+                message: format!("`{construct}` does not take a `{}` word", word.text),
+            });
+        }
+        if pairs.iter().any(|(w, _)| w.text == word.text) {
+            return Err(Diagnostic {
+                code: "SWG0404",
+                span: word.span,
+                message: format!("the word `{}` repeats within `{construct}`", word.text),
+            });
+        }
+        let value = it.next().ok_or_else(|| Diagnostic {
+            code: "SWG0401",
+            span: word.span,
+            message: format!("the word `{}` names no value", word.text),
+        })?;
+        pairs.push((word.clone(), value.clone()));
+    }
+    Ok(pairs)
+}
+
+/// A required word that never arrived: `SWG0403` at the construct's name.
+fn missing_word(construct: &str, word: &str, at: Span) -> Diagnostic {
+    Diagnostic {
+        code: "SWG0403",
+        span: at,
+        message: format!("`{construct}` is missing its required word `{word}`"),
+    }
+}
+
+fn parse_fractalize(entry: &PipelineEntry) -> Result<Fractalize, Diagnostic> {
+    let pairs = scan_pairs(
+        &entry.args,
+        &["depth", "max_cells", "density", "seed"],
+        "fractalize",
+    )?;
+    let mut depth = None;
+    let mut max_cells = None;
+    let mut density = None;
+    let mut seed = None;
+    for (word, value) in &pairs {
+        match word.text.as_str() {
+            "depth" => depth = Some(int_value::<u8>(value, "depth")?),
+            "max_cells" => max_cells = Some(int_value::<u64>(value, "max_cells")?),
+            "density" => density = Some((word.span, density_value(value)?)),
+            _ => seed = Some((word.span, int_value::<u64>(value, "seed")?)),
+        }
+    }
+    let depth = depth.ok_or_else(|| missing_word("fractalize", "depth", entry.name_span))?;
+    let max_cells =
+        max_cells.ok_or_else(|| missing_word("fractalize", "max_cells", entry.name_span))?;
+    let prune = match (density, seed) {
+        (Some((_, density)), Some((_, seed))) => Some(Prune { density, seed }),
+        (Some((at, _)), None) => {
+            return Err(Diagnostic {
+                code: "SWG0303",
+                span: at,
+                message: "density decay was given without a rhythm seed; pruning must be \
+                          explicitly seeded"
+                    .to_owned(),
+            })
+        }
+        (None, Some((at, _))) => {
+            return Err(Diagnostic {
+                code: "SWG0403",
+                span: at,
+                message: "`seed` names a pruning this fractalize does not declare; `density` \
+                          and `seed` are a visible pair"
+                    .to_owned(),
+            })
+        }
+        (None, None) => None,
+    };
+    Ok(Fractalize {
+        depth,
+        max_cells,
+        prune,
+    })
+}
+
+fn parse_linearize(entry: &PipelineEntry) -> Result<Linearize, Diagnostic> {
+    match entry.args.as_slice() {
+        [] => Err(missing_word("linearize", "traversal", entry.name_span)),
+        [token] => Ok(Linearize {
+            traversal: closed_set(
+                token,
+                &[
+                    ("row_major", Traversal::RowMajor),
+                    ("snake", Traversal::Snake),
+                ],
+                "traversal",
+            )?,
+        }),
+        [_, extra, ..] => Err(Diagnostic {
+            code: "SWG0401",
+            span: extra.span,
+            message: "`linearize` takes one traversal and nothing else".to_owned(),
+        }),
+    }
+}
+
+fn parse_map_rhythm(entry: &PipelineEntry) -> Result<MapRhythm, Diagnostic> {
+    let pairs = scan_pairs(&entry.args, &["unit", "tail"], "map_rhythm")?;
+    let mut unit = None;
+    let mut tail = None;
+    for (word, value) in &pairs {
+        if word.text == "unit" {
+            unit = Some(unit_value(value)?);
+        } else {
+            tail = Some(closed_set(
+                value,
+                &[
+                    ("reject", TailPolicy::Reject),
+                    ("rest_pad", TailPolicy::RestPad),
+                ],
+                "tail policy",
+            )?);
+        }
+    }
+    Ok(MapRhythm {
+        unit: unit.ok_or_else(|| missing_word("map_rhythm", "unit", entry.name_span))?,
+        tail: tail.ok_or_else(|| missing_word("map_rhythm", "tail", entry.name_span))?,
+    })
+}
+
+fn parse_generate(entry: &PipelineEntry) -> Result<Generate, Diagnostic> {
+    let block = match entry.args.as_slice() {
+        [open, inner @ .., close]
+            if open.kind == TokenKind::OpenBrace && close.kind == TokenKind::CloseBrace =>
+        {
+            inner
+        }
+        _ => {
+            return Err(Diagnostic {
+                code: "SWG0401",
+                span: entry.name_span,
+                message: "`generate` takes a `{ … }` block".to_owned(),
+            })
+        }
+    };
+    let pairs = scan_pairs(
+        block,
+        &["source", "bars", "seed", "candidates", "strategy", "corpus"],
+        "generate",
+    )?;
+    let mut source = None;
+    let mut bars = None;
+    let mut seed = None;
+    let mut candidates = None;
+    let mut strategy = None;
+    let mut corpus = None;
+    for (word, value) in &pairs {
+        match word.text.as_str() {
+            "source" => source = Some(string_value(value, "source")?),
+            "bars" => bars = Some(int_value::<u64>(value, "bars")?),
+            "seed" => seed = Some(int_value::<u64>(value, "seed")?),
+            "candidates" => candidates = Some(int_value::<u64>(value, "candidates")?),
+            "strategy" => strategy = Some(strategy_value(value)?),
+            _ => corpus = Some(string_value(value, "corpus")?),
+        }
+    }
+    Ok(Generate {
+        source: source.ok_or_else(|| missing_word("generate", "source", entry.name_span))?,
+        bars: bars.ok_or_else(|| missing_word("generate", "bars", entry.name_span))?,
+        seed: seed.ok_or_else(|| missing_word("generate", "seed", entry.name_span))?,
+        candidates: candidates
+            .ok_or_else(|| missing_word("generate", "candidates", entry.name_span))?,
+        strategy: strategy.ok_or_else(|| missing_word("generate", "strategy", entry.name_span))?,
+        corpus,
+    })
+}
+
+fn parse_export(entry: &PipelineEntry) -> Result<Export, Diagnostic> {
+    match entry.args.as_slice() {
+        [format_token, path] => Ok(Export {
+            format: closed_set(
+                format_token,
+                &[("midi", ExportFormat::Midi)],
+                "export format",
+            )?,
+            path: string_value(path, "export path")?,
+        }),
+        _ => Err(Diagnostic {
+            code: "SWG0401",
+            span: entry.name_span,
+            message: "`export` takes a format and a path".to_owned(),
+        }),
+    }
+}
+
+// ── values ───────────────────────────────────────────────────────────────
+
+/// A name from a closed word set; anything else is `SWG0402` listing the
+/// set.
+fn closed_set<T: Copy>(token: &Token, set: &[(&str, T)], what: &str) -> Result<T, Diagnostic> {
+    if token.kind == TokenKind::Word {
+        if let Some(&(_, value)) = set.iter().find(|(word, _)| *word == token.text) {
+            return Ok(value);
+        }
+    }
+    let words: Vec<&str> = set.iter().map(|&(word, _)| word).collect();
+    Err(Diagnostic {
+        code: "SWG0402",
+        span: token.span,
+        message: format!(
+            "unknown {what} `{}`; the set is {}",
+            token.text,
+            words.join(" | ")
+        ),
+    })
+}
+
+fn strategy_value(token: &Token) -> Result<StrategyPolicy, Diagnostic> {
+    closed_set(
+        token,
+        &[
+            ("auto", StrategyPolicy::Auto),
+            (
+                "rhythm_copy",
+                StrategyPolicy::Named(StrategyName::RhythmCopy),
+            ),
+            (
+                "motif_transpose",
+                StrategyPolicy::Named(StrategyName::MotifTranspose),
+            ),
+            (
+                "constrained_walk",
+                StrategyPolicy::Named(StrategyName::ConstrainedWalk),
+            ),
+            (
+                "shuffle_motifs",
+                StrategyPolicy::Named(StrategyName::ShuffleMotifs),
+            ),
+            (
+                "repeat_variation",
+                StrategyPolicy::Named(StrategyName::RepeatVariation),
+            ),
+        ],
+        "strategy",
+    )
+}
+
+fn string_value(token: &Token, what: &str) -> Result<String, Diagnostic> {
+    if token.kind == TokenKind::Str {
+        Ok(token.text.clone())
+    } else {
+        Err(Diagnostic {
+            code: "SWG0401",
+            span: token.span,
+            message: format!("{what} takes a quoted string"),
+        })
+    }
+}
+
+/// A plain decimal integer: digits only, no leading zeros, no separators.
+fn dec_u128(token: &Token, what: &str) -> Result<u128, Diagnostic> {
+    let malformed = |message: String| Diagnostic {
+        code: "SWG0401",
+        span: token.span,
+        message,
+    };
+    if token.kind != TokenKind::NumberLike || !token.text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(malformed(format!(
+            "{what} takes a plain decimal integer, found `{}`",
+            token.text
+        )));
+    }
+    if token.text.len() > 1 && token.text.starts_with('0') {
+        return Err(malformed(format!("{what} does not take leading zeros")));
+    }
+    token
+        .text
+        .parse()
+        .map_err(|_| malformed(format!("{what} value `{}` is out of range", token.text)))
+}
+
+/// A ranged integer value; out of range is `SWG0401` at the token.
+fn int_value<T: TryFrom<u128>>(token: &Token, what: &str) -> Result<T, Diagnostic> {
+    T::try_from(dec_u128(token, what)?).map_err(|_| Diagnostic {
+        code: "SWG0401",
+        span: token.span,
+        message: format!("{what} value `{}` is out of range", token.text),
+    })
+}
+
+/// `<n>bps`, basis points `0..=10000`. A bare or decimal density is
+/// `SWG0401`; an out-of-scale one is `SWG0308` (the transport's code).
+fn density_value(token: &Token) -> Result<DensityBps, Diagnostic> {
+    let digits = if token.kind == TokenKind::NumberLike {
+        token.text.strip_suffix("bps")
+    } else {
+        None
+    };
+    let Some(digits) = digits.filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    else {
+        return Err(Diagnostic {
+            code: "SWG0401",
+            span: token.span,
+            message: format!(
+                "density takes basis points with the `bps` suffix, like `9500bps`; found `{}`",
+                token.text
+            ),
+        });
+    };
+    let out_of_scale = || Diagnostic {
+        code: "SWG0308",
+        span: token.span,
+        message: format!("density {digits} bps is outside 0..=10000"),
+    };
+    let bps: u128 = digits.parse().map_err(|_| out_of_scale())?;
+    let narrow = u16::try_from(bps).map_err(|_| out_of_scale())?;
+    DensityBps::new(narrow).map_err(|_| out_of_scale())
+}
+
+/// A rational note value `a/b`, both parts nonzero decimal integers. Every
+/// malformation is `SWG0301` — the unit's own transport code; whether the
+/// unit divides the bar stays a build-time question.
+fn unit_value(token: &Token) -> Result<Unit, Diagnostic> {
+    let malformed = |message: String| Diagnostic {
+        code: "SWG0301",
+        span: token.span,
+        message,
+    };
+    let parts = if token.kind == TokenKind::NumberLike {
+        token.text.split_once('/')
+    } else {
+        None
+    };
+    let Some((numerator, denominator)) = parts.filter(|(a, b)| {
+        !a.is_empty()
+            && !b.is_empty()
+            && a.bytes().all(|c| c.is_ascii_digit())
+            && b.bytes().all(|c| c.is_ascii_digit())
+    }) else {
+        return Err(malformed(format!(
+            "malformed unit `{}`: expected a note value like 1/16",
+            token.text
+        )));
+    };
+    let numerator: u64 = numerator
+        .parse()
+        .map_err(|_| malformed(format!("unit {} is out of range", token.text)))?;
+    let denominator: u64 = denominator
+        .parse()
+        .map_err(|_| malformed(format!("unit {} is out of range", token.text)))?;
+    if numerator == 0 || denominator == 0 {
+        return Err(malformed(format!("unit {} has a zero part", token.text)));
+    }
+    Ok(Unit {
+        numerator,
+        denominator,
+    })
+}
+
+// ── the kernel literal ───────────────────────────────────────────────────
+
+/// Validates an `ascii` literal with the transport's own codes and order:
+/// whitespace (`SWG0103`), empty rows (`SWG0307`), shape (`SWG0101`), cells
+/// (`SWG0102`). The span is the whole quoted literal.
+fn validate_kernel(literal: &str, span: Span) -> Result<(), Diagnostic> {
+    let fail = |code: &'static str, message: String| Diagnostic {
+        code,
+        span,
+        message,
+    };
+    if literal
+        .chars()
+        .any(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
+    {
+        return Err(fail(
+            "SWG0103",
+            "whitespace inside the kernel literal; rows are separated by `/` alone".to_owned(),
+        ));
+    }
+    let rows: Vec<&str> = literal.split('/').collect();
+    if rows.iter().any(|row| row.is_empty()) {
+        return Err(fail(
+            "SWG0307",
+            "empty kernel literal or empty row".to_owned(),
+        ));
+    }
+    let expected = rows.first().map_or(0, |row| row.chars().count());
+    for (index, row) in rows.iter().enumerate() {
+        let got = row.chars().count();
+        if got != expected {
+            return Err(fail(
+                "SWG0101",
+                format!("ragged kernel: row {index} has {got} cells, expected {expected}"),
+            ));
+        }
+    }
+    for (index, row) in rows.iter().enumerate() {
+        if let Some((col, cell)) = row.chars().enumerate().find(|&(_, c)| c != 'X' && c != '.') {
+            return Err(fail(
+                "SWG0102",
+                format!("invalid kernel cell {cell:?} at row {index}, col {col}: only `X` and `.`"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -290,6 +1223,7 @@ pub fn format(program: &Program) -> String {
     clippy::unwrap_used,
     clippy::panic,
     clippy::indexing_slicing,
+    clippy::string_slice,
     clippy::missing_assert_message,
     clippy::arithmetic_side_effects,
     clippy::str_to_string
@@ -426,15 +1360,15 @@ pattern p {{
             "\n",
             "pattern p {}\n",
             "swang1\n",
-            "swang  1\n",   // two spaces
-            " swang 1\n",   // leading whitespace
-            "\nswang 1\n",  // leading blank line
-            "Swang 1\n",    // wrong case
-            "swang 01\n",   // leading zero
-            "swang -1\n",   // sign
-            "swang 1 \n",   // trailing space
-            "swang 1",      // missing EOL
-            "swang 1\r",    // CR without LF
+            "swang  1\n",         // two spaces
+            " swang 1\n",         // leading whitespace
+            "\nswang 1\n",        // leading blank line
+            "Swang 1\n",          // wrong case
+            "swang 01\n",         // leading zero
+            "swang -1\n",         // sign
+            "swang 1 \n",         // trailing space
+            "swang 1",            // missing EOL
+            "swang 1\r",          // CR without LF
             "swang 1234567890\n", // ten digits
         ] {
             let d = header_level(source).expect_err(source);
@@ -538,8 +1472,8 @@ pattern p {{
 
     #[test]
     fn a_missing_pipeline_step_is_swg0403() {
-        let source =
-            program_with("|> fractalize depth 1 max_cells 4096").replace("    |> linearize snake\n", "");
+        let source = program_with("|> fractalize depth 1 max_cells 4096")
+            .replace("    |> linearize snake\n", "");
         let d = first_error(&source);
         assert_eq!(d.code, "SWG0403");
         assert!(d.message.contains("linearize"), "{}", d.message);
@@ -560,9 +1494,7 @@ pattern p {{
     fn seed_without_density_is_swg0403_never_an_inert_word() {
         // The transport tolerated an inert --rhythm-seed; the grammar
         // deliberately rejects the form as non-canonical (law 1's scope).
-        let d = first_error(&program_with(
-            "|> fractalize depth 1 max_cells 4096 seed 4",
-        ));
+        let d = first_error(&program_with("|> fractalize depth 1 max_cells 4096 seed 4"));
         assert_eq!(d.code, "SWG0403");
         assert!(d.message.contains("density"), "{}", d.message);
     }
@@ -575,7 +1507,10 @@ pattern p {{
         let d = first_error(&source);
         assert_eq!(d.code, "SWG0101");
         let span = &source[d.span.start as usize..d.span.end as usize];
-        assert!(span.contains("X.X/XX"), "the span covers the literal: {span}");
+        assert!(
+            span.contains("X.X/XX"),
+            "the span covers the literal: {span}"
+        );
     }
 
     #[test]
@@ -623,8 +1558,8 @@ pattern p {{
 
     #[test]
     fn a_malformed_unit_is_swg0301() {
-        let source =
-            program_with("|> fractalize depth 1 max_cells 4096").replace("unit 1/16", "unit banana");
+        let source = program_with("|> fractalize depth 1 max_cells 4096")
+            .replace("unit 1/16", "unit banana");
         assert_eq!(first_error(&source).code, "SWG0301");
     }
 
@@ -699,11 +1634,10 @@ pattern p {{
 
     #[test]
     fn a_step_out_of_pipeline_order_is_swg0401() {
-        let source = program_with("|> fractalize depth 1 max_cells 4096")
-            .replace(
-                "    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n",
-                "    |> map_rhythm unit 1/16 tail rest_pad\n    |> linearize snake\n",
-            );
+        let source = program_with("|> fractalize depth 1 max_cells 4096").replace(
+            "    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n",
+            "    |> map_rhythm unit 1/16 tail rest_pad\n    |> linearize snake\n",
+        );
         assert_eq!(first_error(&source).code, "SWG0401");
     }
 
@@ -726,7 +1660,11 @@ pattern p {{
     #[test]
     fn the_reference_text_is_the_fixed_point_of_format_parse() {
         let program = parse(REFERENCE).expect("parses");
-        assert_eq!(format(&program), REFERENCE, "canonical text formats to itself");
+        assert_eq!(
+            format(&program),
+            REFERENCE,
+            "canonical text formats to itself"
+        );
     }
 
     #[test]
