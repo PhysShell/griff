@@ -8,6 +8,7 @@
 //! AST, parser, and canonical formatter — lives in [`syntax`] (S16 Phase 3,
 //! spec §3).
 
+pub mod eval;
 pub mod pattern_compile;
 pub mod syntax;
 
