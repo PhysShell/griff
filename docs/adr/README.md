@@ -34,7 +34,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0026](0026-web-chunk-capture-tool.md) | A minimal in-browser chunk.json capture tool (carve-out from "web curation — later") | Accepted |
 | [0027](0027-egui-cockpit-curation-dock-and-opfs-persistence.md) | Grow the M1 playground into the egui M2 cockpit — curation dock + OPFS persistence | Proposed |
 | [0028](0028-shared-theme-tokens-in-the-ui-core.md) | Shared theme tokens in the UI core — one palette, two renderers, asserted contrast | Proposed |
-| [0029](0029-swang-authoring-and-verified-lifting.md) | Adopt Swang as a deterministic authoring and verified lifting language | Proposed |
+| [0029](0029-swang-authoring-and-verified-lifting.md) | Adopt Swang as a deterministic authoring and verified lifting language | Accepted (Phases 0–3 frozen) |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
