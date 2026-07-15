@@ -1796,6 +1796,7 @@ dependencies = [
  "eframe",
  "getrandom 0.4.2",
  "griff-core",
+ "griff-swang",
  "griff-ui-core",
  "js-sys",
  "proptest",
