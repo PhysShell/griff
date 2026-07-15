@@ -11,5 +11,6 @@
 #![doc(hidden)]
 
 pub mod generation_input;
+pub mod rhythm_pattern;
 
 pub use griff_core::generation_input::primary_voice_note_count;

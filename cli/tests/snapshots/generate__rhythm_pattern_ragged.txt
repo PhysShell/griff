@@ -1,0 +1,5 @@
+$ griff generate <SRC> <OUT> --rhythm-kernel X.X/XX --rhythm-fractal-depth 0 --rhythm-traversal row-major --rhythm-unit 1/16
+exit: 1
+--- stdout ---
+--- stderr ---
+error: error[SWG0101] (--rhythm-kernel): ragged kernel: row 1 has 2 cells, expected 3

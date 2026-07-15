@@ -102,8 +102,15 @@ meaningful:
 
 ### 1.5 Diagnostics
 
-Every diagnostic carries a stable typed code, a source location (a
-`NodePath` before the grammar exists; a source span after), and a message.
+Every diagnostic carries a stable typed code, a location, and a message.
+The location is one of three kinds, by layer:
+
+- a **structural `NodePath`** — errors born inside the pattern core, where
+  the tree address is the only location that exists;
+- the **offending CLI flag, or `INPUT`** for score-borne facts — the Phase-2
+  transport boundary, where the user's fix lives in a flag;
+- a **source span** — from Phase 3 on, once a grammar gives text positions.
+
 Codes are never reused; the registry is append-only. The compiler core emits
 diagnostics as pure data; rendering happens only at the frontend edge.
 
@@ -123,6 +130,10 @@ Initial registry:
 | `SWG0302` | incomplete final bar under tail policy `reject` |
 | `SWG0303` | density decay given without a rhythm seed |
 | `SWG0304` | meter change inside the mapped span (v0.1 requires a constant meter) |
+| `SWG0305` | the mapped span's bar duration is zero or its meter is unrepresentable |
+| `SWG0306` | the expansion produced no onsets — nothing to generate (a fully silent kernel or a pruned-to-silence expansion is a deliberate typed error, not an empty candidate set) |
+| `SWG0307` | empty kernel literal (no rows, or a row with no cells) |
+| `SWG0308` | density outside `0..=10000` basis points |
 
 ### 1.6 Kernel semantics
 
@@ -287,9 +298,11 @@ map_rhythm(unit = 1/16) : ActivitySequence -> Vec<RhythmTemplate>
   v0.1 requires a **constant meter** across the mapped span; a meter change
   inside it is a typed error (`SWG0304`).
 - `slots_per_bar = bar_duration / unit_ticks` must divide **exactly**;
-  a unit that does not divide the bar is a typed error (`SWG0301`). A slot
-  therefore never crosses a bar boundary, and the one-bar template cut is
-  unambiguous.
+  a unit that does not divide the bar is a typed error (`SWG0301`). A unit
+  that is not representable in whole ticks at the score's PPQN is the same
+  incompatibility and carries the same code, with a message naming the PPQN.
+  A slot therefore never crosses a bar boundary, and the one-bar template cut
+  is unambiguous.
 - The sequence is cut into one-bar `RhythmTemplate` values. `X` at slot `i`
   becomes `TemplateNote { offset: (i mod slots_per_bar) × unit_ticks,
   duration: unit_ticks }` in bar `i div slots_per_bar`; `.` contributes no

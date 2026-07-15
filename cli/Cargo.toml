@@ -19,9 +19,11 @@ name = "griff"
 path = "src/main.rs"
 
 [dependencies]
-griff-core = { path = "../core" }
-clap       = { workspace = true }
-serde_json = { workspace = true }
+griff-core    = { path = "../core" }
+griff-pattern = { path = "../pattern" }
+griff-swang   = { path = "../swang" }
+clap          = { workspace = true }
+serde_json    = { workspace = true }
 
 [dev-dependencies]
 # Used only by the S0 characterization suite to synthesise `.mid` fixtures
