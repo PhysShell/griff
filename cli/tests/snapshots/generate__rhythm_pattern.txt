@@ -1,7 +1,7 @@
 $ griff generate <SRC> <OUT> --bars 4 --seed 42 --rhythm-kernel X.X/XX./.XX --rhythm-fractal-depth 1 --rhythm-density-bps 8000 --rhythm-seed 17 --rhythm-traversal snake --rhythm-unit 1/16 --rhythm-tail rest-pad --emit-rhythm-expansion <ART>
 exit: 0
 --- stdout ---
-rhythm: explicit palette, 6 templates rotated verbatim over 4 bars; grids[6] 26b2771a140583cd 44ea47df249cba9d cbf29ce484222325 cbf29ce484222325 cbf29ce484222325 cbf29ce484222325
+rhythm: explicit palette, 6 templates — per-bar strategies rotate them verbatim, RepeatVariation holds the first — over 4 bars; grids[6] 26b2771a140583cd 44ea47df249cba9d cbf29ce484222325 cbf29ce484222325 cbf29ce484222325 cbf29ce484222325
 candidates: 10 total ranked under generation_rerank v1
   1. RhythmCopyPitchSubstitute variant-seed 13679457532755275413 aggregate 0.883
   2. RepeatVariation variant-seed 701532786141963250 aggregate 0.833

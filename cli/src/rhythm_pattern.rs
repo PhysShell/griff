@@ -163,6 +163,8 @@ pub fn compile_pattern(
     let templates =
         griff_swang::map_rhythm(&sequence, bar_duration, unit, tail).map_err(map_lower_error)?;
 
+    check_bars_window(&templates, bars)?;
+
     let artifact_json = render_artifact(&ArtifactContext {
         args,
         geometry: &geometry,
@@ -176,6 +178,35 @@ pub fn compile_pattern(
         templates,
         artifact_json,
     })
+}
+
+/// The whole-expansion onset check is necessary but not sufficient: the
+/// scheduler rotates the palette over `--bars`, so with fewer bars than
+/// templates only a prefix is ever used. A silent prefix would send every
+/// strategy into silence and the reranker into an empty set — *after* the
+/// artifact was written. Stop it at `SWG0306` instead (#116 review).
+fn check_bars_window(templates: &[RhythmTemplate], bars: usize) -> Result<(), PatternDiagnostic> {
+    if bars == 0 {
+        return Ok(()); // the generator's own BarCountZero owns this case
+    }
+    let used = bars.min(templates.len());
+    let window_sounds = templates
+        .iter()
+        .take(used)
+        .any(|template| !template.notes.is_empty());
+    if window_sounds {
+        Ok(())
+    } else {
+        Err(PatternDiagnostic {
+            code: "SWG0306",
+            flag: "--rhythm-kernel",
+            message: format!(
+                "the first {used} template(s) the --bars window rotates over are all \
+                 silent — nothing to generate (raise --bars past the silent prefix, \
+                 or change the kernel, depth, density, or rhythm seed)"
+            ),
+        })
+    }
 }
 
 /// Bar geometry resolved from the seed score's master timeline (spec §1.11).
@@ -712,7 +743,7 @@ mod tests {
         );
 
         // With two bars the sounding template enters the rotation.
-        assert!(compile_pattern(&args(kernel), &seed_score(2), 2).is_ok());
+        compile_pattern(&args(kernel), &seed_score(2), 2).expect("two bars reach the onset");
     }
 
     #[test]

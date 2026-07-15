@@ -774,7 +774,7 @@ fn print_explicit_rhythm_diagnostics(
     let diag = generate::explicit_rhythm_diagnostics(palette, bar_duration);
     let hexes: Vec<String> = diag.fingerprints.iter().map(|h| format!("{h:x}")).collect();
     println!(
-        "rhythm: explicit palette, {count} templates rotated verbatim over {bars} bars; grids[{count}] {fps}",
+        "rhythm: explicit palette, {count} templates — per-bar strategies rotate them verbatim, RepeatVariation holds the first — over {bars} bars; grids[{count}] {fps}",
         count = diag.effective,
         bars = constraints.bar_count,
         fps = hexes.join(" "),
