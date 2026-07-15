@@ -491,9 +491,9 @@ pub fn parse_kernel_literal(literal: &str) -> Result<griff_pattern::Kernel, Patt
 /// or not representable in whole ticks.
 #[allow(
     clippy::arithmetic_side_effects,
-    // ppqn, numerator and denominator are all validated non-zero before the
-    // u64 multiply/divide.
-    reason = "unit math over validated non-zero inputs"
+    // The multiply is u128 over u16 × 4 × u64 inputs — at most 2^82, so it
+    // cannot overflow — and the divisor is validated non-zero before use.
+    reason = "u128 headroom over the user's u64 numerator; divisor non-zero"
 )]
 pub fn parse_unit(literal: &str, ppqn: u16) -> Result<Ticks, PatternDiagnostic> {
     const FLAG: &str = "--rhythm-unit";
@@ -520,20 +520,24 @@ pub fn parse_unit(literal: &str, ppqn: u16) -> Result<Ticks, PatternDiagnostic> 
     if numerator == 0 || denominator == 0 {
         return Err(malformed(format!("unit {literal} has a zero part")));
     }
-    let whole = u64::from(ppqn) * 4 * numerator;
-    if !whole.is_multiple_of(denominator) {
+    // The user's numerator is an arbitrary u64: the product lives in u128
+    // (at most 2^16 × 4 × 2^64 = 2^82), so no input can overflow it — a
+    // too-large unit falls out below as a typed diagnostic, never a panic
+    // or a wrap.
+    let whole = u128::from(ppqn) * 4 * u128::from(numerator);
+    if !whole.is_multiple_of(u128::from(denominator)) {
         return Err(malformed(format!(
             "unit {literal} is not representable in whole ticks at PPQN {ppqn}"
         )));
     }
-    let ticks = whole / denominator;
+    let ticks = whole / u128::from(denominator);
     u32::try_from(ticks)
         .ok()
         .filter(|&t| t > 0)
         .map(Ticks)
         .ok_or_else(|| {
             malformed(format!(
-                "unit {literal} leaves no whole tick at PPQN {ppqn}"
+                "unit {literal} does not fit a whole-tick u32 duration at PPQN {ppqn}"
             ))
         })
 }
