@@ -315,6 +315,88 @@ fn swang_expand_locates_the_unit_at_its_word() {
     assert!(!text.contains("--rhythm"), "no flag vocabulary: {text}");
 }
 
+/// A two-bar MIDI whose meter changes 4/4 → 7/8 at bar 1 — the score-borne
+/// `SWG0304` fixture, encoded independently of griff's own export path.
+fn meter_change_midi() -> Vec<u8> {
+    use midly::{
+        num::{u15, u24, u28, u4, u7},
+        Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
+    };
+    let note = |delta: u32, key: u8, on: bool| TrackEvent {
+        delta: u28::from_int_lossy(delta),
+        kind: TrackEventKind::Midi {
+            channel: u4::new(0),
+            message: if on {
+                MidiMessage::NoteOn {
+                    key: u7::new(key),
+                    vel: u7::new(90),
+                }
+            } else {
+                MidiMessage::NoteOff {
+                    key: u7::new(key),
+                    vel: u7::new(0),
+                }
+            },
+        },
+    };
+    let meta = |delta: u32, message: MetaMessage<'static>| TrackEvent {
+        delta: u28::from_int_lossy(delta),
+        kind: TrackEventKind::Meta(message),
+    };
+    let mut smf = Smf::new(Header {
+        format: Format::SingleTrack,
+        timing: Timing::Metrical(u15::new(480)),
+    });
+    smf.tracks = vec![vec![
+        meta(0, MetaMessage::TimeSignature(4, 2, 24, 8)),
+        meta(0, MetaMessage::Tempo(u24::from_int_lossy(500_000))),
+        note(0, 40, true),
+        note(480, 40, false),
+        // Bar 1 begins at 1920 in a new meter: 7/8 = 1680 ticks.
+        meta(1440, MetaMessage::TimeSignature(7, 3, 24, 8)),
+        note(0, 42, true),
+        note(480, 42, false),
+        meta(1200, MetaMessage::EndOfTrack),
+    ]];
+    let mut bytes = Vec::new();
+    smf.write_std(&mut bytes).expect("fixture must serialise");
+    bytes
+}
+
+#[test]
+fn swang_expand_locates_score_borne_facts_at_the_source_value() {
+    // §1.5 via the spec's expand contract: a score-borne fact (the meter
+    // changes inside the seed file) sits at the quoted source value's span
+    // — line 9, column 16, the opening quote of the path literal. The
+    // path identifies the offending score; the keyword never changes.
+    let mid = env::temp_dir().join("griff_s16_swang_meter_change.mid");
+    fs::write(&mid, meter_change_midi()).expect("fixture must write");
+    let program = expand_program_for(
+        "X.X/XX./.XX",
+        "depth 1 max_cells 4096",
+        "unit 1/16 tail rest_pad",
+        2,
+        &mid,
+    );
+    let path = script("expand_meter", &program);
+    let text = griff(
+        &["swang", "expand", path.to_str().unwrap()],
+        Some(path.to_str().unwrap()),
+    );
+    fs::remove_file(&path).ok();
+    fs::remove_file(&mid).ok();
+    assert!(text.contains("exit: 1"), "{text}");
+    assert!(text.contains("error[SWG0304]"), "{text}");
+    assert!(
+        text.contains("<OUT>:9:16"),
+        "the opening quote of the source path literal: {text}"
+    );
+    assert!(
+        !text.contains("INPUT") && !text.contains("--rhythm"),
+        "no transport location classes in a program diagnostic: {text}"
+    );
+}
+
 #[test]
 fn swang_expand_speaks_program_vocabulary_for_the_silent_window() {
     // 17 cells rest-padded into 16-slot bars: template 0 is silent, and

@@ -3,9 +3,11 @@
 //! Kernel literal → `griff-pattern` expansion → `griff-swang` lowering → an
 //! explicit palette for the shared generation compiler, plus the versioned
 //! expansion artifact. This is the **temporary transport syntax** of S16
-//! Phase 2, not early Swang grammar. Errors leave as [`PatternDiagnostic`]s —
-//! a stable `SWG____` code, the offending flag, and a message — per the
-//! spec's §1.5 registry.
+//! Phase 2, not early Swang grammar. The pipeline fails as typed
+//! [`PatternFlaw`] data (spec §1.5: the core emits pure data); the transport
+//! renders it as [`PatternDiagnostic`]s — a stable `SWG____` code, the
+//! offending flag, and a message — while the Swang `expand` frontend renders
+//! the same flaws against its program spans.
 
 use std::fmt;
 
