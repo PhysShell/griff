@@ -579,7 +579,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, &(numerator, denominator))| {
-                let len = 480 * 4 * u32::from(numerator) / (4 * u32::from(denominator));
+                let len = 480 * 4 * u32::from(numerator) / u32::from(denominator);
                 let mb = MasterBar {
                     index: i,
                     tick_range: TickRange::new(Ticks(start), Ticks(start + len))

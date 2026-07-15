@@ -674,6 +674,21 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
         .map(|args| rhythm_pattern::compile_pattern(args, &score, bars))
         .transpose()?;
     if let (Some(plan), Some(path)) = (&plan, emit_rhythm_expansion) {
+        // The artifact writes before generation: aliasing the input would
+        // clobber the user's tab, aliasing the output would be silently
+        // overwritten by the MIDI moments later. Canonical paths when they
+        // resolve, lexical comparison otherwise (the output may not exist).
+        let clashes = |other: &Path| -> bool {
+            match (fs::canonicalize(path), fs::canonicalize(other)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => path == other,
+            }
+        };
+        if clashes(input) || clashes(output) {
+            return Err(CliError::Argument(
+                "--emit-rhythm-expansion must not alias INPUT or OUTPUT".to_owned(),
+            ));
+        }
         fs::write(path, &plan.artifact_json)?;
     }
 

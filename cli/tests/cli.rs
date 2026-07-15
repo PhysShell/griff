@@ -273,6 +273,8 @@ fn rhythm_pattern_generate_golden() {
     };
 
     let run = |seed: &'static str, rhythm_seed: &'static str| -> (String, String) {
+        // A stale artifact from an earlier run must never mask a failed write.
+        fs::remove_file(&art).ok();
         let argv_owned = args(seed, rhythm_seed);
         let refs: Vec<&str> = argv_owned.iter().map(String::as_str).collect();
         let out = griff(&refs, dst.to_str());
@@ -316,6 +318,7 @@ fn rhythm_pattern_generate_golden() {
 fn rhythm_pattern_ragged_kernel_golden() {
     let src = fixture_path("simple_4_4");
     let dst = env::temp_dir().join("griff_s16_pattern_ragged.mid");
+    fs::remove_file(&dst).ok();
 
     let out = griff(
         &[
@@ -336,4 +339,50 @@ fn rhythm_pattern_ragged_kernel_golden() {
     let out = out.replace(src.to_str().unwrap(), "<SRC>");
     assert_golden("generate__rhythm_pattern_ragged", &out);
     assert!(!dst.exists(), "no riff may be written on a broken kernel");
+}
+
+/// The artifact writes before generation: aliasing INPUT would clobber the
+/// user's tab, aliasing OUTPUT would be overwritten moments later. Both are
+/// rejected before anything is written.
+#[test]
+fn rhythm_pattern_artifact_alias_is_rejected() {
+    let src = fixture_path("simple_4_4");
+    let dst = env::temp_dir().join("griff_s16_pattern_alias.mid");
+    fs::remove_file(&dst).ok();
+    let src_bytes = fs::read(&src).unwrap();
+
+    for alias in [src.to_str().unwrap(), dst.to_str().unwrap()] {
+        let out = griff(
+            &[
+                "generate",
+                src.to_str().unwrap(),
+                dst.to_str().unwrap(),
+                "--rhythm-kernel",
+                "X.X/XX./.XX",
+                "--rhythm-fractal-depth",
+                "0",
+                "--rhythm-traversal",
+                "row-major",
+                "--rhythm-unit",
+                "1/16",
+                "--rhythm-tail",
+                "rest-pad",
+                "--emit-rhythm-expansion",
+                alias,
+            ],
+            dst.to_str(),
+        );
+        assert!(out.contains("exit: 1"), "aliasing must fail:\n{out}");
+        assert!(
+            out.contains("must not alias INPUT or OUTPUT"),
+            "the message names the crime:\n{out}"
+        );
+    }
+
+    assert_eq!(
+        fs::read(&src).unwrap(),
+        src_bytes,
+        "the input tab must survive untouched"
+    );
+    assert!(!dst.exists(), "no riff may be written on a rejected alias");
 }
