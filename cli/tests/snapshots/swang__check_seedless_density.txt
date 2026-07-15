@@ -1,0 +1,5 @@
+$ griff swang check <OUT>
+exit: 1
+--- stdout ---
+--- stderr ---
+error: error[SWG0303] (<OUT>:5:42): density decay was given without a rhythm seed; pruning must be explicitly seeded

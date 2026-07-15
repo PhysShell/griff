@@ -16,10 +16,13 @@
     clippy::missing_assert_message
 )]
 
+// Reason: this binary uses only the runner and the golden comparator; the
+// shared module's MIDI fixture builders belong to the S0 suite in cli.rs.
+#[allow(dead_code)]
 mod common;
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output};
 use std::{env, fs};
 
 use common::{assert_golden, griff};
@@ -77,7 +80,7 @@ fn script(name: &str, text: &str) -> PathBuf {
 }
 
 /// Runs the binary raw, for byte-exact stdout assertions.
-fn griff_raw(args: &[&str]) -> std::process::Output {
+fn griff_raw(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_griff"))
         .args(args)
         .output()
