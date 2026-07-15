@@ -172,6 +172,23 @@ priority onto canonical stages:
   (`SmpteTimingUnsupported`, the rule that already existed in
   `extract_ppqn`) before midly reads it.
 
+### F-004 — tiny-PPQN unbounded bar materialization *(fixed at S16)*
+
+- **Where:** `core/src/midi.rs` — `build_score_track` and
+  `build_master_bars` walk one bar per loop iteration; a metrical PPQN of 1
+  plus a ~2-billion-tick varlen delta implies ~500 million bars.
+- **Effect:** out-of-memory (not a hang — the loops terminate, but only
+  after allocating billions of `EventGroup`/`MasterBar` entries).
+  griff's own bug, found by the gate's **third** smoke run after F-002 was
+  fixed — the same F-001 family (a degenerate timing value driving an
+  unbounded bar loop), a different trigger.
+- **Reproducer / regression seed:** `oom_tiny_ppqn_huge_delta.mid` (49 bytes,
+  corpora of `midi_import` and `midi_roundtrip`). Characterization test:
+  `regression_f004_tiny_ppqn_huge_delta_is_typed_error_not_oom`.
+- **Status:** **fixed at S16** — both per-bar loops stop at
+  `MAX_MASTER_BARS` (1,000,000) with `MidiError::TooManyBars`, bounding
+  memory to tens of megabytes.
+
 ### F-003 — guitarpro unvalidated direction index *(open, quarantined)*
 
 - **Where:** `guitarpro 0.4.2`, `model/legacy/headers/io.rs:114`:
