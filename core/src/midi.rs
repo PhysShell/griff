@@ -94,6 +94,40 @@ pub struct Ppqn(pub u16);
 
 // ── ppqn ──────────────────────────────────────────────────────────────────────
 
+/// F-002 (`docs/fuzzing.md`): midly 0.5.3 negates the SMPTE fps byte before
+/// validating it — an overflow panic on fps == -128 — and it parses **every**
+/// `MThd` chunk it meets as a header (`Chunk::read`), not only the first.
+/// Walk the chunk boundaries exactly the way midly does and report whether
+/// any header chunk's division carries the timecode bit. SMPTE timing is
+/// unsupported anyway (see [`extract_ppqn`]), so rejecting on this walk is
+/// the same typed error, earlier — before the panicking negate can run.
+///
+/// The walk advances by `4 (magic) + 4 (length) + length` per chunk, so it
+/// always makes progress and never reads inside chunk payloads (a stray
+/// `MThd` in track data is not a chunk boundary — midly never parses it, and
+/// neither does this).
+fn smpte_division_reachable(data: &[u8]) -> bool {
+    let mut at = 0_usize;
+    while let Some(len_bytes) = at
+        .checked_add(4)
+        .and_then(|magic_end| data.get(magic_end..magic_end.saturating_add(4)))
+    {
+        let magic = data.get(at..at.saturating_add(4));
+        let len: [u8; 4] = len_bytes.try_into().unwrap_or([0; 4]);
+        if magic == Some(b"MThd")
+            && data
+                .get(at.saturating_add(12))
+                .is_some_and(|&b| b & 0x80 != 0)
+        {
+            return true;
+        }
+        at = at
+            .saturating_add(8)
+            .saturating_add(usize::try_from(u32::from_be_bytes(len)).unwrap_or(usize::MAX));
+    }
+    false
+}
+
 fn extract_ppqn(header: Header) -> Result<Ppqn, MidiError> {
     match header.timing {
         Timing::Metrical(ticks) => {
@@ -272,14 +306,7 @@ fn tempo_to_micros(tempo: Tempo) -> Result<u32, MidiError> {
 /// The returned [`Score`] contains a [`LossReport`] describing any data that
 /// could not be preserved exactly.
 pub fn import_score(data: &[u8]) -> Result<Score, MidiError> {
-    // F-002 (docs/fuzzing.md): midly 0.5.3 negates the SMPTE fps byte before
-    // validating it, which overflows on fps == -128 — a debug-profile panic
-    // reachable from a 14-byte header. SMPTE timing is unsupported here
-    // anyway (see extract_ppqn), so reject a timecode division before midly
-    // reads it: the same typed error, earlier. The division sits at bytes
-    // 12..14 of a well-formed header; a malformed one fails midly's own
-    // parse with a typed error regardless.
-    if data.get(..4) == Some(b"MThd") && data.get(12).is_some_and(|&b| b & 0x80 != 0) {
+    if smpte_division_reachable(data) {
         return Err(MidiError::SmpteTimingUnsupported);
     }
     let smf = Smf::parse(data)?;
