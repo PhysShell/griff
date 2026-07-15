@@ -512,21 +512,29 @@ fn span_of(start: usize, end: usize) -> Span {
     }
 }
 
-/// Parses a Swang script into its [`Program`].
+/// Source locations of the program words an expansion frontend renders
+/// diagnostics at (spec §3.5's CLI contract, §1.5's layers).
 ///
-/// The header is checked first ([`header_level`]); the grammar then covers
-/// exactly the earned pipeline. Diagnostics are pure data with byte-offset
-/// spans; the returned vector is never empty on `Err`.
+/// This is a side table, not part of the AST: [`Program`] equality and the
+/// `parse(format(ast)) == ast` law stay span-free. String-literal spans
+/// include their quotes; value spans cover the value token alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgramSpans {
+    /// The quoted `ascii` kernel literal.
+    pub kernel: Span,
+    /// The `unit` value (`1/16`).
+    pub unit: Span,
+    /// The `tail` value (`reject` / `rest_pad`).
+    pub tail: Span,
+    /// The quoted `source` literal.
+    pub source: Span,
+}
+
+/// [`parse`], additionally returning the [`ProgramSpans`] side table.
 ///
 /// # Errors
-/// Every registry code the grammar can raise: the header codes, the kernel
-/// codes (`SWG0101`–`SWG0103`, `SWG0307`), the semantic parity codes
-/// (`SWG0301` zero/malformed unit, `SWG0303` density without seed,
-/// `SWG0308` density out of scale), and the syntax class (`SWG0401`
-/// malformed syntax or out-of-range value, `SWG0402` unknown name in a
-/// closed word set, `SWG0403` missing required word, `SWG0404` repeated
-/// word).
-pub fn parse(source: &str) -> Result<Program, Vec<Diagnostic>> {
+/// Exactly [`parse`]'s errors — the two functions are one parser.
+pub fn parse_with_spans(source: &str) -> Result<(Program, ProgramSpans), Vec<Diagnostic>> {
     // `header_level` already enforced 1..=LANGUAGE_LEVEL; the map_err is
     // defense in depth, not a reachable path.
     let level = Level::new(header_level(source).map_err(|d| vec![d])?).map_err(|e| {
@@ -548,8 +556,26 @@ pub fn parse(source: &str) -> Result<Program, Vec<Diagnostic>> {
         pos: 0,
         eof: span_of(source.len(), source.len()),
     };
-    let pattern = parser.parse_pattern().map_err(|d| vec![d])?;
-    Ok(Program { level, pattern })
+    let (pattern, spans) = parser.parse_pattern().map_err(|d| vec![d])?;
+    Ok((Program { level, pattern }, spans))
+}
+
+/// Parses a Swang script into its [`Program`].
+///
+/// The header is checked first ([`header_level`]); the grammar then covers
+/// exactly the earned pipeline. Diagnostics are pure data with byte-offset
+/// spans; the returned vector is never empty on `Err`.
+///
+/// # Errors
+/// Every registry code the grammar can raise: the header codes, the kernel
+/// codes (`SWG0101`–`SWG0103`, `SWG0307`), the semantic parity codes
+/// (`SWG0301` zero/malformed unit, `SWG0303` density without seed,
+/// `SWG0308` density out of scale), and the syntax class (`SWG0401`
+/// malformed syntax or out-of-range value, `SWG0402` unknown name in a
+/// closed word set, `SWG0403` missing required word, `SWG0404` repeated
+/// word).
+pub fn parse(source: &str) -> Result<Program, Vec<Diagnostic>> {
+    parse_with_spans(source).map(|(program, _)| program)
 }
 
 /// Formats a [`Program`] into its canonical text — the unique fixed point of
@@ -856,12 +882,12 @@ impl Parser {
     }
 
     /// `pattern <name> { ascii "…" entries* }` and nothing after it.
-    fn parse_pattern(&mut self) -> Result<PatternDef, Diagnostic> {
+    fn parse_pattern(&mut self) -> Result<(PatternDef, ProgramSpans), Diagnostic> {
         self.expect_word("pattern")?;
         let name = self.expect_kind(TokenKind::Word, "a pattern name")?;
         self.expect_kind(TokenKind::OpenBrace, "`{`")?;
 
-        let ascii = self.parse_ascii()?;
+        let (ascii, kernel_span) = self.parse_ascii()?;
         let entries = self.collect_entries()?;
         let close = self.expect_kind(TokenKind::CloseBrace, "`}`")?;
         if let Some(extra) = self.peek() {
@@ -881,8 +907,8 @@ impl Parser {
         };
         let fractalize = parse_fractalize(fractalize_entry)?;
         let linearize = parse_linearize(linearize_entry)?;
-        let map_rhythm = parse_map_rhythm(map_rhythm_entry)?;
-        let generate = parse_generate(generate_entry)?;
+        let (map_rhythm, unit_span, tail_span) = parse_map_rhythm(map_rhythm_entry)?;
+        let (generate, source_span) = parse_generate(generate_entry)?;
         let export = parse_export(export_entry)?;
 
         let name = Ident::new(&name.text).map_err(|e| Diagnostic {
@@ -892,19 +918,27 @@ impl Parser {
             message: e.to_string(),
         })?;
 
-        Ok(PatternDef {
-            name,
-            kernel: ascii,
-            fractalize,
-            linearize,
-            map_rhythm,
-            generate,
-            export,
-        })
+        Ok((
+            PatternDef {
+                name,
+                kernel: ascii,
+                fractalize,
+                linearize,
+                map_rhythm,
+                generate,
+                export,
+            },
+            ProgramSpans {
+                kernel: kernel_span,
+                unit: unit_span,
+                tail: tail_span,
+                source: source_span,
+            },
+        ))
     }
 
     /// `ascii "<literal>"` — the block's first element.
-    fn parse_ascii(&mut self) -> Result<KernelLiteral, Diagnostic> {
+    fn parse_ascii(&mut self) -> Result<(KernelLiteral, Span), Diagnostic> {
         match self.peek() {
             Some(t) if t.kind == TokenKind::Word && t.text == "ascii" => {
                 self.next();
@@ -919,7 +953,7 @@ impl Parser {
             None => return Err(self.unexpected_end()),
         }
         let literal = self.expect_kind(TokenKind::Str, "a kernel literal")?;
-        KernelLiteral::new(&literal.text).map_err(|e| match e {
+        let kernel = KernelLiteral::new(&literal.text).map_err(|e| match e {
             AstError::InvalidKernel { code, message } => Diagnostic {
                 code,
                 span: literal.span,
@@ -930,7 +964,8 @@ impl Parser {
                 span: literal.span,
                 message: other.to_string(),
             },
-        })
+        })?;
+        Ok((kernel, literal.span))
     }
 
     /// Collects raw `|> word args…` entries up to the pattern's `}`.
@@ -1136,31 +1171,35 @@ fn parse_linearize(entry: &PipelineEntry) -> Result<Linearize, Diagnostic> {
     }
 }
 
-fn parse_map_rhythm(entry: &PipelineEntry) -> Result<MapRhythm, Diagnostic> {
+fn parse_map_rhythm(entry: &PipelineEntry) -> Result<(MapRhythm, Span, Span), Diagnostic> {
     let pairs = scan_pairs(&entry.args, &["unit", "tail"], "map_rhythm")?;
     let mut unit = None;
     let mut tail = None;
     for (word, value) in &pairs {
         if word.text == "unit" {
-            unit = Some(unit_value(value)?);
+            unit = Some((unit_value(value)?, value.span));
         } else {
-            tail = Some(closed_set(
-                value,
-                &[
-                    ("reject", TailPolicy::Reject),
-                    ("rest_pad", TailPolicy::RestPad),
-                ],
-                "tail policy",
-            )?);
+            tail = Some((
+                closed_set(
+                    value,
+                    &[
+                        ("reject", TailPolicy::Reject),
+                        ("rest_pad", TailPolicy::RestPad),
+                    ],
+                    "tail policy",
+                )?,
+                value.span,
+            ));
         }
     }
-    Ok(MapRhythm {
-        unit: unit.ok_or_else(|| missing_word("map_rhythm", "unit", entry.name_span))?,
-        tail: tail.ok_or_else(|| missing_word("map_rhythm", "tail", entry.name_span))?,
-    })
+    let (unit, unit_span) =
+        unit.ok_or_else(|| missing_word("map_rhythm", "unit", entry.name_span))?;
+    let (tail, tail_span) =
+        tail.ok_or_else(|| missing_word("map_rhythm", "tail", entry.name_span))?;
+    Ok((MapRhythm { unit, tail }, unit_span, tail_span))
 }
 
-fn parse_generate(entry: &PipelineEntry) -> Result<Generate, Diagnostic> {
+fn parse_generate(entry: &PipelineEntry) -> Result<(Generate, Span), Diagnostic> {
     let block = match entry.args.as_slice() {
         [open, inner @ .., close]
             if open.kind == TokenKind::OpenBrace && close.kind == TokenKind::CloseBrace =>
@@ -1188,7 +1227,7 @@ fn parse_generate(entry: &PipelineEntry) -> Result<Generate, Diagnostic> {
     let mut corpus = None;
     for (word, value) in &pairs {
         match word.text.as_str() {
-            "source" => source = Some(string_value(value, "source")?),
+            "source" => source = Some((string_value(value, "source")?, value.span)),
             "bars" => bars = Some(int_value::<u64>(value, "bars")?),
             "seed" => seed = Some(int_value::<u64>(value, "seed")?),
             "candidates" => candidates = Some(int_value::<u64>(value, "candidates")?),
@@ -1196,15 +1235,21 @@ fn parse_generate(entry: &PipelineEntry) -> Result<Generate, Diagnostic> {
             _ => corpus = Some(string_value(value, "corpus")?),
         }
     }
-    Ok(Generate {
-        source: source.ok_or_else(|| missing_word("generate", "source", entry.name_span))?,
-        bars: bars.ok_or_else(|| missing_word("generate", "bars", entry.name_span))?,
-        seed: seed.ok_or_else(|| missing_word("generate", "seed", entry.name_span))?,
-        candidates: candidates
-            .ok_or_else(|| missing_word("generate", "candidates", entry.name_span))?,
-        strategy: strategy.ok_or_else(|| missing_word("generate", "strategy", entry.name_span))?,
-        corpus,
-    })
+    let (source, source_span) =
+        source.ok_or_else(|| missing_word("generate", "source", entry.name_span))?;
+    Ok((
+        Generate {
+            source,
+            bars: bars.ok_or_else(|| missing_word("generate", "bars", entry.name_span))?,
+            seed: seed.ok_or_else(|| missing_word("generate", "seed", entry.name_span))?,
+            candidates: candidates
+                .ok_or_else(|| missing_word("generate", "candidates", entry.name_span))?,
+            strategy: strategy
+                .ok_or_else(|| missing_word("generate", "strategy", entry.name_span))?,
+            corpus,
+        },
+        source_span,
+    ))
 }
 
 fn parse_export(entry: &PipelineEntry) -> Result<Export, Diagnostic> {
@@ -1469,9 +1514,9 @@ mod tests {
     use griff_pattern::{DensityBps, Traversal};
 
     use super::{
-        format, header_level, parse, AstError, Diagnostic, Export, ExportFormat, Fractalize,
-        Generate, Ident, KernelLiteral, Level, Linearize, MapRhythm, PatternDef, Program, Prune,
-        StrategyName, StrategyPolicy, StringLiteral, Unit, LANGUAGE_LEVEL,
+        format, header_level, parse, parse_with_spans, AstError, Diagnostic, Export, ExportFormat,
+        Fractalize, Generate, Ident, KernelLiteral, Level, Linearize, MapRhythm, PatternDef,
+        Program, Prune, StrategyName, StrategyPolicy, StringLiteral, Unit, LANGUAGE_LEVEL,
     };
     use crate::TailPolicy;
 
@@ -1909,6 +1954,33 @@ pattern p {{
             "|> fractalize depth 1 max_cells 4096 density 0bps seed 4",
         ))
         .expect("a zero density prunes everything but spells canonically");
+    }
+
+    // ── the span side table (the expand frontend's locations) ──────────────
+
+    #[test]
+    fn the_span_table_slices_the_source_to_the_owning_words() {
+        let (program, spans) = parse_with_spans(REFERENCE).expect("the reference parses");
+        assert_eq!(program, reference_ast(), "one parser, two entry points");
+
+        let slice = |span: super::Span| &REFERENCE[span.start as usize..span.end as usize];
+        assert_eq!(slice(spans.kernel), "\"X.X/XX./.XX\"", "quotes included");
+        assert_eq!(slice(spans.unit), "1/16", "the value token alone");
+        assert_eq!(slice(spans.tail), "rest_pad");
+        assert_eq!(
+            slice(spans.source),
+            "\"corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5\""
+        );
+    }
+
+    #[test]
+    fn parse_and_parse_with_spans_are_one_parser() {
+        // Same acceptance and same diagnostics on the same flawed source.
+        let flawed = program_with("|> fractalize depth 1 max_cells 4096 density 9500bps");
+        assert_eq!(
+            parse_with_spans(&flawed).expect_err("seedless density")[0].code,
+            first_error(&flawed).code
+        );
     }
 
     // ── the canonical formatter (spec §3.5 laws 2–3) ────────────────────────

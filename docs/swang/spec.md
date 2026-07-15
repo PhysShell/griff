@@ -579,8 +579,15 @@ Phase 3 adds **no musical semantics**. It closes only when:
 
 CLI: `griff swang check | fmt | expand | build` — `expand` stops after
 `map_rhythm` and emits the same canonical expansion JSON Phase 2 already
-emits; `build` runs the generation strategy and the program's own `export`
-(no output flag exists).
+emits, **to stdout**: the program's `export` owns the only musical output,
+and an inspection command does not get a second path to own. Expansion-time
+diagnostics locate by §1.5's layers: structural errors carry their
+`NodePath` (`node root` for the whole-grid budget check, dotted child
+indices otherwise); score-borne facts sit at the **quoted `source` value's
+span** — the path literal identifies the offending score, and the keyword
+never changes; time-domain errors at the value that must change (`unit`,
+`tail`, the kernel literal); `build` runs the generation strategy and the
+program's own `export` (no output flag exists).
 
 ## 4. Deferred research
 

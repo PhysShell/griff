@@ -30,7 +30,8 @@ use griff_core::{
     slice::{self, TickRange},
     split, structure, syncopation, technique, unfold,
 };
-use griff_swang::syntax;
+use griff_pattern::{NodePath, PatternError, Traversal};
+use griff_swang::{syntax, LowerError, TailPolicy};
 
 /// griff — guitar riff engine.
 #[derive(Debug, Parser)]
@@ -259,6 +260,16 @@ enum SwangCommand {
         #[arg(value_name = "INPUT")]
         input: PathBuf,
     },
+    /// Run the program's pattern pipeline up to `map_rhythm` and print the
+    /// canonical `griff.pattern-expansion` JSON to stdout — byte-identical
+    /// to the Phase-2 `--emit-rhythm-expansion` artifact for the equivalent
+    /// command. No pitch generation happens; the program's `export` stays
+    /// untouched.
+    Expand {
+        /// Path to the `.swg` script.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+    },
 }
 
 fn run() -> Result<(), CliError> {
@@ -331,6 +342,7 @@ fn run() -> Result<(), CliError> {
         Command::Swang { command } => match command {
             SwangCommand::Check { input } => cmd_swang_check(&input),
             SwangCommand::Fmt { input } => cmd_swang_fmt(&input),
+            SwangCommand::Expand { input } => cmd_swang_expand(&input),
         },
     }
 }
@@ -363,6 +375,155 @@ fn cmd_swang_fmt(path: &Path) -> Result<(), CliError> {
         syntax::parse(&source).map_err(|diagnostics| swang_error(path, &source, &diagnostics))?;
     print!("{}", syntax::format(&program));
     Ok(())
+}
+
+/// `griff swang expand`: the pattern pipeline up to `map_rhythm`, printing
+/// the canonical expansion artifact to stdout (spec §3.5's CLI contract).
+/// One compiler with the transport — [`rhythm_pattern::compile_pattern_flaws`]
+/// — so law 1's byte parity holds by construction; only the rendering
+/// differs.
+fn cmd_swang_expand(path: &Path) -> Result<(), CliError> {
+    let source_text = fs::read_to_string(path)?;
+    let (program, spans) = syntax::parse_with_spans(&source_text)
+        .map_err(|diagnostics| swang_error(path, &source_text, &diagnostics))?;
+
+    let pattern = &program.pattern;
+    let score_bytes = fs::read(pattern.generate.source.as_str())?;
+    let score = import::import_score_auto(&score_bytes)?;
+
+    let args = rhythm_pattern::RhythmPatternArgs {
+        kernel: pattern.kernel.as_str().to_owned(),
+        fractal_depth: pattern.fractalize.depth,
+        density_bps: pattern
+            .fractalize
+            .prune
+            .map(|prune| u32::from(prune.density.get())),
+        rhythm_seed: pattern.fractalize.prune.map(|prune| prune.seed),
+        traversal: match pattern.linearize.traversal {
+            Traversal::RowMajor => rhythm_pattern::TraversalChoice::RowMajor,
+            Traversal::Snake => rhythm_pattern::TraversalChoice::Snake,
+        },
+        unit: format!(
+            "{}/{}",
+            pattern.map_rhythm.unit.numerator(),
+            pattern.map_rhythm.unit.denominator()
+        ),
+        max_cells: pattern.fractalize.max_cells,
+        tail: match pattern.map_rhythm.tail {
+            TailPolicy::Reject => rhythm_pattern::TailChoice::Reject,
+            TailPolicy::RestPad => rhythm_pattern::TailChoice::RestPad,
+        },
+    };
+    let bars = usize::try_from(pattern.generate.bars)
+        .map_err(|_| CliError::Argument("bars does not fit this platform".to_owned()))?;
+
+    let plan = rhythm_pattern::compile_pattern_flaws(&args, &score, bars)
+        .map_err(|flaw| render_pattern_flaw(&flaw, path, &source_text, &spans))?;
+    print!("{}", plan.artifact_json);
+    Ok(())
+}
+
+/// Renders a [`rhythm_pattern::PatternFlaw`] in program vocabulary at
+/// §1.5's layered locations: structural errors carry their `NodePath`,
+/// score-borne facts sit at the `source` word, time-domain errors at the
+/// word whose value must change.
+fn render_pattern_flaw(
+    flaw: &rhythm_pattern::PatternFlaw,
+    path: &Path,
+    source: &str,
+    spans: &syntax::ProgramSpans,
+) -> CliError {
+    let at = |span: syntax::Span, code: &str, message: &str| {
+        let (line, col) = line_col(source, span.start);
+        CliError::Swang(format!(
+            "error[{code}] ({}:{line}:{col}): {message}",
+            path.display()
+        ))
+    };
+    match flaw {
+        // Kernel syntax and density scale are unreachable from a parsed
+        // program (the grammar validates both); the kernel literal is the
+        // nearest owner if they ever fire.
+        rhythm_pattern::PatternFlaw::Kernel(d) | rhythm_pattern::PatternFlaw::Density(d) => {
+            at(spans.kernel, d.code, &d.message)
+        }
+        rhythm_pattern::PatternFlaw::Unit(d) => at(spans.unit, d.code, &d.message),
+        rhythm_pattern::PatternFlaw::Score(d) => at(spans.source, d.code, &d.message),
+        rhythm_pattern::PatternFlaw::Budget(e) => match e {
+            PatternError::MaxCellsExceeded {
+                path: node,
+                needed,
+                max_cells,
+            } => CliError::Swang(format!(
+                "error[SWG0201] ({}: node {}): the expansion needs {needed} cells, over \
+                 the budget's {max_cells}",
+                path.display(),
+                node_words(node)
+            )),
+            PatternError::MaxDepthExceeded {
+                path: node,
+                depth,
+                max_depth,
+            } => CliError::Swang(format!(
+                "error[SWG0202] ({}: node {}): depth {depth} exceeds the budget's \
+                 max_depth {max_depth}",
+                path.display(),
+                node_words(node)
+            )),
+            other => at(spans.kernel, "SWG0101", &other.to_string()),
+        },
+        rhythm_pattern::PatternFlaw::Lower(e) => match e {
+            LowerError::UnitDoesNotDivideBar { bar_duration, unit } => at(
+                spans.unit,
+                "SWG0301",
+                &format!(
+                    "unit {} does not divide the {}-tick bar exactly",
+                    unit.0, bar_duration.0
+                ),
+            ),
+            LowerError::ZeroUnit => at(spans.unit, "SWG0301", "the rhythm unit is zero ticks"),
+            LowerError::IncompleteFinalBar {
+                have_slots,
+                slots_per_bar,
+            } => at(
+                spans.tail,
+                "SWG0302",
+                &format!(
+                    "the final bar holds {have_slots} of {slots_per_bar} slots; a \
+                     rest_pad tail pads it with timed rests"
+                ),
+            ),
+        },
+        rhythm_pattern::PatternFlaw::SilentExpansion => at(
+            spans.kernel,
+            "SWG0306",
+            "the expansion produced no onsets — nothing to generate (change the kernel, \
+             depth, density, or rhythm seed)",
+        ),
+        rhythm_pattern::PatternFlaw::SilentWindow { used } => at(
+            spans.kernel,
+            "SWG0306",
+            &format!(
+                "the first {used} template(s) the bars window rotates over are all \
+                 silent — nothing to generate (raise bars past the silent prefix, or \
+                 change the kernel, depth, density, or rhythm seed)"
+            ),
+        ),
+    }
+}
+
+/// A `NodePath` in words: `root` for the empty path, dotted child indices
+/// otherwise.
+fn node_words(node: &NodePath) -> String {
+    if node.as_slice().is_empty() {
+        "root".to_owned()
+    } else {
+        node.as_slice()
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(".")
+    }
 }
 
 /// Renders the parser's first diagnostic against the script: the stable

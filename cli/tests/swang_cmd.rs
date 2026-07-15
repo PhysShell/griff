@@ -21,11 +21,11 @@
 #[allow(dead_code)]
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::{env, fs};
 
-use common::{assert_golden, griff};
+use common::{assert_golden, fixture_path, griff};
 
 /// The spec §3.1 reference program — the canonical text `fmt` must treat as
 /// its fixed point (same fixture as the library's syntax tests).
@@ -159,6 +159,288 @@ fn swang_fmt_is_a_fixed_point_on_canonical_text() {
         String::from_utf8_lossy(&out.stdout),
         CANONICAL,
         "fmt(fmt(s)) == fmt(s), at the CLI too"
+    );
+}
+
+// ── expand: law 1 and the layered locations (spec §3.5, §1.5) ──────────────
+
+/// A program around the expansion knobs the tests turn. Line 7 is
+/// `map_rhythm` — the unit-location test counts on it.
+fn expand_program(kernel: &str, fractalize_args: &str, unit_and_tail: &str, bars: u64) -> String {
+    let source = fixture_path("simple_4_4");
+    expand_program_for(kernel, fractalize_args, unit_and_tail, bars, &source)
+}
+
+fn expand_program_for(
+    kernel: &str,
+    fractalize_args: &str,
+    unit_and_tail: &str,
+    bars: u64,
+    source: &Path,
+) -> String {
+    format!(
+        r#"swang 1
+
+pattern p {{
+    ascii "{kernel}"
+    |> fractalize {fractalize_args}
+    |> linearize snake
+    |> map_rhythm {unit_and_tail}
+    |> generate {{
+        source "{}"
+        bars {bars}
+        seed 42
+        candidates 2
+        strategy auto
+    }}
+    |> export midi "out.mid"
+}}
+"#,
+        source.display()
+    )
+}
+
+#[test]
+fn swang_expand_matches_the_transport_artifact_byte_for_byte() {
+    // Law 1: the program equivalent to a Phase-2 CLI command produces a
+    // byte-identical expansion JSON — same compiler, same artifact.
+    let out = env::temp_dir().join("griff_s16_swang_expand_parity.mid");
+    let art = env::temp_dir().join("griff_s16_swang_expand_parity.json");
+    let src = fixture_path("simple_4_4");
+    let transport = griff_raw(&[
+        "generate",
+        src.to_str().unwrap(),
+        out.to_str().unwrap(),
+        "--bars",
+        "8",
+        "--seed",
+        "42",
+        "--candidates",
+        "2",
+        "--rhythm-kernel",
+        "X.X/XX./.XX",
+        "--rhythm-fractal-depth",
+        "1",
+        "--rhythm-density-bps",
+        "9500",
+        "--rhythm-seed",
+        "4",
+        "--rhythm-traversal",
+        "snake",
+        "--rhythm-unit",
+        "1/16",
+        "--rhythm-max-cells",
+        "4096",
+        "--rhythm-tail",
+        "rest-pad",
+        "--emit-rhythm-expansion",
+        art.to_str().unwrap(),
+    ]);
+    assert!(
+        transport.status.success(),
+        "the transport command must succeed: {}",
+        String::from_utf8_lossy(&transport.stderr)
+    );
+    let transport_artifact = fs::read(&art).expect("the transport wrote its artifact");
+    fs::remove_file(&out).ok();
+    fs::remove_file(&art).ok();
+
+    let program = expand_program(
+        "X.X/XX./.XX",
+        "depth 1 max_cells 4096 density 9500bps seed 4",
+        "unit 1/16 tail rest_pad",
+        8,
+    );
+    let path = script("expand_parity", &program);
+    let expanded = griff_raw(&["swang", "expand", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+    assert!(
+        expanded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&expanded.stderr)
+    );
+    assert_eq!(
+        expanded.stdout, transport_artifact,
+        "one compiler, one artifact, byte for byte"
+    );
+}
+
+#[test]
+fn swang_expand_reports_structural_budget_breaches_by_node_path() {
+    // §1.5: a structural error's location is its NodePath — the whole-grid
+    // budget check breaks at the root.
+    let program = expand_program(
+        "X.X/XX./.XX",
+        "depth 2 max_cells 80",
+        "unit 1/16 tail rest_pad",
+        8,
+    );
+    let path = script("expand_budget", &program);
+    let out = griff_raw(&["swang", "expand", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("error[SWG0201]"), "{stderr}");
+    assert!(
+        stderr.contains("node root"),
+        "the up-front check breaks at the root: {stderr}"
+    );
+}
+
+#[test]
+fn swang_expand_locates_the_unit_at_its_word() {
+    // 7/8 at PPQN 480 is a 1680-tick bar; a 1/4 unit (480) does not divide
+    // it. The location is the unit value on line 7 of the program — the
+    // word whose value must change — not a flag that no longer exists.
+    let source = fixture_path("seven_eight");
+    let program = expand_program_for(
+        "X.X/XX./.XX",
+        "depth 1 max_cells 4096",
+        "unit 1/4 tail rest_pad",
+        8,
+        &source,
+    );
+    let path = script("expand_unit", &program);
+    let text = griff(
+        &["swang", "expand", path.to_str().unwrap()],
+        Some(path.to_str().unwrap()),
+    );
+    fs::remove_file(&path).ok();
+    assert!(text.contains("exit: 1"), "{text}");
+    assert!(text.contains("error[SWG0301]"), "{text}");
+    assert!(
+        text.contains("<OUT>:7:"),
+        "the unit word lives on line 7: {text}"
+    );
+    assert!(!text.contains("--rhythm"), "no flag vocabulary: {text}");
+}
+
+/// A two-bar MIDI whose meter changes 4/4 → 7/8 at bar 1 — the score-borne
+/// `SWG0304` fixture, encoded independently of griff's own export path.
+fn meter_change_midi() -> Vec<u8> {
+    use midly::{
+        num::{u15, u24, u28, u4, u7},
+        Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
+    };
+    let note = |delta: u32, key: u8, on: bool| TrackEvent {
+        delta: u28::from_int_lossy(delta),
+        kind: TrackEventKind::Midi {
+            channel: u4::new(0),
+            message: if on {
+                MidiMessage::NoteOn {
+                    key: u7::new(key),
+                    vel: u7::new(90),
+                }
+            } else {
+                MidiMessage::NoteOff {
+                    key: u7::new(key),
+                    vel: u7::new(0),
+                }
+            },
+        },
+    };
+    let meta = |delta: u32, message: MetaMessage<'static>| TrackEvent {
+        delta: u28::from_int_lossy(delta),
+        kind: TrackEventKind::Meta(message),
+    };
+    let mut smf = Smf::new(Header {
+        format: Format::SingleTrack,
+        timing: Timing::Metrical(u15::new(480)),
+    });
+    smf.tracks = vec![vec![
+        meta(0, MetaMessage::TimeSignature(4, 2, 24, 8)),
+        meta(0, MetaMessage::Tempo(u24::from_int_lossy(500_000))),
+        note(0, 40, true),
+        note(480, 40, false),
+        // Bar 1 begins at 1920 in a new meter: 7/8 = 1680 ticks.
+        meta(1440, MetaMessage::TimeSignature(7, 3, 24, 8)),
+        note(0, 42, true),
+        note(480, 42, false),
+        meta(1200, MetaMessage::EndOfTrack),
+    ]];
+    let mut bytes = Vec::new();
+    smf.write_std(&mut bytes).expect("fixture must serialise");
+    bytes
+}
+
+#[test]
+fn swang_expand_locates_score_borne_facts_at_the_source_value() {
+    // §1.5 via the spec's expand contract: a score-borne fact (the meter
+    // changes inside the seed file) sits at the quoted source value's span
+    // — line 9, column 16, the opening quote of the path literal. The
+    // path identifies the offending score; the keyword never changes.
+    let mid = env::temp_dir().join("griff_s16_swang_meter_change.mid");
+    fs::write(&mid, meter_change_midi()).expect("fixture must write");
+    let program = expand_program_for(
+        "X.X/XX./.XX",
+        "depth 1 max_cells 4096",
+        "unit 1/16 tail rest_pad",
+        2,
+        &mid,
+    );
+    let path = script("expand_meter", &program);
+    let text = griff(
+        &["swang", "expand", path.to_str().unwrap()],
+        Some(path.to_str().unwrap()),
+    );
+    fs::remove_file(&path).ok();
+    fs::remove_file(&mid).ok();
+    assert!(text.contains("exit: 1"), "{text}");
+    assert!(text.contains("error[SWG0304]"), "{text}");
+    assert!(
+        text.contains("<OUT>:9:16"),
+        "the opening quote of the source path literal: {text}"
+    );
+    assert!(
+        !text.contains("INPUT") && !text.contains("--rhythm"),
+        "no transport location classes in a program diagnostic: {text}"
+    );
+}
+
+#[test]
+fn swang_expand_speaks_program_vocabulary_for_the_silent_window() {
+    // 17 cells rest-padded into 16-slot bars: template 0 is silent, and
+    // with bars 1 the rotation never reaches the onset (#116's law). The
+    // message speaks in program words — no retired flags.
+    let program = expand_program(
+        "................X",
+        "depth 0 max_cells 32",
+        "unit 1/16 tail rest_pad",
+        1,
+    );
+    let path = script("expand_window", &program);
+    let out = griff_raw(&["swang", "expand", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("error[SWG0306]"), "{stderr}");
+    assert!(stderr.contains("bars"), "{stderr}");
+    assert!(
+        !stderr.contains("--"),
+        "no flag vocabulary in a program diagnostic: {stderr}"
+    );
+}
+
+#[test]
+fn swang_expand_speaks_program_vocabulary_for_the_rejected_tail() {
+    // 9 slots into a 16-slot 4/4 bar under tail reject: SWG0302, advising
+    // the program's own `rest_pad`, not the transport's `rest-pad`.
+    let program = expand_program(
+        "X.X/XX./.XX",
+        "depth 0 max_cells 32",
+        "unit 1/16 tail reject",
+        8,
+    );
+    let path = script("expand_tail", &program);
+    let out = griff_raw(&["swang", "expand", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("error[SWG0302]"), "{stderr}");
+    assert!(stderr.contains("rest_pad"), "{stderr}");
+    assert!(
+        !stderr.contains("rest-pad"),
+        "no transport spelling: {stderr}"
     );
 }
 
