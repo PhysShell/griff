@@ -11,7 +11,7 @@
 //! already-parsed corpus material, and owns its own I/O.
 
 use griff_core::generation_input::{
-    ranked_candidates, CorpusMaterial, GenerationAsk, GenerationInputError,
+    ranked_candidates, CorpusMaterial, GenerationAsk, GenerationInputError, RankedSet,
 };
 use griff_core::rerank::RERANK_AXIS_LABELS;
 use griff_core::score::{AtomEvent, Score};
@@ -69,6 +69,56 @@ pub struct CandidateSet {
     pub summary: SetSummary,
 }
 
+impl CandidateSet {
+    /// Presents an already-generated [`RankedSet`] as browsable rows.
+    ///
+    /// The one mapping every frontend uses — `generate_set` for the corpus
+    /// path, the Swang evaluator's result for the authoring path — so a
+    /// candidate table is the same table wherever the set came from. The
+    /// `material` supplies only the reference count and skipped-record list,
+    /// which live outside the ranked set.
+    #[must_use]
+    pub fn from_ranked(set: &RankedSet, material: Option<&CorpusMaterial>) -> Self {
+        let rows = set
+            .ranked
+            .iter()
+            .enumerate()
+            .map(|(i, scored)| {
+                let variant_seed = scored.value.seed.0;
+                let strategy = format!("{:?}", scored.value.strategy);
+                CandidateRow {
+                    rank: i.saturating_add(1),
+                    id: format!("{strategy}#{variant_seed:016x}"),
+                    strategy,
+                    variant_seed,
+                    aggregate: scored.aggregate(),
+                    axes: RERANK_AXIS_LABELS
+                        .iter()
+                        .map(|&label| (label, scored.axes.get(label).unwrap_or(0.0)))
+                        .collect(),
+                    note_count: note_count(&scored.value.score),
+                    pitch_range: pitch_range(&scored.value.score),
+                }
+            })
+            .collect();
+        let scores = set.ranked.iter().map(|s| s.value.score.clone()).collect();
+
+        Self {
+            rows,
+            scores,
+            summary: SetSummary {
+                templates: set.source_rhythms.len(),
+                references: material.map_or(0, |m| m.references.len()),
+                gesture: set
+                    .gesture
+                    .map(|g| (g.burst_notes, format!("{:.1}q", g.rest_quarters))),
+                scale_tones: set.base.pitch_material.intervals.len(),
+                skipped: material.map_or_else(Vec::new, |m| m.skipped.clone()),
+            },
+        }
+    }
+}
+
 /// Generates and reranks a candidate set, then presents it as rows.
 ///
 /// A thin adapter over [`ranked_candidates`] — it adds no musical decision of
@@ -83,44 +133,7 @@ pub fn generate_set(
     ask: &GenerationAsk,
 ) -> Result<CandidateSet, GenerationInputError> {
     let set = ranked_candidates(source, material, ask, None)?;
-
-    let rows = set
-        .ranked
-        .iter()
-        .enumerate()
-        .map(|(i, scored)| {
-            let variant_seed = scored.value.seed.0;
-            let strategy = format!("{:?}", scored.value.strategy);
-            CandidateRow {
-                rank: i.saturating_add(1),
-                id: format!("{strategy}#{variant_seed:016x}"),
-                strategy,
-                variant_seed,
-                aggregate: scored.aggregate(),
-                axes: RERANK_AXIS_LABELS
-                    .iter()
-                    .map(|&label| (label, scored.axes.get(label).unwrap_or(0.0)))
-                    .collect(),
-                note_count: note_count(&scored.value.score),
-                pitch_range: pitch_range(&scored.value.score),
-            }
-        })
-        .collect();
-    let scores = set.ranked.iter().map(|s| s.value.score.clone()).collect();
-
-    Ok(CandidateSet {
-        rows,
-        scores,
-        summary: SetSummary {
-            templates: set.source_rhythms.len(),
-            references: material.map_or(0, |m| m.references.len()),
-            gesture: set
-                .gesture
-                .map(|g| (g.burst_notes, format!("{:.1}q", g.rest_quarters))),
-            scale_tones: set.base.pitch_material.intervals.len(),
-            skipped: material.map_or_else(Vec::new, |m| m.skipped.clone()),
-        },
-    })
+    Ok(CandidateSet::from_ranked(&set, material))
 }
 
 /// Notes across a score's first track.
