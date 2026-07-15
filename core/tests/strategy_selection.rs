@@ -5,6 +5,7 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
+    clippy::panic,
     clippy::indexing_slicing,
     clippy::missing_assert_message,
     clippy::absolute_paths,
@@ -118,7 +119,7 @@ fn auto_is_the_reranked_winner() {
     let set = ranked_set();
     let selected = select_ranked(&set, None).expect("a winner exists");
     assert!(
-        ptr::eq(selected, &set.ranked[0]),
+        ptr::eq(selected, &raw const set.ranked[0]),
         "None is today's behavior: the reranked winner across all strategies"
     );
 }
@@ -136,7 +137,7 @@ fn a_named_strategy_is_its_first_ranked_candidate_from_the_unchanged_set() {
         .position(|c| c.value.strategy == target)
         .expect("present in a full set");
     assert!(
-        ptr::eq(selected, &set.ranked[first_index]),
+        ptr::eq(selected, &raw const set.ranked[first_index]),
         "the FIRST ranked candidate of that strategy — not a re-ranking"
     );
 

@@ -263,12 +263,14 @@ pub fn ranked_candidates(
 /// choice is a *reading* of the ranking, not a different ranking. `None`
 /// comes back when the set holds no candidate of that strategy.
 #[must_use]
-pub fn select_ranked<'a>(
-    set: &'a RankedSet,
+pub fn select_ranked(
+    set: &RankedSet,
     strategy: Option<generate::GenerationStrategy>,
-) -> Option<&'a Scored<rerank::SetCandidate>> {
-    let _ = (set, strategy);
-    unimplemented!("S16 Phase 3: law 5's selection")
+) -> Option<&Scored<rerank::SetCandidate>> {
+    strategy.map_or_else(
+        || set.ranked.first(),
+        |target| set.ranked.iter().find(|c| c.value.strategy == target),
+    )
 }
 
 /// Builds a tab-seeded [`generate::RuleGenerationRequest`]: the scale is the

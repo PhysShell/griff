@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use griff_cli::generation_input::{load_corpus_material, CorpusMaterial, GenerationInputError};
 use griff_cli::primary_voice_note_count;
 use griff_cli::rhythm_pattern;
-use griff_core::generation_input::{ranked_candidates, GenerationAsk, RankedSet};
+use griff_core::generation_input::{ranked_candidates, select_ranked, GenerationAsk, RankedSet};
 use griff_core::{
     boundary,
     classify::{self, BarClass},
@@ -270,6 +270,16 @@ enum SwangCommand {
         #[arg(value_name = "INPUT")]
         input: PathBuf,
     },
+    /// Run the program end to end — expansion, generation, strategy
+    /// selection (spec §3.5 law 5: `auto` matches `griff generate`; a named
+    /// strategy selects from the unchanged ranked set), and the program's
+    /// own `export`. No output flag exists: the program is the output's
+    /// single owner.
+    Build {
+        /// Path to the `.swg` script.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+    },
 }
 
 fn run() -> Result<(), CliError> {
@@ -343,6 +353,7 @@ fn run() -> Result<(), CliError> {
             SwangCommand::Check { input } => cmd_swang_check(&input),
             SwangCommand::Fmt { input } => cmd_swang_fmt(&input),
             SwangCommand::Expand { input } => cmd_swang_expand(&input),
+            SwangCommand::Build { input } => cmd_swang_build(&input),
         },
     }
 }
@@ -391,7 +402,111 @@ fn cmd_swang_expand(path: &Path) -> Result<(), CliError> {
     let score_bytes = fs::read(pattern.generate.source.as_str())?;
     let score = import::import_score_auto(&score_bytes)?;
 
-    let args = rhythm_pattern::RhythmPatternArgs {
+    let args = rhythm_args_from_program(pattern);
+    let bars = usize::try_from(pattern.generate.bars)
+        .map_err(|_| CliError::Argument("bars does not fit this platform".to_owned()))?;
+
+    let plan = rhythm_pattern::compile_pattern_flaws(&args, &score, bars)
+        .map_err(|flaw| render_pattern_flaw(&flaw, path, &source_text, &spans))?;
+    print!("{}", plan.artifact_json);
+    Ok(())
+}
+
+/// `griff swang build`: the program end to end. The generation pass is the
+/// same shared compiler every frontend enters — `ranked_candidates` — so
+/// under `strategy auto` the export's bytes match `griff generate` for the
+/// equivalent command (law 5's first half); a named strategy is
+/// [`select_ranked`]'s reading of the same, unchanged set (the second half).
+/// The output path is the program's own `export`, and only it.
+fn cmd_swang_build(path: &Path) -> Result<(), CliError> {
+    let source_text = fs::read_to_string(path)?;
+    let (program, spans) = syntax::parse_with_spans(&source_text)
+        .map_err(|diagnostics| swang_error(path, &source_text, &diagnostics))?;
+
+    let pattern = &program.pattern;
+    let score_bytes = fs::read(pattern.generate.source.as_str())?;
+    let score = import::import_score_auto(&score_bytes)?;
+    let material = pattern
+        .generate
+        .corpus
+        .as_ref()
+        .map(|corpus| load_corpus_material(Path::new(corpus.as_str())))
+        .transpose()?;
+    if let Some(m) = &material {
+        print_corpus_summary(m, false);
+    }
+
+    let bars = usize::try_from(pattern.generate.bars)
+        .map_err(|_| CliError::Argument("bars does not fit this platform".to_owned()))?;
+    let candidates = usize::try_from(pattern.generate.candidates)
+        .map_err(|_| CliError::Argument("candidates does not fit this platform".to_owned()))?;
+    let args = rhythm_args_from_program(pattern);
+    let plan = rhythm_pattern::compile_pattern_flaws(&args, &score, bars)
+        .map_err(|flaw| render_pattern_flaw(&flaw, path, &source_text, &spans))?;
+
+    let set = ranked_candidates(
+        &score,
+        material.as_ref(),
+        &GenerationAsk {
+            seed: pattern.generate.seed,
+            bars,
+            variants_per_strategy: candidates,
+            gesture: true,
+        },
+        Some(plan.templates.as_slice()),
+    )?;
+    print_explicit_rhythm_diagnostics(&set.source_rhythms, &set.base.constraints);
+
+    let target = match pattern.generate.strategy {
+        syntax::StrategyPolicy::Auto => None,
+        syntax::StrategyPolicy::Named(name) => Some(strategy_kind(name)),
+    };
+    let winner = select_ranked(&set, target).ok_or_else(|| {
+        target.map_or_else(
+            || CliError::Corpus("no candidate survived scoring".to_owned()),
+            |strategy| {
+                CliError::Corpus(format!(
+                    "no ranked candidate of strategy {strategy:?} survived scoring"
+                ))
+            },
+        )
+    })?;
+    print_ranking(&set.ranked, &set.policy);
+
+    let out_bytes = midi::export_score(&winner.value.score)?;
+    fs::write(pattern.export.path.as_str(), &out_bytes)?;
+    println!(
+        "built {bars} bars ({strategy:?}, seed {seed}) from a {tones}-tone scale \
+         ({n} bytes) -> {out}",
+        strategy = winner.value.strategy,
+        seed = pattern.generate.seed,
+        tones = set.base.pitch_material.intervals.len(),
+        n = out_bytes.len(),
+        out = pattern.export.path.as_str(),
+    );
+    Ok(())
+}
+
+/// The five program strategy names, mapped onto the S6 strategies they
+/// selected in the killer demo (spec §3.3).
+const fn strategy_kind(name: syntax::StrategyName) -> generate::GenerationStrategy {
+    match name {
+        syntax::StrategyName::RhythmCopy => generate::GenerationStrategy::RhythmCopyPitchSubstitute,
+        syntax::StrategyName::MotifTranspose => {
+            generate::GenerationStrategy::MotifTransposeVariation
+        }
+        syntax::StrategyName::ConstrainedWalk => {
+            generate::GenerationStrategy::ConstrainedRandomWalk
+        }
+        syntax::StrategyName::ShuffleMotifs => generate::GenerationStrategy::ShuffleMotifs,
+        syntax::StrategyName::RepeatVariation => generate::GenerationStrategy::RepeatVariation,
+    }
+}
+
+/// The one mapping from a program's pattern pipeline onto the shared
+/// compiler's transport args — `expand` and `build` must not drift.
+fn rhythm_args_from_program(pattern: &syntax::PatternDef) -> rhythm_pattern::RhythmPatternArgs {
+    rhythm_pattern::RhythmPatternArgs {
         kernel: pattern.kernel.as_str().to_owned(),
         fractal_depth: pattern.fractalize.depth,
         density_bps: pattern
@@ -413,14 +528,7 @@ fn cmd_swang_expand(path: &Path) -> Result<(), CliError> {
             TailPolicy::Reject => rhythm_pattern::TailChoice::Reject,
             TailPolicy::RestPad => rhythm_pattern::TailChoice::RestPad,
         },
-    };
-    let bars = usize::try_from(pattern.generate.bars)
-        .map_err(|_| CliError::Argument("bars does not fit this platform".to_owned()))?;
-
-    let plan = rhythm_pattern::compile_pattern_flaws(&args, &score, bars)
-        .map_err(|flaw| render_pattern_flaw(&flaw, path, &source_text, &spans))?;
-    print!("{}", plan.artifact_json);
-    Ok(())
+    }
 }
 
 /// Renders a [`rhythm_pattern::PatternFlaw`] in program vocabulary at
