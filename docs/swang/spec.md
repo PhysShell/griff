@@ -135,6 +135,15 @@ Initial registry:
 | `SWG0306` | the expansion produced no onsets — nothing to generate (a fully silent kernel or a pruned-to-silence expansion is a deliberate typed error, not an empty candidate set) |
 | `SWG0307` | empty kernel literal (no rows, or a row with no cells) |
 | `SWG0308` | density outside `0..=10000` basis points |
+| `SWG0401` | malformed syntax: unexpected token, structural violation (a step out of pipeline order, a second `pattern` block), a value that does not fit its word's range, or a non-canonical decimal spelling (leading zeros — anywhere, not only in the header) |
+| `SWG0402` | unknown name in a closed word set (traversal, tail policy, strategy, export format) |
+| `SWG0403` | required word missing from a construct (including `seed` given without its `density` — the pair is visible or absent, never half-said) |
+| `SWG0404` | word repeated within a construct |
+
+The `04xx` block is the syntax class: born with the Phase 3 grammar, always
+located by a source span. The `03xx` semantic codes keep their numbers when
+the grammar raises them (§3.5 law 4) — `density` without `seed` is `SWG0303`
+in a program exactly as it is at the transport boundary.
 
 ### 1.6 Kernel semantics
 
@@ -501,6 +510,15 @@ one for itself.
 - `export midi "<path>"` — the output edge. **The program is the output's
   single owner**: `griff swang build` takes no output flag, so a path can
   never have two masters.
+
+Every number in the grammar is plain decimal with **no leading zeros** —
+the header set the tone (§1.1) and no construct is exempt: a `09500bps`
+density and a `01/16` unit part are `SWG0401`, the canonical-text law of
+the syntax class. `SWG0301` stays the unit's *semantic* code (a zero part,
+a malformed shape — flaws the transport also named). The transport
+tolerated `01/16` because `u64` parsing silently normalized it; the
+grammar deliberately rejects the spelling as non-canonical, so — like the
+inert seed — no parity is claimed for it (law 1's scope).
 
 ### 3.3 The strategy policy is explicit — the verdict's amendment
 

@@ -4,8 +4,11 @@
 //! the seam: [`map_rhythm`] cuts an [`ActivitySequence`] into one-bar
 //! [`RhythmTemplate`] values under an explicit time unit, an explicit bar
 //! geometry, and an explicit tail policy — no defaults, no silent fitting
-//! (`docs/swang/spec.md` §1.11). The AST, parser, and formatter arrive in
-//! later phases; nothing here is grammar.
+//! (`docs/swang/spec.md` §1.11). The surface grammar — header pre-parser,
+//! AST, parser, and canonical formatter — lives in [`syntax`] (S16 Phase 3,
+//! spec §3).
+
+pub mod syntax;
 
 use std::error::Error;
 use std::fmt;

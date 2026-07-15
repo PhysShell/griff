@@ -30,6 +30,7 @@ use griff_core::{
     slice::{self, TickRange},
     split, structure, syncopation, technique, unfold,
 };
+use griff_swang::syntax;
 
 /// griff — guitar riff engine.
 #[derive(Debug, Parser)]
@@ -231,6 +232,33 @@ enum Command {
         #[arg(short, long, value_name = "OUTPUT")]
         output: Option<PathBuf>,
     },
+
+    /// Swang script tools (S16 Phase 3): parse, diagnose, and canonically
+    /// format `.swg` programs. Adds no musical semantics; `expand` and
+    /// `build` arrive in later slices.
+    Swang {
+        #[command(subcommand)]
+        command: SwangCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SwangCommand {
+    /// Parse a Swang script and report its diagnostics: a stable `SWG____`
+    /// code located at `<path>:<line>:<col>`. Says nothing when the program
+    /// is well-formed.
+    Check {
+        /// Path to the `.swg` script.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+    },
+    /// Parse a Swang script and print its one canonical text to stdout.
+    /// Emits nothing for a program that does not parse.
+    Fmt {
+        /// Path to the `.swg` script.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+    },
 }
 
 fn run() -> Result<(), CliError> {
@@ -300,6 +328,10 @@ fn run() -> Result<(), CliError> {
         } => cmd_curate(&path, output.as_deref(), ensemble),
         Command::Split { path, output } => cmd_split(&path, output.as_deref()),
         Command::Manifest { dir, output } => cmd_manifest(&dir, output.as_deref()),
+        Command::Swang { command } => match command {
+            SwangCommand::Check { input } => cmd_swang_check(&input),
+            SwangCommand::Fmt { input } => cmd_swang_fmt(&input),
+        },
     }
 }
 
@@ -311,6 +343,64 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// ── swang (S16 Phase 3: the grammar's CLI edge) ─────────────────────────────
+
+/// `griff swang check`: parse only, say nothing on success.
+fn cmd_swang_check(path: &Path) -> Result<(), CliError> {
+    let source = fs::read_to_string(path)?;
+    syntax::parse(&source)
+        .map(|_| ())
+        .map_err(|diagnostics| swang_error(path, &source, &diagnostics))
+}
+
+/// `griff swang fmt`: print the one canonical text, or fail with `check`'s
+/// own diagnostic — never emit text for a program that does not parse.
+fn cmd_swang_fmt(path: &Path) -> Result<(), CliError> {
+    let source = fs::read_to_string(path)?;
+    let program =
+        syntax::parse(&source).map_err(|diagnostics| swang_error(path, &source, &diagnostics))?;
+    print!("{}", syntax::format(&program));
+    Ok(())
+}
+
+/// Renders the parser's first diagnostic against the script: the stable
+/// registry code at `<path>:<line>:<col>` (spec §1.5 — a source span is the
+/// location class of the grammar boundary; the flag class retired with the
+/// transport).
+fn swang_error(path: &Path, source: &str, diagnostics: &[syntax::Diagnostic]) -> CliError {
+    let Some(diagnostic) = diagnostics.first() else {
+        return CliError::Swang("error[SWG0401]: the parser reported no diagnostic".to_owned());
+    };
+    let (line, col) = line_col(source, diagnostic.span.start);
+    CliError::Swang(format!(
+        "error[{}] ({}:{line}:{col}): {}",
+        diagnostic.code,
+        path.display(),
+        diagnostic.message
+    ))
+}
+
+/// 1-based line and column of a byte offset; columns count Unicode scalar
+/// values from the line start. Rendering-edge arithmetic only — spans stay
+/// byte offsets everywhere else.
+fn line_col(source: &str, offset: u32) -> (u32, u32) {
+    let target = usize::try_from(offset).unwrap_or(usize::MAX);
+    let mut line = 1_u32;
+    let mut col = 1_u32;
+    for (at, c) in source.char_indices() {
+        if at >= target {
+            break;
+        }
+        if c == '\n' {
+            line = line.saturating_add(1);
+            col = 1;
+        } else {
+            col = col.saturating_add(1);
+        }
+    }
+    (line, col)
 }
 
 // ── commands ──────────────────────────────────────────────────────────────────
@@ -1617,6 +1707,9 @@ enum CliError {
     Corpus(String),
     Complement(complement::ComplementError),
     Pattern(rhythm_pattern::PatternDiagnostic),
+    /// A Swang syntax diagnostic, already rendered against its script:
+    /// `error[SWG____] (<path>:<line>:<col>): <message>`.
+    Swang(String),
 }
 
 impl fmt::Display for CliError {
@@ -1634,6 +1727,7 @@ impl fmt::Display for CliError {
             Self::Corpus(msg) => write!(f, "corpus error: {msg}"),
             Self::Complement(e) => write!(f, "complement error: {e:?}"),
             Self::Pattern(d) => write!(f, "{d}"),
+            Self::Swang(rendered) => write!(f, "{rendered}"),
         }
     }
 }
