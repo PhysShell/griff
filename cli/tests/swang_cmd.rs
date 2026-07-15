@@ -534,10 +534,7 @@ fn swang_build_selects_the_named_strategy_and_is_deterministic() {
     // selection-only law itself is pinned at the core seam
     // (core/tests/strategy_selection.rs).
     let export = env::temp_dir().join("griff_s16_swang_build_named.mid");
-    let path = script(
-        "build_named",
-        &build_program("repeat_variation", &export),
-    );
+    let path = script("build_named", &build_program("repeat_variation", &export));
 
     let first = griff_raw(&["swang", "build", path.to_str().unwrap()]);
     assert!(
