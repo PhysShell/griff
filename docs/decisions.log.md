@@ -1715,3 +1715,22 @@ Architectural decisions go to [`adr/`](adr/) instead.
   parameter (its dense-demo cut was excellent but unisolated) and buries
   `thin` in favour of the operation that was actually proven — seeded density
   pruning, already named by `fractalize density/seed`.
+
+- 2026-07-15 — In the context of closing S16 Phase 3 (PRs #117–#121: the
+  Swang grammar, canonical formatter, `check | fmt | expand | build`, the
+  seven §3.5 acceptance laws, and fuzz targets), with a fresh nightly
+  compiling the previously-excluded `fuzz/` crate for the first time in one
+  turn, we decided to make the **bounded fuzz smoke plus corpus replay a
+  blocking CI gate** (an eleven-way matrix per implemented target) rather
+  than keep deferring the ADR-0010 hard rule, to achieve the robustness
+  layer the policy always prescribed, accepting that its very first run
+  reported real findings. It did: F-002 (a `midly` SMPTE-fps negate
+  overflow, and its second bite through a later `MThd` chunk), F-003 (an
+  unvalidated direction index inside `guitarpro`, quarantined to
+  signature-check with written exit criteria), and F-004 (our own
+  tiny-PPQN/huge-delta OOM — the F-001 family — now bounded by
+  `MAX_MASTER_BARS`). Each fix ships with a minimized regression seed. The
+  Swang semantic core (spec §1) and surface grammar (spec §3) are now
+  **frozen**: further change requires a new language level. ADR-0029 moves
+  to Accepted for Phases 0–3; Phases 4–9 remain future work, and the next
+  scope is S8 Swang Playground — the human-facing authoring loop.

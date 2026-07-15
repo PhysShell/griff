@@ -4,22 +4,22 @@ Decision: [ADR-0029](../adr/0029-swang-authoring-and-verified-lifting.md).
 Delivery plan: [S16](../stages/S16-swang-language-and-verified-lifting.md).
 
 This document is normative. It is split by stability, and the split is the
-point: the **semantic core** below freezes when S16 Phase 0 is accepted —
-from that point, changing anything in it requires a new language level —
-while the surface grammar stays explicitly unstable until S16 Phase 3
-closes, and the transport syntax is a temporary experiment contract, not
-early grammar.
+point: the **semantic core** froze when S16 Phase 0 was accepted — from that
+point, changing anything in it requires a new language level — and the
+**surface grammar** froze when S16 Phase 3 closed (PRs #117–#121, the seven
+§3.5 acceptance laws proven and fuzzed). The transport syntax was a
+temporary experiment contract, now superseded by §3.
 
 Status of each section:
 
 | Section | Stability |
 |---|---|
-| 1. Proposed semantic core | **Proposed; freezes at Phase 0 acceptance.** After that, changes require a new language level. |
-| 2. Experimental transport syntax | Temporary Phase-2 contract; superseded by §3 once Phase 3 closes. |
-| 3. Surface grammar | **Unstable until Phase 3 closes.** Records only operators that earned syntax by audible demo. |
+| 1. Semantic core | **Frozen (Phase 0 accepted).** Changes require a new language level. |
+| 2. Experimental transport syntax | **Superseded** by §3 at Phase 3 closure; retained as historical record of the Phase-2 contract. |
+| 3. Surface grammar | **Frozen (Phase 3 closed).** The operators the audible demo earned; changes require a new language level. |
 | 4. Deferred research | No promised names, no promised semantics. |
 
-## 1. Proposed semantic core
+## 1. Semantic core (frozen — Phase 0 accepted)
 
 ### 1.1 Language level and the header line
 
@@ -445,7 +445,7 @@ griff generate seed.gp5 out.mid \
 16. Artifact fingerprints equal `rhythm_diagnostics` fingerprints for the
     same templates.
 
-## 3. Surface grammar (unstable until Phase 3 closes)
+## 3. Surface grammar (frozen — Phase 3 closed)
 
 Every construct below **earned its syntax through the Phase 2 killer demo**
 (the DGD fractal riffs, review verdict on #116's closure): nothing here is
