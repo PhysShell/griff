@@ -253,6 +253,26 @@ pub fn ranked_candidates(
     })
 }
 
+/// Selects from an already-ranked set — **selection only**, never a
+/// re-generation (S16 spec §3.5 law 5).
+///
+/// `None` is the `auto` policy: the reranked winner across all strategies,
+/// exactly what every frontend picks today. `Some(strategy)` returns the
+/// **first ranked candidate of that strategy** from the same, unchanged set —
+/// the set, the seeds, and the reranker are never touched, so the named
+/// choice is a *reading* of the ranking, not a different ranking. `None`
+/// comes back when the set holds no candidate of that strategy.
+#[must_use]
+pub fn select_ranked(
+    set: &RankedSet,
+    strategy: Option<generate::GenerationStrategy>,
+) -> Option<&Scored<rerank::SetCandidate>> {
+    strategy.map_or_else(
+        || set.ranked.first(),
+        |target| set.ranked.iter().find(|c| c.value.strategy == target),
+    )
+}
+
 /// Builds a tab-seeded [`generate::RuleGenerationRequest`]: the scale is the
 /// source's distinct pitch classes, the rhythm template its first sounding bar,
 /// and meter / tempo / range its transport.
