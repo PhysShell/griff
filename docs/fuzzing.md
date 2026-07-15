@@ -63,6 +63,19 @@ differ structurally. Only normalized invariants are checked.
    subject: boundary detector. Oracle: boundaries sorted; boundary ticks
    within phrase duration; scores finite; `BoundaryReason` consistent with
    non-zero score components.
+6. **`swang_parse`** — input: arbitrary UTF-8; subject: the S16 Phase 3
+   header pre-parser, parser, and canonical formatter. Oracle: no panic;
+   `Ok(Program)` xor a non-empty `Vec<Diagnostic>` with `SWG` codes and
+   in-bounds spans; every accepted program satisfies the formatter laws
+   (`parse(format(ast)) == ast`, `format` a fixed point).
+7. **`pattern_expansion`** — input: `arbitrary`-built kernel, budget,
+   pruning, and bar/unit geometry; subject:
+   `Kernel -> fractalize -> linearize -> map_rhythm`. Oracle: no panic; an
+   accepted expansion never exceeds `max_cells` (budget capped at
+   `u16::MAX` in the target — a huge grid under a huge explicit budget is
+   not a finding); a budget breach reports `needed > max_cells`; both
+   traversals cover every cell; every lowered note is one unit long, on a
+   slot boundary, inside its bar.
 
 Targets are introduced incrementally — only `midi_import` and
 `midi_roundtrip` are implementable today (the rest depend on types that do
@@ -85,6 +98,8 @@ priority onto canonical stages:
 | P2       | `complement_request`| S13      | ComplementArranger       |
 | P2       | `structure_metrics` | S14      | structure metrics        |
 | P2       | `gesture_request`   | S6       | gesture compiler         |
+| P1       | `swang_parse`       | S16      | Phase 3 parser/formatter |
+| P1       | `pattern_expansion` | S16      | Phases 1–2 pattern core  |
 | P2       | `region_regeneration`| S11     | regeneration             |
 
 ## Corpus
