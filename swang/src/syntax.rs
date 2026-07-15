@@ -53,6 +53,8 @@
 //! [`SWG0403`]: Diagnostic
 //! [`SWG0404`]: Diagnostic
 
+use std::error::Error;
+use std::fmt;
 use std::iter::Peekable;
 use std::str::{from_utf8, CharIndices};
 
@@ -63,6 +65,154 @@ use crate::TailPolicy;
 /// The language level this build parses (spec §1.1). Levels are additive-only
 /// and never enter any content hash.
 pub const LANGUAGE_LEVEL: u32 = 1;
+
+/// Why an AST value refused to exist.
+///
+/// The `parse(format(ast)) == ast` law (spec §3.5 law 3) holds for **every
+/// AST the types let you build** — a future lifter constructs programs
+/// without a parser in sight — so each value the grammar could not reparse
+/// is unrepresentable, and these are the doors it bounces off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AstError {
+    /// Not an ASCII `[A-Za-z_][A-Za-z0-9_]*` identifier.
+    InvalidIdent {
+        /// The rejected spelling.
+        text: String,
+    },
+    /// The kernel literal fails its own registry law; the code is the
+    /// `SWG____` the parser would raise for the same text.
+    InvalidKernel {
+        /// The registry code (`SWG0101`–`SWG0103`, `SWG0307`).
+        code: &'static str,
+        /// The flaw, in kernel vocabulary.
+        message: String,
+    },
+    /// A string literal holding a quote or a line break could never lex.
+    InvalidStringLiteral {
+        /// The rejected content.
+        text: String,
+    },
+    /// A unit part is zero — no note value has a zero side.
+    ZeroUnitPart,
+    /// Level zero, or newer than [`LANGUAGE_LEVEL`].
+    UnsupportedLevel {
+        /// The rejected level.
+        level: u32,
+    },
+}
+
+impl fmt::Display for AstError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidIdent { text } => {
+                write!(f, "{text:?} is not an ASCII identifier")
+            }
+            Self::InvalidKernel { code, message } => {
+                write!(f, "invalid kernel literal [{code}]: {message}")
+            }
+            Self::InvalidStringLiteral { text } => write!(
+                f,
+                "{text:?} cannot live in a string literal (quotes and line \
+                 breaks never lex)"
+            ),
+            Self::ZeroUnitPart => write!(f, "a unit part is zero"),
+            Self::UnsupportedLevel { level } => write!(
+                f,
+                "language level {level} is not supported (1..={LANGUAGE_LEVEL})"
+            ),
+        }
+    }
+}
+
+impl Error for AstError {}
+
+/// A pinned language level: `1..=`[`LANGUAGE_LEVEL`], valid by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Level(u32);
+
+impl Level {
+    /// Validates the level against this build's supported range.
+    ///
+    /// # Errors
+    /// [`AstError::UnsupportedLevel`] for zero or a newer level.
+    pub fn new(level: u32) -> Result<Self, AstError> {
+        let _ = level;
+        unimplemented!("S16 Phase 3: valid-by-construction AST")
+    }
+
+    /// The raw level.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// An ASCII identifier (`[A-Za-z_][A-Za-z0-9_]*`), valid by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ident(String);
+
+impl Ident {
+    /// Validates the spelling.
+    ///
+    /// # Errors
+    /// [`AstError::InvalidIdent`] for anything the lexer would not read as
+    /// one word.
+    pub fn new(text: &str) -> Result<Self, AstError> {
+        let _ = text;
+        unimplemented!("S16 Phase 3: valid-by-construction AST")
+    }
+
+    /// The identifier's text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The content of a double-quoted literal, valid by construction: no `"`,
+/// no line breaks — nothing the lexer could not read back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StringLiteral(String);
+
+impl StringLiteral {
+    /// Validates the content.
+    ///
+    /// # Errors
+    /// [`AstError::InvalidStringLiteral`] for a quote or a line break.
+    pub fn new(text: &str) -> Result<Self, AstError> {
+        let _ = text;
+        unimplemented!("S16 Phase 3: valid-by-construction AST")
+    }
+
+    /// The literal's content, without quotes.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// An `ascii` kernel literal, valid by construction: it passes exactly the
+/// registry checks the parser runs (`SWG0101`–`SWG0103`, `SWG0307`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelLiteral(String);
+
+impl KernelLiteral {
+    /// Validates the literal with the parser's own kernel laws.
+    ///
+    /// # Errors
+    /// [`AstError::InvalidKernel`] carrying the registry code the parser
+    /// would raise for the same text.
+    pub fn new(text: &str) -> Result<Self, AstError> {
+        let _ = text;
+        unimplemented!("S16 Phase 3: valid-by-construction AST")
+    }
+
+    /// The literal's text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// A half-open byte range into the source text. Fixed-width offsets by the
 /// determinism law (spec §1.2): no platform-sized integers in anything a
@@ -170,17 +320,40 @@ pub struct MapRhythm {
     pub tail: TailPolicy,
 }
 
-/// A rational note value (`1/16`).
+/// A rational note value (`1/16`), valid by construction.
 ///
-/// Both parts are nonzero by parse (`SWG0301`, the transport's own code);
-/// whether the unit divides the bar is a build-time question — the bar
-/// geometry lives in the seed score, not in the text.
+/// Both parts are nonzero (`SWG0301` at parse, [`AstError::ZeroUnitPart`]
+/// in code); whether the unit divides the bar is a build-time question —
+/// the bar geometry lives in the seed score, not in the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unit {
     /// The note value's numerator.
     pub numerator: u64,
     /// The note value's denominator.
     pub denominator: u64,
+}
+
+impl Unit {
+    /// Validates both parts nonzero.
+    ///
+    /// # Errors
+    /// [`AstError::ZeroUnitPart`] when either side is zero.
+    pub fn new(numerator: u64, denominator: u64) -> Result<Self, AstError> {
+        let _ = (numerator, denominator);
+        unimplemented!("S16 Phase 3: valid-by-construction AST")
+    }
+
+    /// The note value's numerator.
+    #[must_use]
+    pub const fn numerator(self) -> u64 {
+        self.numerator
+    }
+
+    /// The note value's denominator.
+    #[must_use]
+    pub const fn denominator(self) -> u64 {
+        self.denominator
+    }
 }
 
 /// `generate { source ... bars ... seed ... candidates ... strategy ...
@@ -1255,9 +1428,9 @@ mod tests {
     use griff_pattern::{DensityBps, Traversal};
 
     use super::{
-        format, header_level, parse, Diagnostic, Export, ExportFormat, Fractalize, Generate,
-        Linearize, MapRhythm, PatternDef, Program, Prune, StrategyName, StrategyPolicy, Unit,
-        LANGUAGE_LEVEL,
+        format, header_level, parse, AstError, Diagnostic, Export, ExportFormat, Fractalize,
+        Generate, Ident, KernelLiteral, Level, Linearize, MapRhythm, PatternDef, Program, Prune,
+        StrategyName, StrategyPolicy, StringLiteral, Unit, LANGUAGE_LEVEL,
     };
     use crate::TailPolicy;
 
@@ -1723,6 +1896,61 @@ pattern p {{
         // Idempotence: fmt(fmt(s)) == fmt(s).
         let reparsed = parse(&formatted).expect("canonical text parses");
         assert_eq!(format(&reparsed), formatted);
+    }
+
+    // ── the AST is valid by construction (#118 review) ──────────────────────
+
+    #[test]
+    fn the_ast_refuses_values_the_grammar_could_not_reparse() {
+        // Accept the canonical forms...
+        assert_eq!(Ident::new("dgd_fractal").expect("valid").as_str(), "dgd_fractal");
+        assert_eq!(Ident::new("_").expect("an underscore is a name").as_str(), "_");
+        assert_eq!(
+            KernelLiteral::new("X.X/XX./.XX").expect("valid").as_str(),
+            "X.X/XX./.XX"
+        );
+        assert_eq!(
+            StringLiteral::new("with spaces/and slashes.gp5")
+                .expect("valid")
+                .as_str(),
+            "with spaces/and slashes.gp5"
+        );
+        assert_eq!(StringLiteral::new("").expect("empty is lexable").as_str(), "");
+        let unit = Unit::new(3, 7).expect("odd but nonzero");
+        assert_eq!((unit.numerator(), unit.denominator()), (3, 7));
+        assert_eq!(Level::new(1).expect("this build's level").get(), 1);
+
+        // ...and bounce everything format() could emit but parse() would
+        // refuse or reread differently.
+        assert!(Ident::new("not a name").is_err(), "spaces never lex as one word");
+        assert!(Ident::new("").is_err());
+        assert!(Ident::new("1abc").is_err(), "a digit starts a number, not a name");
+        assert!(Ident::new("имя").is_err(), "ASCII only — the determinism law");
+        assert_eq!(
+            KernelLiteral::new("X.X/XX").expect_err("ragged"),
+            AstError::InvalidKernel {
+                code: "SWG0101",
+                message: "ragged kernel: row 1 has 2 cells, expected 3".to_string(),
+            },
+            "the constructor speaks the parser's own registry"
+        );
+        assert!(KernelLiteral::new("X.O").is_err(), "foreign cell");
+        assert!(KernelLiteral::new("").is_err(), "empty literal");
+        assert!(
+            StringLiteral::new("a\"b.gp5").is_err(),
+            "a quote would cut the literal short"
+        );
+        assert!(StringLiteral::new("a\nb").is_err(), "a newline never lexes");
+        assert!(Unit::new(0, 16).is_err());
+        assert!(Unit::new(1, 0).is_err());
+        assert_eq!(
+            Level::new(0).expect_err("levels are nonzero"),
+            AstError::UnsupportedLevel { level: 0 }
+        );
+        assert!(
+            Level::new(LANGUAGE_LEVEL + 1).is_err(),
+            "newer than this build supports"
+        );
     }
 
     #[test]
