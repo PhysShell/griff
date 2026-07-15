@@ -234,9 +234,9 @@ enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Swang script tools (S16 Phase 3): parse, diagnose, and canonically
-    /// format `.swg` programs. Adds no musical semantics; `expand` and
-    /// `build` arrive in later slices.
+    /// Swang script tools (S16 Phase 3): `check` diagnoses, `fmt` prints
+    /// the canonical text, `expand` emits the expansion artifact, and
+    /// `build` runs a program end to end into its own `export`.
     Swang {
         #[command(subcommand)]
         command: SwangCommand,
