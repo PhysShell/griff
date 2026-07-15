@@ -15,10 +15,12 @@
 //! `griff swang build` and the cockpit share one evaluator without either
 //! learning about the other.
 
+use std::ptr;
+
+use griff_core::generate::GenerationStrategy;
 use griff_core::generation_input::{
     ranked_candidates, select_ranked, CorpusMaterial, GenerationAsk, RankedSet,
 };
-use griff_core::generate::GenerationStrategy;
 use griff_core::score::Score;
 use griff_pattern::NodePath;
 
@@ -143,8 +145,22 @@ pub struct EvaluationResult {
 impl EvaluationResult {
     /// The selected candidate's score — what a frontend draws and exports.
     #[must_use]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`selected` is an index `select` produced into this very set"
+    )]
     pub fn selected_score(&self) -> &Score {
         &self.ranked.ranked[self.selected].value.score
+    }
+
+    /// The selected candidate's strategy — for a frontend's status line.
+    #[must_use]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`selected` is an index `select` produced into this very set"
+    )]
+    pub fn selected_strategy(&self) -> GenerationStrategy {
+        self.ranked.ranked[self.selected].value.strategy
     }
 }
 
@@ -154,13 +170,14 @@ impl EvaluationResult {
 /// # Errors
 /// The parser's span diagnostics (`SWG0001`–`SWG0404`), never empty on `Err`.
 pub fn compile_program(source: &str) -> Result<CompiledProgram, Vec<Diagnostic>> {
-    let _ = source;
-    unimplemented!("S8: the Swang compile seam")
+    let (program, spans) = syntax::parse_with_spans(source)?;
+    Ok(CompiledProgram { program, spans })
 }
 
-/// Runs a compiled program's pattern pipeline up to `map_rhythm` and returns
-/// the expansion plan (templates plus the canonical artifact). This is
-/// `expand`'s engine: no pitch generation happens.
+/// Runs a compiled program's pattern pipeline up to `map_rhythm`.
+///
+/// Returns the expansion plan — templates plus the canonical artifact. This
+/// is `expand`'s engine: no pitch generation happens.
 ///
 /// # Errors
 /// An [`EvalDiagnostic`] per §1.5 (structural `NodePath`, or the owning
@@ -169,13 +186,18 @@ pub fn expand_program(
     compiled: &CompiledProgram,
     source_score: &Score,
 ) -> Result<PatternPlan, Vec<EvalDiagnostic>> {
-    let _ = (compiled, source_score);
-    unimplemented!("S8: the Swang expand seam")
+    let pattern = &compiled.program.pattern;
+    let args = rhythm_args(pattern);
+    let bars = clamp_bars(pattern.generate.bars);
+    compile_pattern_flaws(&args, source_score, bars)
+        .map_err(|flaw| vec![flaw_to_diagnostic(flaw, &compiled.spans)])
 }
 
-/// Runs a compiled program end to end against resolved inputs: expansion,
-/// generation through the shared compiler, and strategy selection (spec §3.5
-/// law 5). Returns the result in memory; the caller owns the export.
+/// Runs a compiled program end to end against resolved inputs.
+///
+/// Expansion, generation through the shared compiler, and strategy selection
+/// (spec §3.5 law 5). Returns the result in memory; the caller owns the
+/// export.
 ///
 /// # Errors
 /// An [`EvalDiagnostic`] per §1.5 — an expansion flaw, or an empty selection.
@@ -183,8 +205,48 @@ pub fn evaluate_program(
     compiled: &CompiledProgram,
     inputs: &ResolvedProgramInputs,
 ) -> Result<EvaluationResult, Vec<EvalDiagnostic>> {
-    let _ = (compiled, inputs);
-    unimplemented!("S8: the Swang evaluate seam")
+    let pattern = &compiled.program.pattern;
+    let plan = expand_program(compiled, &inputs.source_score)?;
+
+    let ask = GenerationAsk {
+        seed: pattern.generate.seed,
+        bars: clamp_bars(pattern.generate.bars),
+        variants_per_strategy: clamp_usize(pattern.generate.candidates),
+        gesture: true,
+    };
+    let set = ranked_candidates(
+        &inputs.source_score,
+        inputs.corpus.as_ref(),
+        &ask,
+        Some(plan.templates.as_slice()),
+    )
+    .map_err(|e| {
+        vec![EvalDiagnostic {
+            code: "SWG0306",
+            location: DiagLocation::Node(NodePath::default()),
+            message: format!("generation failed: {e:?}"),
+        }]
+    })?;
+
+    let selected = select(&set, pattern.generate.strategy).map_err(|d| vec![d])?;
+
+    Ok(EvaluationResult {
+        expansion_artifact: plan.artifact_json,
+        ranked: set,
+        selected,
+        export: compiled.export(),
+    })
+}
+
+/// A program's bar count clamped into `usize` — a bar count past the platform
+/// limit is not a real program, and the pattern compiler bounds it further.
+fn clamp_bars(bars: u64) -> usize {
+    usize::try_from(bars).unwrap_or(usize::MAX)
+}
+
+/// A count word clamped into `usize`.
+fn clamp_usize(n: u64) -> usize {
+    usize::try_from(n).unwrap_or(usize::MAX)
 }
 
 /// Builds the shared compiler's transport args from a program's typed
@@ -330,18 +392,16 @@ fn select(set: &RankedSet, policy: StrategyPolicy) -> Result<usize, EvalDiagnost
     let chosen = select_ranked(set, target).ok_or_else(|| EvalDiagnostic {
         code: "SWG0306",
         location: DiagLocation::Node(NodePath::default()),
-        message: match target {
-            Some(strategy) => {
-                format!("no ranked candidate of strategy {strategy:?} survived scoring")
-            }
-            None => "no candidate survived scoring".to_owned(),
-        },
+        message: target.map_or_else(
+            || "no candidate survived scoring".to_owned(),
+            |strategy| format!("no ranked candidate of strategy {strategy:?} survived scoring"),
+        ),
     })?;
     // `select_ranked` returns a borrow into `set.ranked`; recover its index.
     Ok(set
         .ranked
         .iter()
-        .position(|c| std::ptr::eq(c, chosen))
+        .position(|c| ptr::eq(c, chosen))
         .unwrap_or(0))
 }
 
@@ -352,6 +412,8 @@ fn select(set: &RankedSet, policy: StrategyPolicy) -> Result<usize, EvalDiagnost
     clippy::panic,
     clippy::indexing_slicing,
     clippy::missing_assert_message,
+    clippy::arithmetic_side_effects,
+    clippy::absolute_paths,
     clippy::str_to_string
 )]
 mod tests {
