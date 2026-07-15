@@ -358,17 +358,15 @@ the unchanged generator, reproducible from a one-line delta.
 
 ### Phase 3 — minimal Swang parser and canonical formatter
 
-The first grammar covers only what Phases 1–2 proved useful:
-
-```text
-pattern
-ascii
-fractalize
-linearize
-map_rhythm
-generate
-export
-```
+The grammar covers only what the Phase 2 killer demo **audibly earned**
+(spec §3, the closure verdict on #116): `pattern`, `ascii`,
+`fractalize(depth, density, seed)` with density/seed a visible pair,
+`linearize(traversal)`, `map_rhythm(unit, tail)`,
+`generate(bars, seed, strategy, corpus)`, `export`. The **strategy policy is
+explicit in the AST** — the dense demo proved the audible result is decided
+between the expansion and the ear (`repeat_variation` held one template of a
+six-template palette), and a language that hides that choice under-tells.
+`gesture`, `thin`, pitch/fretboard transforms stay out (spec §3.4).
 
 CLI:
 
@@ -379,13 +377,20 @@ griff swang expand riff.swg
 griff swang build riff.swg --output riff.mid
 ```
 
-Acceptance:
+Acceptance — Phase 3 adds **no musical semantics** (the seven laws of spec
+§3.5):
 
+- a Swang program equivalent to a Phase-2 CLI command produces a
+  byte-identical expansion JSON (`expand` stops after `map_rhythm`);
+- `fmt` is canonical and idempotent: `format(parse(text)) ==
+  canonical_text` and `fmt(fmt(s)) == fmt(s)`; `parse(format(ast)) == ast`;
+- `check` returns the same SWG codes and §1.5 location classes the
+  transport boundary returns today; `build` under the same seeds matches
+  `griff generate`;
 - hand-written recursive-descent parser (initial strategy per ADR-0029 §11)
   emitting `Vec<Diagnostic>` — pure data with spans and stable codes,
-  rendered only at the CLI edge;
-- `fmt` is canonical and idempotent: `format(parse(text)) == canonical_text`;
-- `expand` emits the same versioned artifact as Phase 2;
+  rendered only at the CLI edge; no defaults invented over the frozen
+  semantics;
 - parser and expansion limits gain fuzz targets (ADR-0010).
 
 ### Phase 4 — exact canonical score text and patches

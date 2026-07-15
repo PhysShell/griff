@@ -1701,3 +1701,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   likewise deferred out of Phase 1: spec §1.10 fixes its type contract, but
   its cell-selection rule is unspecified, and inventing one to satisfy an
   acceptance checkbox would freeze semantics nobody designed.
+
+- 2026-07-15 — In the context of the S16 Phase 2 closure verdict (two DGD
+  fractal riffs judged musically: the sparse one as macro-form, the dense one
+  as a riff motor whose audible identity came from `RepeatVariation` holding
+  one template of a six-template palette), facing a `generate` construct that
+  would visually describe a palette the listener never hears, we decided for
+  **an explicit strategy policy in the Swang grammar** (`strategy auto |
+  <named strategy>`, selection-only semantics over the unchanged candidate
+  set) and against hiding the scheduler inside `generate`, to achieve a
+  language that says which reading was asked for, accepting one more required
+  word in every program. The same verdict keeps `gesture` a generation
+  parameter (its dense-demo cut was excellent but unisolated) and buries
+  `thin` in favour of the operation that was actually proven — seeded density
+  pruning, already named by `fractalize density/seed`.

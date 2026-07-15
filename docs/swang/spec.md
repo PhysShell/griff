@@ -15,8 +15,9 @@ Status of each section:
 | Section | Stability |
 |---|---|
 | 1. Proposed semantic core | **Proposed; freezes at Phase 0 acceptance.** After that, changes require a new language level. |
-| 2. Experimental transport syntax | Temporary Phase-2 contract; may be replaced by the grammar. |
-| 3. Deferred research | No promised names, no promised semantics. |
+| 2. Experimental transport syntax | Temporary Phase-2 contract; superseded by §3 once Phase 3 closes. |
+| 3. Surface grammar | **Unstable until Phase 3 closes.** Records only operators that earned syntax by audible demo. |
+| 4. Deferred research | No promised names, no promised semantics. |
 
 ## 1. Proposed semantic core
 
@@ -435,7 +436,105 @@ griff generate seed.gp5 out.mid \
 16. Artifact fingerprints equal `rhythm_diagnostics` fingerprints for the
     same templates.
 
-## 3. Deferred research
+## 3. Surface grammar (unstable until Phase 3 closes)
+
+Every construct below **earned its syntax through the Phase 2 killer demo**
+(the DGD fractal riffs, review verdict on #116's closure): nothing here is
+speculative roster. The grammar records the semantics Phases 1–2 already
+froze; Phase 3 adds no musical meaning.
+
+### 3.1 The reference program
+
+```text
+swang 1
+
+pattern dgd_fractal {
+    ascii "X.X/XX./.XX"
+    |> fractalize depth 1 density 9500bps seed 4
+    |> linearize snake
+    |> map_rhythm unit 1/16 tail rest_pad
+    |> generate {
+        bars 8
+        seed 42
+        strategy repeat_variation
+        corpus "corpus"
+    }
+    |> export midi "dgd_fractal_dense.mid"
+}
+```
+
+(The header is the frozen §1.1 integer level — `swang 1` — not a dotted
+version; the verdict's illustrative `swang 0.1` predates §1.1 and loses.)
+
+### 3.2 Operators and their earned parameters
+
+- `ascii "<literal>"` — the §1.6/§2.1 kernel literal, same characters, same
+  typed errors.
+- `fractalize depth <n> [density <bps>bps seed <u64>]` — §1.7/§1.8. Density
+  and seed are a **visible pair**: naming one without the other is a parse
+  error (`SWG0303` for a missing seed), and there is no implicit seed —
+  determinism was paid for in several PRs and a fair number of human nerve
+  cells. The `bps` suffix is mandatory; no bare or decimal densities.
+- `linearize <traversal>` — `row_major | snake`, always explicit (§1.9).
+- `map_rhythm unit <note> tail <reject|rest_pad>` — both boundaries always
+  written (§1.11); no defaults exist to omit.
+- `generate { bars <n> seed <u64> strategy <policy> [corpus "<path>"] }` —
+  the S6 pass through the shared compiler with the explicit rhythm override
+  (§1.12). Corpus contents are a declared semantic dependency of the run.
+- `export midi "<path>"` — the output edge.
+
+### 3.3 The strategy policy is explicit — the verdict's amendment
+
+The dense demo proved that the audible result is decided *between* the
+expansion and the ear: `RepeatVariation` held the first template and the
+listener never heard the six-template palette the program visually
+described. A language that hides that choice is under-telling. Therefore:
+
+```text
+strategy auto
+strategy rhythm_copy | motif_transpose | constrained_walk
+         | shuffle_motifs | repeat_variation
+```
+
+- `auto` — the reranked winner across all strategies (today's behavior).
+- A named strategy selects the **top-ranked candidate of that strategy**
+  from the same candidate set — selection semantics only; the set, the
+  seeds, and the reranker stay untouched.
+- The four per-bar strategies rotate the palette; `repeat_variation` holds
+  its first template — the program says which reading you asked for.
+- Group policies (e.g. "any rotating strategy") are deferred until asked
+  for by a real program.
+
+### 3.4 What did **not** earn syntax
+
+Per the same verdict: `gesture` (a generation-subsystem parameter and
+artifact metadata, not language semantics — its dense-demo cut was excellent
+but unisolated), pitch/harmony transforms, fretboard operators, `thin` (the
+proven operation is *seeded density pruning*, which `fractalize density/seed`
+already names — the language must not pre-create a vaguer abstraction),
+morph/crossover, and any DGD-specific macros.
+
+### 3.5 Phase 3 acceptance laws
+
+Phase 3 adds **no musical semantics**. It closes only when:
+
+1. the Swang program equivalent to a Phase-2 CLI command produces a
+   **byte-identical** expansion JSON;
+2. `fmt(fmt(source)) == fmt(source)`;
+3. `parse(format(ast)) == ast`;
+4. `check` returns the same `SWG` codes and the same §1.5 location classes
+   the transport boundary returns today;
+5. `build` under the same seeds produces the same result as the existing
+   `griff generate`;
+6. the strategy policy is present in the AST explicitly;
+7. the parser and formatter invent **no defaults** on top of the frozen
+   semantics.
+
+CLI: `griff swang check | fmt | expand | build` — `expand` stops after
+`map_rhythm` and emits the same canonical expansion JSON Phase 2 already
+emits; `build` runs the generation strategy and the export.
+
+## 4. Deferred research
 
 Named without reserved syntax or promised semantics (see the S16 stage doc
 for admission bars):
