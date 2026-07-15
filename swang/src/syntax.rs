@@ -1069,6 +1069,13 @@ fn string_value(token: &Token, what: &str) -> Result<String, Diagnostic> {
     }
 }
 
+/// The one spelling law for every number in the grammar: a leading zero is
+/// never canonical (`SWG0401`), no matter which construct holds the digits —
+/// the header set the tone (spec §3.2).
+fn leading_zero(digits: &str) -> bool {
+    digits.len() > 1 && digits.starts_with('0')
+}
+
 /// A plain decimal integer: digits only, no leading zeros, no separators.
 fn dec_u128(token: &Token, what: &str) -> Result<u128, Diagnostic> {
     let malformed = |message: String| Diagnostic {
@@ -1082,7 +1089,7 @@ fn dec_u128(token: &Token, what: &str) -> Result<u128, Diagnostic> {
             token.text
         )));
     }
-    if token.text.len() > 1 && token.text.starts_with('0') {
+    if leading_zero(&token.text) {
         return Err(malformed(format!("{what} does not take leading zeros")));
     }
     token
@@ -1119,6 +1126,13 @@ fn density_value(token: &Token) -> Result<DensityBps, Diagnostic> {
             ),
         });
     };
+    if leading_zero(digits) {
+        return Err(Diagnostic {
+            code: "SWG0401",
+            span: token.span,
+            message: format!("density does not take leading zeros: `{}`", token.text),
+        });
+    }
     let out_of_scale = || Diagnostic {
         code: "SWG0308",
         span: token.span,
@@ -1154,6 +1168,15 @@ fn unit_value(token: &Token) -> Result<Unit, Diagnostic> {
             token.text
         )));
     };
+    if leading_zero(numerator) || leading_zero(denominator) {
+        // The spelling law, not the unit's semantic one: SWG0401, while
+        // SWG0301 keeps naming zero parts and malformed shapes (spec §3.2).
+        return Err(Diagnostic {
+            code: "SWG0401",
+            span: token.span,
+            message: format!("unit {} does not take leading zeros", token.text),
+        });
+    }
     let numerator: u64 = numerator
         .parse()
         .map_err(|_| malformed(format!("unit {} is out of range", token.text)))?;
