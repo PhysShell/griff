@@ -21,7 +21,7 @@
 #[allow(dead_code)]
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::{env, fs};
 
@@ -176,7 +176,7 @@ fn expand_program_for(
     fractalize_args: &str,
     unit_and_tail: &str,
     bars: u64,
-    source: &std::path::Path,
+    source: &Path,
 ) -> String {
     format!(
         r#"swang 1
@@ -269,7 +269,12 @@ fn swang_expand_matches_the_transport_artifact_byte_for_byte() {
 fn swang_expand_reports_structural_budget_breaches_by_node_path() {
     // §1.5: a structural error's location is its NodePath — the whole-grid
     // budget check breaks at the root.
-    let program = expand_program("X.X/XX./.XX", "depth 2 max_cells 80", "unit 1/16 tail rest_pad", 8);
+    let program = expand_program(
+        "X.X/XX./.XX",
+        "depth 2 max_cells 80",
+        "unit 1/16 tail rest_pad",
+        8,
+    );
     let path = script("expand_budget", &program);
     let out = griff_raw(&["swang", "expand", path.to_str().unwrap()]);
     fs::remove_file(&path).ok();
@@ -351,7 +356,10 @@ fn swang_expand_speaks_program_vocabulary_for_the_rejected_tail() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("error[SWG0302]"), "{stderr}");
     assert!(stderr.contains("rest_pad"), "{stderr}");
-    assert!(!stderr.contains("rest-pad"), "no transport spelling: {stderr}");
+    assert!(
+        !stderr.contains("rest-pad"),
+        "no transport spelling: {stderr}"
+    );
 }
 
 #[test]
