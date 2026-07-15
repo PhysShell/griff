@@ -122,6 +122,15 @@ jobs:
           - gesture_request
           - swang_parse
           - pattern_expansion
+        include:
+          # F-003 (docs/fuzzing.md): guitarpro-0.4.2 indexes measure headers
+          # by an unvalidated direction index — a panic inside the upstream
+          # crate that no adapter-side pre-validation can reach. Quarantined
+          # to signature-check only, *visibly*, with exit criteria in the
+          # findings registry: an upstream fix or a vendored patch turns the
+          # smoke back on.
+          - target: guitar_pro_import
+            smoke: skip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -152,7 +161,18 @@ jobs:
         run: cargo check --bins
 
       - name: Bounded smoke + corpus replay
+        if: matrix.smoke != 'skip'
         run: |
           mkdir -p fuzz/corpus/${{ matrix.target }}
           cargo +nightly fuzz run ${{ matrix.target }} -- \
             -max_total_time=60 -timeout=60 -rss_limit_mb=4096 -malloc_limit_mb=2048
+
+      # A finding nobody can download is a finding nobody can minimize: keep
+      # the crashing inputs when the smoke fails.
+      - name: Keep any finding
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

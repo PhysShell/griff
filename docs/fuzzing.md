@@ -152,6 +152,37 @@ priority onto canonical stages:
 - **Status:** **fixed at S2** — `bar_ticks()` now returns
   `MidiError::DegenerateMeter` when the result is 0 instead of looping.
 
+### F-002 — midly SMPTE fps negate overflow *(fixed at S16)*
+
+- **Where:** `midly 0.5.3`, `Timing::read` (`primitive.rs:495`): the SMPTE
+  fps byte is negated **before** validation — `-(byte as i8)` overflows on
+  fps `-128` (division high byte `0x80`).
+- **Effect:** a debug-profile panic (fuzz builds carry debug assertions)
+  reachable from a 14-byte header. Found by the blocking gate's **first
+  ever smoke run**, felling four MIDI targets at once.
+- **Reproducer / regression seed:** `panic_smpte_fps_min.mid`, committed to
+  the corpora of `midi_import`, `midi_roundtrip`, `score_projection`, and
+  `phrase_boundary`. Characterization test:
+  `regression_f002_smpte_fps_min_returns_typed_error` in `core/src/midi.rs`.
+- **Status:** **fixed at S16** — `import_score` rejects any timecode
+  division (`SmpteTimingUnsupported`, the rule that already existed in
+  `extract_ppqn`) before midly reads it.
+
+### F-003 — guitarpro unvalidated direction index *(open, quarantined)*
+
+- **Where:** `guitarpro 0.4.2`, `model/legacy/headers/io.rs:114`:
+  `measure_headers[index - 1]` indexes by a direction measure index the
+  format data supplies, unvalidated against the header count.
+- **Effect:** an index-out-of-bounds panic inside the upstream crate; no
+  adapter-side pre-validation can reach it (the index is deep in the
+  format), and `catch_unwind` cannot help under libFuzzer's abort-on-panic
+  hook.
+- **Status:** **open** — `guitar_pro_import` is quarantined to
+  signature-check only in the CI matrix (visibly, in the workflow file).
+  **Exit criteria:** an upstream fix or a vendored patch re-enables the
+  smoke; the crashing input from any future run is preserved by the
+  gate's artifact upload.
+
 ## See also
 
 - [`adr/0010-fuzz-format-adapters-and-core-invariants.md`](adr/0010-fuzz-format-adapters-and-core-invariants.md)
