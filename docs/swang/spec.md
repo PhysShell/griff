@@ -19,7 +19,7 @@ Status of each section:
 | 3. Surface grammar | **Frozen (Phase 3 closed).** The operators the audible demo earned; changes require a new language level. |
 | 4. Deferred research | No promised names, no promised semantics. |
 
-## 1. Proposed semantic core
+## 1. Semantic core (frozen — Phase 0 accepted)
 
 ### 1.1 Language level and the header line
 
