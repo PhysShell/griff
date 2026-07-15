@@ -109,7 +109,10 @@ fuzz_target!(|input: FuzzInput| {
         Ok(templates) => {
             for template in &templates {
                 for note in &template.notes {
-                    assert!(note.offset.0 < input.bar_duration, "a note stays in its bar");
+                    assert!(
+                        note.offset.0 < input.bar_duration,
+                        "a note stays in its bar"
+                    );
                     assert_eq!(note.offset.0 % input.unit, 0, "a note sits on a slot");
                     assert_eq!(note.duration.0, input.unit, "a note is one unit long");
                 }
