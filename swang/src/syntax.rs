@@ -512,6 +512,33 @@ fn span_of(start: usize, end: usize) -> Span {
     }
 }
 
+/// Source locations of the program words an expansion frontend renders
+/// diagnostics at (spec §3.5's CLI contract, §1.5's layers).
+///
+/// This is a side table, not part of the AST: [`Program`] equality and the
+/// `parse(format(ast)) == ast` law stay span-free. String-literal spans
+/// include their quotes; value spans cover the value token alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgramSpans {
+    /// The quoted `ascii` kernel literal.
+    pub kernel: Span,
+    /// The `unit` value (`1/16`).
+    pub unit: Span,
+    /// The `tail` value (`reject` / `rest_pad`).
+    pub tail: Span,
+    /// The quoted `source` literal.
+    pub source: Span,
+}
+
+/// [`parse`], additionally returning the [`ProgramSpans`] side table.
+///
+/// # Errors
+/// Exactly [`parse`]'s errors — the two functions are one parser.
+pub fn parse_with_spans(source: &str) -> Result<(Program, ProgramSpans), Vec<Diagnostic>> {
+    let _ = source;
+    unimplemented!("S16 Phase 3: the expand frontend's span table")
+}
+
 /// Parses a Swang script into its [`Program`].
 ///
 /// The header is checked first ([`header_level`]); the grammar then covers
@@ -1469,9 +1496,9 @@ mod tests {
     use griff_pattern::{DensityBps, Traversal};
 
     use super::{
-        format, header_level, parse, AstError, Diagnostic, Export, ExportFormat, Fractalize,
-        Generate, Ident, KernelLiteral, Level, Linearize, MapRhythm, PatternDef, Program, Prune,
-        StrategyName, StrategyPolicy, StringLiteral, Unit, LANGUAGE_LEVEL,
+        format, header_level, parse, parse_with_spans, AstError, Diagnostic, Export, ExportFormat,
+        Fractalize, Generate, Ident, KernelLiteral, Level, Linearize, MapRhythm, PatternDef,
+        Program, Prune, StrategyName, StrategyPolicy, StringLiteral, Unit, LANGUAGE_LEVEL,
     };
     use crate::TailPolicy;
 
@@ -1909,6 +1936,33 @@ pattern p {{
             "|> fractalize depth 1 max_cells 4096 density 0bps seed 4",
         ))
         .expect("a zero density prunes everything but spells canonically");
+    }
+
+    // ── the span side table (the expand frontend's locations) ──────────────
+
+    #[test]
+    fn the_span_table_slices_the_source_to_the_owning_words() {
+        let (program, spans) = parse_with_spans(REFERENCE).expect("the reference parses");
+        assert_eq!(program, reference_ast(), "one parser, two entry points");
+
+        let slice = |span: super::Span| &REFERENCE[span.start as usize..span.end as usize];
+        assert_eq!(slice(spans.kernel), "\"X.X/XX./.XX\"", "quotes included");
+        assert_eq!(slice(spans.unit), "1/16", "the value token alone");
+        assert_eq!(slice(spans.tail), "rest_pad");
+        assert_eq!(
+            slice(spans.source),
+            "\"corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5\""
+        );
+    }
+
+    #[test]
+    fn parse_and_parse_with_spans_are_one_parser() {
+        // Same acceptance and same diagnostics on the same flawed source.
+        let flawed = program_with("|> fractalize depth 1 max_cells 4096 density 9500bps");
+        assert_eq!(
+            parse_with_spans(&flawed).expect_err("seedless density")[0].code,
+            first_error(&flawed).code
+        );
     }
 
     // ── the canonical formatter (spec §3.5 laws 2–3) ────────────────────────
