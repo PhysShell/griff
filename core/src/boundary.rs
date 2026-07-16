@@ -532,7 +532,10 @@ mod tests {
             0xff, 0xff, 0xff, 0x00, 0x40, 0x00, 0x3c, 0x00,
         ];
         let score = crate::midi::import_score(mid).expect("imports within the bar cap");
-        assert!(score.master_bars.len() > 10_000, "the delta implies many bars");
+        assert!(
+            score.master_bars.len() > 10_000,
+            "the delta implies many bars"
+        );
         for ti in 0..score.tracks.len() {
             let boundaries = detect_phrase_boundaries(&score, ti, &BoundaryConfig::default());
             for b in &boundaries {
