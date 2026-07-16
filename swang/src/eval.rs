@@ -208,10 +208,18 @@ pub fn evaluate_program(
     let pattern = &compiled.program.pattern;
     let plan = expand_program(compiled, &inputs.source_score)?;
 
+    // A count that does not fit `usize` (reachable on wasm32) or that exceeds
+    // the resource bound would drive an unbounded generation loop / OOM — the
+    // F-004 family. Reject it typed, before `ranked_candidates` allocates.
     let ask = GenerationAsk {
         seed: pattern.generate.seed,
-        bars: clamp_bars(pattern.generate.bars),
-        variants_per_strategy: clamp_usize(pattern.generate.candidates),
+        bars: checked_count(pattern.generate.bars, MAX_BARS, "bars").map_err(|d| vec![d])?,
+        variants_per_strategy: checked_count(
+            pattern.generate.candidates,
+            MAX_CANDIDATES,
+            "candidates",
+        )
+        .map_err(|d| vec![d])?,
         gesture: true,
     };
     let set = ranked_candidates(
@@ -238,15 +246,37 @@ pub fn evaluate_program(
     })
 }
 
-/// A program's bar count clamped into `usize` — a bar count past the platform
-/// limit is not a real program, and the pattern compiler bounds it further.
-fn clamp_bars(bars: u64) -> usize {
-    usize::try_from(bars).unwrap_or(usize::MAX)
+/// The most bars a program may generate. Generous — a 4/4 piece this long
+/// runs for days — so it never rejects a real program, only an absurd count
+/// that would drive an unbounded generation loop (spec `SWG0309`).
+const MAX_BARS: u64 = 100_000;
+
+/// The most seed variants a program may ask for per strategy. The set holds
+/// this × 5 strategies; a real program asks for single digits.
+const MAX_CANDIDATES: u64 = 4_096;
+
+/// A `generate` count validated into `usize`: rejected (`SWG0309`) when it
+/// exceeds `max` or does not fit the platform's `usize` (reachable on
+/// wasm32), so an oversized source value becomes a typed diagnostic instead
+/// of a hang or OOM. The bound is a runtime limit, not a language semantic,
+/// so it is located at the tree root, never a source span.
+fn checked_count(value: u64, max: u64, word: &str) -> Result<usize, EvalDiagnostic> {
+    usize::try_from(value)
+        .ok()
+        .filter(|_| value <= max)
+        .ok_or_else(|| EvalDiagnostic {
+            code: "SWG0309",
+            location: DiagLocation::Node(NodePath::default()),
+            message: format!("{word} {value} exceeds the evaluator's maximum of {max}"),
+        })
 }
 
-/// A count word clamped into `usize`.
-fn clamp_usize(n: u64) -> usize {
-    usize::try_from(n).unwrap_or(usize::MAX)
+/// A program's bar count clamped into `usize` for the expansion artifact,
+/// which allocates nothing per bar (`check_bars_window` reads only the
+/// palette prefix), so `expand` keeps its byte-parity with the transport
+/// even for an out-of-range count that `build` would reject.
+fn clamp_bars(bars: u64) -> usize {
+    usize::try_from(bars).unwrap_or(usize::MAX)
 }
 
 /// Builds the shared compiler's transport args from a program's typed
@@ -585,6 +615,26 @@ pattern p {{
         let bad = program("auto").replace("density 9500bps seed 4", "density 9500bps");
         let diags = compile_program(&bad).expect_err("seedless density");
         assert_eq!(diags[0].code, "SWG0303");
+    }
+
+    #[test]
+    fn an_oversized_count_is_rejected_not_clamped() {
+        // A bars count that would drive an unbounded generation loop (and on
+        // wasm32 not even fit usize) is a typed SWG0309, never a hang.
+        let huge = program("auto").replace("bars 4", "bars 999999999");
+        let compiled = compile_program(&huge).expect("parses");
+        let inputs = ResolvedProgramInputs {
+            source_score: seed_score(4),
+            corpus: None,
+        };
+        let bars_diags = evaluate_program(&compiled, &inputs).expect_err("oversized bars");
+        assert_eq!(bars_diags[0].code, "SWG0309");
+
+        let many = program("auto").replace("candidates 2", "candidates 999999");
+        let many_compiled = compile_program(&many).expect("parses");
+        let cand_diags =
+            evaluate_program(&many_compiled, &inputs).expect_err("oversized candidates");
+        assert_eq!(cand_diags[0].code, "SWG0309");
     }
 
     #[test]
