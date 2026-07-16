@@ -127,20 +127,28 @@ impl Provenance {
     /// Stamps a provenance for `generator`, tagging it with the current schema
     /// and version and the candidate's content id and creation `sequence`.
     #[must_use]
-    pub fn new(sequence: u64, candidate_id: String, generator: GeneratorProvenance) -> Self {
-        let _ = (sequence, candidate_id, generator);
-        unimplemented!("Provenance::new")
+    pub const fn new(sequence: u64, candidate_id: String, generator: GeneratorProvenance) -> Self {
+        Self {
+            schema: PROVENANCE_SCHEMA,
+            version: PROVENANCE_VERSION,
+            candidate_id,
+            sequence,
+            generator,
+        }
     }
 
     /// The coarse source — which generator made the candidate.
     #[must_use]
-    pub fn source(&self) -> CandidateSource {
-        unimplemented!("Provenance::source")
+    pub const fn source(&self) -> CandidateSource {
+        match self.generator {
+            GeneratorProvenance::Generate { .. } => CandidateSource::Generate,
+            GeneratorProvenance::Swang { .. } => CandidateSource::Swang,
+        }
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::missing_assert_message)]
+#[allow(clippy::missing_assert_message, clippy::panic)]
 mod tests {
     use super::{
         toggle, CandidateSource, GeneratorProvenance, Provenance, Verdict, PROVENANCE_SCHEMA,
