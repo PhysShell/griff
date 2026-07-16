@@ -189,6 +189,22 @@ priority onto canonical stages:
   `MAX_MASTER_BARS` (1,000,000) with `MidiError::TooManyBars`, bounding
   memory to tens of megabytes.
 
+### F-005 — quadratic phrase-boundary cadence scan *(fixed at S8)*
+
+- **Where:** `core/src/boundary.rs` — `signal_cadence` scanned all master bars
+  linearly, and the detector scores one candidate per bar, so the cost was
+  `O(bars²)`.
+- **Effect:** a 24 s slow unit (libFuzzer timeout) from a 50-byte MIDI whose
+  one huge varlen delta at PPQN 480 imports tens of thousands of bars (under
+  F-004's `MAX_MASTER_BARS`, so import succeeds). Not a hang — quadratic. Found
+  by the `phrase_boundary` gate on an unrelated PR's run, the fuzz gate earning
+  its keep again.
+- **Reproducer / regression seed:**
+  `fuzz/corpus/phrase_boundary/slow_quadratic_cadence.mid`. Characterization
+  test: `regression_f005_many_bars_do_not_go_quadratic` in `core/src/boundary.rs`.
+- **Status:** **fixed at S8** — `signal_cadence` binary-searches the ascending
+  master bars (`O(log bars)`), so the detector is `O(bars · log bars)`.
+
 ### F-003 — guitarpro unvalidated direction index *(open, quarantined)*
 
 - **Where:** `guitarpro 0.4.2`, `model/legacy/headers/io.rs:114`:
