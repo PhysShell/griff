@@ -69,13 +69,15 @@ one file.
 
 - **Generate panel + corpus:** the corpus supplies the **rhythm**, novelty
   references, and gesture.
-- **Swang + corpus:** in the current native cockpit, a Swang program's
-  declared `corpus` is **not resolved** — the Swang run reports an explicit
-  refusal and uses the kernel's rhythm alone. By the frozen precedence
-  **explicit pattern > corpus > source first bar** (ADR-0029 §7), once that
-  input is wired it will be able to contribute novelty and gesture but will
-  **never** replace the kernel's rhythm; the grid always comes from the
-  program.
+- **Swang + corpus:** the current native cockpit does **not resolve** a
+  corpus for Swang. A program that *declares* a `corpus` is therefore
+  **refused outright** — the run reports the refusal and produces **no
+  candidates** at all (remove the `corpus` line, or build it with `griff
+  swang build`). Only a program with **no** `corpus` line runs, on the
+  kernel's own rhythm. By the frozen precedence **explicit pattern > corpus
+  > source first bar** (ADR-0029 §7), once corpus resolution is wired a
+  declared corpus will contribute novelty and gesture but will **never**
+  replace the kernel's rhythm; the grid always comes from the program.
 
 So to *play with a real corpus's rhythms* today, use the **Generate** panel,
 not Swang. That precedence is frozen and does not change here.
