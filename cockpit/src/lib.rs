@@ -46,6 +46,7 @@ use griff_ui_core::{
     CorpusStats, Intent, PianoRollView, Step, ViewContext, Viewport,
 };
 
+pub mod audio;
 pub mod generation;
 pub mod swang;
 

@@ -36,6 +36,9 @@ serde_json    = { workspace = true }
 # shipped; the web target picks a leaner, glow-only eframe below.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 eframe = "0.34"
+# Native MIDI out for playback (S8 Slice 2): sends NoteOn/NoteOff/all-notes-off
+# to a chosen output port. Linux uses ALSA (needs libasound2-dev at build).
+midir = "0.10"
 
 # Web (wasm32) — the canonical M2 front (ADR-0027 Slice 2). eframe paints via
 # WebGL (`glow` over `web-sys`): ADR-0027 §5's "web renderer", no wgpu, no Trunk.
@@ -52,6 +55,11 @@ js-sys               = "0.3"
 web-sys              = { version = "0.3", features = [
     "Blob", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Navigator",
     "Url", "Window", "console",
+    # Web Audio — the cockpit's playback voice (`audio.rs`): a sustained sine
+    # per sounding pitch. `BaseAudioContext` carries create_*/current_time/
+    # destination; `AudioParam` the note-on/off envelopes.
+    "AudioContext", "BaseAudioContext", "AudioNode", "AudioDestinationNode",
+    "AudioParam", "GainNode", "OscillatorNode", "OscillatorType",
     # OPFS corpus persistence (ADR-0027 §3); the writable stream needs
     # `--cfg=web_sys_unstable_apis` (set in build-web.sh).
     "StorageManager", "FileSystemDirectoryHandle", "FileSystemFileHandle",
