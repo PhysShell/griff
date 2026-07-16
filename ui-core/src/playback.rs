@@ -51,41 +51,53 @@ pub fn ticks_per_second(ppq: u16, bpm: f64, scale: f64) -> f64 {
     f64::from(ppq) * bpm * scale / 60.0
 }
 
-/// The tempo across the master timeline: `(start tick, BPM)` segments,
-/// ascending, always with one at tick 0. Playback walks these so a tempo
+/// The tempo across the master timeline: `(start tick, BPM)` segments.
+///
+/// Ascending, always with one at tick 0. Playback walks these so a tempo
 /// change is honoured — the master timeline is the single source of tempo —
 /// and advances a **fractional** tick position, so no frame's rounding drifts.
 #[derive(Debug, Clone)]
 pub struct TempoMap {
     /// `(start_tick, bpm)`, ascending by tick, `[0]` at tick 0.
-    #[allow(dead_code)]
     segments: Vec<(u32, f64)>,
 }
 
 impl TempoMap {
     /// A constant-tempo map — the whole score at `bpm`.
     #[must_use]
-    pub fn single(_bpm: f64) -> Self {
-        unimplemented!("TempoMap::single")
+    pub fn single(bpm: f64) -> Self {
+        Self {
+            segments: vec![(0, bpm.max(1.0))],
+        }
     }
 
     /// Builds a map from `(start_tick, bpm)` pairs. They are sorted; a segment
     /// at tick 0 is synthesised if missing; runs of equal BPM collapse.
     #[must_use]
-    pub fn new(_segments: Vec<(u32, f64)>) -> Self {
-        unimplemented!("TempoMap::new")
+    pub fn new(mut segments: Vec<(u32, f64)>) -> Self {
+        segments.retain(|&(_, bpm)| bpm.is_finite() && bpm > 0.0);
+        segments.sort_by_key(|&(t, _)| t);
+        if segments.first().is_none_or(|&(t, _)| t != 0) {
+            let bpm = segments.first().map_or(120.0, |&(_, b)| b);
+            segments.insert(0, (0, bpm));
+        }
+        segments.dedup_by(|a, b| (a.1 - b.1).abs() < f64::EPSILON);
+        Self { segments }
     }
 
     /// The BPM in force at `tick` — the last segment starting at or before it.
     #[must_use]
-    pub fn bpm_at(&self, _tick: u32) -> f64 {
-        unimplemented!("TempoMap::bpm_at")
+    pub fn bpm_at(&self, tick: u32) -> f64 {
+        let idx = self
+            .segments
+            .partition_point(|&(t, _)| t <= tick)
+            .saturating_sub(1);
+        self.segments.get(idx).map_or(120.0, |&(_, b)| b).max(1.0)
     }
 
     /// The first segment boundary strictly after `tick`, if any.
-    #[allow(dead_code)]
-    fn next_boundary(&self, _tick: u32) -> Option<u32> {
-        unimplemented!("TempoMap::next_boundary")
+    fn next_boundary(&self, tick: u32) -> Option<u32> {
+        self.segments.iter().map(|&(t, _)| t).find(|&t| t > tick)
     }
 
     /// Advances a fractional tick position `from` by `dt` seconds, splitting
@@ -93,8 +105,31 @@ impl TempoMap {
     /// and audition `scale`. Fractional in and out: the caller keeps the
     /// remainder, so sub-tick frames never round to zero or drift.
     #[must_use]
-    pub fn advance(&self, _from: f64, _dt: f64, _ppq: u16, _scale: f64) -> f64 {
-        unimplemented!("TempoMap::advance")
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pos ≥ 0, ticks never near u32::MAX
+    pub fn advance(&self, from: f64, dt: f64, ppq: u16, scale: f64) -> f64 {
+        let mut pos = from.max(0.0);
+        let mut remaining = dt.max(0.0);
+        // At most one hop per segment boundary, plus the final partial step.
+        for _ in 0..=self.segments.len() {
+            let tick = pos as u32;
+            let tps = ticks_per_second(ppq, self.bpm_at(tick), scale);
+            if tps <= 0.0 {
+                break;
+            }
+            // If a boundary lies ahead and the frame has time to reach it,
+            // hop to it and re-rate; otherwise take the final partial step.
+            if let Some(boundary) = self.next_boundary(tick) {
+                let secs_to_boundary = (f64::from(boundary) - pos) / tps;
+                if remaining > secs_to_boundary {
+                    pos = f64::from(boundary);
+                    remaining -= secs_to_boundary;
+                    continue;
+                }
+            }
+            pos += tps * remaining;
+            break;
+        }
+        pos
     }
 }
 
