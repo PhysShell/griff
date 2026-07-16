@@ -307,6 +307,14 @@ impl SessionHistory {
         }
     }
 
+    /// Clears the selection without touching the entries or their verdicts —
+    /// the fresh-load lifecycle seam: a new file has no active history row, so
+    /// nothing should read as selected or playing, but the record is preserved.
+    pub fn clear_selection(&mut self) {
+        let _ = &self.selected;
+        unimplemented!("SessionHistory::clear_selection")
+    }
+
     /// The selected entry's id, if any.
     #[must_use]
     pub const fn selected(&self) -> Option<HistoryId> {
@@ -687,5 +695,28 @@ mod tests {
         assert!(h.get(a).is_some() && h.get(b).is_some());
         h.select(a);
         assert_eq!(h.selected(), Some(a), "selection moves freely");
+    }
+
+    #[test]
+    fn clear_selection_drops_the_pointer_but_keeps_the_record() {
+        let mut h = SessionHistory::new();
+        let run = h.begin_run();
+        let a = h.record(
+            run,
+            "a#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen(),
+        );
+        h.set_verdict(a, Verdict::Favorite);
+        h.select(a);
+        h.clear_selection();
+        assert_eq!(h.selected(), None, "nothing is selected after a clear");
+        assert_eq!(h.entries().len(), 1, "the entry survives");
+        assert_eq!(
+            h.get(a).unwrap().verdict,
+            Some(Verdict::Favorite),
+            "and its verdict is kept",
+        );
     }
 }

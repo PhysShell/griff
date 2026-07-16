@@ -3671,6 +3671,60 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_load_clears_the_history_selection_but_keeps_the_record() {
+        // Finding 2: after loading a new score, no history row may read as
+        // selected or playing — but the entries and verdicts are preserved.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // records + selects a history entry
+        let id = app.history.entries()[0].id;
+        app.history.set_verdict(id, Verdict::Favorite);
+        assert!(
+            app.history.selected().is_some(),
+            "a row is selected pre-load"
+        );
+        let before = app.history.entries().len();
+
+        app.load("fresh.mid".to_owned(), include_bytes!("../assets/demo.mid"))
+            .expect("the demo bytes load");
+
+        assert_eq!(
+            app.history.entries().len(),
+            before,
+            "the record is preserved"
+        );
+        assert_eq!(
+            app.history.get(id).unwrap().verdict,
+            Some(Verdict::Favorite),
+            "verdicts survive a fresh load",
+        );
+        assert_eq!(app.history.selected(), None, "no history row is selected");
+        assert_eq!(app.current, None, "no active audition candidate");
+        app.vp.playing = true;
+        assert!(
+            app.history.selected().is_none(),
+            "with nothing selected, no row can read as playing",
+        );
+    }
+
+    #[test]
+    fn a_generate_after_a_fresh_load_selects_its_winner() {
+        // Finding 2 regression: a new successful run after the reset still
+        // selects the shown winner immediately.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.load("fresh.mid".to_owned(), include_bytes!("../assets/demo.mid"))
+            .expect("the demo bytes load");
+        assert_eq!(app.history.selected(), None);
+        app.do_generate(); // a fresh run after the load
+        assert!(
+            app.history.selected().is_some(),
+            "the new run's winner becomes the selected history row",
+        );
+    }
+
+    #[test]
     fn selecting_from_history_switches_the_score_and_silences_the_old() {
         let mut app = demo_app();
         app.gen_panel.variants = 2;
