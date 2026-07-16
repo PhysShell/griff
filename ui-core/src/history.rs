@@ -103,23 +103,30 @@ pub enum GeneratorProvenance {
 /// sidecar, a diff tool) can tell the shape apart from other records.
 pub const PROVENANCE_SCHEMA: &str = "griff.candidate-provenance";
 
-/// The current [`Provenance`] shape version.
-pub const PROVENANCE_VERSION: u32 = 1;
+/// The current [`Provenance`] shape version. v2 adds the generation-run
+/// identity and distinguishes it from the history sequence.
+pub const PROVENANCE_VERSION: u32 = 2;
 
 /// A candidate's typed, backend-neutral origin — enough to answer where it came
 /// from, what made it, and under what request, without a word of UI in it.
 ///
 /// A renderer builds its own description from these fields; nothing here is a
-/// pre-formatted string.
+/// pre-formatted string. The `run` and `sequence` are distinct identities: the
+/// former groups a generation's candidates, the latter orders history entries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Provenance {
     /// The schema marker ([`PROVENANCE_SCHEMA`]).
     pub schema: &'static str,
     /// The shape version ([`PROVENANCE_VERSION`]).
     pub version: u32,
-    /// The reproducible content id of the candidate (`strategy#seed-hex`).
+    /// The generation run that produced the candidate — a session-local id
+    /// shared by every candidate of one Generate/Swang set.
+    pub run: GenerationRunId,
+    /// The candidate key **within its run** (`strategy#variant_seed`). Not a
+    /// content hash — it does not reproduce a score without its request/inputs.
     pub candidate_id: String,
-    /// The session-local creation order — a monotonic sequence number.
+    /// The session-local history order — a monotonic sequence number, distinct
+    /// from `run`.
     pub sequence: u64,
     /// The generator-specific origin.
     pub generator: GeneratorProvenance,
@@ -127,12 +134,19 @@ pub struct Provenance {
 
 impl Provenance {
     /// Stamps a provenance for `generator`, tagging it with the current schema
-    /// and version and the candidate's content id and creation `sequence`.
+    /// and version, the generation `run`, the within-run candidate key, and the
+    /// history `sequence`.
     #[must_use]
-    pub const fn new(sequence: u64, candidate_id: String, generator: GeneratorProvenance) -> Self {
+    pub const fn new(
+        run: GenerationRunId,
+        sequence: u64,
+        candidate_id: String,
+        generator: GeneratorProvenance,
+    ) -> Self {
         Self {
             schema: PROVENANCE_SCHEMA,
             version: PROVENANCE_VERSION,
+            run,
             candidate_id,
             sequence,
             generator,
@@ -156,19 +170,34 @@ impl Provenance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HistoryId(pub u64);
 
+/// A session-local identity for one **generation run** — a single successful
+/// Generate or Swang candidate set.
+///
+/// Every candidate of a set shares one id; a fresh generation mints a new one
+/// (see [`SessionHistory::begin_run`]). This is what scopes de-duplication: a
+/// candidate key like `strategy#variant_seed` is stable only *within* a run —
+/// it is not a content hash and does not reproduce a score without its request
+/// and inputs — so two runs that happen to share a key are still distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GenerationRunId(pub u64);
+
 /// One recorded candidate: an immutable snapshot plus a mutable verdict.
 ///
-/// The snapshot (`score`, `provenance`, `candidate_id`, `title`) is fixed at
-/// record time; only `verdict` changes afterwards.
+/// The snapshot (`score`, `provenance`, `candidate_id`, `title`, `run`) is
+/// fixed at record time; only `verdict` changes afterwards.
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
     /// The stable identity.
     pub id: HistoryId,
     /// Creation order — a monotonic sequence number (equals `id.0`).
     pub sequence: u64,
+    /// The generation run this candidate belongs to — the other half of its
+    /// de-dupe key.
+    pub run: GenerationRunId,
     /// Which generator produced it.
     pub source: CandidateSource,
-    /// The reproducible content id (`strategy#seed-hex`).
+    /// The candidate key **within its run** (`strategy#variant_seed`). Not a
+    /// content hash: unique per row inside one run, but two runs may repeat it.
     pub candidate_id: String,
     /// The display label the roll showed it under.
     pub title: String,
@@ -191,6 +220,8 @@ pub struct SessionHistory {
     entries: Vec<HistoryEntry>,
     /// The next id to hand out — monotonic, never reused.
     next_id: u64,
+    /// The next generation-run id to hand out — monotonic, never reused.
+    next_run_id: u64,
     /// The currently selected entry, if any (a view pointer, not identity).
     selected: Option<HistoryId>,
 }
@@ -202,43 +233,34 @@ impl SessionHistory {
         Self::default()
     }
 
-    /// Records a shown candidate and returns its stable id.
+    /// Mints a fresh [`GenerationRunId`] for one successful candidate set.
     ///
-    /// Append-only and **de-duplicated**: a candidate already present (same
-    /// source and content id) returns its existing id unchanged — no duplicate
-    /// row, and its verdict and snapshot are left intact. A genuinely new
-    /// candidate is appended with the next id; prior entries never move.
+    /// The caller assigns it once per Generate or Swang run and passes it to
+    /// [`Self::record`] for every candidate of that set, so a new run never
+    /// collides with an earlier one — even when the ask and the resulting music
+    /// deterministically match.
+    pub fn begin_run(&mut self) -> GenerationRunId {
+        let _ = &self.next_run_id;
+        unimplemented!("SessionHistory::begin_run")
+    }
+
+    /// Records a shown candidate of run `run` and returns its stable id.
+    ///
+    /// Append-only and **de-duplicated within the run**: a candidate already
+    /// present (same `run` and candidate key) returns its existing id unchanged
+    /// — no duplicate row, and its verdict and snapshot are left intact. A
+    /// candidate of a different run is always appended, even if its key repeats
+    /// an earlier run's; prior entries never move or mutate.
     pub fn record(
         &mut self,
+        run: GenerationRunId,
         candidate_id: String,
         title: String,
         score: Score,
         generator: GeneratorProvenance,
     ) -> HistoryId {
-        let provenance = Provenance::new(self.next_id, candidate_id.clone(), generator);
-        let source = provenance.source();
-        // De-dupe: the same candidate (source + content id) keeps its id, its
-        // snapshot, and its verdict — re-showing it never appends a duplicate.
-        if let Some(existing) = self
-            .entries
-            .iter()
-            .find(|e| e.source == source && e.candidate_id == candidate_id)
-        {
-            return existing.id;
-        }
-        let id = HistoryId(self.next_id);
-        self.entries.push(HistoryEntry {
-            id,
-            sequence: self.next_id,
-            source,
-            candidate_id,
-            title,
-            score,
-            verdict: None,
-            provenance,
-        });
-        self.next_id = self.next_id.saturating_add(1);
-        id
+        let _ = (run, candidate_id, title, score, generator);
+        unimplemented!("SessionHistory::record")
     }
 
     /// The entries, in creation order.
@@ -284,8 +306,8 @@ impl SessionHistory {
 )]
 mod tests {
     use super::{
-        toggle, CandidateSource, GeneratorProvenance, Provenance, SessionHistory, Verdict,
-        PROVENANCE_SCHEMA, PROVENANCE_VERSION,
+        toggle, CandidateSource, GenerationRunId, GeneratorProvenance, Provenance, SessionHistory,
+        Verdict, PROVENANCE_SCHEMA, PROVENANCE_VERSION,
     };
     use griff_core::score::{LossReport, Score};
 
@@ -300,9 +322,13 @@ mod tests {
     }
 
     fn generate_gen() -> GeneratorProvenance {
+        generate_gen_with(false)
+    }
+
+    fn generate_gen_with(corpus: bool) -> GeneratorProvenance {
         GeneratorProvenance::Generate {
             source: Some("riff.mid".to_owned()),
-            corpus: false,
+            corpus,
             seed: 42,
             bars: 8,
             variants_per_strategy: 2,
@@ -352,39 +378,40 @@ mod tests {
     }
 
     #[test]
-    fn provenance_new_stamps_the_schema_and_version() {
+    fn provenance_new_stamps_schema_version_and_run() {
         let p = Provenance::new(
+            GenerationRunId(5),
             3,
             "RepeatVariation#000000000c0ffee".to_owned(),
             generate_gen(),
         );
         assert_eq!(p.schema, PROVENANCE_SCHEMA);
         assert_eq!(p.version, PROVENANCE_VERSION);
-        assert_eq!(p.sequence, 3);
+        assert_eq!(p.run, GenerationRunId(5), "the generation run is recorded");
+        assert_eq!(p.sequence, 3, "distinct from the run");
         assert_eq!(p.candidate_id, "RepeatVariation#000000000c0ffee");
     }
 
     #[test]
     fn provenance_source_reflects_the_generator() {
-        let g = Provenance::new(0, "x".to_owned(), generate_gen());
-        let s = Provenance::new(1, "x".to_owned(), swang_gen());
+        let g = Provenance::new(GenerationRunId(0), 0, "x".to_owned(), generate_gen());
+        let s = Provenance::new(GenerationRunId(0), 1, "x".to_owned(), swang_gen());
         assert_eq!(g.source(), CandidateSource::Generate);
         assert_eq!(s.source(), CandidateSource::Swang);
     }
 
     #[test]
     fn provenance_carries_only_the_fields_its_generator_knows() {
-        // The honest split: a Generate provenance holds the ask (seed/bars/
-        // gesture) and no program; a Swang provenance holds the program and no
-        // ask. The types make the other case unrepresentable — assert the shape.
-        match Provenance::new(0, "x".to_owned(), generate_gen()).generator {
-            GeneratorProvenance::Generate { seed, gesture, .. } => {
-                assert_eq!(seed, 42);
-                assert!(gesture);
-            }
+        // The honest split: a Generate provenance holds the ask and no program;
+        // a Swang provenance holds the program and no ask. The types make the
+        // other case unrepresentable — assert the shape.
+        let g = Provenance::new(GenerationRunId(0), 0, "x".to_owned(), generate_gen());
+        match g.generator {
+            GeneratorProvenance::Generate { seed, .. } => assert_eq!(seed, 42),
             GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
         }
-        match Provenance::new(0, "x".to_owned(), swang_gen()).generator {
+        let s = Provenance::new(GenerationRunId(0), 0, "x".to_owned(), swang_gen());
+        match s.generator {
             GeneratorProvenance::Swang {
                 program,
                 source_path,
@@ -400,62 +427,204 @@ mod tests {
     #[test]
     fn record_appends_an_entry_with_a_stable_id() {
         let mut h = SessionHistory::new();
-        let id = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        let run = h.begin_run();
+        let id = h.record(
+            run,
+            "a#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen(),
+        );
         assert_eq!(h.entries().len(), 1);
         let entry = h.get(id).expect("the entry is retrievable by its id");
         assert_eq!(entry.candidate_id, "a#1");
+        assert_eq!(entry.run, run, "the entry carries its run");
         assert_eq!(entry.source, CandidateSource::Generate);
         assert_eq!(entry.verdict, None);
         assert_eq!(entry.provenance.schema, PROVENANCE_SCHEMA);
         assert_eq!(entry.provenance.version, PROVENANCE_VERSION);
+        assert_eq!(entry.provenance.run, run, "provenance names the run");
     }
 
     #[test]
-    fn a_new_result_appends_and_never_destroys_prior_entries() {
+    fn begin_run_hands_out_distinct_ids() {
         let mut h = SessionHistory::new();
-        let a = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        assert_ne!(h.begin_run(), h.begin_run(), "each run is a fresh identity");
+    }
+
+    #[test]
+    fn re_recording_the_same_row_within_a_run_dedupes_and_keeps_the_verdict() {
+        // Law 7 + 8: re-showing the same row of the current run returns the same
+        // HistoryId and preserves its verdict.
+        let mut h = SessionHistory::new();
+        let run = h.begin_run();
+        let a = h.record(
+            run,
+            "a#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen(),
+        );
         h.set_verdict(a, Verdict::Favorite);
-        let b = h.record("b#2".to_owned(), "B".to_owned(), score(), swang_gen());
-        assert_eq!(h.entries().len(), 2, "the new result is appended");
-        assert_ne!(a, b, "distinct candidates get distinct ids");
-        let first = h.get(a).expect("the first entry survives the new result");
-        assert_eq!(first.candidate_id, "a#1", "its snapshot is untouched");
+        let again = h.record(
+            run,
+            "a#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen(),
+        );
+        assert_eq!(again, a, "same run + key returns the existing id");
+        assert_eq!(h.entries().len(), 1, "no duplicate row");
+        assert_eq!(
+            h.get(a).expect("still there").verdict,
+            Some(Verdict::Favorite),
+            "the verdict survives the re-show",
+        );
+    }
+
+    #[test]
+    fn the_same_key_in_two_generate_runs_makes_two_entries() {
+        // Law 1: identical candidate_id across two Generate runs → two entries.
+        let mut h = SessionHistory::new();
+        let r1 = h.begin_run();
+        let r2 = h.begin_run();
+        let a = h.record(
+            r1,
+            "auto#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen(),
+        );
+        let b = h.record(
+            r2,
+            "auto#1".to_owned(),
+            "B".to_owned(),
+            score(),
+            generate_gen(),
+        );
+        assert_ne!(a, b, "a new run never collapses onto an earlier one");
+        assert_eq!(h.entries().len(), 2);
+    }
+
+    #[test]
+    fn different_inputs_same_key_do_not_collapse() {
+        // Law 2/3/4: different inputs (source score, corpus, gesture) are
+        // different runs, so the same key stays two entries — the run scopes it.
+        let mut h = SessionHistory::new();
+        let r_plain = h.begin_run();
+        let r_corpus = h.begin_run();
+        let a = h.record(
+            r_plain,
+            "auto#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen_with(false),
+        );
+        let b = h.record(
+            r_corpus,
+            "auto#1".to_owned(),
+            "B".to_owned(),
+            score(),
+            generate_gen_with(true),
+        );
+        assert_ne!(a, b);
+        assert_eq!(
+            h.entries().len(),
+            2,
+            "corpus vs no-corpus are separate runs"
+        );
+    }
+
+    #[test]
+    fn different_swang_programs_same_key_do_not_collapse() {
+        // Law 5/6: two Swang executions are two runs; the same key stays two
+        // entries even if the displayed source or program differ.
+        let mut h = SessionHistory::new();
+        let r1 = h.begin_run();
+        let r2 = h.begin_run();
+        let a = h.record(
+            r1,
+            "auto#1".to_owned(),
+            "P1".to_owned(),
+            score(),
+            swang_gen(),
+        );
+        let b = h.record(
+            r2,
+            "auto#1".to_owned(),
+            "P2".to_owned(),
+            score(),
+            swang_gen(),
+        );
+        assert_ne!(a, b);
+        assert_eq!(h.entries().len(), 2, "each Swang execution is its own run");
+    }
+
+    #[test]
+    fn a_new_run_never_destroys_or_mutates_a_prior_entry() {
+        // Law 9/10: a later run keeps every earlier snapshot, provenance, and
+        // verdict — the old entry is not overwritten by a same-key candidate.
+        let mut h = SessionHistory::new();
+        let r1 = h.begin_run();
+        let a = h.record(
+            r1,
+            "auto#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen(),
+        );
+        h.set_verdict(a, Verdict::Favorite);
+        let r2 = h.begin_run();
+        let _b = h.record(
+            r2,
+            "auto#1".to_owned(),
+            "B".to_owned(),
+            score(),
+            swang_gen(),
+        );
+        let first = h.get(a).expect("the first entry survives");
+        assert_eq!(first.candidate_id, "auto#1");
+        assert_eq!(first.title, "A", "its snapshot title is untouched");
+        assert_eq!(first.run, r1, "its run is untouched");
         assert_eq!(
             first.verdict,
             Some(Verdict::Favorite),
             "its verdict is kept"
         );
         assert_eq!(first.sequence, 0, "and its order is fixed");
+        assert_eq!(first.provenance.source(), CandidateSource::Generate);
     }
 
     #[test]
-    fn re_recording_the_same_candidate_dedupes_to_its_id() {
+    fn the_same_key_from_two_sources_is_two_entries() {
+        // Generate and Swang each mint their own run, so a shared key is two
+        // entries.
         let mut h = SessionHistory::new();
-        let a = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
-        h.set_verdict(a, Verdict::Favorite);
-        let again = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
-        assert_eq!(again, a, "the same candidate returns its existing id");
-        assert_eq!(h.entries().len(), 1, "no duplicate row");
-        assert_eq!(
-            h.get(a).expect("still there").verdict,
-            Some(Verdict::Favorite),
-            "re-showing a favourited candidate keeps the favourite",
+        let rg = h.begin_run();
+        let rs = h.begin_run();
+        let g = h.record(
+            rg,
+            "x#1".to_owned(),
+            "G".to_owned(),
+            score(),
+            generate_gen(),
         );
-    }
-
-    #[test]
-    fn the_same_content_id_from_two_sources_is_two_entries() {
-        let mut h = SessionHistory::new();
-        let g = h.record("x#1".to_owned(), "G".to_owned(), score(), generate_gen());
-        let s = h.record("x#1".to_owned(), "S".to_owned(), score(), swang_gen());
-        assert_ne!(g, s, "Generate and Swang are distinct even at the same id");
+        let s = h.record(rs, "x#1".to_owned(), "S".to_owned(), score(), swang_gen());
+        assert_ne!(g, s);
         assert_eq!(h.entries().len(), 2);
     }
 
     #[test]
     fn set_verdict_toggles_and_stays_exclusive() {
         let mut h = SessionHistory::new();
-        let a = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        let run = h.begin_run();
+        let a = h.record(
+            run,
+            "a#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen(),
+        );
         h.set_verdict(a, Verdict::Favorite);
         assert_eq!(h.get(a).unwrap().verdict, Some(Verdict::Favorite));
         h.set_verdict(a, Verdict::Rejected);
@@ -471,8 +640,21 @@ mod tests {
     #[test]
     fn selection_is_a_separate_pointer_from_the_entries() {
         let mut h = SessionHistory::new();
-        let a = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
-        let b = h.record("b#2".to_owned(), "B".to_owned(), score(), swang_gen());
+        let run = h.begin_run();
+        let a = h.record(
+            run,
+            "a#1".to_owned(),
+            "A".to_owned(),
+            score(),
+            generate_gen(),
+        );
+        let b = h.record(
+            run,
+            "b#2".to_owned(),
+            "B".to_owned(),
+            score(),
+            generate_gen(),
+        );
         assert_eq!(h.selected(), None, "nothing selected until asked");
         h.select(b);
         assert_eq!(h.selected(), Some(b));
