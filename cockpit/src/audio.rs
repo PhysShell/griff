@@ -190,6 +190,8 @@ mod native {
 // ── web: sustained Web Audio voices ──────────────────────────────────────────
 #[cfg(target_arch = "wasm32")]
 mod web {
+    use std::fmt;
+
     use griff_ui_core::playback::PlaybackSink;
     use web_sys::{AudioContext, GainNode, OscillatorNode, OscillatorType};
 
@@ -216,6 +218,15 @@ mod web {
         ctx: Option<AudioContext>,
         voices: Vec<Voice>,
         status: String,
+    }
+
+    impl fmt::Debug for Synth {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("Synth")
+                .field("open", &self.ctx.is_some())
+                .field("voices", &self.voices.len())
+                .finish_non_exhaustive()
+        }
     }
 
     impl Synth {
