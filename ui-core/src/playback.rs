@@ -140,8 +140,28 @@ impl TempoMap {
     #[must_use]
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pos ≥ 0, ticks never near u32::MAX
     pub fn time_to(&self, from: f64, to: f64, ppq: u16, scale: f64) -> f64 {
-        let _ = (from, to, ppq, scale);
-        unimplemented!("TempoMap::time_to")
+        if to <= from {
+            return 0.0;
+        }
+        let mut pos = from.max(0.0);
+        let mut secs = 0.0;
+        // At most one hop per segment boundary between `from` and `to`.
+        for _ in 0..=self.segments.len() {
+            let tps = ticks_per_second(ppq, self.bpm_at(pos as u32), scale);
+            if tps <= 0.0 {
+                break;
+            }
+            // Walk to the next boundary, but never past the target.
+            let seg_end = self
+                .next_boundary(pos as u32)
+                .map_or(to, |b| f64::from(b).min(to));
+            secs += (seg_end - pos) / tps;
+            pos = seg_end;
+            if pos >= to {
+                break;
+            }
+        }
+        secs
     }
 }
 
@@ -579,7 +599,10 @@ mod tests {
         // 240 BPM (0.25 s) = 0.75 s — exactly the dt that advance() maps to 960.
         let bent = TempoMap::new(vec![(0, 120.0), (480, 240.0)]);
         let secs = bent.time_to(0.0, 960.0, 480, 1.0);
-        assert!((secs - 0.75).abs() < 1e-9, "integrates each segment, got {secs}");
+        assert!(
+            (secs - 0.75).abs() < 1e-9,
+            "integrates each segment, got {secs}"
+        );
         let round = bent.advance(0.0, secs, 480, 1.0);
         assert!((round - 960.0).abs() < 1e-6, "advance(time_to) is identity");
     }
