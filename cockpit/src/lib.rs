@@ -37,7 +37,8 @@ use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
 use griff_ui_core::history::{
-    CandidateSource, GeneratorProvenance, HistoryId, Provenance, SessionHistory, Verdict,
+    CandidateSource, GenerationRunId, GeneratorProvenance, HistoryId, Provenance, SessionHistory,
+    Verdict,
 };
 use griff_ui_core::playback::{Player, TempoMap};
 
@@ -552,6 +553,12 @@ pub struct CockpitApp {
     /// recorded here with its provenance and the curator's verdict (S8 Slice 3).
     /// A new generation adds to it; it is never destroyed within a session.
     history: SessionHistory,
+    /// The current Generate set's generation-run id — one per `do_generate`
+    /// success, so every candidate of the set shares it and a new pass never
+    /// collides with an earlier one (S8 Slice 3).
+    gen_run: Option<GenerationRunId>,
+    /// The current Swang set's generation-run id — one per `swang_run` success.
+    swang_run_id: Option<GenerationRunId>,
     /// Whether the history window is shown (the `y` key toggles it).
     history_open: bool,
     /// The playhead tick at the end of the last frame — so an input that
@@ -839,6 +846,8 @@ impl CockpitApp {
             current: None,
             ab_other: None,
             history: SessionHistory::new(),
+            gen_run: None,
+            swang_run_id: None,
             history_open: false,
             last_play_tick: 0,
             material: None,
@@ -1105,6 +1114,7 @@ impl CockpitApp {
         match outcome {
             Ok(set) => {
                 self.reset_audition(); // a new candidate set starts fresh (no stale A/B)
+                self.gen_run = Some(self.history.begin_run()); // a fresh run for this set
                 let n = set.rows.len();
                 let tones = set.summary.scale_tones;
                 self.gen_panel.set = Some(set);
@@ -1148,10 +1158,17 @@ impl CockpitApp {
             rank: row.rank,
             aggregate: row.aggregate,
         };
-        // Record the candidate (a de-duped, immutable snapshot) and select it.
+        // Record the candidate (de-duped within this Generate run) and select
+        // it. A run is always live here — `do_generate` mints one before the
+        // first show — but fall back defensively so a stray call cannot panic.
+        let run = self.gen_run.unwrap_or_else(|| {
+            let r = self.history.begin_run();
+            self.gen_run = Some(r);
+            r
+        });
         let id = self
             .history
-            .record(candidate_id, title.clone(), score.clone(), generator);
+            .record(run, candidate_id, title.clone(), score.clone(), generator);
         self.history.select(id);
         // Remember the candidate we are leaving (of either source) so `b` can
         // A/B back to it without a fresh generation pass.
@@ -1564,6 +1581,7 @@ impl CockpitApp {
         self.swang.apply(&compiled, source, None);
         if let Some(i) = self.swang.selected {
             self.reset_audition(); // a new Swang generation session starts A/B fresh
+            self.swang_run_id = Some(self.history.begin_run()); // a fresh run for this set
             self.swang_show(i);
         }
     }
@@ -1618,10 +1636,15 @@ impl CockpitApp {
             rank: row.rank,
             aggregate: row.aggregate,
         };
-        // Record the candidate (a de-duped, immutable snapshot) and select it.
+        // Record the candidate (de-duped within this Swang run) and select it.
+        let run = self.swang_run_id.unwrap_or_else(|| {
+            let r = self.history.begin_run();
+            self.swang_run_id = Some(r);
+            r
+        });
         let id = self
             .history
-            .record(candidate_id, title.clone(), score.clone(), generator);
+            .record(run, candidate_id, title.clone(), score.clone(), generator);
         self.history.select(id);
         // Swang candidates record into A/B too, so `b` can compare a Swang take
         // against the last candidate of either source.
@@ -3587,6 +3610,67 @@ mod tests {
     }
 
     #[test]
+    fn re_running_the_same_generate_ask_makes_a_separate_history_entry() {
+        // Finding 1: two runs of the identical ask share a candidate key but are
+        // distinct runs, so the winner is recorded twice — never collapsed onto
+        // the earlier entry (which would drop the new run's provenance).
+        let mut app = demo_app();
+        app.gen_panel.variants = 1;
+        app.gen_panel.seed = 7;
+        app.do_generate(); // run A → winner recorded
+        let a = app.history.entries()[0].id;
+        let a_run = app.history.entries()[0].run;
+        let after_a = app.history.entries().len();
+        app.do_generate(); // run B, identical ask → winner recorded again
+        assert!(
+            app.history.entries().len() > after_a,
+            "the identical re-run appends a new entry, not a dedupe",
+        );
+        let b = app.history.entries().last().expect("run B entry").id;
+        let b_run = app.history.entries().last().expect("run B entry").run;
+        assert_ne!(a, b, "distinct history ids");
+        assert_ne!(a_run, b_run, "distinct generation runs");
+    }
+
+    #[test]
+    fn re_showing_a_row_within_the_same_generate_run_dedupes() {
+        // Finding 1: re-showing the same row of the current set returns the same
+        // entry (same run + key), so no duplicate accrues.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let before = app.history.entries().len();
+        app.show_candidate(0); // re-show the same row of the same run
+        assert_eq!(
+            app.history.entries().len(),
+            before,
+            "re-showing a row of the live run does not duplicate it",
+        );
+    }
+
+    #[test]
+    fn a_swang_run_is_a_distinct_run_from_a_generate_run() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let gen_run = app.history.entries()[0].run;
+        app.swang.set = app.gen_panel.set.clone();
+        app.swang_run_id = Some(app.history.begin_run()); // a Swang run mints its own
+        app.swang_show(0);
+        let swang_entry = app
+            .history
+            .entries()
+            .iter()
+            .rev()
+            .find(|e| e.source == CandidateSource::Swang)
+            .expect("a Swang entry");
+        assert_ne!(
+            swang_entry.run, gen_run,
+            "Swang and Generate are separate runs"
+        );
+    }
+
+    #[test]
     fn selecting_from_history_switches_the_score_and_silences_the_old() {
         let mut app = demo_app();
         app.gen_panel.variants = 2;
@@ -3637,7 +3721,9 @@ mod tests {
         app.set_loop_bars(true, 1, 1); // loop A's second bar
         assert!(app.loop_range.is_some());
         // Inject a one-bar snapshot into history and jump to it.
+        let run = app.history.begin_run();
         let short = app.history.record(
+            run,
             "short#1".to_owned(),
             "B".to_owned(),
             n_bar_score(1),
@@ -3710,8 +3796,9 @@ mod tests {
 
     #[test]
     fn provenance_summary_names_the_generator_and_the_ask() {
-        use griff_ui_core::history::{GeneratorProvenance, Provenance};
+        use griff_ui_core::history::{GenerationRunId, GeneratorProvenance, Provenance};
         let g = Provenance::new(
+            GenerationRunId(0),
             0,
             "auto#1".to_owned(),
             GeneratorProvenance::Generate {
@@ -3736,6 +3823,7 @@ mod tests {
         assert!(gen_line.contains('3'), "carries the rank: {gen_line}");
 
         let s = Provenance::new(
+            GenerationRunId(1),
             1,
             "auto#1".to_owned(),
             GeneratorProvenance::Swang {
