@@ -135,6 +135,8 @@ Initial registry:
 | `SWG0306` | the expansion produced no onsets — nothing to generate (a fully silent kernel or a pruned-to-silence expansion is a deliberate typed error, not an empty candidate set) |
 | `SWG0307` | empty kernel literal (no rows, or a row with no cells) |
 | `SWG0308` | density outside `0..=10000` basis points |
+| `SWG0309` | a `generate` count (`bars`, `candidates`) is outside the evaluator's accepted range `1..=max` — zero (a request that generates nothing) or oversized (an unbounded generation loop, the F-004 family). The bound is a frontend/runtime limit, not a language semantic, so it never affects a program within range |
+| `SWG0310` | generation produced no usable candidate — the seed score cannot seed the request (no pitch material, or unusable constraints; located at the `source` word), or a named strategy's candidate set is empty. Distinct from `SWG0306`, which is about expansion onsets, never the candidate set |
 | `SWG0401` | malformed syntax: unexpected token, structural violation (a step out of pipeline order, a second `pattern` block), a value that does not fit its word's range, or a non-canonical decimal spelling (leading zeros — anywhere, not only in the header) |
 | `SWG0402` | unknown name in a closed word set (traversal, tail policy, strategy, export format) |
 | `SWG0403` | required word missing from a construct (including `seed` given without its `density` — the pair is visible or absent, never half-said) |

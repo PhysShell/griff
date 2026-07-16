@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use griff_cli::generation_input::{load_corpus_material, CorpusMaterial, GenerationInputError};
 use griff_cli::primary_voice_note_count;
 use griff_cli::rhythm_pattern;
-use griff_core::generation_input::{ranked_candidates, select_ranked, GenerationAsk, RankedSet};
+use griff_core::generation_input::{ranked_candidates, GenerationAsk, RankedSet};
 use griff_core::{
     boundary,
     classify::{self, BarClass},
@@ -30,8 +30,8 @@ use griff_core::{
     slice::{self, TickRange},
     split, structure, syncopation, technique, unfold,
 };
-use griff_pattern::{NodePath, PatternError, Traversal};
-use griff_swang::{syntax, LowerError, TailPolicy};
+use griff_pattern::NodePath;
+use griff_swang::{eval, syntax};
 
 /// griff — guitar riff engine.
 #[derive(Debug, Parser)]
@@ -153,7 +153,7 @@ enum Command {
         rhythm_seed: Option<u64>,
         /// How the expansion reads into a line: row-major or snake.
         #[arg(long, value_name = "ORDER", requires = "rhythm_kernel")]
-        rhythm_traversal: Option<rhythm_pattern::TraversalChoice>,
+        rhythm_traversal: Option<rhythm_pattern::CliTraversal>,
         /// Time unit per pattern slot, e.g. 1/16.
         #[arg(long, value_name = "NOTE", requires = "rhythm_kernel")]
         rhythm_unit: Option<String>,
@@ -162,7 +162,7 @@ enum Command {
         rhythm_max_cells: Option<u64>,
         /// Incomplete-final-bar policy: reject (default) or rest-pad.
         #[arg(long, value_name = "POLICY", requires = "rhythm_kernel")]
-        rhythm_tail: Option<rhythm_pattern::TailChoice>,
+        rhythm_tail: Option<rhythm_pattern::CliTail>,
         /// Write the versioned expansion artifact (JSON) to this path.
         #[arg(long, value_name = "PATH", requires = "rhythm_kernel")]
         emit_rhythm_expansion: Option<PathBuf>,
@@ -316,10 +316,11 @@ fn run() -> Result<(), CliError> {
                 fractal_depth: rhythm_fractal_depth.unwrap_or(0),
                 density_bps: rhythm_density_bps,
                 rhythm_seed,
-                traversal: rhythm_traversal.unwrap_or(rhythm_pattern::TraversalChoice::RowMajor),
+                traversal: rhythm_traversal
+                    .map_or(rhythm_pattern::TraversalChoice::RowMajor, Into::into),
                 unit: rhythm_unit.unwrap_or_else(|| "1/16".to_owned()),
                 max_cells: rhythm_max_cells.unwrap_or(4096),
-                tail: rhythm_tail.unwrap_or(rhythm_pattern::TailChoice::Reject),
+                tail: rhythm_tail.map_or(rhythm_pattern::TailChoice::Reject, Into::into),
             });
             cmd_generate(
                 &input,
@@ -373,7 +374,7 @@ fn main() -> ExitCode {
 /// `griff swang check`: parse only, say nothing on success.
 fn cmd_swang_check(path: &Path) -> Result<(), CliError> {
     let source = fs::read_to_string(path)?;
-    syntax::parse(&source)
+    eval::compile_program(&source)
         .map(|_| ())
         .map_err(|diagnostics| swang_error(path, &source, &diagnostics))
 }
@@ -382,241 +383,103 @@ fn cmd_swang_check(path: &Path) -> Result<(), CliError> {
 /// own diagnostic — never emit text for a program that does not parse.
 fn cmd_swang_fmt(path: &Path) -> Result<(), CliError> {
     let source = fs::read_to_string(path)?;
-    let program =
-        syntax::parse(&source).map_err(|diagnostics| swang_error(path, &source, &diagnostics))?;
-    print!("{}", syntax::format(&program));
+    let compiled = eval::compile_program(&source)
+        .map_err(|diagnostics| swang_error(path, &source, &diagnostics))?;
+    print!("{}", syntax::format(compiled.program()));
     Ok(())
 }
 
 /// `griff swang expand`: the pattern pipeline up to `map_rhythm`, printing
 /// the canonical expansion artifact to stdout (spec §3.5's CLI contract).
-/// One compiler with the transport — [`rhythm_pattern::compile_pattern_flaws`]
-/// — so law 1's byte parity holds by construction; only the rendering
-/// differs.
+/// The shared evaluator drives the same compiler the transport does, so law
+/// 1's byte parity holds by construction; only the rendering differs.
 fn cmd_swang_expand(path: &Path) -> Result<(), CliError> {
-    let source_text = fs::read_to_string(path)?;
-    let (program, spans) = syntax::parse_with_spans(&source_text)
-        .map_err(|diagnostics| swang_error(path, &source_text, &diagnostics))?;
-
-    let pattern = &program.pattern;
-    let score_bytes = fs::read(pattern.generate.source.as_str())?;
+    let source = fs::read_to_string(path)?;
+    let compiled = eval::compile_program(&source)
+        .map_err(|diagnostics| swang_error(path, &source, &diagnostics))?;
+    let score_bytes = fs::read(compiled.source_path())?;
     let score = import::import_score_auto(&score_bytes)?;
-
-    let args = rhythm_args_from_program(pattern);
-    let bars = usize::try_from(pattern.generate.bars)
-        .map_err(|_| CliError::Argument("bars does not fit this platform".to_owned()))?;
-
-    let plan = rhythm_pattern::compile_pattern_flaws(&args, &score, bars)
-        .map_err(|flaw| render_pattern_flaw(&flaw, path, &source_text, &spans))?;
+    let plan = eval::expand_program(&compiled, &score)
+        .map_err(|diagnostics| render_eval_diagnostics(&diagnostics, path, &source))?;
     print!("{}", plan.artifact_json);
     Ok(())
 }
 
-/// `griff swang build`: the program end to end. The generation pass is the
-/// same shared compiler every frontend enters — `ranked_candidates` — so
-/// under `strategy auto` the export's bytes match `griff generate` for the
-/// equivalent command (law 5's first half); a named strategy is
-/// [`select_ranked`]'s reading of the same, unchanged set (the second half).
-/// The output path is the program's own `export`, and only it.
+/// `griff swang build`: the program end to end through the shared evaluator.
+/// Under `strategy auto` the export's bytes match `griff generate` for the
+/// equivalent command (law 5's first half); a named strategy selects that
+/// strategy's first ranked candidate from the unchanged set (the second
+/// half). The output path is the program's own `export`, and only it — the
+/// evaluator returns the result in memory and this shell writes it.
 fn cmd_swang_build(path: &Path) -> Result<(), CliError> {
-    let source_text = fs::read_to_string(path)?;
-    let (program, spans) = syntax::parse_with_spans(&source_text)
-        .map_err(|diagnostics| swang_error(path, &source_text, &diagnostics))?;
+    let source = fs::read_to_string(path)?;
+    let compiled = eval::compile_program(&source)
+        .map_err(|diagnostics| swang_error(path, &source, &diagnostics))?;
 
-    let pattern = &program.pattern;
-    let score_bytes = fs::read(pattern.generate.source.as_str())?;
+    let score_bytes = fs::read(compiled.source_path())?;
     let score = import::import_score_auto(&score_bytes)?;
-    let material = pattern
-        .generate
-        .corpus
-        .as_ref()
-        .map(|corpus| load_corpus_material(Path::new(corpus.as_str())))
+    let corpus = compiled
+        .corpus_path()
+        .map(|corpus| load_corpus_material(Path::new(corpus)))
         .transpose()?;
-    if let Some(m) = &material {
+    if let Some(m) = &corpus {
         print_corpus_summary(m, false);
     }
 
-    let bars = usize::try_from(pattern.generate.bars)
-        .map_err(|_| CliError::Argument("bars does not fit this platform".to_owned()))?;
-    let candidates = usize::try_from(pattern.generate.candidates)
-        .map_err(|_| CliError::Argument("candidates does not fit this platform".to_owned()))?;
-    let args = rhythm_args_from_program(pattern);
-    let plan = rhythm_pattern::compile_pattern_flaws(&args, &score, bars)
-        .map_err(|flaw| render_pattern_flaw(&flaw, path, &source_text, &spans))?;
-
-    let set = ranked_candidates(
-        &score,
-        material.as_ref(),
-        &GenerationAsk {
-            seed: pattern.generate.seed,
-            bars,
-            variants_per_strategy: candidates,
-            gesture: true,
-        },
-        Some(plan.templates.as_slice()),
-    )?;
-    print_explicit_rhythm_diagnostics(&set.source_rhythms, &set.base.constraints);
-
-    let target = match pattern.generate.strategy {
-        syntax::StrategyPolicy::Auto => None,
-        syntax::StrategyPolicy::Named(name) => Some(strategy_kind(name)),
+    let inputs = eval::ResolvedProgramInputs {
+        source_score: score,
+        corpus,
     };
-    let winner = select_ranked(&set, target).ok_or_else(|| {
-        target.map_or_else(
-            || CliError::Corpus("no candidate survived scoring".to_owned()),
-            |strategy| {
-                CliError::Corpus(format!(
-                    "no ranked candidate of strategy {strategy:?} survived scoring"
-                ))
-            },
-        )
-    })?;
+    let result = eval::evaluate_program(&compiled, &inputs)
+        .map_err(|diagnostics| render_eval_diagnostics(&diagnostics, path, &source))?;
+
+    let set = &result.ranked;
+    print_explicit_rhythm_diagnostics(&set.source_rhythms, &set.base.constraints);
     print_ranking(&set.ranked, &set.policy);
 
-    let out_bytes = midi::export_score(&winner.value.score)?;
-    fs::write(pattern.export.path.as_str(), &out_bytes)?;
+    let out_bytes = midi::export_score(result.selected_score())?;
+    fs::write(&result.export.path, &out_bytes)?;
     println!(
         "built {bars} bars ({strategy:?}, seed {seed}) from a {tones}-tone scale \
          ({n} bytes) -> {out}",
-        strategy = winner.value.strategy,
-        seed = pattern.generate.seed,
+        bars = compiled.program().pattern.generate.bars,
+        strategy = result.selected_strategy(),
+        seed = compiled.program().pattern.generate.seed,
         tones = set.base.pitch_material.intervals.len(),
         n = out_bytes.len(),
-        out = pattern.export.path.as_str(),
+        out = result.export.path,
     );
     Ok(())
 }
 
-/// The five program strategy names, mapped onto the S6 strategies they
-/// selected in the killer demo (spec §3.3).
-const fn strategy_kind(name: syntax::StrategyName) -> generate::GenerationStrategy {
-    match name {
-        syntax::StrategyName::RhythmCopy => generate::GenerationStrategy::RhythmCopyPitchSubstitute,
-        syntax::StrategyName::MotifTranspose => {
-            generate::GenerationStrategy::MotifTransposeVariation
-        }
-        syntax::StrategyName::ConstrainedWalk => {
-            generate::GenerationStrategy::ConstrainedRandomWalk
-        }
-        syntax::StrategyName::ShuffleMotifs => generate::GenerationStrategy::ShuffleMotifs,
-        syntax::StrategyName::RepeatVariation => generate::GenerationStrategy::RepeatVariation,
-    }
-}
-
-/// The one mapping from a program's pattern pipeline onto the shared
-/// compiler's transport args — `expand` and `build` must not drift.
-fn rhythm_args_from_program(pattern: &syntax::PatternDef) -> rhythm_pattern::RhythmPatternArgs {
-    rhythm_pattern::RhythmPatternArgs {
-        kernel: pattern.kernel.as_str().to_owned(),
-        fractal_depth: pattern.fractalize.depth,
-        density_bps: pattern
-            .fractalize
-            .prune
-            .map(|prune| u32::from(prune.density.get())),
-        rhythm_seed: pattern.fractalize.prune.map(|prune| prune.seed),
-        traversal: match pattern.linearize.traversal {
-            Traversal::RowMajor => rhythm_pattern::TraversalChoice::RowMajor,
-            Traversal::Snake => rhythm_pattern::TraversalChoice::Snake,
-        },
-        unit: format!(
-            "{}/{}",
-            pattern.map_rhythm.unit.numerator(),
-            pattern.map_rhythm.unit.denominator()
-        ),
-        max_cells: pattern.fractalize.max_cells,
-        tail: match pattern.map_rhythm.tail {
-            TailPolicy::Reject => rhythm_pattern::TailChoice::Reject,
-            TailPolicy::RestPad => rhythm_pattern::TailChoice::RestPad,
-        },
-    }
-}
-
-/// Renders a [`rhythm_pattern::PatternFlaw`] in program vocabulary at
-/// §1.5's layered locations: structural errors carry their `NodePath`,
-/// score-borne facts sit at the `source` word, time-domain errors at the
-/// word whose value must change.
-fn render_pattern_flaw(
-    flaw: &rhythm_pattern::PatternFlaw,
+/// Renders the evaluator's first diagnostic in program vocabulary at §1.5's
+/// layered locations: a source span becomes `<path>:<line>:<col>`, a
+/// structural `NodePath` becomes `<path>: node <words>`.
+fn render_eval_diagnostics(
+    diagnostics: &[eval::EvalDiagnostic],
     path: &Path,
     source: &str,
-    spans: &syntax::ProgramSpans,
 ) -> CliError {
-    let at = |span: syntax::Span, code: &str, message: &str| {
-        let (line, col) = line_col(source, span.start);
-        CliError::Swang(format!(
-            "error[{code}] ({}:{line}:{col}): {message}",
-            path.display()
-        ))
+    let Some(d) = diagnostics.first() else {
+        return CliError::Swang("error[SWG0401]: the evaluator reported no diagnostic".to_owned());
     };
-    match flaw {
-        // Kernel syntax and density scale are unreachable from a parsed
-        // program (the grammar validates both); the kernel literal is the
-        // nearest owner if they ever fire.
-        rhythm_pattern::PatternFlaw::Kernel(d) | rhythm_pattern::PatternFlaw::Density(d) => {
-            at(spans.kernel, d.code, &d.message)
+    match &d.location {
+        eval::DiagLocation::Span(span) => {
+            let (line, col) = line_col(source, span.start);
+            CliError::Swang(format!(
+                "error[{}] ({}:{line}:{col}): {}",
+                d.code,
+                path.display(),
+                d.message
+            ))
         }
-        rhythm_pattern::PatternFlaw::Unit(d) => at(spans.unit, d.code, &d.message),
-        rhythm_pattern::PatternFlaw::Score(d) => at(spans.source, d.code, &d.message),
-        rhythm_pattern::PatternFlaw::Budget(e) => match e {
-            PatternError::MaxCellsExceeded {
-                path: node,
-                needed,
-                max_cells,
-            } => CliError::Swang(format!(
-                "error[SWG0201] ({}: node {}): the expansion needs {needed} cells, over \
-                 the budget's {max_cells}",
-                path.display(),
-                node_words(node)
-            )),
-            PatternError::MaxDepthExceeded {
-                path: node,
-                depth,
-                max_depth,
-            } => CliError::Swang(format!(
-                "error[SWG0202] ({}: node {}): depth {depth} exceeds the budget's \
-                 max_depth {max_depth}",
-                path.display(),
-                node_words(node)
-            )),
-            other => at(spans.kernel, "SWG0101", &other.to_string()),
-        },
-        rhythm_pattern::PatternFlaw::Lower(e) => match e {
-            LowerError::UnitDoesNotDivideBar { bar_duration, unit } => at(
-                spans.unit,
-                "SWG0301",
-                &format!(
-                    "unit {} does not divide the {}-tick bar exactly",
-                    unit.0, bar_duration.0
-                ),
-            ),
-            LowerError::ZeroUnit => at(spans.unit, "SWG0301", "the rhythm unit is zero ticks"),
-            LowerError::IncompleteFinalBar {
-                have_slots,
-                slots_per_bar,
-            } => at(
-                spans.tail,
-                "SWG0302",
-                &format!(
-                    "the final bar holds {have_slots} of {slots_per_bar} slots; a \
-                     rest_pad tail pads it with timed rests"
-                ),
-            ),
-        },
-        rhythm_pattern::PatternFlaw::SilentExpansion => at(
-            spans.kernel,
-            "SWG0306",
-            "the expansion produced no onsets — nothing to generate (change the kernel, \
-             depth, density, or rhythm seed)",
-        ),
-        rhythm_pattern::PatternFlaw::SilentWindow { used } => at(
-            spans.kernel,
-            "SWG0306",
-            &format!(
-                "the first {used} template(s) the bars window rotates over are all \
-                 silent — nothing to generate (raise bars past the silent prefix, or \
-                 change the kernel, depth, density, or rhythm seed)"
-            ),
-        ),
+        eval::DiagLocation::Node(node) => CliError::Swang(format!(
+            "error[{}] ({}: node {}): {}",
+            d.code,
+            path.display(),
+            node_words(node),
+            d.message
+        )),
     }
 }
 

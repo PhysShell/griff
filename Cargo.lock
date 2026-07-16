@@ -1796,6 +1796,7 @@ dependencies = [
  "eframe",
  "getrandom 0.4.2",
  "griff-core",
+ "griff-swang",
  "griff-ui-core",
  "js-sys",
  "proptest",
@@ -1845,6 +1846,7 @@ version = "0.1.0"
 dependencies = [
  "griff-core",
  "griff-pattern",
+ "serde_json",
 ]
 
 [[package]]

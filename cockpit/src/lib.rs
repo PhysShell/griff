@@ -35,6 +35,7 @@ use griff_core::corpus::{ChunkMeta, ReviewerDecision, RightsStatus, StyleCohort,
 use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
+use griff_swang::eval;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
 use griff_ui_core::generate::generate_set;
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
@@ -46,8 +47,10 @@ use griff_ui_core::{
 };
 
 pub mod generation;
+pub mod swang;
 
 use generation::{GeneratePanel, KeptProvenance};
+use swang::SwangPanel;
 
 /// Pixel width of one grid cell.
 const CELL_W: f32 = 9.0;
@@ -495,6 +498,9 @@ pub struct CockpitApp {
     track_names: Vec<String>,
     /// The Generate panel: knobs, the last candidate set, the selection (S8).
     gen_panel: GeneratePanel,
+    /// The Swang editor: program text, diagnostics, the last run's candidates
+    /// (S8 Playground).
+    swang: SwangPanel,
     /// The corpus material a generation pass consumes — rhythm templates,
     /// novelty references, the gesture ask. `None` until a corpus is loaded;
     /// a pass then seeds from the displayed score alone.
@@ -558,6 +564,7 @@ impl CockpitApp {
             selected_track: 0,
             track_names: Vec::new(),
             gen_panel: GeneratePanel::new(),
+            swang: SwangPanel::default(),
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
             out_dir: PathBuf::from("keeps"),
@@ -871,6 +878,272 @@ impl CockpitApp {
         }
     }
 
+    /// The Swang editor (S8 Playground): program text, span diagnostics, an
+    /// explicit Run, the ranked candidates, and Build. It drives the one
+    /// shared evaluator — no `griff.exe`, no second generator — and never
+    /// regenerates on a keystroke; Run is a button (or Ctrl+Enter).
+    fn swang_window(&mut self, ctx: &egui::Context) {
+        let mut actions = SwangActions::default();
+        egui::Window::new("swang · editor")
+            .default_width(540.0)
+            .default_height(560.0)
+            .show(ctx, |ui| {
+                actions = self.swang_body(ui);
+            });
+
+        // Apply after the window releases its borrow of `self`.
+        match actions.action {
+            SwangAction::Check => self.swang.check(),
+            SwangAction::Format => self.swang.format(),
+            SwangAction::Run => self.swang_run(),
+            SwangAction::Build => self.swang_build(),
+            SwangAction::None => {}
+        }
+        if let Some(i) = actions.click {
+            self.swang_show(i);
+        }
+    }
+
+    /// The Swang window's body: the button row, the editor, the diagnostics,
+    /// and the candidate table. Returns the actions the user asked for, so
+    /// `swang_window` applies them after the borrow closes.
+    fn swang_body(&mut self, ui: &mut egui::Ui) -> SwangActions {
+        let mut actions = SwangActions::default();
+        ui.horizontal(|ui| {
+            if ui
+                .button("✓ check")
+                .on_hover_text("parse + validate")
+                .clicked()
+            {
+                actions.action = SwangAction::Check;
+            }
+            if ui
+                .button("⤷ format")
+                .on_hover_text("canonical text")
+                .clicked()
+            {
+                actions.action = SwangAction::Format;
+            }
+            if ui
+                .button("▶ run")
+                .on_hover_text("evaluate (Ctrl+Enter)")
+                .clicked()
+            {
+                actions.action = SwangAction::Run;
+            }
+            if self.swang.run_is_current()
+                && ui
+                    .button("⏏ build")
+                    .on_hover_text("write the program's own export")
+                    .clicked()
+            {
+                actions.action = SwangAction::Build;
+            }
+            if !self.swang.status.is_empty() {
+                ui.weak(&self.swang.status);
+            }
+        });
+
+        let editor = egui::ScrollArea::vertical()
+            .id_salt("swang-editor")
+            .max_height(240.0)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.swang.text)
+                        .code_editor()
+                        .desired_rows(14)
+                        .desired_width(f32::INFINITY),
+                )
+            })
+            .inner;
+        // An edit invalidates the last run: the shown candidates and the
+        // Build button must not outlive the text they came from.
+        if editor.changed() {
+            self.swang.invalidate_run();
+        }
+        // Run on Ctrl+Enter, but only while the editor actually holds focus —
+        // a stray shortcut must not fire a generation pass.
+        if editor.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.command) {
+            actions.action = SwangAction::Run;
+        }
+
+        if !self.swang.diagnostics.is_empty() {
+            ui.separator();
+            for d in &self.swang.diagnostics {
+                ui.label(format!("[{}] {}: {}", d.code, d.location, d.message));
+            }
+        }
+
+        self.swang_candidates(ui, &mut actions.click);
+        actions
+    }
+
+    /// The Swang panel's candidate table: the set's provenance line and the
+    /// ranked rows, each with its rerank axes on hover. A click is reported
+    /// through `click`, applied after the window releases its borrow.
+    fn swang_candidates(&self, ui: &mut egui::Ui, click: &mut Option<usize>) {
+        let Some(set) = self.swang.set.as_ref() else {
+            return;
+        };
+        ui.separator();
+        ui.weak(format!(
+            "{} candidates · {} templates · {}-tone scale",
+            set.rows.len(),
+            set.summary.templates,
+            set.summary.scale_tones,
+        ));
+        egui::ScrollArea::vertical()
+            .id_salt("swang-candidates")
+            .max_height(180.0)
+            .show(ui, |ui| {
+                for (i, row) in set.rows.iter().enumerate() {
+                    let label = format!(
+                        "#{:<2} {:<24} {:.3}  ·  {} notes",
+                        row.rank, row.strategy, row.aggregate, row.note_count
+                    );
+                    let hover = row
+                        .axes
+                        .iter()
+                        .map(|&(name, v)| format!("{name}: {v:.3}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if ui
+                        .selectable_label(self.swang.selected == Some(i), label)
+                        .on_hover_text(hover)
+                        .clicked()
+                    {
+                        *click = Some(i);
+                    }
+                }
+            });
+    }
+
+    /// Compiles the program (real span diagnostics on error), resolves its
+    /// declared seed score, evaluates, and shows the selection. Compile comes
+    /// first so a broken program keeps its diagnostics instead of a generic
+    /// message; the evaluator only ever sees a loaded score, never a path.
+    fn swang_run(&mut self) {
+        let Some(compiled) = self.swang.compile() else {
+            return; // `compile` filled the span diagnostics and cleared the run
+        };
+        let source = match self.resolve_swang_source(&compiled) {
+            Ok(score) => score,
+            Err(err) => {
+                self.swang.invalidate_run();
+                self.swang.diagnostics.clear();
+                self.swang.status = err;
+                return;
+            }
+        };
+        // Slice 1 loads no corpus; `apply` refuses a program that declares one
+        // rather than silently running without it.
+        self.swang.apply(&compiled, source, None);
+        if let Some(i) = self.swang.selected {
+            self.swang_show(i);
+        }
+    }
+
+    /// The seed score a compiled program names, resolved to a `Score`. Native
+    /// reads the declared path and **errors** if it cannot — a missing or
+    /// mistyped `source` is never silently swapped for the displayed file, so
+    /// a program's provenance always matches the music it made. The web target
+    /// has no filesystem and uses the displayed score by defined semantics.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(
+        clippy::unused_self,
+        reason = "mirrors the wasm signature, which reads self.score"
+    )]
+    fn resolve_swang_source(&self, compiled: &eval::CompiledProgram) -> Result<Score, String> {
+        use std::fs;
+
+        let path = compiled.source_path();
+        let bytes = fs::read(path).map_err(|e| format!("cannot read source \"{path}\": {e}"))?;
+        import_score_auto(&bytes).map_err(|e| format!("cannot import \"{path}\": {e}"))
+    }
+
+    /// The web target has no filesystem: the displayed score seeds the run by
+    /// defined frontend semantics (the declared `source` path is not read in
+    /// the browser this slice).
+    #[cfg(target_arch = "wasm32")]
+    fn resolve_swang_source(&self, _compiled: &eval::CompiledProgram) -> Result<Score, String> {
+        self.score
+            .clone()
+            .ok_or_else(|| "load a score first — browser Swang uses the displayed file".to_owned())
+    }
+
+    /// Paints Swang candidate `i` into the roll.
+    fn swang_show(&mut self, i: usize) {
+        self.swang.selected = Some(i);
+        let Some(set) = self.swang.set.as_ref() else {
+            return;
+        };
+        let (Some(score), Some(row)) = (set.scores.get(i).cloned(), set.rows.get(i)) else {
+            return;
+        };
+        let title = format!(
+            "swang #{} {} · {:.3}",
+            row.rank, row.strategy, row.aggregate
+        );
+        self.show_score(score, title);
+    }
+
+    /// Writes the selected candidate to the program's own `export` path, plus a
+    /// provenance sidecar. Native only — a browser download is a later slice.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn swang_build(&mut self) {
+        let outcome = self.write_swang_export();
+        self.swang.status = match outcome {
+            Ok(path) => format!("built -> {path}"),
+            Err(err) => format!("build failed: {err}"),
+        };
+    }
+
+    /// Exports the selected candidate to the program's `export` path and stamps
+    /// a `.json` provenance sidecar; returns the written `.mid` path.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_swang_export(&self) -> Result<String, String> {
+        use std::fs;
+
+        use griff_core::midi::export_score;
+
+        // Belt to the UI's suspenders: never export a result the current text
+        // did not produce, even if a change somehow slipped past the editor's
+        // change signal. Provenance must describe the music it made.
+        if !self.swang.run_is_current() {
+            return Err("the program changed since the last run — Run it again".to_owned());
+        }
+        let path = self
+            .swang
+            .export_path
+            .clone()
+            .ok_or("run the program first")?;
+        let i = self.swang.selected.ok_or("no candidate selected")?;
+        let set = self.swang.set.as_ref().ok_or("run the program first")?;
+        let row = set.rows.get(i).ok_or("no such candidate")?;
+        let score = set.scores.get(i).ok_or("no such candidate")?;
+
+        let bytes = export_score(score).map_err(|e| format!("{e:?}"))?;
+        fs::write(&path, &bytes).map_err(|e| format!("{e}"))?;
+
+        let provenance = serde_json::json!({
+            "schema": "griff.swang-build",
+            "version": 1,
+            "program": self.swang.text,
+            "source": self.swang.source_path(),
+            "selected": { "rank": row.rank, "strategy": row.strategy, "variant_seed": row.variant_seed },
+        });
+        let sidecar = format!("{path}.json");
+        let text = serde_json::to_string_pretty(&provenance).map_err(|e| format!("{e}"))?;
+        fs::write(&sidecar, text).map_err(|e| format!("{e}"))?;
+        Ok(path)
+    }
+
+    /// The web target cannot write files; Build is native-only this slice.
+    #[cfg(target_arch = "wasm32")]
+    fn swang_build(&mut self) {
+        self.swang.status = "build is native-only in this slice".to_owned();
+    }
+
     /// The Generate panel's lower half: the set's provenance line, the ranked
     /// rows, and the keep actions for the selected one. Reports what the user
     /// asked for through `show` / `keep` / `open`, so the window applies every
@@ -1181,6 +1454,9 @@ impl CockpitApp {
         if ctx.input(|i| i.key_pressed(Key::G)) {
             self.gen_panel.open = !self.gen_panel.open;
         }
+        if ctx.input(|i| i.key_pressed(Key::E)) {
+            self.swang.open = !self.swang.open;
+        }
         if ctx.input(|i| i.key_pressed(Key::T)) {
             self.toggle_theme();
         }
@@ -1339,6 +1615,13 @@ impl CockpitApp {
             {
                 self.gen_panel.open = !self.gen_panel.open;
             }
+            if ui
+                .button("✎ swang")
+                .on_hover_text("write a Swang program and run it (e)")
+                .clicked()
+            {
+                self.swang.open = !self.swang.open;
+            }
             let mode = if self.is_dark() {
                 "◑ light"
             } else {
@@ -1363,6 +1646,26 @@ impl CockpitApp {
         });
         focus
     }
+}
+
+/// The one button the user pressed in the Swang window this frame (buttons
+/// are mutually exclusive; Ctrl+Enter also maps to `Run`).
+#[derive(Default, PartialEq, Eq)]
+enum SwangAction {
+    #[default]
+    None,
+    Check,
+    Format,
+    Run,
+    Build,
+}
+
+/// What the Swang window's body reports back for `swang_window` to apply
+/// after the `self` borrow closes.
+#[derive(Default)]
+struct SwangActions {
+    action: SwangAction,
+    click: Option<usize>,
 }
 
 /// The pixel rect of grid position (`col`, `vis_row`).
@@ -1424,6 +1727,9 @@ impl eframe::App for CockpitApp {
         }
         if self.gen_panel.open {
             self.generate_window(&ctx);
+        }
+        if self.swang.open {
+            self.swang_window(&ctx);
         }
     }
 }
@@ -2041,6 +2347,30 @@ mod tests {
         use griff_core::import::import_score_auto;
         let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
         CockpitApp::from_score(score, "demo".to_owned())
+    }
+
+    /// #123 defect 4: a program whose declared `source` cannot be read must
+    /// **error**, never silently seed the run from the displayed score — a
+    /// program's provenance may not describe music made from a different file.
+    #[test]
+    fn a_missing_swang_source_errors_rather_than_using_the_displayed_score() {
+        let app = demo_app(); // a score IS loaded — the tempting wrong fallback
+        let program = "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    \
+             |> fractalize depth 1 max_cells 4096 density 9500bps seed 4\n    \
+             |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    \
+             |> generate {\n        source \"no-such-file-xyz.mid\"\n        bars 4\n        \
+             seed 42\n        candidates 2\n        strategy auto\n    }\n    \
+             |> export midi \"out.mid\"\n}\n";
+        let compiled = eval::compile_program(program).expect("compiles");
+        let result = app.resolve_swang_source(&compiled);
+        assert!(
+            result.is_err(),
+            "a missing source must error, not fall back to the displayed score"
+        );
+        assert!(
+            result.unwrap_err().contains("no-such-file-xyz"),
+            "the error names the unreadable declared path"
+        );
     }
 
     #[test]
