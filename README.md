@@ -48,6 +48,14 @@ Then: open **Generate** (`g`) → pick a seed tab → set seed / bars / candidat
 drag the tempo, **loop** a bar range, **A/B** (`b`) two of them → **Keep**
 writes the MIDI and a provenance sidecar into `--out`.
 
+Every candidate you audition — from Generate or from **Swang** (`e`) — is
+recorded in the session **history** (`y`): a newest-first feed where you can
+mark a take **favorite** or **rejected** (each clears the other), read its
+typed provenance at a glance, and re-audition any earlier take (it re-enters
+the same playback, so A/B and the playhead keep working). The history is
+session-local and in-memory — it is not written to disk — and marking a
+favorite does not (yet) steer generation; that feedback loop is S9.
+
 Build a test corpus from a couple of tabs (the generation loader reads the
 `*.chunk.json` records directly; `manifest` is a coverage check, not required
 at runtime):
