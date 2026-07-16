@@ -621,6 +621,7 @@ enum LoopStep {
 /// tempo past `hi`. A head outside `[lo, hi)` wraps in first; a pathological
 /// `dt` is bounded by [`MAX_LOOP_WRAPS`]. Returns the steps and the fractional
 /// resume position. Pure, so the split is unit-tested against exact spans.
+#[allow(clippy::too_many_arguments)] // the loop bounds + the tempo context are irreducible here
 fn plan_loop(
     pos: f64,
     dt: f64,
@@ -630,8 +631,40 @@ fn plan_loop(
     ppq: u16,
     scale: f64,
 ) -> (Vec<LoopStep>, f64) {
-    let _ = (pos, dt, lo, hi, tempo, ppq, scale);
-    unimplemented!("plan_loop")
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pos ≥ 0, ticks never near u32::MAX
+    const fn floor(pos: f64) -> u32 {
+        pos as u32
+    }
+    let lo_f = f64::from(lo);
+    let hi_f = f64::from(hi);
+    let mut steps = Vec::new();
+    let mut remaining = dt.max(0.0);
+    let mut pos = pos.max(0.0);
+    // A head outside the loop wraps to the start before any time is spent.
+    if pos < lo_f || pos >= hi_f {
+        steps.push(LoopStep::Wrap(lo));
+        pos = lo_f;
+    }
+    for _ in 0..MAX_LOOP_WRAPS {
+        let dt_to_hi = tempo.time_to(pos, hi_f, ppq, scale);
+        if remaining < dt_to_hi {
+            // The frame ends inside the loop: play the partial span.
+            let next = tempo.advance(pos, remaining, ppq, scale);
+            steps.push(LoopStep::PlayTo(floor(next)));
+            return (steps, next);
+        }
+        // Reach the loop end: play the tail up to `hi`, then wrap to `lo` and
+        // re-read the tempo there on the next turn.
+        steps.push(LoopStep::PlayTo(hi));
+        steps.push(LoopStep::Wrap(lo));
+        remaining -= dt_to_hi;
+        pos = lo_f;
+        if dt_to_hi <= 0.0 {
+            break; // a zero-length span would otherwise spin
+        }
+    }
+    // Bounded hitch: a pathological dt settles at the loop start.
+    (steps, lo_f)
 }
 
 /// Each track's display name (`track N` when unnamed), in order — the labels for
@@ -771,8 +804,9 @@ impl CockpitApp {
     }
 
     /// Advances the playhead by `dt` seconds at the auditioned tempo, firing
-    /// the note events the head crossed. Wraps to the loop start (silencing
-    /// first) when looping, else stops and silences at the end.
+    /// the note events the head crossed. Loops through the selected range
+    /// (playing every whole revolution a long frame laps), else stops and
+    /// silences at the end.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // play_pos ≥ 0, ticks never near u32::MAX
     fn advance_audio(&mut self, dt: f64) {
         // If the integer playhead was moved out from under us (a seek, a
@@ -781,43 +815,56 @@ impl CockpitApp {
         if self.vp.play_tick != self.play_pos as u32 {
             self.play_pos = f64::from(self.vp.play_tick);
         }
-        // Advance the fractional playhead along the master-timeline tempo, which
-        // bends at every tempo change inside this frame. The remainder stays in
-        // `play_pos`, so a sub-tick frame neither stalls nor gains a phantom tick.
+        match self.loop_range {
+            Some((lo, hi)) => self.advance_looped(dt, lo, hi),
+            None => self.advance_to_end(dt),
+        }
+    }
+
+    /// The non-looping path: advance along the tempo map, and at the score's
+    /// end play the tail, silence, and stop.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // play_pos ≥ 0, ticks never near u32::MAX
+    fn advance_to_end(&mut self, dt: f64) {
         let pos = self
             .tempo_map
             .advance(self.play_pos, dt, self.ctx.ppq, self.tempo_scale);
-        let now = pos as u32;
-
-        let (lo, hi) = self
-            .loop_range
-            .unwrap_or((self.ctx.tick_start, self.ctx.tick_end));
-        if now < hi {
+        let end = self.ctx.tick_end;
+        if (pos as u32) < end {
             self.play_pos = pos;
-            self.vp.play_tick = now;
-            self.player.advance_to(now, &mut self.synth);
-            return;
-        }
-
-        // Reached the boundary: first play the tail up to it, so no note before
-        // `hi` is dropped.
-        self.player.advance_to(hi, &mut self.synth);
-        if self.loop_range.is_some() {
-            // Wrap, then play the leftover of this frame from the loop start —
-            // the fractional overshoot is carried over, not thrown away.
-            let span = f64::from(hi.saturating_sub(lo).max(1));
-            let overshoot = (pos - f64::from(hi)) % span;
-            let resume = f64::from(lo) + overshoot;
-            self.player.seek(lo, &mut self.synth);
-            self.play_pos = resume;
-            self.vp.play_tick = resume as u32;
-            self.player.advance_to(resume as u32, &mut self.synth);
+            self.vp.play_tick = pos as u32;
+            self.player.advance_to(pos as u32, &mut self.synth);
         } else {
+            self.player.advance_to(end, &mut self.synth);
             self.player.silence(&mut self.synth);
-            self.play_pos = f64::from(self.ctx.tick_end);
-            self.vp.play_tick = self.ctx.tick_end;
+            self.play_pos = f64::from(end);
+            self.vp.play_tick = end;
             self.vp.playing = false;
         }
+    }
+
+    /// The looping path: [`plan_loop`] splits the frame into tail / full
+    /// revolutions / remainder, and the player executes each step. Every whole
+    /// revolution a long frame laps is played, and each wrap re-reads the tempo
+    /// at the loop start.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // play_pos ≥ 0, ticks never near u32::MAX
+    fn advance_looped(&mut self, dt: f64, lo: u32, hi: u32) {
+        let (steps, resume) = plan_loop(
+            self.play_pos,
+            dt,
+            lo,
+            hi,
+            &self.tempo_map,
+            self.ctx.ppq,
+            self.tempo_scale,
+        );
+        for step in steps {
+            match step {
+                LoopStep::PlayTo(t) => self.player.advance_to(t, &mut self.synth),
+                LoopStep::Wrap(l) => self.player.seek(l, &mut self.synth),
+            }
+        }
+        self.play_pos = resume;
+        self.vp.play_tick = resume as u32;
     }
 
     /// Stops playback: playhead to the start, nothing sounding. The audition
