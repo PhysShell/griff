@@ -1752,3 +1752,19 @@ Architectural decisions go to [`adr/`](adr/) instead.
   description. Out of scope and deliberately not smuggled in: generator
   duration-diversity, the frozen precedence, native Swang corpus resolution,
   and any persistence beyond the session.
+
+- 2026-07-16 — In the context of the S8 Slice 3 review (PR #126, three
+  correctness findings), we decided to **scope history de-duplication to a
+  generation run** rather than to a candidate key alone: a `strategy#variant_
+  seed` key is stable only within one request and is not a content hash (it
+  omits the source score, corpus, gesture, and Swang program), so a fresh
+  `GenerationRunId` (minted once per successful Generate/Swang set) plus the
+  key is the identity, and `Provenance` carries the run distinct from the
+  history sequence. We also **deactivate the history selection on a fresh
+  load** (`SessionHistory::clear_selection`, entries and verdicts preserved),
+  so no stale row reads as playing; and we **derive corpus provenance from the
+  actual pass result** (`CorpusContribution{templates, references, gesture}`
+  built from the corpus's own rhythm count and the set summary), so an
+  attached-but-empty corpus reads honestly as "seed only" instead of "corpus".
+  Accepting a session-local monotonic run id, not a content-addressed
+  fingerprint (the repo has no accepted content-addressing scheme yet).
