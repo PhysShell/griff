@@ -1,7 +1,9 @@
 //! Session history, favorite/reject verdicts, and candidate provenance (S8
-//! Slice 3): the append-only record a curator browses, and the honest, typed
-//! origin each candidate carries — the ground S9's human-in-the-loop will
-//! stand on, without any ranking, learning, or adaptation of its own.
+//! Slice 3).
+//!
+//! The append-only record a curator browses, and the honest, typed origin each
+//! candidate carries — the ground S9's human-in-the-loop will stand on, without
+//! any ranking, learning, or adaptation of its own.
 //!
 //! Backend-neutral and wasm-safe: pure data and pure transitions, so the
 //! cockpit shell and any future frontend share one model. Provenance is a
@@ -21,14 +23,19 @@ pub enum Verdict {
     Rejected,
 }
 
-/// The next verdict after the curator presses `action` on a slot currently
-/// holding `current`. Pressing the same verdict again clears it (an undo);
-/// pressing the other switches to it — so favorite and rejected can never both
-/// hold. The one place this transition lives, so no UI handler re-implements it.
+/// The next verdict after the curator presses `action` on a slot holding
+/// `current`.
+///
+/// Pressing the same verdict again clears it (an undo); pressing the other
+/// switches to it — so favorite and rejected can never both hold. The one place
+/// this transition lives, so no UI handler re-implements it.
 #[must_use]
 pub fn toggle(current: Option<Verdict>, action: Verdict) -> Option<Verdict> {
-    let _ = (current, action);
-    unimplemented!("history::toggle")
+    if current == Some(action) {
+        None
+    } else {
+        Some(action)
+    }
 }
 
 #[cfg(test)]
