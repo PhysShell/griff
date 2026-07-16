@@ -468,6 +468,17 @@ fn tag_wire(tag: SwancoreTag) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// A candidate the roll can show, tagged by which set it belongs to — so A/B
+/// remembers the last one viewed across **both** generators and swaps back to
+/// the right source, never a same-index candidate of the wrong set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuditionCandidate {
+    /// Index into the Generate panel's set.
+    Generate(usize),
+    /// Index into the Swang panel's set.
+    Swang(usize),
+}
+
 /// The egui cockpit application: a `Scene` renderer over the shared core.
 #[derive(Debug)]
 pub struct CockpitApp {
@@ -524,9 +535,12 @@ pub struct CockpitApp {
     /// The loop range in ticks, when looping is on: playback wraps to the
     /// start when it reaches the end.
     loop_range: Option<(u32, u32)>,
-    /// The A/B "other" candidate index — the one a single key swaps to and
-    /// from without a fresh generation pass.
-    ab_other: Option<usize>,
+    /// The candidate currently painted, tagged by source — the anchor A/B
+    /// swaps away from. `None` until the first candidate is shown.
+    current: Option<AuditionCandidate>,
+    /// The A/B "other" candidate — the last one viewed before `current`, of
+    /// either source — that a single key swaps back to without regenerating.
+    ab_other: Option<AuditionCandidate>,
     /// The playhead tick at the end of the last frame — so an input that
     /// seeks the head (a section jump) is noticed and the audio repositioned.
     last_play_tick: u32,
@@ -615,6 +629,7 @@ impl CockpitApp {
             tempo_map: TempoMap::single(view_tempo_bpm),
             play_pos: 0.0,
             loop_range: None,
+            current: None,
             ab_other: None,
             last_play_tick: 0,
             material: None,
@@ -751,7 +766,21 @@ impl CockpitApp {
     const fn reset_audition(&mut self) {
         self.tempo_scale = 1.0;
         self.loop_range = None;
+        self.current = None;
         self.ab_other = None;
+    }
+
+    /// Records that `shown` is now painted: the candidate we are leaving (of
+    /// either source) becomes the A/B target, so `b` swaps back to the last one
+    /// viewed regardless of which generator produced it. A no-op re-show keeps
+    /// the existing A/B target.
+    fn remember_shown(&mut self, shown: AuditionCandidate) {
+        if let Some(current) = self.current {
+            if current != shown {
+                self.ab_other = Some(current);
+            }
+        }
+        self.current = Some(shown);
     }
 
     /// The source label shown in the window title.
@@ -863,21 +892,22 @@ impl CockpitApp {
             return;
         };
         let title = format!("#{} {} · {:.3}", row.rank, row.strategy, row.aggregate);
-        // Remember the candidate we are leaving so `b` can A/B back to it,
-        // without a fresh generation pass.
-        let leaving = self.gen_panel.selected;
-        if leaving != Some(i) {
-            self.ab_other = leaving;
-        }
+        // Remember the candidate we are leaving (of either source) so `b` can
+        // A/B back to it without a fresh generation pass.
+        self.remember_shown(AuditionCandidate::Generate(i));
         self.gen_panel.selected = Some(i);
         self.show_score(score, title);
     }
 
-    /// A/B: swaps to the other of the last two candidates viewed, keeping the
-    /// playhead so the comparison lands at the same spot. No regeneration.
+    /// A/B: swaps to the other of the last two candidates viewed — routing to
+    /// the correct source, so a Swang candidate after a Generate one swaps back
+    /// to the Swang set, not a same-index Generate row. Keeps the playhead so
+    /// the comparison lands at the same spot. No regeneration.
     fn ab_swap(&mut self) {
-        if let Some(other) = self.ab_other {
-            self.show_candidate(other);
+        match self.ab_other {
+            Some(AuditionCandidate::Generate(i)) => self.show_candidate(i),
+            Some(AuditionCandidate::Swang(i)) => self.swang_show(i),
+            None => {}
         }
     }
 
@@ -1200,6 +1230,7 @@ impl CockpitApp {
         // rather than silently running without it.
         self.swang.apply(&compiled, source, None);
         if let Some(i) = self.swang.selected {
+            self.reset_audition(); // a new Swang generation session starts A/B fresh
             self.swang_show(i);
         }
     }
@@ -1245,6 +1276,9 @@ impl CockpitApp {
             "swang #{} {} · {:.3}",
             row.rank, row.strategy, row.aggregate
         );
+        // Swang candidates record into A/B too, so `b` can compare a Swang take
+        // against the last candidate of either source.
+        self.remember_shown(AuditionCandidate::Swang(i));
         self.show_score(score, title);
     }
 
@@ -2816,12 +2850,16 @@ mod tests {
         app.vp.play_tick = 500;
         app.tempo_scale = 2.0;
         app.set_loop_bars(true, 0, 0);
-        app.ab_other = Some(3);
+        app.ab_other = Some(AuditionCandidate::Generate(3));
         app.stop_playback();
         assert_eq!(app.vp.play_tick, app.ctx.tick_start, "rewound");
         assert!((app.tempo_scale - 2.0).abs() < 1e-9, "tempo kept");
         assert!(app.loop_range.is_some(), "loop kept");
-        assert_eq!(app.ab_other, Some(3), "A/B kept");
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::Generate(3)),
+            "A/B kept"
+        );
 
         app.reset_audition();
         assert!(
@@ -2890,7 +2928,7 @@ mod tests {
         app.do_generate(); // shows candidate 0
         assert_eq!(app.gen_panel.selected, Some(0));
         app.show_candidate(1); // now B; A (0) is remembered
-        assert_eq!(app.ab_other, Some(0));
+        assert_eq!(app.ab_other, Some(AuditionCandidate::Generate(0)));
         app.ab_swap();
         assert_eq!(
             app.gen_panel.selected,
@@ -2899,6 +2937,53 @@ mod tests {
         );
         app.ab_swap();
         assert_eq!(app.gen_panel.selected, Some(1), "and back again — a toggle");
+    }
+
+    #[test]
+    fn ab_swaps_across_generate_and_swang_sources() {
+        // #125 re-review 2: A/B remembers the last candidate viewed regardless
+        // of source and swaps back to the RIGHT one — a Swang candidate after a
+        // Generate candidate returns to the Swang set, not a same-index Generate
+        // row.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // shows Generate(0)
+        app.swang.set = app.gen_panel.set.clone(); // give Swang a set to paint
+        app.swang_show(1); // now viewing Swang(1); leaving Generate(0)
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::Generate(0)),
+            "the Generate candidate we left is the A/B target",
+        );
+        app.ab_swap(); // back to the Generate set
+        assert_eq!(app.gen_panel.selected, Some(0), "routed to Generate");
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::Swang(1)),
+            "and Swang(1) is now the other",
+        );
+        app.ab_swap(); // back to the Swang set
+        assert_eq!(
+            app.swang.selected,
+            Some(1),
+            "routed to Swang, not a Generate row"
+        );
+    }
+
+    #[test]
+    fn a_new_swang_run_resets_the_ab_session() {
+        // #125 re-review 2: a fresh generation session (Generate OR Swang) clears
+        // the A/B history, so `b` never swaps to a candidate from a stale run.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_candidate(1); // A/B target is now Generate(0)
+        assert!(app.ab_other.is_some());
+        app.reset_audition(); // stands in for the reset a new run performs
+        assert!(
+            app.ab_other.is_none() && app.current.is_none(),
+            "a new generation session starts A/B empty",
+        );
     }
 
     /// #123 defect 4: a program whose declared `source` cannot be read must
