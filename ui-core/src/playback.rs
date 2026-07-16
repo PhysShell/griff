@@ -131,6 +131,18 @@ impl TempoMap {
         }
         pos
     }
+
+    /// The seconds to travel from tick `from` to tick `to` (`to >= from`),
+    /// integrating across every tempo segment between them — the inverse of
+    /// [`Self::advance`]. `0.0` when `to <= from`. Playback's loop uses it to
+    /// find the exact time a frame spends reaching the loop end, so a lap can
+    /// be split at the boundary instead of overshooting into the tempo past it.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pos ≥ 0, ticks never near u32::MAX
+    pub fn time_to(&self, from: f64, to: f64, ppq: u16, scale: f64) -> f64 {
+        let _ = (from, to, ppq, scale);
+        unimplemented!("TempoMap::time_to")
+    }
 }
 
 /// Drives a [`PlaybackSink`] across a score's note events in tick order.
@@ -550,5 +562,38 @@ mod tests {
         let map = TempoMap::new(vec![(960, 90.0)]);
         assert!((map.bpm_at(0) - 90.0).abs() < 1e-9, "start is synthesised");
         assert!((map.bpm_at(960) - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn time_to_is_the_inverse_of_advance() {
+        use super::TempoMap;
+        // Constant tempo: 480 ppq at 120 BPM is 960 tick/s, so 960 ticks = 1 s.
+        let flat = TempoMap::single(120.0);
+        assert!((flat.time_to(0.0, 960.0, 480, 1.0) - 1.0).abs() < 1e-9);
+        assert!(
+            flat.time_to(200.0, 150.0, 480, 1.0).abs() < 1e-12,
+            "backwards is zero seconds",
+        );
+
+        // Across a tempo change at 480: 0→480 at 120 BPM (0.5 s) then 480→960 at
+        // 240 BPM (0.25 s) = 0.75 s — exactly the dt that advance() maps to 960.
+        let bent = TempoMap::new(vec![(0, 120.0), (480, 240.0)]);
+        let secs = bent.time_to(0.0, 960.0, 480, 1.0);
+        assert!((secs - 0.75).abs() < 1e-9, "integrates each segment, got {secs}");
+        let round = bent.advance(0.0, secs, 480, 1.0);
+        assert!((round - 960.0).abs() < 1e-6, "advance(time_to) is identity");
+    }
+
+    #[test]
+    fn time_to_the_loop_end_ignores_the_tempo_past_it() {
+        use super::TempoMap;
+        // A fast segment starts exactly at the loop end (200). Time to reach 200
+        // must use only the in-loop tempo (120), never the 1000-BPM tail.
+        let map = TempoMap::new(vec![(0, 120.0), (200, 1000.0)]);
+        let inside = TempoMap::single(120.0).time_to(0.0, 200.0, 480, 1.0);
+        assert!(
+            (map.time_to(0.0, 200.0, 480, 1.0) - inside).abs() < 1e-9,
+            "reaching the boundary is unaffected by what lies past it",
+        );
     }
 }
