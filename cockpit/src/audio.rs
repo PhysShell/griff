@@ -69,8 +69,7 @@ pub use web::Synth;
 /// so the remap is unit-tested without a real MIDI device.
 #[cfg(not(target_arch = "wasm32"))]
 fn remap_selection(connected_name: Option<&str>, ports: &[String]) -> Option<usize> {
-    let _ = (connected_name, ports);
-    unimplemented!("remap_selection")
+    connected_name.and_then(|name| ports.iter().position(|p| p == name))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -93,6 +92,9 @@ mod native {
         conn: Option<MidiOutputConnection>,
         ports: Vec<String>,
         selected: Option<usize>,
+        /// The name of the port `conn` is open to — the stable identity a
+        /// rescan re-anchors `selected` by (a port's index is not stable).
+        connected_name: Option<String>,
         status: String,
     }
 
@@ -111,6 +113,7 @@ mod native {
                 conn: None,
                 ports: Vec::new(),
                 selected: None,
+                connected_name: None,
                 status: String::new(),
             };
             synth.refresh_ports();
@@ -118,6 +121,12 @@ mod native {
         }
 
         /// Rescans the available MIDI output ports (devices come and go).
+        ///
+        /// A rescan rebuilds the index space, so an open connection is
+        /// re-anchored to its port by name: [`remap_selection`] either finds
+        /// its new index (and re-points `selected`) or reports it gone (and the
+        /// stale `conn`/`selected` are dropped). `selected` never survives
+        /// pointing at a different port than the one actually open.
         pub fn refresh_ports(&mut self) {
             self.ports = MidiOutput::new("griff-cockpit").map_or_else(
                 |_| Vec::new(),
@@ -128,8 +137,24 @@ mod native {
                         .collect()
                 },
             );
+            let remapped = self
+                .conn
+                .is_some()
+                .then(|| super::remap_selection(self.connected_name.as_deref(), &self.ports));
+            let device_left = matches!(remapped, Some(None));
+            match remapped {
+                Some(Some(i)) => self.selected = Some(i),
+                Some(None) => {
+                    self.conn = None;
+                    self.selected = None;
+                    self.connected_name = None;
+                }
+                None => {}
+            }
             if self.ports.is_empty() {
                 "no MIDI output — use \"open externally\"".clone_into(&mut self.status);
+            } else if device_left {
+                "the MIDI port left — pick another".clone_into(&mut self.status);
             } else if self.conn.is_none() {
                 self.status = format!("{} MIDI port(s) — pick one", self.ports.len());
             }
@@ -158,6 +183,7 @@ mod native {
         pub fn connect(&mut self, index: usize) {
             self.conn = None;
             self.selected = None;
+            self.connected_name = None;
             let Ok(out) = MidiOutput::new("griff-cockpit") else {
                 "MIDI is unavailable on this system".clone_into(&mut self.status);
                 return;
@@ -172,6 +198,7 @@ mod native {
                 Ok(conn) => {
                     self.conn = Some(conn);
                     self.selected = Some(index);
+                    self.connected_name = Some(name.clone());
                     self.status = format!("playing to {name}");
                 }
                 Err(_) => self.status = format!("could not open {name}"),
@@ -182,6 +209,7 @@ mod native {
         pub fn disconnect(&mut self) {
             self.conn = None;
             self.selected = None;
+            self.connected_name = None;
             self.refresh_ports();
         }
 
@@ -197,6 +225,7 @@ mod native {
             if lost {
                 self.conn = None;
                 self.selected = None;
+                self.connected_name = None;
                 "the MIDI port dropped — rescan".clone_into(&mut self.status);
             }
         }
@@ -436,7 +465,6 @@ mod tests {
         );
         assert_eq!(remap_selection(None, &after), None, "nothing was connected");
     }
-
 
     /// A test voice — only its pitch matters to `drain_pitch`.
     struct MockVoice(u8);
