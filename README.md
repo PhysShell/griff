@@ -69,13 +69,16 @@ one file.
 
 - **Generate panel + corpus:** the corpus supplies the **rhythm**, novelty
   references, and gesture.
-- **Swang + corpus:** a Swang program already fixes the rhythm through its
-  `ascii` kernel. By the frozen precedence **explicit pattern > corpus > source
-  first bar**, the corpus does **not** replace the kernel's rhythm; it still
-  contributes novelty and gesture, but the grid comes from the program.
+- **Swang + corpus:** in the current native cockpit, a Swang program's
+  declared `corpus` is **not resolved** — the Swang run reports an explicit
+  refusal and uses the kernel's rhythm alone. By the frozen precedence
+  **explicit pattern > corpus > source first bar** (ADR-0029 §7), once that
+  input is wired it will be able to contribute novelty and gesture but will
+  **never** replace the kernel's rhythm; the grid always comes from the
+  program.
 
-So to *play with a real corpus's rhythms*, use the **Generate** panel, not
-Swang. That precedence is frozen (ADR-0029 §7) and does not change here.
+So to *play with a real corpus's rhythms* today, use the **Generate** panel,
+not Swang. That precedence is frozen and does not change here.
 
 Playback (native MIDI or the browser's Web Audio) is identical for a Generate
 candidate and a Swang candidate — both are just a `Score`.

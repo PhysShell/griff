@@ -67,9 +67,10 @@ pub struct Player {
     on_cursor: usize,
     /// Next unfired note-off.
     off_cursor: usize,
-    /// Pitches currently sounding — so a silence can note-off each explicitly,
-    /// not only trust an all-notes-off CC.
-    active: Vec<u8>,
+    /// How many notes are holding each pitch (indexed by pitch 0..=127). A
+    /// physical note-off fires only when a pitch's count returns to zero, so
+    /// two overlapping notes of the same pitch do not cut each other short.
+    holds: Vec<u16>,
 }
 
 impl Player {
@@ -103,7 +104,36 @@ impl Player {
             offs,
             on_cursor: 0,
             off_cursor: 0,
-            active: Vec::new(),
+            holds: vec![0; 128],
+        }
+    }
+
+    /// Fires the pending note-on at `on_cursor`: raises the pitch's hold count
+    /// and sounds it (a re-attack retriggers, which is correct for MIDI).
+    fn fire_on<S: PlaybackSink>(&mut self, sink: &mut S) {
+        if let Some(&(_, pitch)) = self.ons.get(self.on_cursor) {
+            self.on_cursor = self.on_cursor.saturating_add(1);
+            if let Some(count) = self.holds.get_mut(usize::from(pitch)) {
+                *count = count.saturating_add(1);
+            }
+            sink.note_on(pitch, DEFAULT_VELOCITY);
+        }
+    }
+
+    /// Fires the pending note-off at `off_cursor`: lowers the pitch's hold
+    /// count and physically releases it only when the last holder ends. An
+    /// off for a pitch not held (its onset was seeked past) is a no-op.
+    fn fire_off<S: PlaybackSink>(&mut self, sink: &mut S) {
+        if let Some(&(_, pitch)) = self.offs.get(self.off_cursor) {
+            self.off_cursor = self.off_cursor.saturating_add(1);
+            if let Some(count) = self.holds.get_mut(usize::from(pitch)) {
+                if *count > 0 {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        sink.note_off(pitch);
+                    }
+                }
+            }
         }
     }
 
@@ -117,25 +147,33 @@ impl Player {
     /// note-off then note-on the playhead has reached (`tick < now`). Offs
     /// before ons so a re-attacked pitch is released before it restarts.
     pub fn advance_to<S: PlaybackSink>(&mut self, now: u32, sink: &mut S) {
-        // Offs first: a pitch ending exactly where another (or itself) begins
-        // is released before the attack.
-        while let Some(&(tick, pitch)) = self.offs.get(self.off_cursor) {
-            if tick >= now {
-                break;
+        // Merge the two cursors in tick order, so a frame that steps clean over
+        // a short note fires its on THEN its off — never off-then-on, which
+        // would drop the off and hang the note. At a shared tick the off wins,
+        // so a re-attacked pitch releases before it restarts.
+        loop {
+            let next_on = self
+                .ons
+                .get(self.on_cursor)
+                .copied()
+                .filter(|&(t, _)| t < now);
+            let next_off = self
+                .offs
+                .get(self.off_cursor)
+                .copied()
+                .filter(|&(t, _)| t < now);
+            match (next_on, next_off) {
+                (None, None) => break,
+                (Some(_), None) => self.fire_on(sink),
+                (None, Some(_)) => self.fire_off(sink),
+                (Some((on_t, _)), Some((off_t, _))) => {
+                    if off_t <= on_t {
+                        self.fire_off(sink);
+                    } else {
+                        self.fire_on(sink);
+                    }
+                }
             }
-            self.off_cursor = self.off_cursor.saturating_add(1);
-            if let Some(pos) = self.active.iter().position(|&p| p == pitch) {
-                self.active.swap_remove(pos);
-                sink.note_off(pitch);
-            }
-        }
-        while let Some(&(tick, pitch)) = self.ons.get(self.on_cursor) {
-            if tick >= now {
-                break;
-            }
-            self.on_cursor = self.on_cursor.saturating_add(1);
-            self.active.push(pitch);
-            sink.note_on(pitch, DEFAULT_VELOCITY);
         }
     }
 
@@ -155,16 +193,19 @@ impl Player {
     /// Stops every sounding note now — an explicit note-off per active pitch
     /// plus an all-notes-off. Leaves the cursor where it is.
     pub fn silence<S: PlaybackSink>(&mut self, sink: &mut S) {
-        for pitch in self.active.drain(..) {
-            sink.note_off(pitch);
+        for pitch in 0..self.holds.len() {
+            if self.holds.get(pitch).is_some_and(|&c| c > 0) {
+                sink.note_off(u8::try_from(pitch).unwrap_or(0));
+            }
         }
+        self.holds.iter_mut().for_each(|c| *c = 0);
         sink.all_notes_off();
     }
 
-    /// How many pitches are sounding right now.
+    /// How many distinct pitches are sounding right now.
     #[must_use]
-    pub const fn active_count(&self) -> usize {
-        self.active.len()
+    pub fn active_count(&self) -> usize {
+        self.holds.iter().filter(|&&c| c > 0).count()
     }
 }
 
@@ -248,6 +289,47 @@ mod tests {
             Some(&("off", 62)),
             "62 releases at its end"
         );
+    }
+
+    #[test]
+    fn one_advance_across_a_whole_short_note_fires_on_then_off() {
+        // #125 review 1: a frame that steps clean over a note entirely
+        // within [prev, now) must fire ON then OFF, in that order — never
+        // OFF-then-ON, which the old two-pass scheduler dropped, hanging it.
+        let mut player = Player::from_view(&view(vec![note(100, 120, 64)]));
+        let mut sink = MockSink::default();
+        player.advance_to(200, &mut sink); // 0 → 200 crosses both onset and end
+        assert_eq!(
+            sink.events,
+            vec![("on", 64), ("off", 64)],
+            "the whole note sounds and releases in one frame",
+        );
+        assert_eq!(player.active_count(), 0, "nothing left hanging");
+    }
+
+    #[test]
+    fn overlapping_same_pitch_notes_release_once_at_the_last_end() {
+        // #125 review 4: two notes of the same pitch overlap; the first note's
+        // end must NOT physically release the pitch while the second still
+        // holds it. Reference count: one physical off, at the last end.
+        let mut player = Player::from_view(&view(vec![note(0, 480, 60), note(240, 720, 60)]));
+        let mut sink = MockSink::default();
+
+        player.advance_to(500, &mut sink); // both onsets + the first end
+        assert_eq!(
+            sink.events,
+            vec![("on", 60), ("on", 60)],
+            "both attacks sound; the first end does not release the held pitch",
+        );
+        assert_eq!(player.active_count(), 1, "the pitch is still held once");
+
+        player.advance_to(800, &mut sink); // the second end
+        assert_eq!(
+            sink.events.last(),
+            Some(&("off", 60)),
+            "released at the last end"
+        );
+        assert_eq!(player.active_count(), 0);
     }
 
     #[test]

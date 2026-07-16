@@ -663,31 +663,48 @@ impl CockpitApp {
         let (lo, hi) = self
             .loop_range
             .unwrap_or((self.ctx.tick_start, self.ctx.tick_end));
-        if now >= hi {
-            if self.loop_range.is_some() {
-                self.vp.play_tick = lo;
-                self.player.seek(lo, &mut self.synth); // wrap: silence + reposition
-            } else {
-                self.vp.play_tick = self.ctx.tick_end;
-                self.player.advance_to(self.ctx.tick_end, &mut self.synth);
-                self.player.silence(&mut self.synth);
-                self.vp.playing = false;
-            }
+        if now < hi {
+            self.vp.play_tick = now;
+            self.player.advance_to(now, &mut self.synth);
             return;
         }
-        self.vp.play_tick = now;
-        self.player.advance_to(now, &mut self.synth);
+
+        // Reached the boundary: first play the tail up to it, so no note before
+        // `hi` is dropped.
+        self.player.advance_to(hi, &mut self.synth);
+        if self.loop_range.is_some() {
+            // Wrap, then play the leftover of this frame from the loop start —
+            // the overshoot is not thrown away.
+            let span = hi.saturating_sub(lo).max(1);
+            let overshoot = now.saturating_sub(hi) % span;
+            let resume = lo.saturating_add(overshoot);
+            self.player.seek(lo, &mut self.synth);
+            self.vp.play_tick = resume;
+            self.player.advance_to(resume, &mut self.synth);
+        } else {
+            self.player.silence(&mut self.synth);
+            self.vp.play_tick = self.ctx.tick_end;
+            self.vp.playing = false;
+        }
     }
 
-    /// Stops playback: playhead to the start, nothing sounding, tempo back to
-    /// the score's own. The reset a fresh file gets and the Stop button fires.
+    /// Stops playback: playhead to the start, nothing sounding. The audition
+    /// setup — tempo, loop, A/B — is **kept**, so stopping to re-listen or
+    /// compare does not undo it (that is [`Self::reset_audition`]'s job, on a
+    /// fresh file or a new generation).
     fn stop_playback(&mut self) {
         self.vp.playing = false;
         self.vp.play_tick = self.ctx.tick_start;
+        self.player.seek(self.vp.play_tick, &mut self.synth);
+    }
+
+    /// Clears the audition setup back to defaults — the written tempo, no
+    /// loop, no A/B. A fresh file and a new generation session get this;
+    /// Stop does not.
+    const fn reset_audition(&mut self) {
         self.tempo_scale = 1.0;
         self.loop_range = None;
         self.ab_other = None;
-        self.player.seek(self.vp.play_tick, &mut self.synth);
     }
 
     /// The source label shown in the window title.
@@ -712,7 +729,8 @@ impl CockpitApp {
         self.vp.show_inspector = false; // a fresh load hides the capture panel
         self.score = Some(score);
         self.focus_on_track(focus); // rebuilds view/analysis/ctx/vp for the focus track
-        self.stop_playback(); // a new file plays from its start, at its own tempo
+        self.stop_playback(); // a new file plays from its start
+        self.reset_audition(); // and at its own tempo, no stale loop or A/B
         Ok(())
     }
 
@@ -771,6 +789,7 @@ impl CockpitApp {
         });
         match outcome {
             Ok(set) => {
+                self.reset_audition(); // a new candidate set starts fresh (no stale A/B)
                 let n = set.rows.len();
                 let tones = set.summary.scale_tones;
                 self.gen_panel.set = Some(set);
@@ -1920,11 +1939,23 @@ impl CockpitApp {
             ui.weak(self.synth.status());
         }
         if let Some(i) = connect {
-            self.synth.connect(i);
+            self.connect_device(i);
         }
         if refresh {
+            // Rescanning can drop the open port; hush it first, then reposition.
+            self.player.silence(&mut self.synth);
             self.synth.refresh_ports();
+            self.player.seek(self.vp.play_tick, &mut self.synth);
         }
+    }
+
+    /// Switches the MIDI output: releases whatever is sounding on the **old**
+    /// port before the connection is dropped (a new port cannot ask the old
+    /// one to hush), opens the new one, and repositions the schedule on it.
+    fn connect_device(&mut self, index: usize) {
+        self.player.silence(&mut self.synth);
+        self.synth.connect(index);
+        self.player.seek(self.vp.play_tick, &mut self.synth);
     }
 }
 
@@ -2656,30 +2687,66 @@ mod tests {
     }
 
     #[test]
-    fn looping_wraps_to_the_loop_start_without_stopping() {
+    fn looping_plays_the_tail_then_the_wrapped_remainder() {
+        // #125 review 2: crossing the loop end must not jump straight to the
+        // start — the overshoot past the boundary plays from the loop start,
+        // not thrown away.
         let mut app = demo_app();
-        app.set_loop_bars(true, 0, 0); // loop the first bar
-        let (lo, hi) = app.loop_range.expect("a loop range");
-        app.vp.play_tick = hi.saturating_sub(1);
+        app.loop_range = Some((0, 200)); // a tight loop, in ticks
+        app.vp.play_tick = 150;
         app.vp.playing = true;
-        app.advance_audio(10_000.0); // blow past the loop end
-        assert_eq!(app.vp.play_tick, lo, "playback wraps to the loop start");
+        // A frame worth exactly 300 ticks: 150→450 crosses the 200 boundary by
+        // 250, which wraps to 50 (250 mod 200) past the loop start.
+        let tps = ticks_per_second(app.ctx.ppq, app.ctx.tempo_bpm, 1.0);
+        app.advance_audio(300.0 / tps);
+        assert_eq!(
+            app.vp.play_tick, 50,
+            "the remainder plays from the loop start, not lost",
+        );
         assert!(app.vp.playing, "a loop never stops on its own");
     }
 
     #[test]
-    fn stop_rewinds_the_head_and_resets_the_audition() {
+    fn stop_rewinds_but_keeps_the_audition_setup() {
+        // #125 review UX: Stop is not Reset — tempo, loop, and A/B survive it;
+        // only a fresh file or a new generation clears them.
         let mut app = demo_app();
         app.vp.play_tick = 500;
         app.tempo_scale = 2.0;
         app.set_loop_bars(true, 0, 0);
+        app.ab_other = Some(3);
         app.stop_playback();
         assert_eq!(app.vp.play_tick, app.ctx.tick_start, "rewound");
+        assert!((app.tempo_scale - 2.0).abs() < 1e-9, "tempo kept");
+        assert!(app.loop_range.is_some(), "loop kept");
+        assert_eq!(app.ab_other, Some(3), "A/B kept");
+
+        app.reset_audition();
         assert!(
             (app.tempo_scale - 1.0).abs() < 1e-9,
-            "tempo back to written"
+            "reset clears the tempo"
         );
-        assert!(app.loop_range.is_none(), "loop cleared");
+        assert!(
+            app.loop_range.is_none() && app.ab_other.is_none(),
+            "and the loop + A/B",
+        );
+    }
+
+    #[test]
+    fn switching_the_output_hushes_the_old_port() {
+        // #125 review 3: a port switch silences the old connection before it
+        // is dropped, so no note is stranded ringing on it.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.playing = true;
+        app.advance_audio(0.2); // sound some notes
+        app.connect_device(0); // switch output (an absent port is fine)
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the old port is hushed on the switch",
+        );
     }
 
     #[test]
