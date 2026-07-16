@@ -579,6 +579,21 @@ fn tempo_map_of(score: &Score) -> TempoMap {
     )
 }
 
+/// Re-derives a loop that covered bars `from..=to` onto a **new** view's
+/// `bar_lines`, clamped so `0 <= lo < hi <= tick_end`. Returns `None` when
+/// those bars no longer span a real range in the new view — a shorter score
+/// clears (or clamps) the loop rather than letting playback wander past its
+/// end. Pure, so the remap is unit-tested without an egui app.
+fn remap_loop_range(
+    from: usize,
+    to: usize,
+    bar_lines: &[u32],
+    tick_end: u32,
+) -> Option<(u32, u32)> {
+    let _ = (from, to, bar_lines, tick_end);
+    unimplemented!("remap_loop_range")
+}
+
 /// Each track's display name (`track N` when unnamed), in order — the labels for
 /// the toolbar's track selector.
 fn track_labels(score: &Score) -> Vec<String> {
@@ -2755,7 +2770,117 @@ mod tests {
         CockpitApp::from_score(score, "demo".to_owned())
     }
 
+    /// A `bars`-bar 4/4 score at 960 ppq (3840 ticks/bar), one note-less track —
+    /// `build_view` takes bar lines and the end from the master bars alone, so
+    /// this exercises the loop/transport geometry without note fixtures.
+    fn n_bar_score(bars: u32) -> Score {
+        use griff_core::event::{Tempo, Ticks, TimeSignature, Tuning};
+        use griff_core::score::{LossReport, MasterBar, RepeatMarker, Track, Voice};
+        use griff_core::slice::TickRange;
+        const BAR: u32 = 3840;
+        let master_bars = (0..bars)
+            .map(|i| MasterBar {
+                index: i as usize,
+                tick_range: TickRange::new(Ticks(i * BAR), Ticks((i + 1) * BAR)).expect("range"),
+                time_signature: TimeSignature::new(4, 4).expect("4/4"),
+                tempo: Tempo::new(120.0).expect("120"),
+                repeat: RepeatMarker::default(),
+            })
+            .collect();
+        let track = Track {
+            name: None,
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: Vec::new(),
+            }],
+            tuning: Tuning::standard_e(),
+        };
+        Score {
+            ticks_per_quarter: 960,
+            master_bars,
+            tracks: vec![track],
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
     // ── S8 Slice 2: transport ────────────────────────────────────────────────
+
+    #[test]
+    fn remap_loop_range_keeps_present_bars_and_clamps_to_the_end() {
+        // Bar lines of a 3-bar score, end 11520.
+        let lines = [0_u32, 3840, 7680, 11520];
+        assert_eq!(
+            remap_loop_range(1, 1, &lines, 11520),
+            Some((3840, 7680)),
+            "bar 1 maps to its tick span",
+        );
+        assert_eq!(
+            remap_loop_range(0, 2, &lines, 11520),
+            Some((0, 11520)),
+            "the whole range stays whole",
+        );
+    }
+
+    #[test]
+    fn remap_loop_range_clears_a_range_the_new_view_lacks() {
+        // A 1-bar score: lines [0, 3840], end 3840.
+        let lines = [0_u32, 3840];
+        assert_eq!(
+            remap_loop_range(1, 1, &lines, 3840),
+            None,
+            "bar 1 no longer exists — the loop is cleared",
+        );
+        assert_eq!(
+            remap_loop_range(0, 0, &lines, 3840),
+            Some((0, 3840)),
+            "bar 0 clamps to the one bar that remains",
+        );
+        // A never-past-the-end guard, even if a stray line exceeds the score.
+        assert_eq!(
+            remap_loop_range(0, 5, &[0, 9999], 3840),
+            None,
+            "hi must fit"
+        );
+    }
+
+    #[test]
+    fn switching_to_a_shorter_score_clamps_or_clears_the_loop() {
+        // #125 initial-review correctness thread: on a candidate/score switch,
+        // focus_on_track must revalidate the loop against the NEW view — never
+        // leave an absolute range that runs past the shorter score's end and
+        // graze silently there.
+        let mut app = CockpitApp::from_score(n_bar_score(2), "A".to_owned());
+        app.set_loop_bars(true, 1, 1); // loop the SECOND bar of the 2-bar score
+        let (_, hi_a) = app.loop_range.expect("loop set on A");
+        assert!(hi_a > 3840, "the loop lives in A's second bar");
+
+        app.vp.play_tick = 5000; // head inside A's second bar
+        app.vp.playing = true;
+        app.show_score(n_bar_score(1), "B".to_owned()); // switch to a 1-bar score
+
+        let end = app.ctx.tick_end;
+        assert!(end <= 3840, "B is one bar — a shorter score");
+        if let Some((lo, hi)) = app.loop_range {
+            assert!(
+                lo < hi && hi <= end,
+                "a kept loop is clamped inside B: ({lo},{hi}) end={end}",
+            );
+            assert!(
+                app.vp.play_tick >= lo && app.vp.play_tick < hi,
+                "the head sits inside the remapped loop",
+            );
+        }
+        // Playback never wanders past the new score's end.
+        for _ in 0..50 {
+            app.advance_audio(0.05);
+            assert!(
+                app.vp.play_tick <= end,
+                "the playhead never exceeds B's end",
+            );
+        }
+    }
 
     #[test]
     fn playback_bends_at_a_master_timeline_tempo_change() {
