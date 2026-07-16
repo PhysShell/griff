@@ -36,7 +36,7 @@ use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
-use griff_ui_core::playback::{ticks_per_second, Player};
+use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
@@ -513,6 +513,14 @@ pub struct CockpitApp {
     /// as written, `2.0` at double speed. A tempo audition override: it never
     /// touches the Score, its MIDI export, or provenance.
     tempo_scale: f64,
+    /// The master timeline's tempo — `(start tick, BPM)` segments — so playback
+    /// bends at every tempo change instead of playing the whole score at the
+    /// first bar's BPM. The single source of tempo (per the repo constraint).
+    tempo_map: TempoMap,
+    /// The **fractional** playhead in ticks — the source of truth while
+    /// playing. `vp.play_tick` is its floor, for the visuals and the schedule;
+    /// keeping the remainder here stops sub-tick frames stalling or drifting.
+    play_pos: f64,
     /// The loop range in ticks, when looping is on: playback wraps to the
     /// start when it reaches the end.
     loop_range: Option<(u32, u32)>,
@@ -544,6 +552,19 @@ fn single_track_score(score: &Score, track: usize) -> Score {
     sub
 }
 
+/// The score's master-timeline tempo as playback segments — one `(start tick,
+/// BPM)` per bar, with equal-BPM runs collapsed by [`TempoMap`]. This is what
+/// the playhead auditions; the master timeline is the single source of tempo.
+fn tempo_map_of(score: &Score) -> TempoMap {
+    TempoMap::new(
+        score
+            .master_bars
+            .iter()
+            .map(|mb| (mb.tick_range.start.0, mb.tempo.0))
+            .collect(),
+    )
+}
+
 /// Each track's display name (`track N` when unnamed), in order — the labels for
 /// the toolbar's track selector.
 fn track_labels(score: &Score) -> Vec<String> {
@@ -565,6 +586,7 @@ impl CockpitApp {
     #[must_use]
     pub fn new(view: PianoRollView, analysis: Analysis, title: String) -> Self {
         let ctx = build_context(&view, &analysis);
+        let view_tempo_bpm = view.tempo_bpm;
         let mut vp = Viewport::new(&ctx, view.high_pitch);
         vp.show_inspector = false; // the capture panel starts hidden (the `i` key shows it)
         let player = Player::from_view(&view);
@@ -590,6 +612,8 @@ impl CockpitApp {
             synth: Synth::new(),
             player,
             tempo_scale: 1.0,
+            tempo_map: TempoMap::single(view_tempo_bpm),
+            play_pos: 0.0,
             loop_range: None,
             ab_other: None,
             last_play_tick: 0,
@@ -650,20 +674,40 @@ impl CockpitApp {
         // the playhead — silencing whatever the old score left ringing.
         self.player = Player::from_view(&self.view);
         self.player.seek(self.vp.play_tick, &mut self.synth);
+        // Adopt this score's master-timeline tempo, and re-anchor the
+        // fractional playhead on the (already-clamped) integer one.
+        self.tempo_map = if sub.master_bars.is_empty() {
+            TempoMap::single(self.view.tempo_bpm)
+        } else {
+            tempo_map_of(&sub)
+        };
+        self.play_pos = f64::from(self.vp.play_tick);
     }
 
     /// Advances the playhead by `dt` seconds at the auditioned tempo, firing
     /// the note events the head crossed. Wraps to the loop start (silencing
     /// first) when looping, else stops and silences at the end.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // play_pos ≥ 0, ticks never near u32::MAX
     fn advance_audio(&mut self, dt: f64) {
-        let tps = ticks_per_second(self.ctx.ppq, self.ctx.tempo_bpm, self.tempo_scale);
-        let step = (tps * dt) as u32;
-        let now = self.vp.play_tick.saturating_add(step.max(1));
+        // If the integer playhead was moved out from under us (a seek, a
+        // candidate switch, a Stop), adopt it before accumulating — `play_pos`
+        // is authoritative only while it still floors to the visible head.
+        if self.vp.play_tick != self.play_pos as u32 {
+            self.play_pos = f64::from(self.vp.play_tick);
+        }
+        // Advance the fractional playhead along the master-timeline tempo, which
+        // bends at every tempo change inside this frame. The remainder stays in
+        // `play_pos`, so a sub-tick frame neither stalls nor gains a phantom tick.
+        let pos = self
+            .tempo_map
+            .advance(self.play_pos, dt, self.ctx.ppq, self.tempo_scale);
+        let now = pos as u32;
 
         let (lo, hi) = self
             .loop_range
             .unwrap_or((self.ctx.tick_start, self.ctx.tick_end));
         if now < hi {
+            self.play_pos = pos;
             self.vp.play_tick = now;
             self.player.advance_to(now, &mut self.synth);
             return;
@@ -674,15 +718,17 @@ impl CockpitApp {
         self.player.advance_to(hi, &mut self.synth);
         if self.loop_range.is_some() {
             // Wrap, then play the leftover of this frame from the loop start —
-            // the overshoot is not thrown away.
-            let span = hi.saturating_sub(lo).max(1);
-            let overshoot = now.saturating_sub(hi) % span;
-            let resume = lo.saturating_add(overshoot);
+            // the fractional overshoot is carried over, not thrown away.
+            let span = f64::from(hi.saturating_sub(lo).max(1));
+            let overshoot = (pos - f64::from(hi)) % span;
+            let resume = f64::from(lo) + overshoot;
             self.player.seek(lo, &mut self.synth);
-            self.vp.play_tick = resume;
-            self.player.advance_to(resume, &mut self.synth);
+            self.play_pos = resume;
+            self.vp.play_tick = resume as u32;
+            self.player.advance_to(resume as u32, &mut self.synth);
         } else {
             self.player.silence(&mut self.synth);
+            self.play_pos = f64::from(self.ctx.tick_end);
             self.vp.play_tick = self.ctx.tick_end;
             self.vp.playing = false;
         }
@@ -695,6 +741,7 @@ impl CockpitApp {
     fn stop_playback(&mut self) {
         self.vp.playing = false;
         self.vp.play_tick = self.ctx.tick_start;
+        self.play_pos = f64::from(self.ctx.tick_start);
         self.player.seek(self.vp.play_tick, &mut self.synth);
     }
 
@@ -2021,6 +2068,7 @@ impl eframe::App for CockpitApp {
         // An input that moved the playhead (a section jump) is a seek: silence
         // and reposition the audio before advancing.
         if self.vp.play_tick != self.last_play_tick {
+            self.play_pos = f64::from(self.vp.play_tick);
             self.player.seek(self.vp.play_tick, &mut self.synth);
         }
         // A pause — Space, or the viewport stopping at the end — must never
@@ -2313,6 +2361,7 @@ mod tests {
     use eframe::egui::epaint::ClippedShape;
     use eframe::egui::Shape;
     use griff_core::classify::BarClass;
+    use griff_ui_core::playback::ticks_per_second;
     use griff_ui_core::scene::CellRole;
 
     /// Every fill the painter emitted in one frame.
@@ -2673,6 +2722,59 @@ mod tests {
     }
 
     // ── S8 Slice 2: transport ────────────────────────────────────────────────
+
+    #[test]
+    fn playback_bends_at_a_master_timeline_tempo_change() {
+        // #125 re-review 1: the playhead follows the master timeline's tempo,
+        // so the half after a tempo change advances at the new rate — not the
+        // whole score at the first bar's BPM.
+        let mut app = demo_app();
+        app.ctx.ppq = 480;
+        app.ctx.tick_start = 0;
+        app.ctx.tick_end = 1_000_000; // room to run without reaching the end
+        app.tempo_map = TempoMap::new(vec![(0, 120.0), (4800, 240.0)]);
+        app.vp.playing = true;
+
+        // 0.1 s inside the 120-BPM segment (480 ppq → 960 tick/s → 96 ticks).
+        app.vp.play_tick = 0;
+        app.play_pos = 0.0;
+        app.advance_audio(0.1);
+        let slow = app.vp.play_tick;
+
+        // 0.1 s inside the 240-BPM segment (→ 1920 tick/s → 192 ticks).
+        app.vp.play_tick = 4800;
+        app.play_pos = f64::from(4800);
+        app.advance_audio(0.1);
+        let fast = app.vp.play_tick - 4800;
+
+        assert!(slow > 0, "the slow segment moves");
+        assert!(
+            fast >= slow * 2 - 1 && fast <= slow * 2 + 1,
+            "the doubled tempo advances ~2x as far: slow={slow} fast={fast}",
+        );
+    }
+
+    #[test]
+    fn a_thousand_sub_tick_frames_do_not_drift() {
+        // #125 re-review 1: the fractional accumulator neither stalls nor gains
+        // a phantom tick over many frames each shorter than a single tick — the
+        // old `step.max(1)` nudge would have raced far ahead.
+        let mut app = demo_app();
+        app.ctx.ppq = 480;
+        app.ctx.tick_start = 0;
+        app.ctx.tick_end = 1_000_000;
+        app.tempo_map = TempoMap::single(1.0); // 1 BPM at 480 ppq → 8 tick/s
+        app.vp.play_tick = 0;
+        app.play_pos = 0.0;
+        app.vp.playing = true;
+        for _ in 0..1000 {
+            app.advance_audio(0.001); // 1000 × 1 ms = 1 s of travel = 8 ticks
+        }
+        assert_eq!(
+            app.vp.play_tick, 8,
+            "a second of sub-tick frames sums to exactly 8 ticks, no drift",
+        );
+    }
 
     #[test]
     fn playback_advances_then_stops_and_silences_at_the_end() {
