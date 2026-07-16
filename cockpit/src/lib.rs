@@ -35,6 +35,7 @@ use griff_core::corpus::{ChunkMeta, ReviewerDecision, RightsStatus, StyleCohort,
 use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
+use griff_swang::eval;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
 use griff_ui_core::generate::generate_set;
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
@@ -882,93 +883,99 @@ impl CockpitApp {
     /// shared evaluator — no `griff.exe`, no second generator — and never
     /// regenerates on a keystroke; Run is a button (or Ctrl+Enter).
     fn swang_window(&mut self, ctx: &egui::Context) {
-        let mut check = false;
-        let mut format = false;
-        let mut run = false;
-        let mut build = false;
-        let mut click: Option<usize> = None;
-
+        let mut actions = SwangActions::default();
         egui::Window::new("swang · editor")
             .default_width(540.0)
             .default_height(560.0)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .button("✓ check")
-                        .on_hover_text("parse + validate")
-                        .clicked()
-                    {
-                        check = true;
-                    }
-                    if ui
-                        .button("⤷ format")
-                        .on_hover_text("canonical text")
-                        .clicked()
-                    {
-                        format = true;
-                    }
-                    if ui
-                        .button("▶ run")
-                        .on_hover_text("evaluate (Ctrl+Enter)")
-                        .clicked()
-                    {
-                        run = true;
-                    }
-                    if self.swang.set.is_some()
-                        && ui
-                            .button("⏏ build")
-                            .on_hover_text("write the program's own export")
-                            .clicked()
-                    {
-                        build = true;
-                    }
-                    if !self.swang.status.is_empty() {
-                        ui.weak(&self.swang.status);
-                    }
-                });
-
-                egui::ScrollArea::vertical()
-                    .id_salt("swang-editor")
-                    .max_height(240.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.swang.text)
-                                .code_editor()
-                                .desired_rows(14)
-                                .desired_width(f32::INFINITY),
-                        );
-                    });
-                // Run on Ctrl+Enter, but only while the editor has focus — a
-                // stray shortcut elsewhere must not fire a generation pass.
-                if ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.command) {
-                    run = true;
-                }
-
-                if !self.swang.diagnostics.is_empty() {
-                    ui.separator();
-                    for d in &self.swang.diagnostics {
-                        ui.label(format!("[{}] {}: {}", d.code, d.location, d.message));
-                    }
-                }
-
-                self.swang_candidates(ui, &mut click);
+                actions = self.swang_body(ui);
             });
 
-        if check {
-            self.swang.check();
+        // Apply after the window releases its borrow of `self`.
+        match actions.action {
+            SwangAction::Check => self.swang.check(),
+            SwangAction::Format => self.swang.format(),
+            SwangAction::Run => self.swang_run(),
+            SwangAction::Build => self.swang_build(),
+            SwangAction::None => {}
         }
-        if format {
-            self.swang.format();
-        }
-        if run {
-            self.swang_run();
-        }
-        if let Some(i) = click {
+        if let Some(i) = actions.click {
             self.swang_show(i);
         }
-        if build {
-            self.swang_build();
+    }
+
+    /// The Swang window's body: the button row, the editor, the diagnostics,
+    /// and the candidate table. Returns the actions the user asked for, so
+    /// `swang_window` applies them after the borrow closes.
+    fn swang_body(&mut self, ui: &mut egui::Ui) -> SwangActions {
+        let mut actions = SwangActions::default();
+        ui.horizontal(|ui| {
+            if ui
+                .button("✓ check")
+                .on_hover_text("parse + validate")
+                .clicked()
+            {
+                actions.action = SwangAction::Check;
+            }
+            if ui
+                .button("⤷ format")
+                .on_hover_text("canonical text")
+                .clicked()
+            {
+                actions.action = SwangAction::Format;
+            }
+            if ui
+                .button("▶ run")
+                .on_hover_text("evaluate (Ctrl+Enter)")
+                .clicked()
+            {
+                actions.action = SwangAction::Run;
+            }
+            if self.swang.run_is_current()
+                && ui
+                    .button("⏏ build")
+                    .on_hover_text("write the program's own export")
+                    .clicked()
+            {
+                actions.action = SwangAction::Build;
+            }
+            if !self.swang.status.is_empty() {
+                ui.weak(&self.swang.status);
+            }
+        });
+
+        let editor = egui::ScrollArea::vertical()
+            .id_salt("swang-editor")
+            .max_height(240.0)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.swang.text)
+                        .code_editor()
+                        .desired_rows(14)
+                        .desired_width(f32::INFINITY),
+                )
+            })
+            .inner;
+        // An edit invalidates the last run: the shown candidates and the
+        // Build button must not outlive the text they came from.
+        if editor.changed() {
+            self.swang.invalidate_run();
         }
+        // Run on Ctrl+Enter, but only while the editor actually holds focus —
+        // a stray shortcut must not fire a generation pass.
+        if editor.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.command) {
+            actions.action = SwangAction::Run;
+        }
+
+        if !self.swang.diagnostics.is_empty() {
+            ui.separator();
+            for d in &self.swang.diagnostics {
+                ui.label(format!("[{}] {}: {}", d.code, d.location, d.message));
+            }
+        }
+
+        self.swang_candidates(ui, &mut actions.click);
+        actions
     }
 
     /// The Swang panel's candidate table: the set's provenance line and the
@@ -1011,53 +1018,54 @@ impl CockpitApp {
             });
     }
 
-    /// Resolves the program's declared seed score and evaluates, then shows the
-    /// selected candidate in the roll. Path resolution lives here in the shell;
-    /// the evaluator only ever sees a loaded score.
+    /// Compiles the program (real span diagnostics on error), resolves its
+    /// declared seed score, evaluates, and shows the selection. Compile comes
+    /// first so a broken program keeps its diagnostics instead of a generic
+    /// message; the evaluator only ever sees a loaded score, never a path.
     fn swang_run(&mut self) {
-        let source = match self.resolve_swang_source() {
+        let Some(compiled) = self.swang.compile() else {
+            return; // `compile` filled the span diagnostics and cleared the run
+        };
+        let source = match self.resolve_swang_source(&compiled) {
             Ok(score) => score,
             Err(err) => {
+                self.swang.invalidate_run();
                 self.swang.diagnostics.clear();
-                self.swang.set = None;
-                self.swang.selected = None;
                 self.swang.status = err;
                 return;
             }
         };
-        // Slice 1 evaluates without a corpus; the program may still name one,
-        // and a later slice resolves it. The evaluator already accepts it.
-        self.swang.run(source, None);
+        // Slice 1 loads no corpus; `apply` refuses a program that declares one
+        // rather than silently running without it.
+        self.swang.apply(&compiled, source, None);
         if let Some(i) = self.swang.selected {
             self.swang_show(i);
         }
     }
 
-    /// The seed score the current program names, resolved to a `Score`. Native
-    /// reads the declared path; when that path cannot be read, the displayed
-    /// score stands in (so the loop is playable without a matching filename),
-    /// and the web target always uses the displayed score.
+    /// The seed score a compiled program names, resolved to a `Score`. Native
+    /// reads the declared path and **errors** if it cannot — a missing or
+    /// mistyped `source` is never silently swapped for the displayed file, so
+    /// a program's provenance always matches the music it made. The web target
+    /// has no filesystem and uses the displayed score by defined semantics.
     #[cfg(not(target_arch = "wasm32"))]
-    fn resolve_swang_source(&self) -> Result<Score, String> {
+    #[allow(
+        clippy::unused_self,
+        reason = "mirrors the wasm signature, which reads self.score"
+    )]
+    fn resolve_swang_source(&self, compiled: &eval::CompiledProgram) -> Result<Score, String> {
         use std::fs;
 
-        let path = self
-            .swang
-            .source_path()
-            .ok_or_else(|| "the program does not compile — check it first".to_owned())?;
-        fs::read(&path).map_or_else(
-            |_| {
-                self.score
-                    .clone()
-                    .ok_or_else(|| format!("cannot read {path}, and no score is loaded"))
-            },
-            |bytes| import_score_auto(&bytes).map_err(|e| format!("cannot import {path}: {e}")),
-        )
+        let path = compiled.source_path();
+        let bytes = fs::read(path).map_err(|e| format!("cannot read source \"{path}\": {e}"))?;
+        import_score_auto(&bytes).map_err(|e| format!("cannot import \"{path}\": {e}"))
     }
 
-    /// The web target has no filesystem: the displayed score seeds the run.
+    /// The web target has no filesystem: the displayed score seeds the run by
+    /// defined frontend semantics (the declared `source` path is not read in
+    /// the browser this slice).
     #[cfg(target_arch = "wasm32")]
-    fn resolve_swang_source(&self) -> Result<Score, String> {
+    fn resolve_swang_source(&self, _compiled: &eval::CompiledProgram) -> Result<Score, String> {
         self.score
             .clone()
             .ok_or_else(|| "load a score first — browser Swang uses the displayed file".to_owned())
@@ -1098,6 +1106,12 @@ impl CockpitApp {
 
         use griff_core::midi::export_score;
 
+        // Belt to the UI's suspenders: never export a result the current text
+        // did not produce, even if a change somehow slipped past the editor's
+        // change signal. Provenance must describe the music it made.
+        if !self.swang.run_is_current() {
+            return Err("the program changed since the last run — Run it again".to_owned());
+        }
         let path = self
             .swang
             .export_path
@@ -1632,6 +1646,26 @@ impl CockpitApp {
         });
         focus
     }
+}
+
+/// The one button the user pressed in the Swang window this frame (buttons
+/// are mutually exclusive; Ctrl+Enter also maps to `Run`).
+#[derive(Default, PartialEq, Eq)]
+enum SwangAction {
+    #[default]
+    None,
+    Check,
+    Format,
+    Run,
+    Build,
+}
+
+/// What the Swang window's body reports back for `swang_window` to apply
+/// after the `self` borrow closes.
+#[derive(Default)]
+struct SwangActions {
+    action: SwangAction,
+    click: Option<usize>,
 }
 
 /// The pixel rect of grid position (`col`, `vis_row`).
@@ -2313,6 +2347,30 @@ mod tests {
         use griff_core::import::import_score_auto;
         let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
         CockpitApp::from_score(score, "demo".to_owned())
+    }
+
+    /// #123 defect 4: a program whose declared `source` cannot be read must
+    /// **error**, never silently seed the run from the displayed score — a
+    /// program's provenance may not describe music made from a different file.
+    #[test]
+    fn a_missing_swang_source_errors_rather_than_using_the_displayed_score() {
+        let app = demo_app(); // a score IS loaded — the tempting wrong fallback
+        let program = "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    \
+             |> fractalize depth 1 max_cells 4096 density 9500bps seed 4\n    \
+             |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    \
+             |> generate {\n        source \"no-such-file-xyz.mid\"\n        bars 4\n        \
+             seed 42\n        candidates 2\n        strategy auto\n    }\n    \
+             |> export midi \"out.mid\"\n}\n";
+        let compiled = eval::compile_program(program).expect("compiles");
+        let result = app.resolve_swang_source(&compiled);
+        assert!(
+            result.is_err(),
+            "a missing source must error, not fall back to the displayed score"
+        );
+        assert!(
+            result.unwrap_err().contains("no-such-file-xyz"),
+            "the error names the unreadable declared path"
+        );
     }
 
     #[test]
