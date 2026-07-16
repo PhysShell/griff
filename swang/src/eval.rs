@@ -638,10 +638,19 @@ pattern p {{
         };
         // Oversized would hang/OOM (on wasm32 not even fit usize); zero would
         // generate nothing. Both are SWG0309, never a clamp or a mis-code.
-        range_reject(&program("auto").replace("bars 4", "bars 999999999"), "oversized bars");
-        range_reject(&program("auto").replace("candidates 2", "candidates 99999"), "oversized candidates");
+        range_reject(
+            &program("auto").replace("bars 4", "bars 999999999"),
+            "oversized bars",
+        );
+        range_reject(
+            &program("auto").replace("candidates 2", "candidates 99999"),
+            "oversized candidates",
+        );
         range_reject(&program("auto").replace("bars 4", "bars 0"), "zero bars");
-        range_reject(&program("auto").replace("candidates 2", "candidates 0"), "zero candidates");
+        range_reject(
+            &program("auto").replace("candidates 2", "candidates 0"),
+            "zero candidates",
+        );
     }
 
     #[test]
