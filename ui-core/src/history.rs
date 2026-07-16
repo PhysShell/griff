@@ -239,9 +239,10 @@ impl SessionHistory {
     /// [`Self::record`] for every candidate of that set, so a new run never
     /// collides with an earlier one — even when the ask and the resulting music
     /// deterministically match.
-    pub fn begin_run(&mut self) -> GenerationRunId {
-        let _ = &self.next_run_id;
-        unimplemented!("SessionHistory::begin_run")
+    pub const fn begin_run(&mut self) -> GenerationRunId {
+        let id = GenerationRunId(self.next_run_id);
+        self.next_run_id = self.next_run_id.saturating_add(1);
+        id
     }
 
     /// Records a shown candidate of run `run` and returns its stable id.
@@ -251,6 +252,7 @@ impl SessionHistory {
     /// — no duplicate row, and its verdict and snapshot are left intact. A
     /// candidate of a different run is always appended, even if its key repeats
     /// an earlier run's; prior entries never move or mutate.
+    #[allow(clippy::too_many_arguments)] // run + key + title + snapshot + generator are irreducible
     pub fn record(
         &mut self,
         run: GenerationRunId,
@@ -259,8 +261,31 @@ impl SessionHistory {
         score: Score,
         generator: GeneratorProvenance,
     ) -> HistoryId {
-        let _ = (run, candidate_id, title, score, generator);
-        unimplemented!("SessionHistory::record")
+        // De-dupe **within the run**: the same row of the same generation keeps
+        // its id, snapshot, and verdict. A different run is always a new entry,
+        // even if its key repeats — the key is not a content hash.
+        if let Some(existing) = self
+            .entries
+            .iter()
+            .find(|e| e.run == run && e.candidate_id == candidate_id)
+        {
+            return existing.id;
+        }
+        let id = HistoryId(self.next_id);
+        let provenance = Provenance::new(run, self.next_id, candidate_id.clone(), generator);
+        self.entries.push(HistoryEntry {
+            id,
+            sequence: self.next_id,
+            run,
+            source: provenance.source(),
+            candidate_id,
+            title,
+            score,
+            verdict: None,
+            provenance,
+        });
+        self.next_id = self.next_id.saturating_add(1);
+        id
     }
 
     /// The entries, in creation order.
