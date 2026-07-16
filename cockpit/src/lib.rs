@@ -590,8 +590,12 @@ fn remap_loop_range(
     bar_lines: &[u32],
     tick_end: u32,
 ) -> Option<(u32, u32)> {
-    let _ = (from, to, bar_lines, tick_end);
-    unimplemented!("remap_loop_range")
+    let last = bar_lines.len().saturating_sub(1);
+    let a = from.min(to).min(last);
+    let b = from.max(to).min(last);
+    let lo = *bar_lines.get(a)?;
+    let hi = *bar_lines.get(b.saturating_add(1).min(last))?;
+    (lo < hi && hi <= tick_end).then_some((lo, hi))
 }
 
 /// Each track's display name (`track N` when unnamed), in order — the labels for
@@ -684,6 +688,9 @@ impl CockpitApp {
         if track >= n && n != 0 {
             return;
         }
+        // Capture the loop as bar indices on the OLD view before it is rebuilt,
+        // so the switch can re-anchor it to the same bars of the NEW view.
+        let prior_loop_bars = self.loop_range.map(|_| self.loop_bar_indices());
         let sub = single_track_score(score, track);
         let view = build_view(&sub);
         let analysis = analyze(&sub);
@@ -700,6 +707,19 @@ impl CockpitApp {
         self.vp = vp;
         self.selected_track = track.min(n.saturating_sub(1));
         self.fitted = false;
+        // Re-anchor the loop to the same bars of the new view — clamped inside
+        // it, or cleared when those bars are gone — so a shorter score can never
+        // leave playback grazing a range past its end (the master timeline is
+        // the source of the geometry, not a stale absolute span).
+        if let Some((from, to)) = prior_loop_bars {
+            self.loop_range = remap_loop_range(from, to, &self.view.bar_lines, self.ctx.tick_end);
+            // If the head fell outside the remapped loop, seek it to the start.
+            if let Some((lo, hi)) = self.loop_range {
+                if self.vp.play_tick < lo || self.vp.play_tick >= hi {
+                    self.vp.play_tick = lo;
+                }
+            }
+        }
         // Rebuild the note schedule for the new score and reposition it under
         // the playhead — silencing whatever the old score left ringing.
         self.player = Player::from_view(&self.view);
@@ -1880,21 +1900,9 @@ impl CockpitApp {
 
     /// Turns a bar-index range into the loop's tick span, or clears the loop.
     fn set_loop_bars(&mut self, on: bool, from_bar: usize, to_bar: usize) {
-        if !on {
-            self.loop_range = None;
-            return;
-        }
-        let lines = &self.view.bar_lines;
-        let last = lines.len().saturating_sub(1);
-        let a = from_bar.min(to_bar).min(last);
-        let b = from_bar.max(to_bar).min(last);
-        if let (Some(&lo), Some(&hi)) = (lines.get(a), lines.get(b.saturating_add(1).min(last))) {
-            if hi > lo {
-                self.loop_range = Some((lo, hi));
-                return;
-            }
-        }
-        self.loop_range = None;
+        self.loop_range = on
+            .then(|| remap_loop_range(from_bar, to_bar, &self.view.bar_lines, self.ctx.tick_end))
+            .flatten();
     }
 
     /// The bottom transport bar (S8 Slice 2): play/pause, stop, tempo
