@@ -18,6 +18,7 @@ use griff_core::corpus::ChunkMeta;
 use griff_core::generation_input::CorpusMaterial;
 use griff_core::generation_input::GenerationAsk;
 use griff_ui_core::generate::CandidateSet;
+use griff_ui_core::history::{CorpusContribution, GenerationRunId};
 
 /// A tab the panel can seed a generation from: its display name and the bytes
 /// the shared importer parses. Bytes, not a path, so the same state works in the
@@ -28,6 +29,38 @@ pub struct SourceTab {
     pub name: String,
     /// The raw MIDI / Guitar Pro bytes.
     pub bytes: Vec<u8>,
+}
+
+/// The **immutable** request/input identity of one Generate run, captured the
+/// moment the set was produced.
+///
+/// A candidate's provenance reads its request fields from here, never from live
+/// panel state, so changing a knob (or attaching a corpus) after generation
+/// cannot rewrite an already-made candidate's origin.
+#[derive(Debug, Clone)]
+pub struct GenerateRunContext {
+    /// The run this set belongs to.
+    pub run: GenerationRunId,
+    /// The seed score's identity (a source-tab name, or the displayed title).
+    pub source: Option<String>,
+    /// The ask seed.
+    pub seed: u64,
+    /// Bars generated.
+    pub bars: usize,
+    /// Seed variants per strategy.
+    pub variants_per_strategy: usize,
+    /// What the corpus actually contributed to this pass.
+    pub corpus: CorpusContribution,
+}
+
+/// A produced Generate set bound to the immutable context that made it — so the
+/// set and its provenance identity cannot drift apart.
+#[derive(Debug)]
+pub struct ActiveGenerateRun {
+    /// The immutable run context.
+    pub context: GenerateRunContext,
+    /// The reranked candidate set.
+    pub set: CandidateSet,
 }
 
 /// The Generate panel's state.
@@ -48,8 +81,9 @@ pub struct GeneratePanel {
     pub variants: usize,
     /// Carve the corpus's burst/rest gesture.
     pub gesture: bool,
-    /// The last generated set, in rank order.
-    pub set: Option<CandidateSet>,
+    /// The last produced run: its set bound to the immutable context that made
+    /// it. `None` until the first generation.
+    pub active: Option<ActiveGenerateRun>,
     /// Index into the set's rows — the candidate the roll is showing.
     pub selected: Option<usize>,
     /// Outcome of the last generate / keep, shown in the panel.
@@ -69,10 +103,22 @@ impl GeneratePanel {
             bars: 8,
             variants: 2,
             gesture: true,
-            set: None,
+            active: None,
             selected: None,
             status: None,
         }
+    }
+
+    /// The current run's candidate set, if any.
+    #[must_use]
+    pub fn set(&self) -> Option<&CandidateSet> {
+        self.active.as_ref().map(|a| &a.set)
+    }
+
+    /// The current run's immutable context, if any.
+    #[must_use]
+    pub fn context(&self) -> Option<&GenerateRunContext> {
+        self.active.as_ref().map(|a| &a.context)
     }
 
     /// The ask the knobs currently describe.
@@ -220,7 +266,7 @@ mod tests {
             "griff generate --candidates default",
         );
         assert!(ask.gesture, "gesture is on unless --no-gesture");
-        assert!(panel.set.is_none(), "nothing generated yet");
+        assert!(panel.set().is_none(), "nothing generated yet");
     }
 
     #[test]

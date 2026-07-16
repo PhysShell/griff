@@ -57,7 +57,7 @@ pub mod audio;
 pub mod generation;
 pub mod swang;
 
-use generation::{GeneratePanel, KeptProvenance};
+use generation::{ActiveGenerateRun, GeneratePanel, GenerateRunContext, KeptProvenance};
 use swang::SwangPanel;
 
 /// Pixel width of one grid cell.
@@ -475,6 +475,20 @@ fn tag_wire(tag: SwancoreTag) -> Option<String> {
 /// A candidate the roll can show, tagged by which set it belongs to — so A/B
 /// remembers the last one viewed across **both** generators and swaps back to
 /// the right source, never a same-index candidate of the wrong set.
+/// The **immutable** identity of one successful Swang run: the run id, the
+/// exact evaluated program text, and the resolved source. A candidate's
+/// provenance reads these — never the live editor text — so editing the program
+/// after a run cannot rewrite an already-made candidate's origin.
+#[derive(Debug, Clone)]
+struct SwangRunContext {
+    /// The run this evaluated set belongs to.
+    run: GenerationRunId,
+    /// The exact program text that was evaluated.
+    program: String,
+    /// The resolved source path, if the frontend read one.
+    source_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditionCandidate {
     /// Index into the Generate panel's set.
@@ -553,12 +567,11 @@ pub struct CockpitApp {
     /// recorded here with its provenance and the curator's verdict (S8 Slice 3).
     /// A new generation adds to it; it is never destroyed within a session.
     history: SessionHistory,
-    /// The current Generate set's generation-run id — one per `do_generate`
-    /// success, so every candidate of the set shares it and a new pass never
-    /// collides with an earlier one (S8 Slice 3).
-    gen_run: Option<GenerationRunId>,
-    /// The current Swang set's generation-run id — one per `swang_run` success.
-    swang_run_id: Option<GenerationRunId>,
+    /// The current Swang run's immutable context — its run id, evaluated
+    /// program, and resolved source — captured on a successful `swang_run`, so
+    /// a candidate's provenance never reads the live editor text (S8 Slice 3).
+    /// The Generate run's context lives with its set in `gen_panel.active`.
+    swang_ctx: Option<SwangRunContext>,
     /// Whether the history window is shown (the `y` key toggles it).
     history_open: bool,
     /// The playhead tick at the end of the last frame — so an input that
@@ -854,8 +867,7 @@ impl CockpitApp {
             current: None,
             ab_other: None,
             history: SessionHistory::new(),
-            gen_run: None,
-            swang_run_id: None,
+            swang_ctx: None,
             history_open: false,
             last_play_tick: 0,
             material: None,
@@ -1123,10 +1135,28 @@ impl CockpitApp {
         match outcome {
             Ok(set) => {
                 self.reset_audition(); // a new candidate set starts fresh (no stale A/B)
-                self.gen_run = Some(self.history.begin_run()); // a fresh run for this set
+                                       // Capture the run's request/input identity NOW, from the state
+                                       // that produced the set — the source seed, the ask, and the
+                                       // corpus's actual contribution — so no later knob change can
+                                       // rewrite a candidate's origin.
+                let context = GenerateRunContext {
+                    run: self.history.begin_run(),
+                    source: Some(
+                        self.gen_panel
+                            .source_tab()
+                            .map_or_else(|| self.title.clone(), |tab| tab.name.clone()),
+                    ),
+                    seed: ask.seed,
+                    bars: ask.bars,
+                    variants_per_strategy: ask.variants_per_strategy,
+                    corpus: CorpusContribution::from_pass(
+                        self.material.as_ref().map_or(0, |m| m.rhythms.len()),
+                        &set.summary,
+                    ),
+                };
                 let n = set.rows.len();
                 let tones = set.summary.scale_tones;
-                self.gen_panel.set = Some(set);
+                self.gen_panel.active = Some(ActiveGenerateRun { context, set });
                 self.gen_panel.status = Some(format!(
                     "{n} candidates ranked · {tones}-tone scale · seed {}",
                     ask.seed
@@ -1134,7 +1164,7 @@ impl CockpitApp {
                 self.show_candidate(0);
             }
             Err(err) => {
-                self.gen_panel.set = None;
+                self.gen_panel.active = None;
                 self.gen_panel.selected = None;
                 self.gen_panel.status = Some(format!("generate failed: {err}"));
             }
@@ -1143,40 +1173,35 @@ impl CockpitApp {
 
     /// Paints candidate `i` of the current set into the roll, recording it in
     /// the session history with its Generate provenance.
+    ///
+    /// The request/input fields come only from the run's immutable
+    /// [`GenerateRunContext`] — never from live panel state — so re-showing a
+    /// row (or showing one after a knob change) cannot rewrite its origin. Only
+    /// the candidate-specific result (strategy, variant seed, rank, aggregate)
+    /// is read from the row.
     fn show_candidate(&mut self, i: usize) {
-        let Some(set) = self.gen_panel.set.as_ref() else {
+        let Some(active) = self.gen_panel.active.as_ref() else {
             return;
         };
+        let set = &active.set;
+        let ctx = &active.context;
         let (Some(score), Some(row)) = (set.scores.get(i).cloned(), set.rows.get(i)) else {
             return;
         };
         let title = format!("#{} {} · {:.3}", row.rank, row.strategy, row.aggregate);
         let candidate_id = row.id.clone();
-        // Report what the corpus ACTUALLY contributed, from the pass result —
-        // an attached-but-empty corpus is honest "seed only", not "corpus".
-        let corpus_templates = self.material.as_ref().map_or(0, |m| m.rhythms.len());
         let generator = GeneratorProvenance::Generate {
-            source: self
-                .gen_panel
-                .source_tab()
-                .map_or_else(|| Some(self.title.clone()), |tab| Some(tab.name.clone())),
-            corpus: CorpusContribution::from_pass(corpus_templates, &set.summary),
-            seed: self.gen_panel.seed,
-            bars: self.gen_panel.bars,
-            variants_per_strategy: self.gen_panel.variants,
+            source: ctx.source.clone(),
+            corpus: ctx.corpus,
+            seed: ctx.seed,
+            bars: ctx.bars,
+            variants_per_strategy: ctx.variants_per_strategy,
             strategy: row.strategy.clone(),
             variant_seed: row.variant_seed,
             rank: row.rank,
             aggregate: row.aggregate,
         };
-        // Record the candidate (de-duped within this Generate run) and select
-        // it. A run is always live here — `do_generate` mints one before the
-        // first show — but fall back defensively so a stray call cannot panic.
-        let run = self.gen_run.unwrap_or_else(|| {
-            let r = self.history.begin_run();
-            self.gen_run = Some(r);
-            r
-        });
+        let run = ctx.run;
         let id = self
             .history
             .record(run, candidate_id, title.clone(), score.clone(), generator);
@@ -1292,7 +1317,7 @@ impl CockpitApp {
 
         use griff_core::midi::export_score;
 
-        let set = self.gen_panel.set.as_ref().ok_or("nothing generated yet")?;
+        let set = self.gen_panel.set().ok_or("nothing generated yet")?;
         let row = set.rows.get(i).ok_or("no such candidate")?;
         let score = set.scores.get(i).ok_or("no such candidate")?;
 
@@ -1592,7 +1617,14 @@ impl CockpitApp {
         self.swang.apply(&compiled, source, None);
         if let Some(i) = self.swang.selected {
             self.reset_audition(); // a new Swang generation session starts A/B fresh
-            self.swang_run_id = Some(self.history.begin_run()); // a fresh run for this set
+                                   // Capture the run's identity from the program just evaluated — its
+                                   // exact text and declared source — so later edits cannot rewrite a
+                                   // recorded candidate's provenance.
+            self.swang_ctx = Some(SwangRunContext {
+                run: self.history.begin_run(),
+                program: self.swang.text.clone(),
+                source_path: Some(compiled.source_path().to_owned()),
+            });
             self.swang_show(i);
         }
     }
@@ -1639,20 +1671,21 @@ impl CockpitApp {
             row.rank, row.strategy, row.aggregate
         );
         let candidate_id = row.id.clone();
+        // Program + source come from the run's captured context, never the live
+        // editor text. Without a context (no successful run yet) there is
+        // nothing honest to record.
+        let Some(ctx) = self.swang_ctx.as_ref() else {
+            return;
+        };
         let generator = GeneratorProvenance::Swang {
-            program: self.swang.text.clone(),
-            source_path: self.swang.source_path(),
+            program: ctx.program.clone(),
+            source_path: ctx.source_path.clone(),
             strategy: row.strategy.clone(),
             variant_seed: row.variant_seed,
             rank: row.rank,
             aggregate: row.aggregate,
         };
-        // Record the candidate (de-duped within this Swang run) and select it.
-        let run = self.swang_run_id.unwrap_or_else(|| {
-            let r = self.history.begin_run();
-            self.swang_run_id = Some(r);
-            r
-        });
+        let run = ctx.run;
         let id = self
             .history
             .record(run, candidate_id, title.clone(), score.clone(), generator);
@@ -1731,7 +1764,7 @@ impl CockpitApp {
         keep: &mut Option<usize>,
         open: &mut Option<usize>,
     ) {
-        let Some(set) = self.gen_panel.set.as_ref() else {
+        let Some(set) = self.gen_panel.set() else {
             ui.separator();
             ui.weak(match self.material {
                 Some(_) => "a corpus is loaded — generate to rank a candidate set",
@@ -3517,7 +3550,12 @@ mod tests {
         let mut app = demo_app();
         app.gen_panel.variants = 2;
         app.do_generate(); // shows Generate(0)
-        app.swang.set = app.gen_panel.set.clone(); // give Swang a set to paint
+        app.swang.set = app.gen_panel.set().cloned(); // give Swang a set to paint
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(),
+            program: app.swang.text.clone(),
+            source_path: None,
+        });
         app.swang_show(1); // now viewing Swang(1); leaving Generate(0)
         assert_eq!(
             app.ab_other,
@@ -3760,10 +3798,14 @@ mod tests {
         let mut app = demo_app();
         app.gen_panel.variants = 2;
         app.do_generate(); // borrow a 2-row set to stand in for a Swang set
-        app.swang.set = app.gen_panel.set.clone();
+        app.swang.set = app.gen_panel.set().cloned();
         let evaluated = "swang 1\n\n// the program that was evaluated\n".to_owned();
         app.swang.text = evaluated.clone();
-        app.swang_run_id = Some(app.history.begin_run());
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(),
+            program: evaluated.clone(),
+            source_path: None,
+        });
         app.swang_show(0); // record row 0 under the evaluated program
                            // The editor text changes; then A/B lands on another row of the SAME
                            // run — its provenance must be the evaluated program, not the live edit.
@@ -3787,7 +3829,12 @@ mod tests {
         let mut app = demo_app();
         app.gen_panel.variants = 2;
         app.do_generate();
-        app.swang.set = app.gen_panel.set.clone(); // give Swang a set to paint
+        app.swang.set = app.gen_panel.set().cloned(); // give Swang a set to paint
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(),
+            program: app.swang.text.clone(),
+            source_path: None,
+        });
         app.swang_show(0);
         let swang_entry = app
             .history
@@ -3865,8 +3912,12 @@ mod tests {
         app.gen_panel.variants = 2;
         app.do_generate();
         let gen_run = app.history.entries()[0].run;
-        app.swang.set = app.gen_panel.set.clone();
-        app.swang_run_id = Some(app.history.begin_run()); // a Swang run mints its own
+        app.swang.set = app.gen_panel.set().cloned();
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(), // a Swang run mints its own
+            program: app.swang.text.clone(),
+            source_path: None,
+        });
         app.swang_show(0);
         let swang_entry = app
             .history
@@ -4152,11 +4203,7 @@ mod tests {
         app.gen_panel.variants = 2;
         app.do_generate();
 
-        let set = app
-            .gen_panel
-            .set
-            .as_ref()
-            .expect("the demo seeds a request");
+        let set = app.gen_panel.set().expect("the demo seeds a request");
         assert!(
             !set.rows.is_empty(),
             "five strategies contribute candidates"
@@ -4179,12 +4226,12 @@ mod tests {
     fn selecting_a_candidate_paints_that_candidate() {
         let mut app = demo_app();
         app.do_generate();
-        let n = app.gen_panel.set.as_ref().expect("generated").rows.len();
+        let n = app.gen_panel.set().expect("generated").rows.len();
         assert!(n > 1, "more than one candidate to choose between");
 
         app.show_candidate(n - 1);
         assert_eq!(app.gen_panel.selected, Some(n - 1));
-        let last = &app.gen_panel.set.as_ref().expect("generated").rows[n - 1];
+        let last = &app.gen_panel.set().expect("generated").rows[n - 1];
         assert!(
             app.title.contains(&last.strategy),
             "the roll follows the selection: {}",
@@ -4198,7 +4245,7 @@ mod tests {
         app.gen_panel.source = Some(3); // no sources loaded — an impossible pick
         app.do_generate();
         assert!(
-            app.gen_panel.set.is_some(),
+            app.gen_panel.set().is_some(),
             "an out-of-range pick seeds from the displayed score, it does not fail",
         );
     }
