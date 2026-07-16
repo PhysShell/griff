@@ -10,6 +10,8 @@
 //! **typed** value, never a pre-baked UI string — a renderer builds its own
 //! description from it.
 
+use griff_core::score::Score;
+
 /// A curator's verdict on a candidate.
 ///
 /// Modelled as an `Option<Verdict>` on a history entry: `None` is undecided,
@@ -147,13 +149,125 @@ impl Provenance {
     }
 }
 
+/// A stable, session-local candidate identity — a monotonic id, **never an
+/// index into the list**, so it survives appends, verdicts, re-selection, and
+/// A/B without ever pointing at the wrong entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HistoryId(pub u64);
+
+/// One recorded candidate: an immutable snapshot plus the curator's mutable
+/// verdict. The snapshot (`score`, `provenance`, `candidate_id`, `title`) is
+/// fixed at record time; only `verdict` changes afterwards.
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    /// The stable identity.
+    pub id: HistoryId,
+    /// Creation order — a monotonic sequence number (equals `id.0`).
+    pub sequence: u64,
+    /// Which generator produced it.
+    pub source: CandidateSource,
+    /// The reproducible content id (`strategy#seed-hex`).
+    pub candidate_id: String,
+    /// The display label the roll showed it under.
+    pub title: String,
+    /// The candidate's score — an immutable snapshot, owned by the entry.
+    pub score: Score,
+    /// The curator's verdict, or `None` while undecided.
+    pub verdict: Option<Verdict>,
+    /// The candidate's typed origin.
+    pub provenance: Provenance,
+}
+
+/// The session's append-only candidate history.
+///
+/// A new generation **adds** to it; it never destroys prior entries. Entries
+/// are keyed by a stable [`HistoryId`], and selection is a separate pointer, so
+/// the record a curator built does not depend on the current UI selection.
+#[derive(Debug, Clone, Default)]
+pub struct SessionHistory {
+    /// Entries in creation order.
+    entries: Vec<HistoryEntry>,
+    /// The next id to hand out — monotonic, never reused.
+    next_id: u64,
+    /// The currently selected entry, if any (a view pointer, not identity).
+    selected: Option<HistoryId>,
+}
+
+impl SessionHistory {
+    /// An empty history.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records a shown candidate and returns its stable id.
+    ///
+    /// Append-only and **de-duplicated**: a candidate already present (same
+    /// source and content id) returns its existing id unchanged — no duplicate
+    /// row, and its verdict and snapshot are left intact. A genuinely new
+    /// candidate is appended with the next id; prior entries never move.
+    pub fn record(
+        &mut self,
+        candidate_id: String,
+        title: String,
+        score: Score,
+        generator: GeneratorProvenance,
+    ) -> HistoryId {
+        let _ = (candidate_id, title, score, generator);
+        unimplemented!("SessionHistory::record")
+    }
+
+    /// The entries, in creation order.
+    #[must_use]
+    pub fn entries(&self) -> &[HistoryEntry] {
+        unimplemented!("SessionHistory::entries")
+    }
+
+    /// The entry with `id`, if it exists.
+    #[must_use]
+    pub fn get(&self, id: HistoryId) -> Option<&HistoryEntry> {
+        let _ = id;
+        unimplemented!("SessionHistory::get")
+    }
+
+    /// Selects entry `id` (a no-op if it is not present).
+    pub fn select(&mut self, id: HistoryId) {
+        let _ = id;
+        unimplemented!("SessionHistory::select")
+    }
+
+    /// The selected entry's id, if any.
+    #[must_use]
+    pub fn selected(&self) -> Option<HistoryId> {
+        unimplemented!("SessionHistory::selected")
+    }
+
+    /// Applies verdict `action` to entry `id` via [`toggle`] (a no-op if the
+    /// entry is gone). Re-pressing the same verdict clears it.
+    pub fn set_verdict(&mut self, id: HistoryId, action: Verdict) {
+        let _ = (id, action);
+        unimplemented!("SessionHistory::set_verdict")
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::missing_assert_message, clippy::panic)]
 mod tests {
     use super::{
-        toggle, CandidateSource, GeneratorProvenance, Provenance, Verdict, PROVENANCE_SCHEMA,
-        PROVENANCE_VERSION,
+        toggle, CandidateSource, GeneratorProvenance, Provenance, SessionHistory, Verdict,
+        PROVENANCE_SCHEMA, PROVENANCE_VERSION,
     };
+    use griff_core::score::{LossReport, Score};
+
+    fn score() -> Score {
+        Score {
+            ticks_per_quarter: 960,
+            master_bars: Vec::new(),
+            tracks: Vec::new(),
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
 
     fn generate_gen() -> GeneratorProvenance {
         GeneratorProvenance::Generate {
@@ -251,5 +365,90 @@ mod tests {
             }
             GeneratorProvenance::Generate { .. } => panic!("a Swang candidate is not Generate"),
         }
+    }
+
+    #[test]
+    fn record_appends_an_entry_with_a_stable_id() {
+        let mut h = SessionHistory::new();
+        let id = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        assert_eq!(h.entries().len(), 1);
+        let entry = h.get(id).expect("the entry is retrievable by its id");
+        assert_eq!(entry.candidate_id, "a#1");
+        assert_eq!(entry.source, CandidateSource::Generate);
+        assert_eq!(entry.verdict, None);
+        assert_eq!(entry.provenance.schema, PROVENANCE_SCHEMA);
+        assert_eq!(entry.provenance.version, PROVENANCE_VERSION);
+    }
+
+    #[test]
+    fn a_new_result_appends_and_never_destroys_prior_entries() {
+        let mut h = SessionHistory::new();
+        let a = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        h.set_verdict(a, Verdict::Favorite);
+        let b = h.record("b#2".to_owned(), "B".to_owned(), score(), swang_gen());
+        assert_eq!(h.entries().len(), 2, "the new result is appended");
+        assert_ne!(a, b, "distinct candidates get distinct ids");
+        let first = h.get(a).expect("the first entry survives the new result");
+        assert_eq!(first.candidate_id, "a#1", "its snapshot is untouched");
+        assert_eq!(
+            first.verdict,
+            Some(Verdict::Favorite),
+            "its verdict is kept"
+        );
+        assert_eq!(first.sequence, 0, "and its order is fixed");
+    }
+
+    #[test]
+    fn re_recording_the_same_candidate_dedupes_to_its_id() {
+        let mut h = SessionHistory::new();
+        let a = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        h.set_verdict(a, Verdict::Favorite);
+        let again = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        assert_eq!(again, a, "the same candidate returns its existing id");
+        assert_eq!(h.entries().len(), 1, "no duplicate row");
+        assert_eq!(
+            h.get(a).expect("still there").verdict,
+            Some(Verdict::Favorite),
+            "re-showing a favourited candidate keeps the favourite",
+        );
+    }
+
+    #[test]
+    fn the_same_content_id_from_two_sources_is_two_entries() {
+        let mut h = SessionHistory::new();
+        let g = h.record("x#1".to_owned(), "G".to_owned(), score(), generate_gen());
+        let s = h.record("x#1".to_owned(), "S".to_owned(), score(), swang_gen());
+        assert_ne!(g, s, "Generate and Swang are distinct even at the same id");
+        assert_eq!(h.entries().len(), 2);
+    }
+
+    #[test]
+    fn set_verdict_toggles_and_stays_exclusive() {
+        let mut h = SessionHistory::new();
+        let a = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        h.set_verdict(a, Verdict::Favorite);
+        assert_eq!(h.get(a).unwrap().verdict, Some(Verdict::Favorite));
+        h.set_verdict(a, Verdict::Rejected);
+        assert_eq!(
+            h.get(a).unwrap().verdict,
+            Some(Verdict::Rejected),
+            "reject supplants favorite",
+        );
+        h.set_verdict(a, Verdict::Rejected);
+        assert_eq!(h.get(a).unwrap().verdict, None, "re-press clears it");
+    }
+
+    #[test]
+    fn selection_is_a_separate_pointer_from_the_entries() {
+        let mut h = SessionHistory::new();
+        let a = h.record("a#1".to_owned(), "A".to_owned(), score(), generate_gen());
+        let b = h.record("b#2".to_owned(), "B".to_owned(), score(), swang_gen());
+        assert_eq!(h.selected(), None, "nothing selected until asked");
+        h.select(b);
+        assert_eq!(h.selected(), Some(b));
+        // Selecting does not touch the entries, and both remain retrievable.
+        assert!(h.get(a).is_some() && h.get(b).is_some());
+        h.select(a);
+        assert_eq!(h.selected(), Some(a), "selection moves freely");
     }
 }
