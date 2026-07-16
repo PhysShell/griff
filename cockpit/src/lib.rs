@@ -36,6 +36,7 @@ use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
+use griff_ui_core::history::{GeneratorProvenance, HistoryId, SessionHistory};
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
@@ -477,6 +478,10 @@ enum AuditionCandidate {
     Generate(usize),
     /// Index into the Swang panel's set.
     Swang(usize),
+    /// A recorded candidate replayed from the session history, by its stable id
+    /// (S8 Slice 3) — so A/B and the playhead survive a switch to an entry from
+    /// an earlier generation whose panel set is long gone.
+    History(HistoryId),
 }
 
 /// The egui cockpit application: a `Scene` renderer over the shared core.
@@ -541,6 +546,10 @@ pub struct CockpitApp {
     /// The A/B "other" candidate — the last one viewed before `current`, of
     /// either source — that a single key swaps back to without regenerating.
     ab_other: Option<AuditionCandidate>,
+    /// The session's append-only candidate history: every candidate shown is
+    /// recorded here with its provenance and the curator's verdict (S8 Slice 3).
+    /// A new generation adds to it; it is never destroyed within a session.
+    history: SessionHistory,
     /// The playhead tick at the end of the last frame — so an input that
     /// seeks the head (a section jump) is noticed and the audio repositioned.
     last_play_tick: u32,
@@ -719,6 +728,7 @@ impl CockpitApp {
             loop_range: None,
             current: None,
             ab_other: None,
+            history: SessionHistory::new(),
             last_play_tick: 0,
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1001,7 +1011,8 @@ impl CockpitApp {
         }
     }
 
-    /// Paints candidate `i` of the current set into the roll.
+    /// Paints candidate `i` of the current set into the roll, recording it in
+    /// the session history with its Generate provenance.
     fn show_candidate(&mut self, i: usize) {
         let Some(set) = self.gen_panel.set.as_ref() else {
             return;
@@ -1010,6 +1021,27 @@ impl CockpitApp {
             return;
         };
         let title = format!("#{} {} · {:.3}", row.rank, row.strategy, row.aggregate);
+        let candidate_id = row.id.clone();
+        let generator = GeneratorProvenance::Generate {
+            source: self
+                .gen_panel
+                .source_tab()
+                .map_or_else(|| Some(self.title.clone()), |tab| Some(tab.name.clone())),
+            corpus: self.material.is_some(),
+            seed: self.gen_panel.seed,
+            bars: self.gen_panel.bars,
+            variants_per_strategy: self.gen_panel.variants,
+            gesture: set.summary.gesture.is_some(),
+            strategy: row.strategy.clone(),
+            variant_seed: row.variant_seed,
+            rank: row.rank,
+            aggregate: row.aggregate,
+        };
+        // Record the candidate (a de-duped, immutable snapshot) and select it.
+        let id = self
+            .history
+            .record(candidate_id, title.clone(), score.clone(), generator);
+        self.history.select(id);
         // Remember the candidate we are leaving (of either source) so `b` can
         // A/B back to it without a fresh generation pass.
         self.remember_shown(AuditionCandidate::Generate(i));
@@ -1019,14 +1051,31 @@ impl CockpitApp {
 
     /// A/B: swaps to the other of the last two candidates viewed — routing to
     /// the correct source, so a Swang candidate after a Generate one swaps back
-    /// to the Swang set, not a same-index Generate row. Keeps the playhead so
-    /// the comparison lands at the same spot. No regeneration.
+    /// to the Swang set (and a history entry back to its snapshot), never a
+    /// same-index row of the wrong set. Keeps the playhead so the comparison
+    /// lands at the same spot. No regeneration.
     fn ab_swap(&mut self) {
         match self.ab_other {
             Some(AuditionCandidate::Generate(i)) => self.show_candidate(i),
             Some(AuditionCandidate::Swang(i)) => self.swang_show(i),
+            Some(AuditionCandidate::History(id)) => self.select_history(id),
             None => {}
         }
+    }
+
+    /// Replays a recorded history candidate by its stable id: switches the roll
+    /// to its immutable snapshot through the same safe path as any score change
+    /// (`show_score` → `focus_on_track`: All Notes Off, loop remap, tempo, and
+    /// playhead all handled), and marks it selected. A no-op for an unknown id.
+    fn select_history(&mut self, id: HistoryId) {
+        let Some(entry) = self.history.get(id) else {
+            return;
+        };
+        let score = entry.score.clone();
+        let title = entry.title.clone();
+        self.history.select(id);
+        self.remember_shown(AuditionCandidate::History(id));
+        self.show_score(score, title);
     }
 
     /// Writes candidate `i` as a `.mid` plus a provenance sidecar naming the
@@ -1394,6 +1443,20 @@ impl CockpitApp {
             "swang #{} {} · {:.3}",
             row.rank, row.strategy, row.aggregate
         );
+        let candidate_id = row.id.clone();
+        let generator = GeneratorProvenance::Swang {
+            program: self.swang.text.clone(),
+            source_path: self.swang.source_path(),
+            strategy: row.strategy.clone(),
+            variant_seed: row.variant_seed,
+            rank: row.rank,
+            aggregate: row.aggregate,
+        };
+        // Record the candidate (a de-duped, immutable snapshot) and select it.
+        let id = self
+            .history
+            .record(candidate_id, title.clone(), score.clone(), generator);
+        self.history.select(id);
         // Swang candidates record into A/B too, so `b` can compare a Swang take
         // against the last candidate of either source.
         self.remember_shown(AuditionCandidate::Swang(i));
@@ -3270,6 +3333,193 @@ mod tests {
         assert!(
             app.ab_other.is_none() && app.current.is_none(),
             "a new generation session starts A/B empty",
+        );
+    }
+
+    // ── S8 Slice 3: history / favorite-reject / provenance ────────────────────
+
+    #[test]
+    fn showing_a_generate_candidate_records_it_with_generate_provenance() {
+        use griff_ui_core::history::{CandidateSource, GeneratorProvenance};
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 7;
+        app.do_generate(); // shows candidate 0 → records it
+        assert_eq!(
+            app.history.entries().len(),
+            1,
+            "the shown candidate is recorded"
+        );
+        let entry = &app.history.entries()[0];
+        assert_eq!(entry.source, CandidateSource::Generate);
+        assert_eq!(entry.verdict, None, "recorded undecided");
+        match &entry.provenance.generator {
+            GeneratorProvenance::Generate { seed, bars, .. } => {
+                assert_eq!(*seed, 7, "the ask seed is captured honestly");
+                assert_eq!(*bars, app.gen_panel.bars);
+            }
+            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+        }
+    }
+
+    #[test]
+    fn showing_a_swang_candidate_records_it_with_swang_provenance() {
+        use griff_ui_core::history::{CandidateSource, GeneratorProvenance};
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.swang.set = app.gen_panel.set.clone(); // give Swang a set to paint
+        app.swang_show(0);
+        let swang_entry = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::Swang)
+            .expect("the Swang candidate is recorded");
+        match &swang_entry.provenance.generator {
+            GeneratorProvenance::Swang { program, .. } => {
+                assert!(!program.is_empty(), "the program text is captured");
+            }
+            GeneratorProvenance::Generate { .. } => panic!("a Swang candidate is not Generate"),
+        }
+    }
+
+    #[test]
+    fn a_new_generation_appends_to_history_without_destroying_it() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 1;
+        app.do_generate();
+        app.show_candidate(1); // a second distinct candidate this run
+        let after_first = app.history.entries().len();
+        assert!(after_first >= 2);
+        app.gen_panel.seed = 999; // a different ask → different candidates
+        app.do_generate();
+        assert!(
+            app.history.entries().len() > after_first,
+            "the new generation appends; the earlier run's entries survive",
+        );
+    }
+
+    #[test]
+    fn selecting_from_history_switches_the_score_and_silences_the_old() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // Generate(0) recorded as the first entry
+        let first = app.history.entries()[0].id;
+        app.show_candidate(1); // a second entry; now playing this one
+        app.vp.play_tick = 300;
+        app.vp.playing = true;
+        app.advance_audio(0.2); // sound some notes
+        app.select_history(first); // jump back to the first via history
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the old score's notes are silenced on a history switch",
+        );
+        assert_eq!(app.history.selected(), Some(first), "the entry is selected");
+        assert!(
+            app.vp.play_tick <= app.ctx.tick_end,
+            "the playhead belongs to the active score",
+        );
+    }
+
+    #[test]
+    fn ab_swaps_between_a_history_entry_and_a_panel_candidate() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let first = app.history.entries()[0].id;
+        app.select_history(first); // now current = History(first)
+        app.show_candidate(1); // leaving History(first) for Generate(1)
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::History(first)),
+            "the history entry is the A/B target",
+        );
+        app.ab_swap(); // back to the history entry
+        assert_eq!(
+            app.history.selected(),
+            Some(first),
+            "routed to the history entry"
+        );
+    }
+
+    #[test]
+    fn selecting_a_shorter_history_snapshot_remaps_the_loop() {
+        use griff_ui_core::history::GeneratorProvenance;
+        let mut app = CockpitApp::from_score(n_bar_score(2), "A".to_owned());
+        app.set_loop_bars(true, 1, 1); // loop A's second bar
+        assert!(app.loop_range.is_some());
+        // Inject a one-bar snapshot into history and jump to it.
+        let short = app.history.record(
+            "short#1".to_owned(),
+            "B".to_owned(),
+            n_bar_score(1),
+            GeneratorProvenance::Generate {
+                source: None,
+                corpus: false,
+                seed: 0,
+                bars: 1,
+                variants_per_strategy: 1,
+                gesture: false,
+                strategy: "auto".to_owned(),
+                variant_seed: 1,
+                rank: 1,
+                aggregate: 0.0,
+            },
+        );
+        app.vp.playing = true;
+        app.select_history(short);
+        let end = app.ctx.tick_end;
+        assert!(end <= 3840, "B is one bar");
+        if let Some((lo, hi)) = app.loop_range {
+            assert!(lo < hi && hi <= end, "a kept loop is clamped inside B");
+        }
+        for _ in 0..40 {
+            app.advance_audio(0.05);
+            assert!(app.vp.play_tick <= end, "playback never exceeds B's end");
+        }
+    }
+
+    #[test]
+    fn fast_successive_history_switches_leave_no_hung_notes() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 3;
+        app.do_generate();
+        app.show_candidate(1);
+        app.show_candidate(2); // three entries recorded
+        let ids: Vec<_> = app.history.entries().iter().map(|e| e.id).collect();
+        app.vp.playing = true;
+        for &id in ids.iter().cycle().take(12) {
+            app.advance_audio(0.03);
+            app.select_history(id);
+            assert_eq!(
+                app.player.active_count(),
+                0,
+                "every rapid switch silences the old score",
+            );
+        }
+        assert_eq!(app.history.selected(), ids.last().copied());
+    }
+
+    #[test]
+    fn set_verdict_on_a_history_entry_toggles_favorite_and_reject() {
+        use griff_ui_core::history::Verdict;
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let id = app.history.entries()[0].id;
+        app.history.set_verdict(id, Verdict::Favorite);
+        assert_eq!(
+            app.history.get(id).unwrap().verdict,
+            Some(Verdict::Favorite)
+        );
+        app.history.set_verdict(id, Verdict::Rejected);
+        assert_eq!(
+            app.history.get(id).unwrap().verdict,
+            Some(Verdict::Rejected),
+            "reject supplants favorite",
         );
     }
 
