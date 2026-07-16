@@ -36,7 +36,7 @@ use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
-use griff_ui_core::history::{GeneratorProvenance, HistoryId, SessionHistory};
+use griff_ui_core::history::{GeneratorProvenance, HistoryId, Provenance, SessionHistory, Verdict};
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
@@ -605,6 +605,15 @@ fn remap_loop_range(
     let lo = *bar_lines.get(a)?;
     let hi = *bar_lines.get(b.saturating_add(1).min(last))?;
     (lo < hi && hi <= tick_end).then_some((lo, hi))
+}
+
+/// A one-line human description of a candidate's typed provenance — built here,
+/// in the UI layer, so the model stays a typed value and never a baked string.
+/// Names the generator, the ask (Generate) or the source (Swang), and the
+/// candidate's rank — enough to tell where a history row came from at a glance.
+fn provenance_summary(p: &Provenance) -> String {
+    let _ = p;
+    unimplemented!("provenance_summary")
 }
 
 /// The most loop revolutions one frame may play before the transport takes a
@@ -3520,6 +3529,50 @@ mod tests {
             app.history.get(id).unwrap().verdict,
             Some(Verdict::Rejected),
             "reject supplants favorite",
+        );
+    }
+
+    #[test]
+    fn provenance_summary_names_the_generator_and_the_ask() {
+        use griff_ui_core::history::{GeneratorProvenance, Provenance};
+        let gen = Provenance::new(
+            0,
+            "auto#1".to_owned(),
+            GeneratorProvenance::Generate {
+                source: Some("riff.mid".to_owned()),
+                corpus: true,
+                seed: 7,
+                bars: 8,
+                variants_per_strategy: 2,
+                gesture: true,
+                strategy: "auto".to_owned(),
+                variant_seed: 1,
+                rank: 3,
+                aggregate: 0.5,
+            },
+        );
+        let line = provenance_summary(&gen);
+        assert!(line.contains("generate"), "names the generator: {line}");
+        assert!(line.contains('7'), "carries the ask seed: {line}");
+        assert!(line.contains('3'), "carries the rank: {line}");
+
+        let swang = Provenance::new(
+            1,
+            "auto#1".to_owned(),
+            GeneratorProvenance::Swang {
+                program: "swang 1".to_owned(),
+                source_path: Some("riff.mid".to_owned()),
+                strategy: "auto".to_owned(),
+                variant_seed: 1,
+                rank: 2,
+                aggregate: 0.5,
+            },
+        );
+        let line = provenance_summary(&swang);
+        assert!(line.contains("swang"), "names the Swang generator: {line}");
+        assert!(
+            !line.contains("seed 7"),
+            "a Swang line never shows a Generate-only ask: {line}",
         );
     }
 
