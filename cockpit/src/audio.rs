@@ -60,6 +60,19 @@ fn drain_pitch<V: Voiced>(voices: &mut Vec<V>, pitch: u8) -> Vec<V> {
 #[cfg(target_arch = "wasm32")]
 pub use web::Synth;
 
+/// Where a still-open MIDI connection lands after a port rescan.
+///
+/// `Some(i)` re-selects the port now at index `i` — matched by **name**, since
+/// a rescan rebuilds the index space and a device may have reordered, so the
+/// old index can point at a different port. `None` means the connected device
+/// is gone from the new list, so the caller drops the stale connection. Pure,
+/// so the remap is unit-tested without a real MIDI device.
+#[cfg(not(target_arch = "wasm32"))]
+fn remap_selection(connected_name: Option<&str>, ports: &[String]) -> Option<usize> {
+    let _ = (connected_name, ports);
+    unimplemented!("remap_selection")
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::Synth;
 
@@ -386,7 +399,44 @@ mod web {
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_pitch, midi_to_hz, Voiced};
+    use super::{drain_pitch, midi_to_hz, remap_selection, Voiced};
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_rescan_remaps_a_still_present_port_to_its_new_index() {
+        // #125 re-review 4: a rescan rebuilds the index space. The port a
+        // connection is open to may have moved — re-anchor `selected` to it by
+        // name, not leave it pointing at whatever is now at the old index.
+        let before = names(&["Bus A", "Bus B"]);
+        let after = names(&["Bus B", "Bus A"]); // reordered
+        assert_eq!(
+            remap_selection(Some("Bus B"), &before),
+            Some(1),
+            "found at its original index",
+        );
+        assert_eq!(
+            remap_selection(Some("Bus B"), &after),
+            Some(0),
+            "re-anchored to its new index after the reorder",
+        );
+    }
+
+    #[test]
+    fn a_rescan_drops_a_vanished_port() {
+        // #125 re-review 4: if the connected device is gone from the new list,
+        // the remap yields None so the caller invalidates conn + selected.
+        let after = names(&["Bus A", "Bus C"]);
+        assert_eq!(
+            remap_selection(Some("Bus B"), &after),
+            None,
+            "the connected device left — drop the stale connection",
+        );
+        assert_eq!(remap_selection(None, &after), None, "nothing was connected");
+    }
+
 
     /// A test voice — only its pitch matters to `drain_pitch`.
     struct MockVoice(u8);
