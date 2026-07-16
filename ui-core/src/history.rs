@@ -149,15 +149,17 @@ impl Provenance {
     }
 }
 
-/// A stable, session-local candidate identity — a monotonic id, **never an
-/// index into the list**, so it survives appends, verdicts, re-selection, and
-/// A/B without ever pointing at the wrong entry.
+/// A stable, session-local candidate identity.
+///
+/// A monotonic id, **never an index into the list**, so it survives appends,
+/// verdicts, re-selection, and A/B without ever pointing at the wrong entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HistoryId(pub u64);
 
-/// One recorded candidate: an immutable snapshot plus the curator's mutable
-/// verdict. The snapshot (`score`, `provenance`, `candidate_id`, `title`) is
-/// fixed at record time; only `verdict` changes afterwards.
+/// One recorded candidate: an immutable snapshot plus a mutable verdict.
+///
+/// The snapshot (`score`, `provenance`, `candidate_id`, `title`) is fixed at
+/// record time; only `verdict` changes afterwards.
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
     /// The stable identity.
@@ -213,45 +215,73 @@ impl SessionHistory {
         score: Score,
         generator: GeneratorProvenance,
     ) -> HistoryId {
-        let _ = (candidate_id, title, score, generator);
-        unimplemented!("SessionHistory::record")
+        let provenance = Provenance::new(self.next_id, candidate_id.clone(), generator);
+        let source = provenance.source();
+        // De-dupe: the same candidate (source + content id) keeps its id, its
+        // snapshot, and its verdict — re-showing it never appends a duplicate.
+        if let Some(existing) = self
+            .entries
+            .iter()
+            .find(|e| e.source == source && e.candidate_id == candidate_id)
+        {
+            return existing.id;
+        }
+        let id = HistoryId(self.next_id);
+        self.entries.push(HistoryEntry {
+            id,
+            sequence: self.next_id,
+            source,
+            candidate_id,
+            title,
+            score,
+            verdict: None,
+            provenance,
+        });
+        self.next_id = self.next_id.saturating_add(1);
+        id
     }
 
     /// The entries, in creation order.
     #[must_use]
     pub fn entries(&self) -> &[HistoryEntry] {
-        unimplemented!("SessionHistory::entries")
+        &self.entries
     }
 
     /// The entry with `id`, if it exists.
     #[must_use]
     pub fn get(&self, id: HistoryId) -> Option<&HistoryEntry> {
-        let _ = id;
-        unimplemented!("SessionHistory::get")
+        self.entries.iter().find(|e| e.id == id)
     }
 
     /// Selects entry `id` (a no-op if it is not present).
     pub fn select(&mut self, id: HistoryId) {
-        let _ = id;
-        unimplemented!("SessionHistory::select")
+        if self.entries.iter().any(|e| e.id == id) {
+            self.selected = Some(id);
+        }
     }
 
     /// The selected entry's id, if any.
     #[must_use]
-    pub fn selected(&self) -> Option<HistoryId> {
-        unimplemented!("SessionHistory::selected")
+    pub const fn selected(&self) -> Option<HistoryId> {
+        self.selected
     }
 
     /// Applies verdict `action` to entry `id` via [`toggle`] (a no-op if the
     /// entry is gone). Re-pressing the same verdict clears it.
     pub fn set_verdict(&mut self, id: HistoryId, action: Verdict) {
-        let _ = (id, action);
-        unimplemented!("SessionHistory::set_verdict")
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
+            entry.verdict = toggle(entry.verdict, action);
+        }
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::missing_assert_message, clippy::panic)]
+#[allow(
+    clippy::missing_assert_message,
+    clippy::panic,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::{
         toggle, CandidateSource, GeneratorProvenance, Provenance, SessionHistory, Verdict,
