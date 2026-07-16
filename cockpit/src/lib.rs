@@ -598,6 +598,42 @@ fn remap_loop_range(
     (lo < hi && hi <= tick_end).then_some((lo, hi))
 }
 
+/// The most loop revolutions one frame may play before the transport takes a
+/// bounded hitch and lands at the loop start. Far above any real per-frame lap
+/// count (a frame is capped at 0.1 s, a loop is at least a bar), so only a
+/// pathological `dt` is bounded — a normal revolution is never dropped.
+const MAX_LOOP_WRAPS: usize = 1024;
+
+/// One transport action inside a looped frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopStep {
+    /// Play forward to this tick, from wherever the cursor sits.
+    PlayTo(u32),
+    /// Wrap: silence and reposition to this tick (the loop start).
+    Wrap(u32),
+}
+
+/// Splits a looped frame of `dt` seconds into ordered steps: the tail up to
+/// `hi`, then a full `lo..hi` for **every** whole revolution the frame laps,
+/// then the remainder to the resume tick. The time to reach `hi` is measured
+/// with [`TempoMap::time_to`] and the tempo is re-read at `lo` after each wrap,
+/// so no revolution is silently dropped and the wrapped part never runs at the
+/// tempo past `hi`. A head outside `[lo, hi)` wraps in first; a pathological
+/// `dt` is bounded by [`MAX_LOOP_WRAPS`]. Returns the steps and the fractional
+/// resume position. Pure, so the split is unit-tested against exact spans.
+fn plan_loop(
+    pos: f64,
+    dt: f64,
+    lo: u32,
+    hi: u32,
+    tempo: &TempoMap,
+    ppq: u16,
+    scale: f64,
+) -> (Vec<LoopStep>, f64) {
+    let _ = (pos, dt, lo, hi, tempo, ppq, scale);
+    unimplemented!("plan_loop")
+}
+
 /// Each track's display name (`track N` when unnamed), in order — the labels for
 /// the toolbar's track selector.
 fn track_labels(score: &Score) -> Vec<String> {
@@ -2814,6 +2850,77 @@ mod tests {
     }
 
     // ── S8 Slice 2: transport ────────────────────────────────────────────────
+
+    #[test]
+    fn a_looped_frame_that_laps_plays_tail_then_full_then_remainder() {
+        // #125 correctness: a frame that spans more than one loop length must
+        // play the tail, then a FULL revolution, then the remainder — the old
+        // advance-then-modulo dropped the middle lap (right coordinate, wrong
+        // music). head 150, a 300-tick frame, loop [0,200).
+        let tempo = TempoMap::single(120.0);
+        let ppq = 480;
+        let tps = ticks_per_second(ppq, 120.0, 1.0);
+        let (steps, resume) = plan_loop(150.0, 300.0 / tps, 0, 200, &tempo, ppq, 1.0);
+        assert_eq!(
+            steps,
+            vec![
+                LoopStep::PlayTo(200), // 150 → 200 tail
+                LoopStep::Wrap(0),
+                LoopStep::PlayTo(200), // 0 → 200 the full revolution, not dropped
+                LoopStep::Wrap(0),
+                LoopStep::PlayTo(50), // 0 → 50 remainder
+            ],
+        );
+        assert_eq!(resume as u32, 50, "and the head resumes at 50");
+    }
+
+    #[test]
+    fn a_looped_frame_ignores_the_tempo_past_the_loop_end() {
+        // #125 correctness: a 1000-BPM segment begins exactly at the loop end.
+        // The wrapped spans use the in-loop 120 BPM, so the plan is identical to
+        // the flat-tempo case — the tempo past `hi` is never consulted.
+        let bent = TempoMap::new(vec![(0, 120.0), (200, 1000.0)]);
+        let ppq = 480;
+        let tps = ticks_per_second(ppq, 120.0, 1.0);
+        let (steps, resume) = plan_loop(150.0, 300.0 / tps, 0, 200, &bent, ppq, 1.0);
+        assert_eq!(
+            steps,
+            vec![
+                LoopStep::PlayTo(200),
+                LoopStep::Wrap(0),
+                LoopStep::PlayTo(200),
+                LoopStep::Wrap(0),
+                LoopStep::PlayTo(50),
+            ],
+            "the wrap uses the loop-start tempo, not the fast tail",
+        );
+        assert_eq!(resume as u32, 50);
+    }
+
+    #[test]
+    fn a_looped_frame_wraps_a_head_that_sits_past_the_loop_end() {
+        // A loop set while the head is past its end wraps in first, then plays.
+        let tempo = TempoMap::single(120.0);
+        let (steps, _) = plan_loop(500.0, 0.0, 0, 200, &tempo, 480, 1.0);
+        assert_eq!(
+            steps.first(),
+            Some(&LoopStep::Wrap(0)),
+            "the stray head wraps in"
+        );
+    }
+
+    #[test]
+    fn a_looped_frame_is_bounded_for_an_absurd_dt() {
+        // A pathological dt does not spin forever — it takes a bounded hitch and
+        // lands at the loop start.
+        let tempo = TempoMap::single(120.0);
+        let (steps, resume) = plan_loop(0.0, 1_000_000.0, 0, 200, &tempo, 480, 1.0);
+        assert!(
+            steps.len() <= 2 * MAX_LOOP_WRAPS + 1,
+            "bounded, not unbounded"
+        );
+        assert_eq!(resume as u32, 0, "and settles at the loop start");
+    }
 
     #[test]
     fn remap_loop_range_keeps_present_bars_and_clamps_to_the_end() {
