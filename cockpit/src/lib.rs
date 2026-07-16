@@ -3606,6 +3606,181 @@ mod tests {
         );
     }
 
+    // ── S8 Slice 3 re-review: Generate provenance is captured at run time ─────
+
+    /// The Generate provenance of the last-recorded candidate.
+    fn last_generate(app: &CockpitApp) -> (Option<String>, u64, usize, usize, bool) {
+        use griff_ui_core::history::GeneratorProvenance;
+        match &app
+            .history
+            .entries()
+            .last()
+            .expect("an entry")
+            .provenance
+            .generator
+        {
+            GeneratorProvenance::Generate {
+                source,
+                seed,
+                bars,
+                variants_per_strategy,
+                corpus,
+                ..
+            } => (
+                source.clone(),
+                *seed,
+                *bars,
+                *variants_per_strategy,
+                corpus.is_seed_only(),
+            ),
+            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+        }
+    }
+
+    fn two_rhythm_material() -> CorpusMaterial {
+        use griff_core::event::Ticks;
+        use griff_core::generate::RhythmTemplate;
+        CorpusMaterial {
+            rhythms: vec![
+                RhythmTemplate::from_durations(&[Ticks(480)]),
+                RhythmTemplate::from_durations(&[Ticks(240)]),
+            ],
+            references: Vec::new(),
+            gesture: None,
+            skipped: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn generate_source_is_the_run_seed_not_a_shown_candidate_title() {
+        // P1: showing candidate 1 after candidate 0 must record the run's seed
+        // score ("demo"), not candidate 0's display title (which show_score set).
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // shows candidate 0 → title becomes its own
+        app.show_candidate(1);
+        assert_eq!(
+            last_generate(&app).0.as_deref(),
+            Some("demo"),
+            "the source is the seed score, not a shown candidate's title",
+        );
+    }
+
+    #[test]
+    fn generate_provenance_keeps_the_runs_seed_after_a_knob_change() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        app.gen_panel.seed = 99; // change the knob after the set was produced
+        app.show_candidate(1);
+        assert_eq!(last_generate(&app).1, 5, "the old row keeps the run's seed");
+    }
+
+    #[test]
+    fn generate_provenance_keeps_the_runs_bars_and_variants() {
+        let mut app = demo_app();
+        app.gen_panel.bars = 4;
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.gen_panel.bars = 16;
+        app.gen_panel.variants = 5;
+        app.show_candidate(1);
+        let (_, _, bars, variants, _) = last_generate(&app);
+        assert_eq!(bars, 4, "the old row keeps the run's bars");
+        assert_eq!(variants, 2, "the old row keeps the run's variants");
+    }
+
+    #[test]
+    fn generate_provenance_keeps_seed_only_after_a_corpus_is_attached() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // no corpus → seed-only
+        app.material = Some(two_rhythm_material()); // attach one afterwards
+        app.show_candidate(1);
+        assert!(
+            last_generate(&app).4,
+            "the old row's contribution stays seed-only — attachment is not the run",
+        );
+    }
+
+    #[test]
+    fn generate_source_keeps_the_run_tab_after_the_selection_changes() {
+        let mut app = demo_app();
+        app.gen_panel.sources = vec![generation::SourceTab {
+            name: "tabA.mid".to_owned(),
+            bytes: include_bytes!("../assets/demo.mid").to_vec(),
+        }];
+        app.gen_panel.source = Some(0);
+        app.gen_panel.variants = 2;
+        app.do_generate(); // seeded from tabA.mid
+        app.gen_panel.source = None; // change the selection afterwards
+        app.show_candidate(1);
+        assert_eq!(
+            last_generate(&app).0.as_deref(),
+            Some("tabA.mid"),
+            "the old row keeps the tab that seeded its run",
+        );
+    }
+
+    #[test]
+    fn re_showing_a_row_does_not_rewrite_its_provenance() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        let before = app.history.entries()[0].provenance.clone();
+        app.gen_panel.seed = 999; // mutate, then re-show the same row
+        app.show_candidate(0);
+        assert_eq!(
+            app.history.entries()[0].provenance,
+            before,
+            "re-showing a row of its run does not rewrite its origin",
+        );
+    }
+
+    #[test]
+    fn a_new_generate_run_captures_the_changed_settings() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        app.gen_panel.seed = 42;
+        app.do_generate(); // a fresh run reads the new settings
+        assert_eq!(
+            last_generate(&app).1,
+            42,
+            "the new run captures the new seed"
+        );
+    }
+
+    #[test]
+    fn swang_provenance_is_tied_to_the_evaluated_program_not_live_text() {
+        use griff_ui_core::history::GeneratorProvenance;
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // borrow a 2-row set to stand in for a Swang set
+        app.swang.set = app.gen_panel.set.clone();
+        let evaluated = "swang 1\n\n// the program that was evaluated\n".to_owned();
+        app.swang.text = evaluated.clone();
+        app.swang_run_id = Some(app.history.begin_run());
+        app.swang_show(0); // record row 0 under the evaluated program
+                           // The editor text changes; then A/B lands on another row of the SAME
+                           // run — its provenance must be the evaluated program, not the live edit.
+        app.swang.text = "swang 1\n\n// EDITED AFTERWARDS\n".to_owned();
+        app.swang_show(1);
+        let entry = app.history.entries().last().expect("a swang entry");
+        match &entry.provenance.generator {
+            GeneratorProvenance::Swang { program, .. } => {
+                assert_eq!(
+                    *program, evaluated,
+                    "the program is the run's evaluated text"
+                );
+            }
+            GeneratorProvenance::Generate { .. } => panic!("expected a Swang candidate"),
+        }
+    }
+
     #[test]
     fn showing_a_swang_candidate_records_it_with_swang_provenance() {
         use griff_ui_core::history::{CandidateSource, GeneratorProvenance};
