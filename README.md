@@ -30,3 +30,52 @@ cargo test --workspace
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
+
+## Corpus quickstart (the cockpit, S8)
+
+The cockpit generates from an open score alone, or — with a **corpus** — from
+curated material: rhythm templates, novelty references, and burst/rest
+gesture statistics, plus the corpus's tabs as the seed pick-list.
+
+Run the native cockpit over an existing corpus:
+
+```
+cargo run --release -p griff-cockpit -- --corpus /path/to/corpus --out /path/to/keeps
+```
+
+Then: open **Generate** (`g`) → pick a seed tab → set seed / bars / candidates
+/ gesture → **Generate** → click the ranked candidates → **▶** to hear them,
+drag the tempo, **loop** a bar range, **A/B** (`b`) two of them → **Keep**
+writes the MIDI and a provenance sidecar into `--out`.
+
+Build a test corpus from a couple of tabs (the generation loader reads the
+`*.chunk.json` records directly; `manifest` is a coverage check, not required
+at runtime):
+
+```
+mkdir -p corpus
+cp tabs/song1.gp5 tabs/song2.gp5 corpus/
+cargo run --release -p griff-cli -- split corpus/song1.gp5 -o corpus/song1
+cargo run --release -p griff-cli -- split corpus/song2.gp5 -o corpus/song2
+cargo run --release -p griff-cli -- manifest corpus
+cargo run --release -p griff-cockpit -- --corpus corpus --out keeps
+```
+
+Without `--corpus`, generation uses only the open score — no corpus rhythms,
+references, or gesture — so it reads as an honest early rule generator handed
+one file.
+
+### Generate vs Swang, with a corpus — they differ, on purpose
+
+- **Generate panel + corpus:** the corpus supplies the **rhythm**, novelty
+  references, and gesture.
+- **Swang + corpus:** a Swang program already fixes the rhythm through its
+  `ascii` kernel. By the frozen precedence **explicit pattern > corpus > source
+  first bar**, the corpus does **not** replace the kernel's rhythm; it still
+  contributes novelty and gesture, but the grid comes from the program.
+
+So to *play with a real corpus's rhythms*, use the **Generate** panel, not
+Swang. That precedence is frozen (ADR-0029 §7) and does not change here.
+
+Playback (native MIDI or the browser's Web Audio) is identical for a Generate
+candidate and a Swang candidate — both are just a `Score`.

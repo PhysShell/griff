@@ -942,6 +942,11 @@ impl CockpitApp {
                         ui.weak(status);
                     }
                 });
+                ui.weak(if self.material.is_some() {
+                    "mode: corpus rhythms + novelty + gesture"
+                } else {
+                    "mode: seed only — no corpus (run with --corpus for rhythms)"
+                });
 
                 self.generate_candidates(ui, &mut show, &mut keep, &mut open);
             });
@@ -1063,6 +1068,7 @@ impl CockpitApp {
             }
         }
 
+        ui.weak("mode: Swang explicit rhythm (the ascii kernel) — a corpus would add novelty/gesture, never the grid");
         self.swang_candidates(ui, &mut actions.click);
         actions
     }
