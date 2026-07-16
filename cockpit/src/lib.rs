@@ -36,6 +36,9 @@ use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
+use griff_ui_core::playback::{ticks_per_second, Player};
+
+use audio::Synth;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
 use griff_ui_core::generate::generate_set;
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
@@ -502,6 +505,23 @@ pub struct CockpitApp {
     /// The Swang editor: program text, diagnostics, the last run's candidates
     /// (S8 Playground).
     swang: SwangPanel,
+    /// The playback backend — native MIDI or web audio (S8 Slice 2).
+    synth: Synth,
+    /// The note schedule of the shown score, driven as the playhead sweeps.
+    player: Player,
+    /// Playback-speed multiplier over the score's written tempo — `1.0` plays
+    /// as written, `2.0` at double speed. A tempo audition override: it never
+    /// touches the Score, its MIDI export, or provenance.
+    tempo_scale: f64,
+    /// The loop range in ticks, when looping is on: playback wraps to the
+    /// start when it reaches the end.
+    loop_range: Option<(u32, u32)>,
+    /// The A/B "other" candidate index — the one a single key swaps to and
+    /// from without a fresh generation pass.
+    ab_other: Option<usize>,
+    /// The playhead tick at the end of the last frame — so an input that
+    /// seeks the head (a section jump) is noticed and the audio repositioned.
+    last_play_tick: u32,
     /// The corpus material a generation pass consumes — rhythm templates,
     /// novelty references, the gesture ask. `None` until a corpus is loaded;
     /// a pass then seeds from the displayed score alone.
@@ -547,6 +567,7 @@ impl CockpitApp {
         let ctx = build_context(&view, &analysis);
         let mut vp = Viewport::new(&ctx, view.high_pitch);
         vp.show_inspector = false; // the capture panel starts hidden (the `i` key shows it)
+        let player = Player::from_view(&view);
         Self {
             view,
             analysis,
@@ -566,6 +587,12 @@ impl CockpitApp {
             track_names: Vec::new(),
             gen_panel: GeneratePanel::new(),
             swang: SwangPanel::default(),
+            synth: Synth::new(),
+            player,
+            tempo_scale: 1.0,
+            loop_range: None,
+            ab_other: None,
+            last_play_tick: 0,
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
             out_dir: PathBuf::from("keeps"),
@@ -609,12 +636,58 @@ impl CockpitApp {
         let ctx = build_context(&view, &analysis);
         let mut vp = Viewport::new(&ctx, view.high_pitch);
         vp.show_inspector = self.vp.show_inspector; // keep the panel state across a switch
+                                                    // Keep the playhead across a candidate switch, so A/B compares the same
+                                                    // spot; a fresh file resets it explicitly (see `load`).
+        vp.play_tick = self.vp.play_tick.min(ctx.tick_end);
+        vp.playing = self.vp.playing;
         self.view = view;
         self.analysis = analysis;
         self.ctx = ctx;
         self.vp = vp;
         self.selected_track = track.min(n.saturating_sub(1));
         self.fitted = false;
+        // Rebuild the note schedule for the new score and reposition it under
+        // the playhead — silencing whatever the old score left ringing.
+        self.player = Player::from_view(&self.view);
+        self.player.seek(self.vp.play_tick, &mut self.synth);
+    }
+
+    /// Advances the playhead by `dt` seconds at the auditioned tempo, firing
+    /// the note events the head crossed. Wraps to the loop start (silencing
+    /// first) when looping, else stops and silences at the end.
+    fn advance_audio(&mut self, dt: f64) {
+        let tps = ticks_per_second(self.ctx.ppq, self.ctx.tempo_bpm, self.tempo_scale);
+        let step = (tps * dt) as u32;
+        let now = self.vp.play_tick.saturating_add(step.max(1));
+
+        let (lo, hi) = self
+            .loop_range
+            .unwrap_or((self.ctx.tick_start, self.ctx.tick_end));
+        if now >= hi {
+            if self.loop_range.is_some() {
+                self.vp.play_tick = lo;
+                self.player.seek(lo, &mut self.synth); // wrap: silence + reposition
+            } else {
+                self.vp.play_tick = self.ctx.tick_end;
+                self.player.advance_to(self.ctx.tick_end, &mut self.synth);
+                self.player.silence(&mut self.synth);
+                self.vp.playing = false;
+            }
+            return;
+        }
+        self.vp.play_tick = now;
+        self.player.advance_to(now, &mut self.synth);
+    }
+
+    /// Stops playback: playhead to the start, nothing sounding, tempo back to
+    /// the score's own. The reset a fresh file gets and the Stop button fires.
+    fn stop_playback(&mut self) {
+        self.vp.playing = false;
+        self.vp.play_tick = self.ctx.tick_start;
+        self.tempo_scale = 1.0;
+        self.loop_range = None;
+        self.ab_other = None;
+        self.player.seek(self.vp.play_tick, &mut self.synth);
     }
 
     /// The source label shown in the window title.
@@ -639,6 +712,7 @@ impl CockpitApp {
         self.vp.show_inspector = false; // a fresh load hides the capture panel
         self.score = Some(score);
         self.focus_on_track(focus); // rebuilds view/analysis/ctx/vp for the focus track
+        self.stop_playback(); // a new file plays from its start, at its own tempo
         Ok(())
     }
 
@@ -723,8 +797,22 @@ impl CockpitApp {
             return;
         };
         let title = format!("#{} {} · {:.3}", row.rank, row.strategy, row.aggregate);
+        // Remember the candidate we are leaving so `b` can A/B back to it,
+        // without a fresh generation pass.
+        let leaving = self.gen_panel.selected;
+        if leaving != Some(i) {
+            self.ab_other = leaving;
+        }
         self.gen_panel.selected = Some(i);
         self.show_score(score, title);
+    }
+
+    /// A/B: swaps to the other of the last two candidates viewed, keeping the
+    /// playhead so the comparison lands at the same spot. No regeneration.
+    fn ab_swap(&mut self) {
+        if let Some(other) = self.ab_other {
+            self.show_candidate(other);
+        }
     }
 
     /// Writes candidate `i` as a `.mid` plus a provenance sidecar naming the
@@ -1458,6 +1546,9 @@ impl CockpitApp {
         if ctx.input(|i| i.key_pressed(Key::E)) {
             self.swang.open = !self.swang.open;
         }
+        if ctx.input(|i| i.key_pressed(Key::B)) {
+            self.ab_swap(); // A/B between the last two candidates
+        }
         if ctx.input(|i| i.key_pressed(Key::T)) {
             self.toggle_theme();
         }
@@ -1647,6 +1738,188 @@ impl CockpitApp {
         });
         focus
     }
+
+    /// The score's own tempo, floored positive so the audition scale never
+    /// divides by zero.
+    const fn base_bpm(&self) -> f64 {
+        self.ctx.tempo_bpm.max(1.0)
+    }
+
+    /// The BPM the playhead currently advances at — written tempo × audition
+    /// scale. A display value; it never touches the Score or its export.
+    fn playback_bpm(&self) -> f64 {
+        self.base_bpm() * self.tempo_scale
+    }
+
+    /// Sets the audition scale so playback runs at `bpm` (clamped 20..=300),
+    /// leaving the score untouched.
+    fn set_playback_bpm(&mut self, bpm: f64) {
+        self.tempo_scale = (bpm.clamp(20.0, 300.0)) / self.base_bpm();
+    }
+
+    /// Turns a bar-index range into the loop's tick span, or clears the loop.
+    fn set_loop_bars(&mut self, on: bool, from_bar: usize, to_bar: usize) {
+        if !on {
+            self.loop_range = None;
+            return;
+        }
+        let lines = &self.view.bar_lines;
+        let last = lines.len().saturating_sub(1);
+        let a = from_bar.min(to_bar).min(last);
+        let b = from_bar.max(to_bar).min(last);
+        if let (Some(&lo), Some(&hi)) = (lines.get(a), lines.get(b.saturating_add(1).min(last))) {
+            if hi > lo {
+                self.loop_range = Some((lo, hi));
+                return;
+            }
+        }
+        self.loop_range = None;
+    }
+
+    /// The bottom transport bar (S8 Slice 2): play/pause, stop, tempo
+    /// audition, loop, and the MIDI device picker.
+    fn transport_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let play = if self.vp.playing { "⏸" } else { "▶" };
+            if ui
+                .button(play)
+                .on_hover_text("play / pause (space)")
+                .clicked()
+            {
+                self.vp.playing = !self.vp.playing;
+            }
+            if ui
+                .button("⏹")
+                .on_hover_text("stop — rewind and silence")
+                .clicked()
+            {
+                self.stop_playback();
+            }
+
+            ui.separator();
+            // Tempo audition — the score's own tempo is untouched.
+            ui.label("bpm");
+            let mut bpm = self.playback_bpm();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut bpm)
+                        .range(20.0..=300.0)
+                        .speed(1.0),
+                )
+                .on_hover_text("audition tempo — never changes the score or its export")
+                .changed()
+            {
+                self.set_playback_bpm(bpm);
+            }
+            if ui.button("½×").clicked() {
+                self.tempo_scale = 0.5;
+            }
+            if ui
+                .button("1×")
+                .on_hover_text("back to the written tempo")
+                .clicked()
+            {
+                self.tempo_scale = 1.0;
+            }
+            if ui.button("2×").clicked() {
+                self.tempo_scale = 2.0;
+            }
+
+            ui.separator();
+            self.transport_loop(ui);
+
+            if self.ab_other.is_some() {
+                ui.separator();
+                if ui
+                    .button("A/B")
+                    .on_hover_text("swap to the other candidate (b)")
+                    .clicked()
+                {
+                    self.ab_swap();
+                }
+            }
+        });
+        ui.horizontal(|ui| self.transport_device(ui));
+    }
+
+    /// The loop controls: a toggle plus the bar range it spans.
+    fn transport_loop(&mut self, ui: &mut egui::Ui) {
+        let bars = self.view.bar_count.max(1);
+        let (mut on, (mut from, mut to)) = self.loop_range.map_or_else(
+            || (false, (0, bars.saturating_sub(1))),
+            |_| (true, self.loop_bar_indices()),
+        );
+        let mut changed = ui.checkbox(&mut on, "loop").changed();
+        ui.add_enabled_ui(on, |ui| {
+            ui.label("bars");
+            changed |= ui
+                .add(egui::DragValue::new(&mut from).range(0..=bars.saturating_sub(1)))
+                .changed();
+            ui.label("–");
+            changed |= ui
+                .add(egui::DragValue::new(&mut to).range(0..=bars.saturating_sub(1)))
+                .changed();
+        });
+        if changed {
+            self.set_loop_bars(on, from, to);
+        }
+    }
+
+    /// The loop range as inclusive bar indices, for the loop `DragValue`s.
+    fn loop_bar_indices(&self) -> (usize, usize) {
+        let Some((lo, hi)) = self.loop_range else {
+            return (0, self.view.bar_count.saturating_sub(1));
+        };
+        let lines = &self.view.bar_lines;
+        let from = lines.partition_point(|&t| t < lo);
+        let to = lines.partition_point(|&t| t < hi).saturating_sub(1);
+        (from, to.max(from))
+    }
+
+    /// The MIDI output device picker (native) or the backend status (web).
+    fn transport_device(&mut self, ui: &mut egui::Ui) {
+        let mut connect: Option<usize> = None;
+        let mut refresh = false;
+        if self.synth.ports().is_empty() {
+            ui.weak(self.synth.status());
+            if ui
+                .button("🔄")
+                .on_hover_text("rescan MIDI outputs")
+                .clicked()
+            {
+                refresh = true;
+            }
+        } else {
+            let current = self
+                .synth
+                .selected()
+                .and_then(|i| self.synth.ports().get(i))
+                .map_or("(pick a MIDI output)", String::as_str)
+                .to_owned();
+            egui::ComboBox::from_label("out")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for (i, name) in self.synth.ports().iter().enumerate() {
+                        if ui
+                            .selectable_label(self.synth.selected() == Some(i), name)
+                            .clicked()
+                        {
+                            connect = Some(i);
+                        }
+                    }
+                });
+            if ui.button("🔄").on_hover_text("rescan").clicked() {
+                refresh = true;
+            }
+            ui.weak(self.synth.status());
+        }
+        if let Some(i) = connect {
+            self.synth.connect(i);
+        }
+        if refresh {
+            self.synth.refresh_ports();
+        }
+    }
 }
 
 /// The one button the user pressed in the Swang window this frame (buttons
@@ -1708,17 +1981,29 @@ impl eframe::App for CockpitApp {
         if self.handle_input(&ctx) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        // An input that moved the playhead (a section jump) is a seek: silence
+        // and reposition the audio before advancing.
+        if self.vp.play_tick != self.last_play_tick {
+            self.player.seek(self.vp.play_tick, &mut self.synth);
+        }
+        // A pause — Space, or the viewport stopping at the end — must never
+        // leave a note ringing.
+        if !self.vp.playing && self.player.active_count() > 0 {
+            self.player.silence(&mut self.synth);
+        }
         if self.vp.playing {
             let dt = f64::from(ctx.input(|i| i.stable_dt)).min(0.1);
-            self.vp.advance_playback(dt, &self.ctx);
+            self.advance_audio(dt);
             ctx.request_repaint();
         }
+        self.last_play_tick = self.vp.play_tick;
         let focus = egui::TopBottomPanel::top("toolbar")
             .show_inside(ui, |ui| self.toolbar_bar(ui))
             .inner;
         if let Some(track) = focus {
             self.focus_on_track(track);
         }
+        egui::TopBottomPanel::bottom("transport").show_inside(ui, |ui| self.transport_bar(ui));
         egui::CentralPanel::default().show_inside(ui, |ui| self.paint(ui));
         if self.vp.show_inspector {
             self.capture_panel(&ctx);
@@ -2348,6 +2633,97 @@ mod tests {
         use griff_core::import::import_score_auto;
         let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
         CockpitApp::from_score(score, "demo".to_owned())
+    }
+
+    // ── S8 Slice 2: transport ────────────────────────────────────────────────
+
+    #[test]
+    fn playback_advances_then_stops_and_silences_at_the_end() {
+        let mut app = demo_app();
+        app.vp.playing = true;
+        app.advance_audio(0.05);
+        assert!(app.vp.play_tick > 0, "the playhead moves while playing");
+        app.advance_audio(10_000.0); // far past the end
+        assert_eq!(app.vp.play_tick, app.ctx.tick_end, "it lands on the end");
+        assert!(!app.vp.playing, "and stops there");
+        assert_eq!(app.player.active_count(), 0, "nothing left ringing");
+    }
+
+    #[test]
+    fn looping_wraps_to_the_loop_start_without_stopping() {
+        let mut app = demo_app();
+        app.set_loop_bars(true, 0, 0); // loop the first bar
+        let (lo, hi) = app.loop_range.expect("a loop range");
+        app.vp.play_tick = hi.saturating_sub(1);
+        app.vp.playing = true;
+        app.advance_audio(10_000.0); // blow past the loop end
+        assert_eq!(app.vp.play_tick, lo, "playback wraps to the loop start");
+        assert!(app.vp.playing, "a loop never stops on its own");
+    }
+
+    #[test]
+    fn stop_rewinds_the_head_and_resets_the_audition() {
+        let mut app = demo_app();
+        app.vp.play_tick = 500;
+        app.tempo_scale = 2.0;
+        app.set_loop_bars(true, 0, 0);
+        app.stop_playback();
+        assert_eq!(app.vp.play_tick, app.ctx.tick_start, "rewound");
+        assert!(
+            (app.tempo_scale - 1.0).abs() < 1e-9,
+            "tempo back to written"
+        );
+        assert!(app.loop_range.is_none(), "loop cleared");
+    }
+
+    #[test]
+    fn the_audition_tempo_never_changes_the_score() {
+        let mut app = demo_app();
+        let written = app.base_bpm();
+        app.set_playback_bpm(written * 2.0);
+        assert!((app.tempo_scale - 2.0).abs() < 1e-6, "2x scale");
+        assert!(
+            (app.ctx.tempo_bpm - written).abs() < 1e-9,
+            "the score's own tempo is untouched — audition only",
+        );
+    }
+
+    #[test]
+    fn a_candidate_switch_keeps_the_playhead_and_rebuilds_the_voice() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.play_tick = 300;
+        app.vp.playing = true;
+        // Switch to another candidate mid-playback.
+        app.show_candidate(1);
+        assert_eq!(
+            app.vp.play_tick, 300,
+            "the playhead holds across the switch"
+        );
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the old score's notes are silenced"
+        );
+    }
+
+    #[test]
+    fn ab_swaps_between_the_last_two_candidates_without_regenerating() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // shows candidate 0
+        assert_eq!(app.gen_panel.selected, Some(0));
+        app.show_candidate(1); // now B; A (0) is remembered
+        assert_eq!(app.ab_other, Some(0));
+        app.ab_swap();
+        assert_eq!(
+            app.gen_panel.selected,
+            Some(0),
+            "A/B returns to the other one"
+        );
+        app.ab_swap();
+        assert_eq!(app.gen_panel.selected, Some(1), "and back again — a toggle");
     }
 
     /// #123 defect 4: a program whose declared `source` cannot be read must
