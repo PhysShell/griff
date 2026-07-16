@@ -27,6 +27,36 @@ pub fn midi_to_hz(pitch: u8) -> f64 {
     440.0 * (semitones_from_a4 / 12.0).exp2()
 }
 
+/// A sounding voice keyed by its pitch — the trait [`drain_pitch`] needs so
+/// its "release every voice of a pitch" logic is testable off-target. Only
+/// the web backend (and its native test) has voices to track.
+#[cfg(any(target_arch = "wasm32", test))]
+trait Voiced {
+    fn pitch(&self) -> u8;
+}
+
+/// Removes and returns **every** voice sounding `pitch`.
+///
+/// The shared engine ref-counts each pitch and sends a physical `note_off`
+/// only once — when the last of several overlapping notes of that pitch ends.
+/// A backend that released just one matching voice would strand the rest
+/// ringing until the next all-notes-off. So the physical release drains them
+/// all at once. Pure and generic, so a native test verifies the invariant the
+/// browser-only backend depends on.
+#[cfg(any(target_arch = "wasm32", test))]
+fn drain_pitch<V: Voiced>(voices: &mut Vec<V>, pitch: u8) -> Vec<V> {
+    let mut released = Vec::new();
+    let mut i = 0;
+    while i < voices.len() {
+        if voices.get(i).is_some_and(|v| v.pitch() == pitch) {
+            released.push(voices.swap_remove(i));
+        } else {
+            i = i.saturating_add(1);
+        }
+    }
+    released
+}
+
 #[cfg(target_arch = "wasm32")]
 pub use web::Synth;
 
@@ -211,6 +241,12 @@ mod web {
         gain: GainNode,
     }
 
+    impl super::Voiced for Voice {
+        fn pitch(&self) -> u8 {
+            self.pitch
+        }
+    }
+
     /// The browser voice: a lazily-opened context and the set of sounding
     /// voices, each started on note-on and released on note-off.
     #[derive(Default)]
@@ -291,10 +327,13 @@ mod web {
         }
 
         fn note_off(&mut self, pitch: u8) {
-            if let Some(pos) = self.voices.iter().position(|v| v.pitch == pitch) {
-                let voice = self.voices.swap_remove(pos);
-                if let Some(ctx) = &self.ctx {
-                    release_voice(ctx, &voice);
+            // Release EVERY voice of this pitch: the engine's per-pitch
+            // refcount only reaches here once, at the last overlapping note's
+            // end, so a lone release would leave the others ringing.
+            let released = super::drain_pitch(&mut self.voices, pitch);
+            if let Some(ctx) = &self.ctx {
+                for voice in &released {
+                    release_voice(ctx, voice);
                 }
             }
         }
@@ -347,7 +386,30 @@ mod web {
 
 #[cfg(test)]
 mod tests {
-    use super::midi_to_hz;
+    use super::{drain_pitch, midi_to_hz, Voiced};
+
+    /// A test voice — only its pitch matters to `drain_pitch`.
+    struct MockVoice(u8);
+    impl Voiced for MockVoice {
+        fn pitch(&self) -> u8 {
+            self.0
+        }
+    }
+
+    #[test]
+    fn note_off_releases_every_overlapping_voice_of_a_pitch() {
+        // #125 review 2: two overlapping notes of pitch 60 each opened a voice;
+        // the engine sends ONE physical note_off(60) at the last end, and the
+        // web backend must then release BOTH voices, not one.
+        let mut voices = vec![MockVoice(60), MockVoice(60), MockVoice(67)];
+        let released = drain_pitch(&mut voices, 60);
+        assert_eq!(released.len(), 2, "both voices of pitch 60 are released");
+        assert!(
+            voices.iter().all(|v| v.pitch() != 60),
+            "no voice of pitch 60 is left ringing",
+        );
+        assert_eq!(voices.len(), 1, "the unrelated pitch 67 keeps sounding");
+    }
 
     #[test]
     fn a4_is_concert_pitch() {
