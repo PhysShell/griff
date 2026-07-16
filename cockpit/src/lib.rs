@@ -3792,6 +3792,153 @@ mod tests {
         );
     }
 
+    // ── S8 Slice 3 re-review: Keep exports the captured run, not live knobs ───
+
+    /// A deterministic, freshly-emptied out dir for one keep test.
+    fn keep_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("griff-keep-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir); // start clean, every run
+        dir
+    }
+
+    /// The sidecar JSON written beside a kept `.mid`.
+    fn read_sidecar(mid: &str) -> serde_json::Value {
+        let json = mid.strip_suffix(".mid").expect("a .mid path").to_owned() + ".json";
+        let text = std::fs::read_to_string(&json).expect("the sidecar is written");
+        serde_json::from_str(&text).expect("the sidecar is JSON")
+    }
+
+    #[test]
+    fn keep_sidecar_and_filename_use_the_runs_seed_not_the_live_knob() {
+        let dir = keep_dir("seed");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        app.gen_panel.seed = 99; // change the knob after the run
+        let mid = app.write_keep(1).expect("keep writes");
+        assert!(
+            mid.contains("seed5_"),
+            "the filename uses the run's seed: {mid}"
+        );
+        assert!(!mid.contains("seed99_"), "not the live knob: {mid}");
+        assert_eq!(
+            read_sidecar(&mid)["seed"],
+            5,
+            "the sidecar keeps the run's seed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keep_sidecar_keeps_the_runs_bars_and_variants() {
+        let dir = keep_dir("bars");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.bars = 4;
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.gen_panel.bars = 16;
+        app.gen_panel.variants = 5;
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        assert_eq!(json["bars"], 4, "the sidecar keeps the run's bars");
+        assert_eq!(json["variants_per_strategy"], 2, "and its variants");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keep_sidecar_keeps_the_run_source_tab() {
+        let dir = keep_dir("source");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.sources = vec![generation::SourceTab {
+            name: "tabA.mid".to_owned(),
+            bytes: include_bytes!("../assets/demo.mid").to_vec(),
+        }];
+        app.gen_panel.source = Some(0);
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.gen_panel.source = None; // change the selection afterwards
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        assert_eq!(
+            json["source"], "tabA.mid",
+            "the sidecar keeps the run's source"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keep_sidecar_stays_seed_only_when_a_corpus_is_attached_later() {
+        let dir = keep_dir("attach");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.variants = 2;
+        app.do_generate(); // no corpus → seed-only
+        app.material = Some(two_rhythm_material()); // attach afterwards
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        assert_eq!(
+            json["corpus"], false,
+            "attachment after the run is not contribution"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keep_sidecar_keeps_a_real_contribution_after_the_corpus_is_detached() {
+        let dir = keep_dir("detach");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.material = Some(two_rhythm_material()); // a corpus that contributes
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.material = None; // detach afterwards
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        assert_eq!(json["corpus"], true, "the run's real contribution survives");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keep_midi_and_sidecar_come_from_the_same_run() {
+        let dir = keep_dir("pair");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let (strategy, variant_seed) = {
+            let row = &app.gen_panel.set().expect("a set").rows[1];
+            (row.strategy.clone(), row.variant_seed)
+        };
+        let mid = app.write_keep(1).expect("keep writes");
+        assert!(std::path::Path::new(&mid).exists(), "the .mid is written");
+        let json = read_sidecar(&mid);
+        assert_eq!(
+            json["strategy"], strategy,
+            "the sidecar names the exported row"
+        );
+        assert_eq!(json["variant_seed"], variant_seed, "and its variant seed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_generate_run_keeps_the_newly_changed_values() {
+        let dir = keep_dir("newrun");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        app.gen_panel.seed = 42;
+        app.do_generate(); // a fresh run
+        let mid = app.write_keep(0).expect("keep writes");
+        assert!(
+            mid.contains("seed42_"),
+            "the new run exports its own seed: {mid}"
+        );
+        assert_eq!(read_sidecar(&mid)["seed"], 42);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn swang_provenance_is_tied_to_the_evaluated_program_not_live_text() {
         use griff_ui_core::history::GeneratorProvenance;
