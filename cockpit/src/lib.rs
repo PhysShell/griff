@@ -37,8 +37,8 @@ use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
 use griff_ui_core::history::{
-    CandidateSource, GenerationRunId, GeneratorProvenance, HistoryId, Provenance, SessionHistory,
-    Verdict,
+    CandidateSource, CorpusContribution, GenerationRunId, GeneratorProvenance, HistoryId,
+    Provenance, SessionHistory, Verdict,
 };
 use griff_ui_core::playback::{Player, TempoMap};
 
@@ -632,8 +632,16 @@ fn provenance_summary(p: &Provenance) -> String {
             strategy,
             ..
         } => {
-            let corpus = if *corpus { "corpus" } else { "seed only" };
-            format!("generate · {strategy} · #{rank} · seed {seed} · {bars} bars · {corpus}")
+            let contribution = if corpus.is_seed_only() {
+                "seed only".to_owned()
+            } else {
+                let gesture = if corpus.gesture { ", gesture" } else { "" };
+                format!(
+                    "corpus {} templates, {} refs{gesture}",
+                    corpus.templates, corpus.references
+                )
+            };
+            format!("generate · {strategy} · #{rank} · seed {seed} · {bars} bars · {contribution}")
         }
         GeneratorProvenance::Swang {
             source_path,
@@ -1144,16 +1152,18 @@ impl CockpitApp {
         };
         let title = format!("#{} {} · {:.3}", row.rank, row.strategy, row.aggregate);
         let candidate_id = row.id.clone();
+        // Report what the corpus ACTUALLY contributed, from the pass result —
+        // an attached-but-empty corpus is honest "seed only", not "corpus".
+        let corpus_templates = self.material.as_ref().map_or(0, |m| m.rhythms.len());
         let generator = GeneratorProvenance::Generate {
             source: self
                 .gen_panel
                 .source_tab()
                 .map_or_else(|| Some(self.title.clone()), |tab| Some(tab.name.clone())),
-            corpus: self.material.is_some(),
+            corpus: CorpusContribution::from_pass(corpus_templates, &set.summary),
             seed: self.gen_panel.seed,
             bars: self.gen_panel.bars,
             variants_per_strategy: self.gen_panel.variants,
-            gesture: set.summary.gesture.is_some(),
             strategy: row.strategy.clone(),
             variant_seed: row.variant_seed,
             rank: row.rank,
@@ -3572,6 +3582,31 @@ mod tests {
     }
 
     #[test]
+    fn a_no_corpus_generate_records_seed_only_provenance() {
+        // Finding 3 (#1/#7): with no corpus attached, the recorded contribution
+        // is seed-only and the UI summary says so — never "corpus".
+        use griff_ui_core::history::GeneratorProvenance;
+        let mut app = demo_app();
+        assert!(app.material.is_none(), "the demo app has no corpus");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let entry = &app.history.entries()[0];
+        match &entry.provenance.generator {
+            GeneratorProvenance::Generate { corpus, .. } => {
+                assert!(corpus.is_seed_only(), "no corpus contributes nothing");
+                assert_eq!(corpus.templates, 0);
+                assert_eq!(corpus.references, 0);
+                assert!(!corpus.gesture);
+            }
+            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+        }
+        assert!(
+            provenance_summary(&entry.provenance).contains("seed only"),
+            "the summary reads seed-only, not corpus",
+        );
+    }
+
+    #[test]
     fn showing_a_swang_candidate_records_it_with_swang_provenance() {
         use griff_ui_core::history::{CandidateSource, GeneratorProvenance};
         let mut app = demo_app();
@@ -3784,11 +3819,14 @@ mod tests {
             n_bar_score(1),
             GeneratorProvenance::Generate {
                 source: None,
-                corpus: false,
+                corpus: CorpusContribution {
+                    templates: 0,
+                    references: 0,
+                    gesture: false,
+                },
                 seed: 0,
                 bars: 1,
                 variants_per_strategy: 1,
-                gesture: false,
                 strategy: "auto".to_owned(),
                 variant_seed: 1,
                 rank: 1,
@@ -3858,11 +3896,14 @@ mod tests {
             "auto#1".to_owned(),
             GeneratorProvenance::Generate {
                 source: Some("riff.mid".to_owned()),
-                corpus: true,
+                corpus: CorpusContribution {
+                    templates: 2,
+                    references: 1,
+                    gesture: true,
+                },
                 seed: 7,
                 bars: 8,
                 variants_per_strategy: 2,
-                gesture: true,
                 strategy: "auto".to_owned(),
                 variant_seed: 1,
                 rank: 3,
@@ -3876,6 +3917,10 @@ mod tests {
         );
         assert!(gen_line.contains('7'), "carries the ask seed: {gen_line}");
         assert!(gen_line.contains('3'), "carries the rank: {gen_line}");
+        assert!(
+            gen_line.contains("corpus") && gen_line.contains("gesture"),
+            "reports the actual corpus contribution: {gen_line}",
+        );
 
         let s = Provenance::new(
             GenerationRunId(1),

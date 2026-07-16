@@ -65,16 +65,15 @@ pub enum GeneratorProvenance {
     Generate {
         /// The seed the pass was given (a tab name, or the displayed score).
         source: Option<String>,
-        /// Whether a corpus supplied templates / references / gesture.
-        corpus: bool,
+        /// What the corpus **actually** contributed — templates, references,
+        /// and whether a gesture was carved — not merely that one was attached.
+        corpus: CorpusContribution,
         /// The deterministic ask seed.
         seed: u64,
         /// Bars generated.
         bars: usize,
         /// Seed variants per strategy.
         variants_per_strategy: usize,
-        /// Whether the gesture ask was carved.
-        gesture: bool,
         /// The candidate's strategy.
         strategy: String,
         /// Its derived variant seed — its reproduction key within the set.
@@ -126,15 +125,18 @@ impl CorpusContribution {
     /// count (0 without a corpus), since the summary's template count also folds
     /// in the source's own rhythms.
     #[must_use]
-    pub fn from_pass(corpus_templates: usize, summary: &SetSummary) -> Self {
-        let _ = (corpus_templates, summary);
-        unimplemented!("CorpusContribution::from_pass")
+    pub const fn from_pass(corpus_templates: usize, summary: &SetSummary) -> Self {
+        Self {
+            templates: corpus_templates,
+            references: summary.references,
+            gesture: summary.gesture.is_some(),
+        }
     }
 
     /// Whether the corpus contributed nothing — the pass ran on the seed alone.
     #[must_use]
-    pub fn is_seed_only(&self) -> bool {
-        unimplemented!("CorpusContribution::is_seed_only")
+    pub const fn is_seed_only(&self) -> bool {
+        self.templates == 0 && self.references == 0 && !self.gesture
     }
 }
 
@@ -404,17 +406,20 @@ mod tests {
     }
 
     fn generate_gen() -> GeneratorProvenance {
-        generate_gen_with(false)
+        generate_gen_with(CorpusContribution {
+            templates: 0,
+            references: 0,
+            gesture: false,
+        })
     }
 
-    fn generate_gen_with(corpus: bool) -> GeneratorProvenance {
+    fn generate_gen_with(corpus: CorpusContribution) -> GeneratorProvenance {
         GeneratorProvenance::Generate {
             source: Some("riff.mid".to_owned()),
             corpus,
             seed: 42,
             bars: 8,
             variants_per_strategy: 2,
-            gesture: true,
             strategy: "RepeatVariation".to_owned(),
             variant_seed: 0x00c0_ffee,
             rank: 1,
@@ -595,19 +600,29 @@ mod tests {
         let mut h = SessionHistory::new();
         let r_plain = h.begin_run();
         let r_corpus = h.begin_run();
+        let plain = CorpusContribution {
+            templates: 0,
+            references: 0,
+            gesture: false,
+        };
+        let used = CorpusContribution {
+            templates: 2,
+            references: 1,
+            gesture: true,
+        };
         let a = h.record(
             r_plain,
             "auto#1".to_owned(),
             "A".to_owned(),
             score(),
-            generate_gen_with(false),
+            generate_gen_with(plain),
         );
         let b = h.record(
             r_corpus,
             "auto#1".to_owned(),
             "B".to_owned(),
             score(),
-            generate_gen_with(true),
+            generate_gen_with(used),
         );
         assert_ne!(a, b);
         assert_eq!(
