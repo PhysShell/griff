@@ -36,7 +36,9 @@ use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
-use griff_ui_core::history::{GeneratorProvenance, HistoryId, Provenance, SessionHistory, Verdict};
+use griff_ui_core::history::{
+    CandidateSource, GeneratorProvenance, HistoryId, Provenance, SessionHistory, Verdict,
+};
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
@@ -550,6 +552,8 @@ pub struct CockpitApp {
     /// recorded here with its provenance and the curator's verdict (S8 Slice 3).
     /// A new generation adds to it; it is never destroyed within a session.
     history: SessionHistory,
+    /// Whether the history window is shown (the `y` key toggles it).
+    history_open: bool,
     /// The playhead tick at the end of the last frame — so an input that
     /// seeks the head (a section jump) is noticed and the audio repositioned.
     last_play_tick: u32,
@@ -612,8 +616,105 @@ fn remap_loop_range(
 /// Names the generator, the ask (Generate) or the source (Swang), and the
 /// candidate's rank — enough to tell where a history row came from at a glance.
 fn provenance_summary(p: &Provenance) -> String {
-    let _ = p;
-    unimplemented!("provenance_summary")
+    match &p.generator {
+        GeneratorProvenance::Generate {
+            seed,
+            bars,
+            corpus,
+            rank,
+            strategy,
+            ..
+        } => {
+            let corpus = if *corpus { "corpus" } else { "seed only" };
+            format!("generate · {strategy} · #{rank} · seed {seed} · {bars} bars · {corpus}")
+        }
+        GeneratorProvenance::Swang {
+            source_path,
+            rank,
+            strategy,
+            ..
+        } => {
+            let src = source_path.as_deref().unwrap_or("displayed score");
+            format!("swang · {strategy} · #{rank} · source {src}")
+        }
+    }
+}
+
+/// A history row's display data, snapshotted so the window closure holds no
+/// borrow of the app while it paints.
+struct HistoryRow {
+    id: HistoryId,
+    sequence: u64,
+    source: CandidateSource,
+    verdict: Option<Verdict>,
+    summary: String,
+}
+
+/// What the curator clicked on a history row this frame (at most one).
+enum HistoryAction {
+    /// Audition the row's snapshot.
+    Audition(HistoryId),
+    /// Toggle the row's favorite verdict.
+    Favorite(HistoryId),
+    /// Toggle the row's rejected verdict.
+    Reject(HistoryId),
+}
+
+/// Paints one history row — selection/playing marker, source, verdict (glyph
+/// AND word, never colour alone), the provenance line, and the actions — and
+/// returns whatever the curator clicked.
+fn history_row(
+    ui: &mut egui::Ui,
+    row: &HistoryRow,
+    is_selected: bool,
+    playing: bool,
+) -> Option<HistoryAction> {
+    let mut action = None;
+    ui.horizontal(|ui| {
+        let marker = if is_selected && playing {
+            "▶ playing"
+        } else if is_selected {
+            "◉ selected"
+        } else {
+            "  ·"
+        };
+        ui.monospace(marker);
+        let source = match row.source {
+            CandidateSource::Generate => "gen",
+            CandidateSource::Swang => "swang",
+        };
+        ui.monospace(format!("#{:<3} [{source:>5}]", row.sequence));
+        if ui
+            .button("audition")
+            .on_hover_text("play this one (b to A/B)")
+            .clicked()
+        {
+            action = Some(HistoryAction::Audition(row.id));
+        }
+        if ui
+            .selectable_label(row.verdict == Some(Verdict::Favorite), "★ fav")
+            .on_hover_text("favorite (clears reject)")
+            .clicked()
+        {
+            action = Some(HistoryAction::Favorite(row.id));
+        }
+        if ui
+            .selectable_label(row.verdict == Some(Verdict::Rejected), "⊘ rej")
+            .on_hover_text("reject (clears favorite)")
+            .clicked()
+        {
+            action = Some(HistoryAction::Reject(row.id));
+        }
+        // The verdict in words too, for the colour-blind and screen readers.
+        ui.label(match row.verdict {
+            Some(Verdict::Favorite) => "favorite",
+            Some(Verdict::Rejected) => "rejected",
+            None => "—",
+        });
+    });
+    ui.weak(&row.summary);
+    ui.separator();
+    action
 }
 
 /// The most loop revolutions one frame may play before the transport takes a
@@ -738,6 +839,7 @@ impl CockpitApp {
             current: None,
             ab_other: None,
             history: SessionHistory::new(),
+            history_open: false,
             last_play_tick: 0,
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1085,6 +1187,61 @@ impl CockpitApp {
         self.history.select(id);
         self.remember_shown(AuditionCandidate::History(id));
         self.show_score(score, title);
+    }
+
+    /// The session history window (S8 Slice 3): a newest-first feed of every
+    /// candidate shown, each with its source, verdict, and a one-line
+    /// provenance, plus audition / favorite / reject actions. State is
+    /// distinguished by text and glyph, never colour alone.
+    fn history_window(&mut self, ctx: &egui::Context) {
+        // Snapshot what the list needs, so the closure holds no borrow of self
+        // and the actions apply cleanly afterwards.
+        let selected = self.history.selected();
+        let playing = self.vp.playing;
+        let rows: Vec<HistoryRow> = self
+            .history
+            .entries()
+            .iter()
+            .rev()
+            .map(|e| HistoryRow {
+                id: e.id,
+                sequence: e.sequence,
+                source: e.source,
+                verdict: e.verdict,
+                summary: provenance_summary(&e.provenance),
+            })
+            .collect();
+
+        let mut action: Option<HistoryAction> = None;
+        egui::Window::new("history · session")
+            .default_width(440.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                if rows.is_empty() {
+                    ui.weak("no candidates yet — generate (g) or run a Swang program (e)");
+                    return;
+                }
+                ui.weak(format!(
+                    "{} candidate(s) this session — newest first",
+                    rows.len()
+                ));
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for row in &rows {
+                        let hit = history_row(ui, row, selected == Some(row.id), playing);
+                        if action.is_none() {
+                            action = hit;
+                        }
+                    }
+                });
+            });
+
+        match action {
+            Some(HistoryAction::Favorite(id)) => self.history.set_verdict(id, Verdict::Favorite),
+            Some(HistoryAction::Reject(id)) => self.history.set_verdict(id, Verdict::Rejected),
+            Some(HistoryAction::Audition(id)) => self.select_history(id),
+            None => {}
+        }
     }
 
     /// Writes candidate `i` as a `.mid` plus a provenance sidecar naming the
@@ -1842,6 +1999,9 @@ impl CockpitApp {
         if ctx.input(|i| i.key_pressed(Key::E)) {
             self.swang.open = !self.swang.open;
         }
+        if ctx.input(|i| i.key_pressed(Key::Y)) {
+            self.history_open = !self.history_open; // the session candidate history
+        }
         if ctx.input(|i| i.key_pressed(Key::B)) {
             self.ab_swap(); // A/B between the last two candidates
         }
@@ -1952,6 +2112,39 @@ impl CockpitApp {
     /// The top toolbar — the discoverable surface, so the controls aren't hidden
     /// behind hotkeys: a track selector (the roll shows one part at a time),
     /// play/pause, and toggles for the capture form and the corpus dock.
+    /// The corpus dock and the three panel toggles (generate, swang, history)
+    /// — the windowed views the toolbar and their hotkeys open.
+    fn window_toggle_buttons(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .button("📚 corpus")
+            .on_hover_text("browse the captured corpus (c)")
+            .clicked()
+        {
+            self.show_dock = !self.show_dock;
+        }
+        if ui
+            .button("⚙ generate")
+            .on_hover_text("rank a candidate set from the corpus (g)")
+            .clicked()
+        {
+            self.gen_panel.open = !self.gen_panel.open;
+        }
+        if ui
+            .button("✎ swang")
+            .on_hover_text("write a Swang program and run it (e)")
+            .clicked()
+        {
+            self.swang.open = !self.swang.open;
+        }
+        if ui
+            .button("🕮 history")
+            .on_hover_text("browse this session's candidates (y)")
+            .clicked()
+        {
+            self.history_open = !self.history_open;
+        }
+    }
+
     fn toolbar_bar(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let mut focus: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
@@ -1989,27 +2182,7 @@ impl CockpitApp {
             {
                 self.vp.show_inspector = !self.vp.show_inspector;
             }
-            if ui
-                .button("📚 corpus")
-                .on_hover_text("browse the captured corpus (c)")
-                .clicked()
-            {
-                self.show_dock = !self.show_dock;
-            }
-            if ui
-                .button("⚙ generate")
-                .on_hover_text("rank a candidate set from the corpus (g)")
-                .clicked()
-            {
-                self.gen_panel.open = !self.gen_panel.open;
-            }
-            if ui
-                .button("✎ swang")
-                .on_hover_text("write a Swang program and run it (e)")
-                .clicked()
-            {
-                self.swang.open = !self.swang.open;
-            }
+            self.window_toggle_buttons(ui);
             let mode = if self.is_dark() {
                 "◑ light"
             } else {
@@ -2313,6 +2486,9 @@ impl eframe::App for CockpitApp {
         }
         if self.swang.open {
             self.swang_window(&ctx);
+        }
+        if self.history_open {
+            self.history_window(&ctx);
         }
     }
 }
@@ -3535,7 +3711,7 @@ mod tests {
     #[test]
     fn provenance_summary_names_the_generator_and_the_ask() {
         use griff_ui_core::history::{GeneratorProvenance, Provenance};
-        let gen = Provenance::new(
+        let g = Provenance::new(
             0,
             "auto#1".to_owned(),
             GeneratorProvenance::Generate {
@@ -3551,12 +3727,15 @@ mod tests {
                 aggregate: 0.5,
             },
         );
-        let line = provenance_summary(&gen);
-        assert!(line.contains("generate"), "names the generator: {line}");
-        assert!(line.contains('7'), "carries the ask seed: {line}");
-        assert!(line.contains('3'), "carries the rank: {line}");
+        let gen_line = provenance_summary(&g);
+        assert!(
+            gen_line.contains("generate"),
+            "names the generator: {gen_line}"
+        );
+        assert!(gen_line.contains('7'), "carries the ask seed: {gen_line}");
+        assert!(gen_line.contains('3'), "carries the rank: {gen_line}");
 
-        let swang = Provenance::new(
+        let s = Provenance::new(
             1,
             "auto#1".to_owned(),
             GeneratorProvenance::Swang {
@@ -3568,11 +3747,14 @@ mod tests {
                 aggregate: 0.5,
             },
         );
-        let line = provenance_summary(&swang);
-        assert!(line.contains("swang"), "names the Swang generator: {line}");
+        let swang_line = provenance_summary(&s);
         assert!(
-            !line.contains("seed 7"),
-            "a Swang line never shows a Generate-only ask: {line}",
+            swang_line.contains("swang"),
+            "names the Swang generator: {swang_line}"
+        );
+        assert!(
+            !swang_line.contains("seed 7"),
+            "a Swang line never shows a Generate-only ask: {swang_line}",
         );
     }
 
@@ -3728,6 +3910,16 @@ mod tests {
         let before = app.vp.show_inspector;
         press(&mut app, Key::I);
         assert_eq!(app.vp.show_inspector, !before, "`i` toggles the inspector");
+    }
+
+    #[test]
+    fn the_history_key_toggles_the_history_window() {
+        let mut app = demo_app();
+        assert!(!app.history_open, "the history window starts closed");
+        press(&mut app, Key::Y);
+        assert!(app.history_open, "`y` opens it");
+        press(&mut app, Key::Y);
+        assert!(!app.history_open, "`y` toggles it shut");
     }
 
     #[test]
