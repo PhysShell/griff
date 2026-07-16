@@ -2,11 +2,12 @@
 //!
 //! The one place that turns a laid-out score into note events, so every
 //! backend — native MIDI, the browser's Web Audio, a test's mock — hears the
-//! same music. Events carry the score's **real onsets and durations**: a note
-//! sounds from its onset until its end, never a fixed-length blip. That makes
-//! playback an honest instrument for the very question the generator raised —
-//! whether it varies note length — instead of hiding the answer behind
-//! uniform pips.
+//! same music.
+//!
+//! Events carry the score's **real onsets and durations**: a note sounds from
+//! its onset until its end, never a fixed-length blip. That makes playback an
+//! honest instrument for the very question the generator raised — whether it
+//! varies note length — instead of hiding the answer behind uniform pips.
 //!
 //! The layer is pure and testable: [`Player`] holds a time-ordered schedule
 //! and a cursor, and drives a [`PlaybackSink`] forward as the transport
@@ -16,11 +17,13 @@
 //! Griff never leaves a note ringing forever (MIDI's favourite way to remind
 //! a developer of mortality).
 
-use crate::view::{Lane, PianoRollView};
+use crate::view::{Lane, NoteRect, PianoRollView};
 
-/// The default velocity every note sounds at. The piano-roll view drops the
-/// score's per-note velocity (`NoteRect` is onset/end/pitch), so Slice 2
-/// plays a constant, musical mezzo-forte; dynamics are a later slice.
+/// The default velocity every note sounds at.
+///
+/// The piano-roll view drops the score's per-note velocity (`NoteRect` is
+/// onset/end/pitch), so Slice 2 plays a constant, musical mezzo-forte;
+/// dynamics are a later slice.
 pub const DEFAULT_VELOCITY: u8 = 96;
 
 /// A synthesiser or MIDI port the player drives. Every call is best-effort:
@@ -36,9 +39,11 @@ pub trait PlaybackSink {
     fn all_notes_off(&mut self);
 }
 
-/// The ticks-per-second the playhead advances at: the score's `ppq`, its
-/// tempo, and the audition `scale` (playback BPM = written BPM × scale).
-/// A non-positive input floors to a sane minimum so a frame always moves.
+/// The ticks-per-second the playhead advances at.
+///
+/// The score's `ppq`, its tempo, and the audition `scale` (playback BPM =
+/// written BPM × scale). A non-positive input floors to a sane minimum so a
+/// frame always moves.
 #[must_use]
 pub fn ticks_per_second(ppq: u16, bpm: f64, scale: f64) -> f64 {
     let bpm = bpm.max(1.0);
@@ -71,7 +76,11 @@ impl Player {
     /// Builds a player over every lane of a view — the whole displayed score.
     #[must_use]
     pub fn from_view(view: &PianoRollView) -> Self {
-        Self::from_notes(view.lanes.iter().flat_map(|lane| lane.notes.iter().copied()))
+        Self::from_notes(
+            view.lanes
+                .iter()
+                .flat_map(|lane| lane.notes.iter().copied()),
+        )
     }
 
     /// Builds a player over a single lane (one track).
@@ -80,14 +89,27 @@ impl Player {
         Self::from_notes(lane.notes.iter().copied())
     }
 
-    fn from_notes(notes: impl Iterator<Item = crate::view::NoteRect>) -> Self {
-        let _ = notes;
-        unimplemented!("S8 Slice 2: build the note schedule")
+    fn from_notes(notes: impl Iterator<Item = NoteRect>) -> Self {
+        let mut ons = Vec::new();
+        let mut offs = Vec::new();
+        for n in notes {
+            ons.push((n.onset, n.pitch));
+            offs.push((n.end, n.pitch));
+        }
+        ons.sort_unstable();
+        offs.sort_unstable();
+        Self {
+            ons,
+            offs,
+            on_cursor: 0,
+            off_cursor: 0,
+            active: Vec::new(),
+        }
     }
 
     /// True when the schedule holds no notes.
     #[must_use]
-    pub fn is_silent(&self) -> bool {
+    pub const fn is_silent(&self) -> bool {
         self.ons.is_empty()
     }
 
@@ -95,8 +117,26 @@ impl Player {
     /// note-off then note-on the playhead has reached (`tick < now`). Offs
     /// before ons so a re-attacked pitch is released before it restarts.
     pub fn advance_to<S: PlaybackSink>(&mut self, now: u32, sink: &mut S) {
-        let _ = (now, sink);
-        unimplemented!("S8 Slice 2: fire events up to `now`")
+        // Offs first: a pitch ending exactly where another (or itself) begins
+        // is released before the attack.
+        while let Some(&(tick, pitch)) = self.offs.get(self.off_cursor) {
+            if tick >= now {
+                break;
+            }
+            self.off_cursor = self.off_cursor.saturating_add(1);
+            if let Some(pos) = self.active.iter().position(|&p| p == pitch) {
+                self.active.swap_remove(pos);
+                sink.note_off(pitch);
+            }
+        }
+        while let Some(&(tick, pitch)) = self.ons.get(self.on_cursor) {
+            if tick >= now {
+                break;
+            }
+            self.on_cursor = self.on_cursor.saturating_add(1);
+            self.active.push(pitch);
+            sink.note_on(pitch, DEFAULT_VELOCITY);
+        }
     }
 
     /// Repositions the cursor to `tick` after a discontinuous move (seek, loop
@@ -104,20 +144,26 @@ impl Player {
     /// the first event at or after `tick`. Notes already sounding at `tick`
     /// are **not** retriggered — a seek lands mid-rest cleanly.
     pub fn seek<S: PlaybackSink>(&mut self, tick: u32, sink: &mut S) {
-        let _ = (tick, sink);
-        unimplemented!("S8 Slice 2: silence and reposition the cursor")
+        self.silence(sink);
+        // The cursor lands on the first event at or after `tick`; a note
+        // whose onset is behind the head is treated as already past, so it
+        // does not retrigger.
+        self.on_cursor = self.ons.partition_point(|&(t, _)| t < tick);
+        self.off_cursor = self.offs.partition_point(|&(t, _)| t < tick);
     }
 
     /// Stops every sounding note now — an explicit note-off per active pitch
     /// plus an all-notes-off. Leaves the cursor where it is.
     pub fn silence<S: PlaybackSink>(&mut self, sink: &mut S) {
-        let _ = sink;
-        unimplemented!("S8 Slice 2: release every sounding note")
+        for pitch in self.active.drain(..) {
+            sink.note_off(pitch);
+        }
+        sink.all_notes_off();
     }
 
     /// How many pitches are sounding right now.
     #[must_use]
-    pub fn active_count(&self) -> usize {
+    pub const fn active_count(&self) -> usize {
         self.active.len()
     }
 }
@@ -130,7 +176,7 @@ impl Player {
     clippy::missing_assert_message
 )]
 mod tests {
-    use super::{ticks_per_second, Player, PlaybackSink};
+    use super::{ticks_per_second, PlaybackSink, Player};
     use crate::view::{Lane, NoteRect, PianoRollView};
 
     /// Records every call so a test can assert the exact event stream.
@@ -178,7 +224,11 @@ mod tests {
         let mut sink = MockSink::default();
 
         player.advance_to(480, &mut sink); // crossed onset 0, not yet its end
-        assert_eq!(sink.events, vec![("on", 60)], "note 60 starts, does not blip off");
+        assert_eq!(
+            sink.events,
+            vec![("on", 60)],
+            "note 60 starts, does not blip off"
+        );
         assert_eq!(player.active_count(), 1);
 
         player.advance_to(960, &mut sink); // end of 60 and onset of 62
@@ -190,10 +240,14 @@ mod tests {
         assert_eq!(player.active_count(), 1, "only 62 is sounding now");
 
         player.advance_to(960, &mut sink); // reaching the end releases 62
-        // 62 ends at 960; at tick 960 (exclusive) it has not released yet.
+                                           // 62 ends at 960; at tick 960 (exclusive) it has not released yet.
         assert_eq!(player.active_count(), 1);
         player.advance_to(1000, &mut sink);
-        assert_eq!(sink.events.last(), Some(&("off", 62)), "62 releases at its end");
+        assert_eq!(
+            sink.events.last(),
+            Some(&("off", 62)),
+            "62 releases at its end"
+        );
     }
 
     #[test]
@@ -201,9 +255,16 @@ mod tests {
         let mut player = Player::from_view(&view(vec![note(480, 960, 64)]));
         let mut sink = MockSink::default();
         player.advance_to(480, &mut sink); // onset == now: half-open, not yet
-        assert!(sink.events.is_empty(), "an onset at `now` waits for the next frame");
+        assert!(
+            sink.events.is_empty(),
+            "an onset at `now` waits for the next frame"
+        );
         player.advance_to(481, &mut sink);
-        assert_eq!(sink.events, vec![("on", 64)], "fired once, on the next frame");
+        assert_eq!(
+            sink.events,
+            vec![("on", 64)],
+            "fired once, on the next frame"
+        );
     }
 
     #[test]
@@ -216,7 +277,11 @@ mod tests {
         sink.events.clear();
         player.silence(&mut sink);
         assert!(sink.events.contains(&("off", 60)) && sink.events.contains(&("off", 67)));
-        assert_eq!(sink.events.last(), Some(&("alloff", 0)), "and the panic button");
+        assert_eq!(
+            sink.events.last(),
+            Some(&("alloff", 0)),
+            "and the panic button"
+        );
         assert_eq!(player.active_count(), 0);
     }
 
@@ -232,13 +297,11 @@ mod tests {
         assert!(sink.events.contains(&("alloff", 0)), "seek silences");
         // Advancing from the seek must not re-fire 60's onset (it was at 0).
         player.advance_to(1100, &mut sink);
-        let ons: Vec<u8> = sink
-            .events
-            .iter()
-            .filter(|(k, _)| *k == "on")
-            .map(|(_, p)| *p)
-            .collect();
-        assert!(!ons.contains(&60), "a note whose onset is behind the seek does not retrigger");
+        let retriggered_60 = sink.events.iter().any(|&(k, p)| k == "on" && p == 60);
+        assert!(
+            !retriggered_60,
+            "a note whose onset is behind the seek does not retrigger"
+        );
     }
 
     #[test]
@@ -257,9 +320,21 @@ mod tests {
     #[test]
     fn tempo_scale_multiplies_the_written_rate() {
         let base = ticks_per_second(480, 120.0, 1.0);
-        assert!((base - 960.0).abs() < 1e-9, "480 ppq at 120 BPM is 960 tick/s");
-        assert!((ticks_per_second(480, 120.0, 2.0) - 1920.0).abs() < 1e-9, "2x doubles");
-        assert!((ticks_per_second(480, 120.0, 0.5) - 480.0).abs() < 1e-9, "half halves");
-        assert!(ticks_per_second(480, 0.0, 0.0) > 0.0, "a frame always moves");
+        assert!(
+            (base - 960.0).abs() < 1e-9,
+            "480 ppq at 120 BPM is 960 tick/s"
+        );
+        assert!(
+            (ticks_per_second(480, 120.0, 2.0) - 1920.0).abs() < 1e-9,
+            "2x doubles"
+        );
+        assert!(
+            (ticks_per_second(480, 120.0, 0.5) - 480.0).abs() < 1e-9,
+            "half halves"
+        );
+        assert!(
+            ticks_per_second(480, 0.0, 0.0) > 0.0,
+            "a frame always moves"
+        );
     }
 }
