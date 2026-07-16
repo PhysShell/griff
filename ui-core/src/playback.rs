@@ -51,6 +51,53 @@ pub fn ticks_per_second(ppq: u16, bpm: f64, scale: f64) -> f64 {
     f64::from(ppq) * bpm * scale / 60.0
 }
 
+/// The tempo across the master timeline: `(start tick, BPM)` segments,
+/// ascending, always with one at tick 0. Playback walks these so a tempo
+/// change is honoured — the master timeline is the single source of tempo —
+/// and advances a **fractional** tick position, so no frame's rounding drifts.
+#[derive(Debug, Clone)]
+pub struct TempoMap {
+    /// `(start_tick, bpm)`, ascending by tick, `[0]` at tick 0.
+    #[allow(dead_code)]
+    segments: Vec<(u32, f64)>,
+}
+
+impl TempoMap {
+    /// A constant-tempo map — the whole score at `bpm`.
+    #[must_use]
+    pub fn single(_bpm: f64) -> Self {
+        unimplemented!("TempoMap::single")
+    }
+
+    /// Builds a map from `(start_tick, bpm)` pairs. They are sorted; a segment
+    /// at tick 0 is synthesised if missing; runs of equal BPM collapse.
+    #[must_use]
+    pub fn new(_segments: Vec<(u32, f64)>) -> Self {
+        unimplemented!("TempoMap::new")
+    }
+
+    /// The BPM in force at `tick` — the last segment starting at or before it.
+    #[must_use]
+    pub fn bpm_at(&self, _tick: u32) -> f64 {
+        unimplemented!("TempoMap::bpm_at")
+    }
+
+    /// The first segment boundary strictly after `tick`, if any.
+    #[allow(dead_code)]
+    fn next_boundary(&self, _tick: u32) -> Option<u32> {
+        unimplemented!("TempoMap::next_boundary")
+    }
+
+    /// Advances a fractional tick position `from` by `dt` seconds, splitting
+    /// the interval at every tempo boundary it crosses, at resolution `ppq`
+    /// and audition `scale`. Fractional in and out: the caller keeps the
+    /// remainder, so sub-tick frames never round to zero or drift.
+    #[must_use]
+    pub fn advance(&self, _from: f64, _dt: f64, _ppq: u16, _scale: f64) -> f64 {
+        unimplemented!("TempoMap::advance")
+    }
+}
+
 /// Drives a [`PlaybackSink`] across a score's note events in tick order.
 ///
 /// The schedule is two sorted lists — note-ons keyed by onset, note-offs
@@ -418,5 +465,55 @@ mod tests {
             ticks_per_second(480, 0.0, 0.0) > 0.0,
             "a frame always moves"
         );
+    }
+
+    #[test]
+    fn a_tempo_change_bends_the_playhead_at_its_boundary() {
+        use super::TempoMap;
+        // 120 BPM until tick 480, then 240 BPM. At 480 ppq: 960 then 1920 t/s.
+        let map = TempoMap::new(vec![(0, 120.0), (480, 240.0)]);
+        assert!((map.bpm_at(0) - 120.0).abs() < 1e-9);
+        assert!((map.bpm_at(479) - 120.0).abs() < 1e-9);
+        assert!((map.bpm_at(480) - 240.0).abs() < 1e-9);
+
+        // 0.5 s at 960 t/s reaches exactly the boundary (480).
+        let at_boundary = map.advance(0.0, 0.5, 480, 1.0);
+        assert!(
+            (at_boundary - 480.0).abs() < 1e-6,
+            "half a second lands on the tempo change, got {at_boundary}"
+        );
+        // 0.75 s: 0.5 s to the boundary, then 0.25 s at the doubled rate =
+        // 480 more ticks → 960. A single-tempo walk would give only 720.
+        let past = map.advance(0.0, 0.75, 480, 1.0);
+        assert!(
+            (past - 960.0).abs() < 1e-6,
+            "the frame is split at the boundary, got {past}"
+        );
+    }
+
+    #[test]
+    fn sub_tick_frames_accumulate_without_drift() {
+        use super::TempoMap;
+        // A slow rate so each tiny frame is well under one tick: 1 BPM at
+        // 480 ppq is 8 tick/s, so a 1 ms frame is 0.008 tick.
+        let map = TempoMap::single(1.0);
+        let mut pos = 0.0_f64;
+        for _ in 0..1000 {
+            pos = map.advance(pos, 0.001, 480, 1.0);
+        }
+        // 1000 frames × 1 ms = 1 s of travel = 8 ticks, fractional intact.
+        assert!(
+            (pos - 8.0).abs() < 1e-6,
+            "a thousand sub-tick frames sum to exactly 8 ticks, got {pos}"
+        );
+    }
+
+    #[test]
+    fn a_map_always_has_a_segment_at_the_start() {
+        use super::TempoMap;
+        // Given only a late segment, tick 0 still resolves (to that BPM).
+        let map = TempoMap::new(vec![(960, 90.0)]);
+        assert!((map.bpm_at(0) - 90.0).abs() < 1e-9, "start is synthesised");
+        assert!((map.bpm_at(960) - 90.0).abs() < 1e-9);
     }
 }
