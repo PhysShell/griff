@@ -222,6 +222,10 @@ pub fn evaluate_program(
         .map_err(|d| vec![d])?,
         gesture: true,
     };
+    // `bars`/`candidates` were range-checked above, so a failure here is a
+    // seed score that cannot seed the request (no pitch material, unusable
+    // constraints) — a score-borne fact at the `source` word, never SWG0306
+    // (which the registry reserves for expansion onsets, not the set).
     let set = ranked_candidates(
         &inputs.source_score,
         inputs.corpus.as_ref(),
@@ -230,9 +234,9 @@ pub fn evaluate_program(
     )
     .map_err(|e| {
         vec![EvalDiagnostic {
-            code: "SWG0306",
-            location: DiagLocation::Node(NodePath::default()),
-            message: format!("generation failed: {e:?}"),
+            code: "SWG0310",
+            location: DiagLocation::Span(compiled.spans.source),
+            message: format!("the source score cannot seed generation: {e:?}"),
         }]
     })?;
 
@@ -255,19 +259,21 @@ const MAX_BARS: u64 = 100_000;
 /// this × 5 strategies; a real program asks for single digits.
 const MAX_CANDIDATES: u64 = 4_096;
 
-/// A `generate` count validated into `usize`: rejected (`SWG0309`) when it
-/// exceeds `max` or does not fit the platform's `usize` (reachable on
-/// wasm32), so an oversized source value becomes a typed diagnostic instead
-/// of a hang or OOM. The bound is a runtime limit, not a language semantic,
-/// so it is located at the tree root, never a source span.
+/// A `generate` count validated into `usize`: rejected (`SWG0309`) when it is
+/// zero (a request that generates nothing — the generator's `BarCountZero` /
+/// `VariantCountZero`), or exceeds `max`, or does not fit the platform's
+/// `usize` (reachable on wasm32). An out-of-range source value becomes a
+/// typed diagnostic instead of a hang, an OOM, or a mis-coded downstream
+/// failure. The bound is a runtime limit, not a language semantic, so it is
+/// located at the tree root, never a source span.
 fn checked_count(value: u64, max: u64, word: &str) -> Result<usize, EvalDiagnostic> {
     usize::try_from(value)
         .ok()
-        .filter(|_| value <= max)
+        .filter(|_| (1..=max).contains(&value))
         .ok_or_else(|| EvalDiagnostic {
             code: "SWG0309",
             location: DiagLocation::Node(NodePath::default()),
-            message: format!("{word} {value} exceeds the evaluator's maximum of {max}"),
+            message: format!("{word} {value} is outside the accepted range 1..={max}"),
         })
 }
 
@@ -419,8 +425,10 @@ fn select(set: &RankedSet, policy: StrategyPolicy) -> Result<usize, EvalDiagnost
         StrategyPolicy::Auto => None,
         StrategyPolicy::Named(name) => Some(strategy_kind(name)),
     };
+    // An empty candidate set is SWG0310 — the registry keeps SWG0306 for
+    // expansion onsets and says explicitly it is *not* the candidate set.
     let chosen = select_ranked(set, target).ok_or_else(|| EvalDiagnostic {
-        code: "SWG0306",
+        code: "SWG0310",
         location: DiagLocation::Node(NodePath::default()),
         message: target.map_or_else(
             || "no candidate survived scoring".to_owned(),
@@ -618,23 +626,46 @@ pattern p {{
     }
 
     #[test]
-    fn an_oversized_count_is_rejected_not_clamped() {
-        // A bars count that would drive an unbounded generation loop (and on
-        // wasm32 not even fit usize) is a typed SWG0309, never a hang.
-        let huge = program("auto").replace("bars 4", "bars 999999999");
-        let compiled = compile_program(&huge).expect("parses");
+    fn an_out_of_range_count_is_rejected_not_clamped() {
         let inputs = ResolvedProgramInputs {
             source_score: seed_score(4),
             corpus: None,
         };
-        let bars_diags = evaluate_program(&compiled, &inputs).expect_err("oversized bars");
-        assert_eq!(bars_diags[0].code, "SWG0309");
+        let range_reject = |src: &str, what: &str| {
+            let compiled = compile_program(src).expect("parses");
+            let diags = evaluate_program(&compiled, &inputs).expect_err(what);
+            assert_eq!(diags[0].code, "SWG0309", "{what}");
+        };
+        // Oversized would hang/OOM (on wasm32 not even fit usize); zero would
+        // generate nothing. Both are SWG0309, never a clamp or a mis-code.
+        range_reject(&program("auto").replace("bars 4", "bars 999999999"), "oversized bars");
+        range_reject(&program("auto").replace("candidates 2", "candidates 99999"), "oversized candidates");
+        range_reject(&program("auto").replace("bars 4", "bars 0"), "zero bars");
+        range_reject(&program("auto").replace("candidates 2", "candidates 0"), "zero candidates");
+    }
 
-        let many = program("auto").replace("candidates 2", "candidates 999999");
-        let many_compiled = compile_program(&many).expect("parses");
-        let cand_diags =
-            evaluate_program(&many_compiled, &inputs).expect_err("oversized candidates");
-        assert_eq!(cand_diags[0].code, "SWG0309");
+    #[test]
+    fn a_source_that_cannot_seed_is_swg0310_at_the_source_word_not_swg0306() {
+        // A seed score with no sounding notes has no pitch material, so
+        // ranked_candidates rejects it — a score-borne fact at the `source`
+        // word, never SWG0306 (which is about expansion onsets).
+        let mut silent = seed_score(4);
+        for track in &mut silent.tracks {
+            for voice in &mut track.voices {
+                voice.event_groups.clear();
+            }
+        }
+        let compiled = compile_program(&program("auto")).expect("parses");
+        let inputs = ResolvedProgramInputs {
+            source_score: silent,
+            corpus: None,
+        };
+        let diags = evaluate_program(&compiled, &inputs).expect_err("no pitch material");
+        assert_eq!(diags[0].code, "SWG0310");
+        assert!(
+            matches!(diags[0].location, super::DiagLocation::Span(_)),
+            "a score-borne failure locates at the source word"
+        );
     }
 
     #[test]
