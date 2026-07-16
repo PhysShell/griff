@@ -319,8 +319,16 @@ fn signal_pause(tick: Ticks, atoms: &[AtomEvent], ppqn: u32) -> f64 {
 }
 
 /// Returns a cadence signal: 0.6 if `tick` is a master-bar downbeat, else 0.0.
+///
+/// Master bars are ascending by start tick, so a binary search answers this in
+/// `O(log bars)` — not the `O(bars)` linear scan that made the whole detector
+/// quadratic in the bar count (F-005: a huge delta at a small PPQN imports
+/// tens of thousands of bars, and one candidate per bar × a linear scan per
+/// candidate is millions of comparisons; the fuzz gate found a 24 s unit).
 fn signal_cadence(tick: Ticks, master_bars: &[MasterBar]) -> f64 {
-    let on_bar = master_bars.iter().any(|mb| mb.tick_range.start.0 == tick.0);
+    let on_bar = master_bars
+        .binary_search_by(|mb| mb.tick_range.start.0.cmp(&tick.0))
+        .is_ok();
     if on_bar {
         0.6
     } else {
@@ -508,6 +516,35 @@ mod tests {
     };
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// F-005 (`docs/fuzzing.md`): a 50-byte MIDI whose one huge varlen delta
+    /// imports tens of thousands of bars. The detector used to score one
+    /// candidate per bar with a linear per-candidate bar scan — quadratic, a
+    /// 24 s unit the fuzz gate caught. With the binary-search `signal_cadence`
+    /// this returns effectively instantly; a slow-path regression would time
+    /// the whole suite out here rather than hide.
+    #[test]
+    fn regression_f005_many_bars_do_not_go_quadratic() {
+        use crate::midi::import_score;
+
+        let mid: &[u8] = &[
+            0x4d, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0xe0,
+            0x4d, 0x54, 0x72, 0x6b, 0x00, 0x00, 0x00, 0x1c, 0x00, 0xff, 0x58, 0x04, 0x04, 0x02,
+            0x18, 0x08, 0x00, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20, 0x00, 0x98, 0x3c, 0x64, 0xf1,
+            0xff, 0xff, 0xff, 0x00, 0x40, 0x00, 0x3c, 0x00,
+        ];
+        let score = import_score(mid).expect("imports within the bar cap");
+        assert!(
+            score.master_bars.len() > 10_000,
+            "the delta implies many bars"
+        );
+        for ti in 0..score.tracks.len() {
+            let boundaries = detect_phrase_boundaries(&score, ti, &BoundaryConfig::default());
+            for b in &boundaries {
+                assert!(b.start_tick <= b.end_tick);
+            }
+        }
+    }
 
     fn ts_4_4() -> TimeSignature {
         TimeSignature::new(4, 4).expect("4/4 valid")

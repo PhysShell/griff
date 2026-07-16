@@ -29,6 +29,7 @@ pub mod corpus;
 pub mod curation;
 pub mod dock;
 pub mod generate;
+pub mod playback;
 pub mod scene;
 pub mod theme;
 pub mod view;

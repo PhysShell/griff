@@ -48,7 +48,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libasound2-dev
 
       - name: Format
         run: cargo fmt --all --check
@@ -94,7 +94,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libasound2-dev
 
       - name: Build on the MSRV
         run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-targets

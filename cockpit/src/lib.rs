@@ -36,6 +36,9 @@ use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
+use griff_ui_core::playback::{Player, TempoMap};
+
+use audio::Synth;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
 use griff_ui_core::generate::generate_set;
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
@@ -46,6 +49,7 @@ use griff_ui_core::{
     CorpusStats, Intent, PianoRollView, Step, ViewContext, Viewport,
 };
 
+pub mod audio;
 pub mod generation;
 pub mod swang;
 
@@ -464,6 +468,17 @@ fn tag_wire(tag: SwancoreTag) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// A candidate the roll can show, tagged by which set it belongs to — so A/B
+/// remembers the last one viewed across **both** generators and swaps back to
+/// the right source, never a same-index candidate of the wrong set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuditionCandidate {
+    /// Index into the Generate panel's set.
+    Generate(usize),
+    /// Index into the Swang panel's set.
+    Swang(usize),
+}
+
 /// The egui cockpit application: a `Scene` renderer over the shared core.
 #[derive(Debug)]
 pub struct CockpitApp {
@@ -501,6 +516,34 @@ pub struct CockpitApp {
     /// The Swang editor: program text, diagnostics, the last run's candidates
     /// (S8 Playground).
     swang: SwangPanel,
+    /// The playback backend — native MIDI or web audio (S8 Slice 2).
+    synth: Synth,
+    /// The note schedule of the shown score, driven as the playhead sweeps.
+    player: Player,
+    /// Playback-speed multiplier over the score's written tempo — `1.0` plays
+    /// as written, `2.0` at double speed. A tempo audition override: it never
+    /// touches the Score, its MIDI export, or provenance.
+    tempo_scale: f64,
+    /// The master timeline's tempo — `(start tick, BPM)` segments — so playback
+    /// bends at every tempo change instead of playing the whole score at the
+    /// first bar's BPM. The single source of tempo (per the repo constraint).
+    tempo_map: TempoMap,
+    /// The **fractional** playhead in ticks — the source of truth while
+    /// playing. `vp.play_tick` is its floor, for the visuals and the schedule;
+    /// keeping the remainder here stops sub-tick frames stalling or drifting.
+    play_pos: f64,
+    /// The loop range in ticks, when looping is on: playback wraps to the
+    /// start when it reaches the end.
+    loop_range: Option<(u32, u32)>,
+    /// The candidate currently painted, tagged by source — the anchor A/B
+    /// swaps away from. `None` until the first candidate is shown.
+    current: Option<AuditionCandidate>,
+    /// The A/B "other" candidate — the last one viewed before `current`, of
+    /// either source — that a single key swaps back to without regenerating.
+    ab_other: Option<AuditionCandidate>,
+    /// The playhead tick at the end of the last frame — so an input that
+    /// seeks the head (a section jump) is noticed and the audio repositioned.
+    last_play_tick: u32,
     /// The corpus material a generation pass consumes — rhythm templates,
     /// novelty references, the gesture ask. `None` until a corpus is loaded;
     /// a pass then seeds from the displayed score alone.
@@ -521,6 +564,107 @@ fn single_track_score(score: &Score, track: usize) -> Score {
         sub.tracks = vec![one];
     }
     sub
+}
+
+/// The score's master-timeline tempo as playback segments — one `(start tick,
+/// BPM)` per bar, with equal-BPM runs collapsed by [`TempoMap`]. This is what
+/// the playhead auditions; the master timeline is the single source of tempo.
+fn tempo_map_of(score: &Score) -> TempoMap {
+    TempoMap::new(
+        score
+            .master_bars
+            .iter()
+            .map(|mb| (mb.tick_range.start.0, mb.tempo.0))
+            .collect(),
+    )
+}
+
+/// Re-derives a loop that covered bars `from..=to` onto a **new** view's
+/// `bar_lines`, clamped so `0 <= lo < hi <= tick_end`. Returns `None` when
+/// those bars no longer span a real range in the new view — a shorter score
+/// clears (or clamps) the loop rather than letting playback wander past its
+/// end. Pure, so the remap is unit-tested without an egui app.
+fn remap_loop_range(
+    from: usize,
+    to: usize,
+    bar_lines: &[u32],
+    tick_end: u32,
+) -> Option<(u32, u32)> {
+    let last = bar_lines.len().saturating_sub(1);
+    let a = from.min(to).min(last);
+    let b = from.max(to).min(last);
+    let lo = *bar_lines.get(a)?;
+    let hi = *bar_lines.get(b.saturating_add(1).min(last))?;
+    (lo < hi && hi <= tick_end).then_some((lo, hi))
+}
+
+/// The most loop revolutions one frame may play before the transport takes a
+/// bounded hitch and lands at the loop start. Far above any real per-frame lap
+/// count (a frame is capped at 0.1 s, a loop is at least a bar), so only a
+/// pathological `dt` is bounded — a normal revolution is never dropped.
+const MAX_LOOP_WRAPS: usize = 1024;
+
+/// One transport action inside a looped frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopStep {
+    /// Play forward to this tick, from wherever the cursor sits.
+    PlayTo(u32),
+    /// Wrap: silence and reposition to this tick (the loop start).
+    Wrap(u32),
+}
+
+/// Splits a looped frame of `dt` seconds into ordered steps: the tail up to
+/// `hi`, then a full `lo..hi` for **every** whole revolution the frame laps,
+/// then the remainder to the resume tick. The time to reach `hi` is measured
+/// with [`TempoMap::time_to`] and the tempo is re-read at `lo` after each wrap,
+/// so no revolution is silently dropped and the wrapped part never runs at the
+/// tempo past `hi`. A head outside `[lo, hi)` wraps in first; a pathological
+/// `dt` is bounded by [`MAX_LOOP_WRAPS`]. Returns the steps and the fractional
+/// resume position. Pure, so the split is unit-tested against exact spans.
+#[allow(clippy::too_many_arguments)] // the loop bounds + the tempo context are irreducible here
+fn plan_loop(
+    pos: f64,
+    dt: f64,
+    lo: u32,
+    hi: u32,
+    tempo: &TempoMap,
+    ppq: u16,
+    scale: f64,
+) -> (Vec<LoopStep>, f64) {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pos ≥ 0, ticks never near u32::MAX
+    const fn floor(pos: f64) -> u32 {
+        pos as u32
+    }
+    let lo_f = f64::from(lo);
+    let hi_f = f64::from(hi);
+    let mut steps = Vec::new();
+    let mut remaining = dt.max(0.0);
+    let mut pos = pos.max(0.0);
+    // A head outside the loop wraps to the start before any time is spent.
+    if pos < lo_f || pos >= hi_f {
+        steps.push(LoopStep::Wrap(lo));
+        pos = lo_f;
+    }
+    for _ in 0..MAX_LOOP_WRAPS {
+        let dt_to_hi = tempo.time_to(pos, hi_f, ppq, scale);
+        if remaining < dt_to_hi {
+            // The frame ends inside the loop: play the partial span.
+            let next = tempo.advance(pos, remaining, ppq, scale);
+            steps.push(LoopStep::PlayTo(floor(next)));
+            return (steps, next);
+        }
+        // Reach the loop end: play the tail up to `hi`, then wrap to `lo` and
+        // re-read the tempo there on the next turn.
+        steps.push(LoopStep::PlayTo(hi));
+        steps.push(LoopStep::Wrap(lo));
+        remaining -= dt_to_hi;
+        pos = lo_f;
+        if dt_to_hi <= 0.0 {
+            break; // a zero-length span would otherwise spin
+        }
+    }
+    // Bounded hitch: a pathological dt settles at the loop start.
+    (steps, lo_f)
 }
 
 /// Each track's display name (`track N` when unnamed), in order — the labels for
@@ -544,8 +688,10 @@ impl CockpitApp {
     #[must_use]
     pub fn new(view: PianoRollView, analysis: Analysis, title: String) -> Self {
         let ctx = build_context(&view, &analysis);
+        let view_tempo_bpm = view.tempo_bpm;
         let mut vp = Viewport::new(&ctx, view.high_pitch);
         vp.show_inspector = false; // the capture panel starts hidden (the `i` key shows it)
+        let player = Player::from_view(&view);
         Self {
             view,
             analysis,
@@ -565,6 +711,15 @@ impl CockpitApp {
             track_names: Vec::new(),
             gen_panel: GeneratePanel::new(),
             swang: SwangPanel::default(),
+            synth: Synth::new(),
+            player,
+            tempo_scale: 1.0,
+            tempo_map: TempoMap::single(view_tempo_bpm),
+            play_pos: 0.0,
+            loop_range: None,
+            current: None,
+            ab_other: None,
+            last_play_tick: 0,
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
             out_dir: PathBuf::from("keeps"),
@@ -602,18 +757,148 @@ impl CockpitApp {
         if track >= n && n != 0 {
             return;
         }
+        // Capture the loop as bar indices on the OLD view before it is rebuilt,
+        // so the switch can re-anchor it to the same bars of the NEW view.
+        let prior_loop_bars = self.loop_range.map(|_| self.loop_bar_indices());
         let sub = single_track_score(score, track);
         let view = build_view(&sub);
         let analysis = analyze(&sub);
         let ctx = build_context(&view, &analysis);
         let mut vp = Viewport::new(&ctx, view.high_pitch);
         vp.show_inspector = self.vp.show_inspector; // keep the panel state across a switch
+                                                    // Keep the playhead across a candidate switch, so A/B compares the same
+                                                    // spot; a fresh file resets it explicitly (see `load`).
+        vp.play_tick = self.vp.play_tick.min(ctx.tick_end);
+        vp.playing = self.vp.playing;
         self.view = view;
         self.analysis = analysis;
         self.ctx = ctx;
         self.vp = vp;
         self.selected_track = track.min(n.saturating_sub(1));
         self.fitted = false;
+        // Re-anchor the loop to the same bars of the new view — clamped inside
+        // it, or cleared when those bars are gone — so a shorter score can never
+        // leave playback grazing a range past its end (the master timeline is
+        // the source of the geometry, not a stale absolute span).
+        if let Some((from, to)) = prior_loop_bars {
+            self.loop_range = remap_loop_range(from, to, &self.view.bar_lines, self.ctx.tick_end);
+            // If the head fell outside the remapped loop, seek it to the start.
+            if let Some((lo, hi)) = self.loop_range {
+                if self.vp.play_tick < lo || self.vp.play_tick >= hi {
+                    self.vp.play_tick = lo;
+                }
+            }
+        }
+        // Rebuild the note schedule for the new score and reposition it under
+        // the playhead — silencing whatever the old score left ringing.
+        self.player = Player::from_view(&self.view);
+        self.player.seek(self.vp.play_tick, &mut self.synth);
+        // Adopt this score's master-timeline tempo, and re-anchor the
+        // fractional playhead on the (already-clamped) integer one.
+        self.tempo_map = if sub.master_bars.is_empty() {
+            TempoMap::single(self.view.tempo_bpm)
+        } else {
+            tempo_map_of(&sub)
+        };
+        self.play_pos = f64::from(self.vp.play_tick);
+    }
+
+    /// Advances the playhead by `dt` seconds at the auditioned tempo, firing
+    /// the note events the head crossed. Loops through the selected range
+    /// (playing every whole revolution a long frame laps), else stops and
+    /// silences at the end.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // play_pos ≥ 0, ticks never near u32::MAX
+    fn advance_audio(&mut self, dt: f64) {
+        // If the integer playhead was moved out from under us (a seek, a
+        // candidate switch, a Stop), adopt it before accumulating — `play_pos`
+        // is authoritative only while it still floors to the visible head.
+        if self.vp.play_tick != self.play_pos as u32 {
+            self.play_pos = f64::from(self.vp.play_tick);
+        }
+        match self.loop_range {
+            Some((lo, hi)) => self.advance_looped(dt, lo, hi),
+            None => self.advance_to_end(dt),
+        }
+    }
+
+    /// The non-looping path: advance along the tempo map, and at the score's
+    /// end play the tail, silence, and stop.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // play_pos ≥ 0, ticks never near u32::MAX
+    fn advance_to_end(&mut self, dt: f64) {
+        let pos = self
+            .tempo_map
+            .advance(self.play_pos, dt, self.ctx.ppq, self.tempo_scale);
+        let end = self.ctx.tick_end;
+        if (pos as u32) < end {
+            self.play_pos = pos;
+            self.vp.play_tick = pos as u32;
+            self.player.advance_to(pos as u32, &mut self.synth);
+        } else {
+            self.player.advance_to(end, &mut self.synth);
+            self.player.silence(&mut self.synth);
+            self.play_pos = f64::from(end);
+            self.vp.play_tick = end;
+            self.vp.playing = false;
+        }
+    }
+
+    /// The looping path: [`plan_loop`] splits the frame into tail / full
+    /// revolutions / remainder, and the player executes each step. Every whole
+    /// revolution a long frame laps is played, and each wrap re-reads the tempo
+    /// at the loop start.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // play_pos ≥ 0, ticks never near u32::MAX
+    fn advance_looped(&mut self, dt: f64, lo: u32, hi: u32) {
+        let (steps, resume) = plan_loop(
+            self.play_pos,
+            dt,
+            lo,
+            hi,
+            &self.tempo_map,
+            self.ctx.ppq,
+            self.tempo_scale,
+        );
+        for step in steps {
+            match step {
+                LoopStep::PlayTo(t) => self.player.advance_to(t, &mut self.synth),
+                LoopStep::Wrap(l) => self.player.seek(l, &mut self.synth),
+            }
+        }
+        self.play_pos = resume;
+        self.vp.play_tick = resume as u32;
+    }
+
+    /// Stops playback: playhead to the start, nothing sounding. The audition
+    /// setup — tempo, loop, A/B — is **kept**, so stopping to re-listen or
+    /// compare does not undo it (that is [`Self::reset_audition`]'s job, on a
+    /// fresh file or a new generation).
+    fn stop_playback(&mut self) {
+        self.vp.playing = false;
+        self.vp.play_tick = self.ctx.tick_start;
+        self.play_pos = f64::from(self.ctx.tick_start);
+        self.player.seek(self.vp.play_tick, &mut self.synth);
+    }
+
+    /// Clears the audition setup back to defaults — the written tempo, no
+    /// loop, no A/B. A fresh file and a new generation session get this;
+    /// Stop does not.
+    const fn reset_audition(&mut self) {
+        self.tempo_scale = 1.0;
+        self.loop_range = None;
+        self.current = None;
+        self.ab_other = None;
+    }
+
+    /// Records that `shown` is now painted: the candidate we are leaving (of
+    /// either source) becomes the A/B target, so `b` swaps back to the last one
+    /// viewed regardless of which generator produced it. A no-op re-show keeps
+    /// the existing A/B target.
+    fn remember_shown(&mut self, shown: AuditionCandidate) {
+        if let Some(current) = self.current {
+            if current != shown {
+                self.ab_other = Some(current);
+            }
+        }
+        self.current = Some(shown);
     }
 
     /// The source label shown in the window title.
@@ -638,6 +923,8 @@ impl CockpitApp {
         self.vp.show_inspector = false; // a fresh load hides the capture panel
         self.score = Some(score);
         self.focus_on_track(focus); // rebuilds view/analysis/ctx/vp for the focus track
+        self.stop_playback(); // a new file plays from its start
+        self.reset_audition(); // and at its own tempo, no stale loop or A/B
         Ok(())
     }
 
@@ -696,6 +983,7 @@ impl CockpitApp {
         });
         match outcome {
             Ok(set) => {
+                self.reset_audition(); // a new candidate set starts fresh (no stale A/B)
                 let n = set.rows.len();
                 let tones = set.summary.scale_tones;
                 self.gen_panel.set = Some(set);
@@ -722,8 +1010,23 @@ impl CockpitApp {
             return;
         };
         let title = format!("#{} {} · {:.3}", row.rank, row.strategy, row.aggregate);
+        // Remember the candidate we are leaving (of either source) so `b` can
+        // A/B back to it without a fresh generation pass.
+        self.remember_shown(AuditionCandidate::Generate(i));
         self.gen_panel.selected = Some(i);
         self.show_score(score, title);
+    }
+
+    /// A/B: swaps to the other of the last two candidates viewed — routing to
+    /// the correct source, so a Swang candidate after a Generate one swaps back
+    /// to the Swang set, not a same-index Generate row. Keeps the playhead so
+    /// the comparison lands at the same spot. No regeneration.
+    fn ab_swap(&mut self) {
+        match self.ab_other {
+            Some(AuditionCandidate::Generate(i)) => self.show_candidate(i),
+            Some(AuditionCandidate::Swang(i)) => self.swang_show(i),
+            None => {}
+        }
     }
 
     /// Writes candidate `i` as a `.mid` plus a provenance sidecar naming the
@@ -853,6 +1156,11 @@ impl CockpitApp {
                         ui.weak(status);
                     }
                 });
+                ui.weak(if self.material.is_some() {
+                    "mode: corpus rhythms + novelty + gesture"
+                } else {
+                    "mode: seed only — no corpus (run with --corpus for rhythms)"
+                });
 
                 self.generate_candidates(ui, &mut show, &mut keep, &mut open);
             });
@@ -974,6 +1282,7 @@ impl CockpitApp {
             }
         }
 
+        ui.weak("mode: Swang explicit rhythm (the ascii kernel) — a corpus would add novelty/gesture, never the grid");
         self.swang_candidates(ui, &mut actions.click);
         actions
     }
@@ -1039,6 +1348,7 @@ impl CockpitApp {
         // rather than silently running without it.
         self.swang.apply(&compiled, source, None);
         if let Some(i) = self.swang.selected {
+            self.reset_audition(); // a new Swang generation session starts A/B fresh
             self.swang_show(i);
         }
     }
@@ -1084,6 +1394,9 @@ impl CockpitApp {
             "swang #{} {} · {:.3}",
             row.rank, row.strategy, row.aggregate
         );
+        // Swang candidates record into A/B too, so `b` can compare a Swang take
+        // against the last candidate of either source.
+        self.remember_shown(AuditionCandidate::Swang(i));
         self.show_score(score, title);
     }
 
@@ -1457,6 +1770,9 @@ impl CockpitApp {
         if ctx.input(|i| i.key_pressed(Key::E)) {
             self.swang.open = !self.swang.open;
         }
+        if ctx.input(|i| i.key_pressed(Key::B)) {
+            self.ab_swap(); // A/B between the last two candidates
+        }
         if ctx.input(|i| i.key_pressed(Key::T)) {
             self.toggle_theme();
         }
@@ -1646,6 +1962,188 @@ impl CockpitApp {
         });
         focus
     }
+
+    /// The score's own tempo, floored positive so the audition scale never
+    /// divides by zero.
+    const fn base_bpm(&self) -> f64 {
+        self.ctx.tempo_bpm.max(1.0)
+    }
+
+    /// The BPM the playhead currently advances at — written tempo × audition
+    /// scale. A display value; it never touches the Score or its export.
+    fn playback_bpm(&self) -> f64 {
+        self.base_bpm() * self.tempo_scale
+    }
+
+    /// Sets the audition scale so playback runs at `bpm` (clamped 20..=300),
+    /// leaving the score untouched.
+    fn set_playback_bpm(&mut self, bpm: f64) {
+        self.tempo_scale = (bpm.clamp(20.0, 300.0)) / self.base_bpm();
+    }
+
+    /// Turns a bar-index range into the loop's tick span, or clears the loop.
+    fn set_loop_bars(&mut self, on: bool, from_bar: usize, to_bar: usize) {
+        self.loop_range = on
+            .then(|| remap_loop_range(from_bar, to_bar, &self.view.bar_lines, self.ctx.tick_end))
+            .flatten();
+    }
+
+    /// The bottom transport bar (S8 Slice 2): play/pause, stop, tempo
+    /// audition, loop, and the MIDI device picker.
+    fn transport_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let play = if self.vp.playing { "⏸" } else { "▶" };
+            if ui
+                .button(play)
+                .on_hover_text("play / pause (space)")
+                .clicked()
+            {
+                self.vp.playing = !self.vp.playing;
+            }
+            if ui
+                .button("⏹")
+                .on_hover_text("stop — rewind and silence")
+                .clicked()
+            {
+                self.stop_playback();
+            }
+
+            ui.separator();
+            // Tempo audition — the score's own tempo is untouched.
+            ui.label("bpm");
+            let mut bpm = self.playback_bpm();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut bpm)
+                        .range(20.0..=300.0)
+                        .speed(1.0),
+                )
+                .on_hover_text("audition tempo — never changes the score or its export")
+                .changed()
+            {
+                self.set_playback_bpm(bpm);
+            }
+            if ui.button("½×").clicked() {
+                self.tempo_scale = 0.5;
+            }
+            if ui
+                .button("1×")
+                .on_hover_text("back to the written tempo")
+                .clicked()
+            {
+                self.tempo_scale = 1.0;
+            }
+            if ui.button("2×").clicked() {
+                self.tempo_scale = 2.0;
+            }
+
+            ui.separator();
+            self.transport_loop(ui);
+
+            if self.ab_other.is_some() {
+                ui.separator();
+                if ui
+                    .button("A/B")
+                    .on_hover_text("swap to the other candidate (b)")
+                    .clicked()
+                {
+                    self.ab_swap();
+                }
+            }
+        });
+        ui.horizontal(|ui| self.transport_device(ui));
+    }
+
+    /// The loop controls: a toggle plus the bar range it spans.
+    fn transport_loop(&mut self, ui: &mut egui::Ui) {
+        let bars = self.view.bar_count.max(1);
+        let (mut on, (mut from, mut to)) = self.loop_range.map_or_else(
+            || (false, (0, bars.saturating_sub(1))),
+            |_| (true, self.loop_bar_indices()),
+        );
+        let mut changed = ui.checkbox(&mut on, "loop").changed();
+        ui.add_enabled_ui(on, |ui| {
+            ui.label("bars");
+            changed |= ui
+                .add(egui::DragValue::new(&mut from).range(0..=bars.saturating_sub(1)))
+                .changed();
+            ui.label("–");
+            changed |= ui
+                .add(egui::DragValue::new(&mut to).range(0..=bars.saturating_sub(1)))
+                .changed();
+        });
+        if changed {
+            self.set_loop_bars(on, from, to);
+        }
+    }
+
+    /// The loop range as inclusive bar indices, for the loop `DragValue`s.
+    fn loop_bar_indices(&self) -> (usize, usize) {
+        let Some((lo, hi)) = self.loop_range else {
+            return (0, self.view.bar_count.saturating_sub(1));
+        };
+        let lines = &self.view.bar_lines;
+        let from = lines.partition_point(|&t| t < lo);
+        let to = lines.partition_point(|&t| t < hi).saturating_sub(1);
+        (from, to.max(from))
+    }
+
+    /// The MIDI output device picker (native) or the backend status (web).
+    fn transport_device(&mut self, ui: &mut egui::Ui) {
+        let mut connect: Option<usize> = None;
+        let mut refresh = false;
+        if self.synth.ports().is_empty() {
+            ui.weak(self.synth.status());
+            if ui
+                .button("🔄")
+                .on_hover_text("rescan MIDI outputs")
+                .clicked()
+            {
+                refresh = true;
+            }
+        } else {
+            let current = self
+                .synth
+                .selected()
+                .and_then(|i| self.synth.ports().get(i))
+                .map_or("(pick a MIDI output)", String::as_str)
+                .to_owned();
+            egui::ComboBox::from_label("out")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for (i, name) in self.synth.ports().iter().enumerate() {
+                        if ui
+                            .selectable_label(self.synth.selected() == Some(i), name)
+                            .clicked()
+                        {
+                            connect = Some(i);
+                        }
+                    }
+                });
+            if ui.button("🔄").on_hover_text("rescan").clicked() {
+                refresh = true;
+            }
+            ui.weak(self.synth.status());
+        }
+        if let Some(i) = connect {
+            self.connect_device(i);
+        }
+        if refresh {
+            // Rescanning can drop the open port; hush it first, then reposition.
+            self.player.silence(&mut self.synth);
+            self.synth.refresh_ports();
+            self.player.seek(self.vp.play_tick, &mut self.synth);
+        }
+    }
+
+    /// Switches the MIDI output: releases whatever is sounding on the **old**
+    /// port before the connection is dropped (a new port cannot ask the old
+    /// one to hush), opens the new one, and repositions the schedule on it.
+    fn connect_device(&mut self, index: usize) {
+        self.player.silence(&mut self.synth);
+        self.synth.connect(index);
+        self.player.seek(self.vp.play_tick, &mut self.synth);
+    }
 }
 
 /// The one button the user pressed in the Swang window this frame (buttons
@@ -1707,17 +2205,30 @@ impl eframe::App for CockpitApp {
         if self.handle_input(&ctx) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        // An input that moved the playhead (a section jump) is a seek: silence
+        // and reposition the audio before advancing.
+        if self.vp.play_tick != self.last_play_tick {
+            self.play_pos = f64::from(self.vp.play_tick);
+            self.player.seek(self.vp.play_tick, &mut self.synth);
+        }
+        // A pause — Space, or the viewport stopping at the end — must never
+        // leave a note ringing.
+        if !self.vp.playing && self.player.active_count() > 0 {
+            self.player.silence(&mut self.synth);
+        }
         if self.vp.playing {
             let dt = f64::from(ctx.input(|i| i.stable_dt)).min(0.1);
-            self.vp.advance_playback(dt, &self.ctx);
+            self.advance_audio(dt);
             ctx.request_repaint();
         }
+        self.last_play_tick = self.vp.play_tick;
         let focus = egui::TopBottomPanel::top("toolbar")
             .show_inside(ui, |ui| self.toolbar_bar(ui))
             .inner;
         if let Some(track) = focus {
             self.focus_on_track(track);
         }
+        egui::TopBottomPanel::bottom("transport").show_inside(ui, |ui| self.transport_bar(ui));
         egui::CentralPanel::default().show_inside(ui, |ui| self.paint(ui));
         if self.vp.show_inspector {
             self.capture_panel(&ctx);
@@ -1990,6 +2501,7 @@ mod tests {
     use eframe::egui::epaint::ClippedShape;
     use eframe::egui::Shape;
     use griff_core::classify::BarClass;
+    use griff_ui_core::playback::ticks_per_second;
     use griff_ui_core::scene::CellRole;
 
     /// Every fill the painter emitted in one frame.
@@ -2347,6 +2859,418 @@ mod tests {
         use griff_core::import::import_score_auto;
         let score = import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports");
         CockpitApp::from_score(score, "demo".to_owned())
+    }
+
+    /// A `bars`-bar 4/4 score at 960 ppq (3840 ticks/bar), one note-less track —
+    /// `build_view` takes bar lines and the end from the master bars alone, so
+    /// this exercises the loop/transport geometry without note fixtures.
+    fn n_bar_score(bars: u32) -> Score {
+        use griff_core::event::{Tempo, Ticks, TimeSignature, Tuning};
+        use griff_core::score::{LossReport, MasterBar, RepeatMarker, Track, Voice};
+        use griff_core::slice::TickRange;
+        const BAR: u32 = 3840;
+        let master_bars = (0..bars)
+            .map(|i| MasterBar {
+                index: i as usize,
+                tick_range: TickRange::new(Ticks(i * BAR), Ticks((i + 1) * BAR)).expect("range"),
+                time_signature: TimeSignature::new(4, 4).expect("4/4"),
+                tempo: Tempo::new(120.0).expect("120"),
+                repeat: RepeatMarker::default(),
+            })
+            .collect();
+        let track = Track {
+            name: None,
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: Vec::new(),
+            }],
+            tuning: Tuning::standard_e(),
+        };
+        Score {
+            ticks_per_quarter: 960,
+            master_bars,
+            tracks: vec![track],
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    // ── S8 Slice 2: transport ────────────────────────────────────────────────
+
+    #[test]
+    fn a_looped_frame_that_laps_plays_tail_then_full_then_remainder() {
+        // #125 correctness: a frame that spans more than one loop length must
+        // play the tail, then a FULL revolution, then the remainder — the old
+        // advance-then-modulo dropped the middle lap (right coordinate, wrong
+        // music). head 150, a 300-tick frame, loop [0,200).
+        let tempo = TempoMap::single(120.0);
+        let ppq = 480;
+        let tps = ticks_per_second(ppq, 120.0, 1.0);
+        let (steps, resume) = plan_loop(150.0, 300.0 / tps, 0, 200, &tempo, ppq, 1.0);
+        assert_eq!(
+            steps,
+            vec![
+                LoopStep::PlayTo(200), // 150 → 200 tail
+                LoopStep::Wrap(0),
+                LoopStep::PlayTo(200), // 0 → 200 the full revolution, not dropped
+                LoopStep::Wrap(0),
+                LoopStep::PlayTo(50), // 0 → 50 remainder
+            ],
+        );
+        assert_eq!(resume as u32, 50, "and the head resumes at 50");
+    }
+
+    #[test]
+    fn a_looped_frame_ignores_the_tempo_past_the_loop_end() {
+        // #125 correctness: a 1000-BPM segment begins exactly at the loop end.
+        // The wrapped spans use the in-loop 120 BPM, so the plan is identical to
+        // the flat-tempo case — the tempo past `hi` is never consulted.
+        let bent = TempoMap::new(vec![(0, 120.0), (200, 1000.0)]);
+        let ppq = 480;
+        let tps = ticks_per_second(ppq, 120.0, 1.0);
+        let (steps, resume) = plan_loop(150.0, 300.0 / tps, 0, 200, &bent, ppq, 1.0);
+        assert_eq!(
+            steps,
+            vec![
+                LoopStep::PlayTo(200),
+                LoopStep::Wrap(0),
+                LoopStep::PlayTo(200),
+                LoopStep::Wrap(0),
+                LoopStep::PlayTo(50),
+            ],
+            "the wrap uses the loop-start tempo, not the fast tail",
+        );
+        assert_eq!(resume as u32, 50);
+    }
+
+    #[test]
+    fn a_looped_frame_wraps_a_head_that_sits_past_the_loop_end() {
+        // A loop set while the head is past its end wraps in first, then plays.
+        let tempo = TempoMap::single(120.0);
+        let (steps, _) = plan_loop(500.0, 0.0, 0, 200, &tempo, 480, 1.0);
+        assert_eq!(
+            steps.first(),
+            Some(&LoopStep::Wrap(0)),
+            "the stray head wraps in"
+        );
+    }
+
+    #[test]
+    fn a_looped_frame_is_bounded_for_an_absurd_dt() {
+        // A pathological dt does not spin forever — it takes a bounded hitch and
+        // lands at the loop start.
+        let tempo = TempoMap::single(120.0);
+        let (steps, resume) = plan_loop(0.0, 1_000_000.0, 0, 200, &tempo, 480, 1.0);
+        assert!(
+            steps.len() <= 2 * MAX_LOOP_WRAPS + 1,
+            "bounded, not unbounded"
+        );
+        assert_eq!(resume as u32, 0, "and settles at the loop start");
+    }
+
+    #[test]
+    fn remap_loop_range_keeps_present_bars_and_clamps_to_the_end() {
+        // Bar lines of a 3-bar score, end 11520.
+        let lines = [0_u32, 3840, 7680, 11520];
+        assert_eq!(
+            remap_loop_range(1, 1, &lines, 11520),
+            Some((3840, 7680)),
+            "bar 1 maps to its tick span",
+        );
+        assert_eq!(
+            remap_loop_range(0, 2, &lines, 11520),
+            Some((0, 11520)),
+            "the whole range stays whole",
+        );
+    }
+
+    #[test]
+    fn remap_loop_range_clears_a_range_the_new_view_lacks() {
+        // A 1-bar score: lines [0, 3840], end 3840.
+        let lines = [0_u32, 3840];
+        assert_eq!(
+            remap_loop_range(1, 1, &lines, 3840),
+            None,
+            "bar 1 no longer exists — the loop is cleared",
+        );
+        assert_eq!(
+            remap_loop_range(0, 0, &lines, 3840),
+            Some((0, 3840)),
+            "bar 0 clamps to the one bar that remains",
+        );
+        // A never-past-the-end guard, even if a stray line exceeds the score.
+        assert_eq!(
+            remap_loop_range(0, 5, &[0, 9999], 3840),
+            None,
+            "hi must fit"
+        );
+    }
+
+    #[test]
+    fn switching_to_a_shorter_score_clamps_or_clears_the_loop() {
+        // #125 initial-review correctness thread: on a candidate/score switch,
+        // focus_on_track must revalidate the loop against the NEW view — never
+        // leave an absolute range that runs past the shorter score's end and
+        // graze silently there.
+        let mut app = CockpitApp::from_score(n_bar_score(2), "A".to_owned());
+        app.set_loop_bars(true, 1, 1); // loop the SECOND bar of the 2-bar score
+        let (_, hi_a) = app.loop_range.expect("loop set on A");
+        assert!(hi_a > 3840, "the loop lives in A's second bar");
+
+        app.vp.play_tick = 5000; // head inside A's second bar
+        app.vp.playing = true;
+        app.show_score(n_bar_score(1), "B".to_owned()); // switch to a 1-bar score
+
+        let end = app.ctx.tick_end;
+        assert!(end <= 3840, "B is one bar — a shorter score");
+        if let Some((lo, hi)) = app.loop_range {
+            assert!(
+                lo < hi && hi <= end,
+                "a kept loop is clamped inside B: ({lo},{hi}) end={end}",
+            );
+            assert!(
+                app.vp.play_tick >= lo && app.vp.play_tick < hi,
+                "the head sits inside the remapped loop",
+            );
+        }
+        // Playback never wanders past the new score's end.
+        for _ in 0..50 {
+            app.advance_audio(0.05);
+            assert!(
+                app.vp.play_tick <= end,
+                "the playhead never exceeds B's end",
+            );
+        }
+    }
+
+    #[test]
+    fn playback_bends_at_a_master_timeline_tempo_change() {
+        // #125 re-review 1: the playhead follows the master timeline's tempo,
+        // so the half after a tempo change advances at the new rate — not the
+        // whole score at the first bar's BPM.
+        let mut app = demo_app();
+        app.ctx.ppq = 480;
+        app.ctx.tick_start = 0;
+        app.ctx.tick_end = 1_000_000; // room to run without reaching the end
+        app.tempo_map = TempoMap::new(vec![(0, 120.0), (4800, 240.0)]);
+        app.vp.playing = true;
+
+        // 0.1 s inside the 120-BPM segment (480 ppq → 960 tick/s → 96 ticks).
+        app.vp.play_tick = 0;
+        app.play_pos = 0.0;
+        app.advance_audio(0.1);
+        let slow = app.vp.play_tick;
+
+        // 0.1 s inside the 240-BPM segment (→ 1920 tick/s → 192 ticks).
+        app.vp.play_tick = 4800;
+        app.play_pos = f64::from(4800);
+        app.advance_audio(0.1);
+        let fast = app.vp.play_tick - 4800;
+
+        assert!(slow > 0, "the slow segment moves");
+        assert!(
+            fast >= slow * 2 - 1 && fast <= slow * 2 + 1,
+            "the doubled tempo advances ~2x as far: slow={slow} fast={fast}",
+        );
+    }
+
+    #[test]
+    fn a_thousand_sub_tick_frames_do_not_drift() {
+        // #125 re-review 1: the fractional accumulator neither stalls nor gains
+        // a phantom tick over many frames each shorter than a single tick — the
+        // old `step.max(1)` nudge would have raced far ahead.
+        let mut app = demo_app();
+        app.ctx.ppq = 480;
+        app.ctx.tick_start = 0;
+        app.ctx.tick_end = 1_000_000;
+        app.tempo_map = TempoMap::single(1.0); // 1 BPM at 480 ppq → 8 tick/s
+        app.vp.play_tick = 0;
+        app.play_pos = 0.0;
+        app.vp.playing = true;
+        for _ in 0..1000 {
+            app.advance_audio(0.001); // 1000 × 1 ms = 1 s of travel = 8 ticks
+        }
+        assert_eq!(
+            app.vp.play_tick, 8,
+            "a second of sub-tick frames sums to exactly 8 ticks, no drift",
+        );
+    }
+
+    #[test]
+    fn playback_advances_then_stops_and_silences_at_the_end() {
+        let mut app = demo_app();
+        app.vp.playing = true;
+        app.advance_audio(0.05);
+        assert!(app.vp.play_tick > 0, "the playhead moves while playing");
+        app.advance_audio(10_000.0); // far past the end
+        assert_eq!(app.vp.play_tick, app.ctx.tick_end, "it lands on the end");
+        assert!(!app.vp.playing, "and stops there");
+        assert_eq!(app.player.active_count(), 0, "nothing left ringing");
+    }
+
+    #[test]
+    fn looping_plays_the_tail_then_the_wrapped_remainder() {
+        // #125 review 2: crossing the loop end must not jump straight to the
+        // start — the overshoot past the boundary plays from the loop start,
+        // not thrown away.
+        let mut app = demo_app();
+        app.loop_range = Some((0, 200)); // a tight loop, in ticks
+        app.vp.play_tick = 150;
+        app.vp.playing = true;
+        // A frame worth exactly 300 ticks: 150→450 crosses the 200 boundary by
+        // 250, which wraps to 50 (250 mod 200) past the loop start.
+        let tps = ticks_per_second(app.ctx.ppq, app.ctx.tempo_bpm, 1.0);
+        app.advance_audio(300.0 / tps);
+        assert_eq!(
+            app.vp.play_tick, 50,
+            "the remainder plays from the loop start, not lost",
+        );
+        assert!(app.vp.playing, "a loop never stops on its own");
+    }
+
+    #[test]
+    fn stop_rewinds_but_keeps_the_audition_setup() {
+        // #125 review UX: Stop is not Reset — tempo, loop, and A/B survive it;
+        // only a fresh file or a new generation clears them.
+        let mut app = demo_app();
+        app.vp.play_tick = 500;
+        app.tempo_scale = 2.0;
+        app.set_loop_bars(true, 0, 0);
+        app.ab_other = Some(AuditionCandidate::Generate(3));
+        app.stop_playback();
+        assert_eq!(app.vp.play_tick, app.ctx.tick_start, "rewound");
+        assert!((app.tempo_scale - 2.0).abs() < 1e-9, "tempo kept");
+        assert!(app.loop_range.is_some(), "loop kept");
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::Generate(3)),
+            "A/B kept"
+        );
+
+        app.reset_audition();
+        assert!(
+            (app.tempo_scale - 1.0).abs() < 1e-9,
+            "reset clears the tempo"
+        );
+        assert!(
+            app.loop_range.is_none() && app.ab_other.is_none(),
+            "and the loop + A/B",
+        );
+    }
+
+    #[test]
+    fn switching_the_output_hushes_the_old_port() {
+        // #125 review 3: a port switch silences the old connection before it
+        // is dropped, so no note is stranded ringing on it.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.playing = true;
+        app.advance_audio(0.2); // sound some notes
+        app.connect_device(0); // switch output (an absent port is fine)
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the old port is hushed on the switch",
+        );
+    }
+
+    #[test]
+    fn the_audition_tempo_never_changes_the_score() {
+        let mut app = demo_app();
+        let written = app.base_bpm();
+        app.set_playback_bpm(written * 2.0);
+        assert!((app.tempo_scale - 2.0).abs() < 1e-6, "2x scale");
+        assert!(
+            (app.ctx.tempo_bpm - written).abs() < 1e-9,
+            "the score's own tempo is untouched — audition only",
+        );
+    }
+
+    #[test]
+    fn a_candidate_switch_keeps_the_playhead_and_rebuilds_the_voice() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.play_tick = 300;
+        app.vp.playing = true;
+        // Switch to another candidate mid-playback.
+        app.show_candidate(1);
+        assert_eq!(
+            app.vp.play_tick, 300,
+            "the playhead holds across the switch"
+        );
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the old score's notes are silenced"
+        );
+    }
+
+    #[test]
+    fn ab_swaps_between_the_last_two_candidates_without_regenerating() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // shows candidate 0
+        assert_eq!(app.gen_panel.selected, Some(0));
+        app.show_candidate(1); // now B; A (0) is remembered
+        assert_eq!(app.ab_other, Some(AuditionCandidate::Generate(0)));
+        app.ab_swap();
+        assert_eq!(
+            app.gen_panel.selected,
+            Some(0),
+            "A/B returns to the other one"
+        );
+        app.ab_swap();
+        assert_eq!(app.gen_panel.selected, Some(1), "and back again — a toggle");
+    }
+
+    #[test]
+    fn ab_swaps_across_generate_and_swang_sources() {
+        // #125 re-review 2: A/B remembers the last candidate viewed regardless
+        // of source and swaps back to the RIGHT one — a Swang candidate after a
+        // Generate candidate returns to the Swang set, not a same-index Generate
+        // row.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // shows Generate(0)
+        app.swang.set = app.gen_panel.set.clone(); // give Swang a set to paint
+        app.swang_show(1); // now viewing Swang(1); leaving Generate(0)
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::Generate(0)),
+            "the Generate candidate we left is the A/B target",
+        );
+        app.ab_swap(); // back to the Generate set
+        assert_eq!(app.gen_panel.selected, Some(0), "routed to Generate");
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::Swang(1)),
+            "and Swang(1) is now the other",
+        );
+        app.ab_swap(); // back to the Swang set
+        assert_eq!(
+            app.swang.selected,
+            Some(1),
+            "routed to Swang, not a Generate row"
+        );
+    }
+
+    #[test]
+    fn a_new_swang_run_resets_the_ab_session() {
+        // #125 re-review 2: a fresh generation session (Generate OR Swang) clears
+        // the A/B history, so `b` never swaps to a candidate from a stale run.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_candidate(1); // A/B target is now Generate(0)
+        assert!(app.ab_other.is_some());
+        app.reset_audition(); // stands in for the reset a new run performs
+        assert!(
+            app.ab_other.is_none() && app.current.is_none(),
+            "a new generation session starts A/B empty",
+        );
     }
 
     /// #123 defect 4: a program whose declared `source` cannot be read must
