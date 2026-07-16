@@ -1055,6 +1055,7 @@ impl CockpitApp {
         self.focus_on_track(focus); // rebuilds view/analysis/ctx/vp for the focus track
         self.stop_playback(); // a new file plays from its start
         self.reset_audition(); // and at its own tempo, no stale loop or A/B
+        self.history.clear_selection(); // no history row is active on a fresh file
         Ok(())
     }
 

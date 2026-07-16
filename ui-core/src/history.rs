@@ -310,9 +310,8 @@ impl SessionHistory {
     /// Clears the selection without touching the entries or their verdicts —
     /// the fresh-load lifecycle seam: a new file has no active history row, so
     /// nothing should read as selected or playing, but the record is preserved.
-    pub fn clear_selection(&mut self) {
-        let _ = &self.selected;
-        unimplemented!("SessionHistory::clear_selection")
+    pub const fn clear_selection(&mut self) {
+        self.selected = None;
     }
 
     /// The selected entry's id, if any.
