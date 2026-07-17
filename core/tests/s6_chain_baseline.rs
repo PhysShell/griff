@@ -1,11 +1,21 @@
 //! Characterization: S6's ranked output is exactly what it was before S7.
 //!
 //! S7 Slice A/B consumes a [`RankedSet`] and must never perturb the pass that
-//! produced it. These tests pin the observable S6 facts the chain depends on —
-//! candidate count and order, strategies, derived variant seeds, rerank
-//! aggregates, the rank tie-break, and the winner — for a fixed seed, so any
-//! future chain work that quietly reaches back into generation fails here
-//! rather than in someone's ears.
+//! produced it. So these tests describe S6's observable output for a fixed
+//! seed, and any future chain work that quietly reaches back into generation
+//! fails here rather than in someone's ears.
+//!
+//! What "characterization" requires, and what this file did not do until the
+//! golden below: the expectations must come from **before** the change. Asking
+//! the pass to run twice and comparing the answers proves the pass is
+//! repeatable, which is worth knowing but is not the claim — a pass that S7 had
+//! perturbed would agree with itself just as happily. The invariant checks
+//! (descending aggregate, one rationale entry per axis) are worth the same
+//! caveat: they describe a contract, not this pass's actual output.
+//!
+//! The golden values are therefore recorded from a detached worktree at the
+//! merge commit S7 branched from, and pasted in as literals. Nothing here may
+//! recompute an expectation by calling the code under test.
 //!
 //! Nothing in this file imports `candidate_chain` or `layered_path` on purpose:
 //! it describes S6 alone.
@@ -105,8 +115,110 @@ const fn ask() -> GenerationAsk {
     }
 }
 
+// ── the golden: S6's output as recorded before S7 existed ────────────────────
+
+/// The base this golden was recorded at: the merge commit S7 branched from.
+const GOLDEN_BASE: &str = "a02355a2b371b8e71b2dcf7c63d9999721d14bfa";
+
+/// `(policy id, policy version)`.
+///
+/// **Not yet recorded.** The values below are placeholders until they are
+/// captured from a detached worktree at [`GOLDEN_BASE`]; recording them from
+/// this branch would only prove the code equals itself.
+const GOLDEN_POLICY: (&str, u32) = ("", 0);
+
+/// The winner's rerank axis labels, in order.
+const GOLDEN_AXES: &[&str] = &[];
+
+/// `(strategy, derived variant seed, rerank aggregate bits)`, in rank order.
+///
+/// The aggregate is pinned by [`f64::to_bits`], not by a rounded decimal: a
+/// characterization test that compares within a tolerance cannot see the drift
+/// it exists to catch.
+const GOLDEN_RANKED: &[(&str, u64, u64)] = &[];
+
+/// The winner's bar count.
+const GOLDEN_WINNER_BARS: usize = 0;
+
+/// The winner's tick resolution.
+const GOLDEN_WINNER_PPQ: u16 = 0;
+
+/// `(absolute start, duration, pitch, velocity)` of every note the winner
+/// holds, in the order the canonical model holds them — the fingerprint of the
+/// actual music S6 produced, not merely of its score.
+const GOLDEN_WINNER_NOTES: &[(u32, u32, u8, u8)] = &[];
+
 #[test]
-fn the_ranked_set_order_seeds_and_aggregates_are_pinned() {
+fn the_ranked_set_matches_the_output_recorded_before_s7() {
+    let set = ranked_candidates(&source(), None, &ask(), None).expect("the pass runs");
+    assert_eq!(
+        (set.policy.id, set.policy.version),
+        GOLDEN_POLICY,
+        "the rerank policy S6 shipped with, as recorded at {GOLDEN_BASE}",
+    );
+    let observed: Vec<(String, u64, u64)> = set
+        .ranked
+        .iter()
+        .map(|c| {
+            (
+                format!("{:?}", c.value.strategy),
+                c.value.seed.0,
+                c.aggregate().to_bits(),
+            )
+        })
+        .collect();
+    let golden: Vec<(String, u64, u64)> = GOLDEN_RANKED
+        .iter()
+        .map(|&(s, seed, bits)| (s.to_owned(), seed, bits))
+        .collect();
+    assert_eq!(
+        observed, golden,
+        "candidate count, rank order, strategies, variant seeds and exact \
+         aggregates, as recorded at {GOLDEN_BASE}",
+    );
+}
+
+#[test]
+fn the_axis_labels_match_the_order_recorded_before_s7() {
+    let set = ranked_candidates(&source(), None, &ask(), None).expect("the pass runs");
+    let winner = set.ranked.first().expect("a winner");
+    let labels: Vec<&str> = winner.axes.iter().map(|a| a.label).collect();
+    assert_eq!(
+        labels, GOLDEN_AXES,
+        "the chain reads these axes by position; their set and order are S6's contract",
+    );
+}
+
+#[test]
+fn the_winners_music_matches_the_score_recorded_before_s7() {
+    // The chain slices this score into bars and copies its event groups. If S6
+    // ever generates different notes for this seed, every downstream number in
+    // the slice — the 3.3 baseline included — silently describes other music.
+    let set = ranked_candidates(&source(), None, &ask(), None).expect("the pass runs");
+    let winner = set.ranked.first().expect("a winner");
+    assert_eq!(winner.value.score.master_bars.len(), GOLDEN_WINNER_BARS);
+    assert_eq!(winner.value.score.ticks_per_quarter, GOLDEN_WINNER_PPQ);
+    let notes: Vec<(u32, u32, u8, u8)> = winner
+        .value
+        .score
+        .tracks
+        .iter()
+        .flat_map(|t| t.voices.iter())
+        .flat_map(|v| v.event_groups.iter())
+        .flat_map(|g| g.atoms.iter())
+        .filter_map(|atom| match atom {
+            AtomEvent::Note(n) => Some((n.absolute_start.0, n.duration.0, n.pitch.0, n.velocity.0)),
+            AtomEvent::Rest(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        notes, GOLDEN_WINNER_NOTES,
+        "the winner's notes, as recorded at {GOLDEN_BASE}",
+    );
+}
+
+#[test]
+fn the_ranked_set_order_and_aggregates_are_repeatable() {
     let set = ranked_candidates(&source(), None, &ask(), None).expect("the pass runs");
 
     // The observable shape of the set: how many candidates, under what policy.
@@ -114,9 +226,10 @@ fn the_ranked_set_order_seeds_and_aggregates_are_pinned() {
     assert_eq!(set.policy.version, 1);
     assert!(!set.ranked.is_empty(), "the pass produced candidates");
 
-    // Every candidate's identity and score, in rank order — the exact tuple the
-    // chain reads. A change to strategy order, variant-seed derivation, or the
-    // rerank aggregate moves these numbers.
+    // Every candidate's identity and score, in rank order. This is the tuple
+    // the chain reads — but comparing it to a second run of the same code only
+    // shows the pass agrees with itself. What it *was* before S7 is the golden
+    // above; this is the weaker, still-worth-having claim of repeatability.
     let observed: Vec<(String, u64, String)> = set
         .ranked
         .iter()
