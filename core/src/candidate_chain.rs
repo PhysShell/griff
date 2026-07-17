@@ -21,6 +21,7 @@ use crate::layered_path::{self, EdgeId, PathError};
 use crate::rerank::SetCandidate;
 use crate::score::{AtomEvent, EventGroup, LossReport, MasterBar, Score, Track, Voice};
 use crate::scoring::{Axes, Axis, Provenance, Rationale, Scored, WeightPolicy};
+use crate::slice::TickRange;
 
 /// One state of the chain: bar `bar` as supplied by ranked candidate
 /// `candidate`.
@@ -619,33 +620,41 @@ fn plan_ranked_with(
 /// round-trip. MIDI is a boundary, not an editing tool.
 fn assemble(ranked: &[Scored<SetCandidate>], chosen: &[usize]) -> Result<Score, ChainError> {
     let reference = &ranked.first().ok_or(ChainError::EmptySet)?.value.score;
-    let tracks = reference
-        .tracks
-        .iter()
-        .enumerate()
-        .map(|(track, source_track)| Track {
+    // Written as loops, not as a `map` chain: every lookup here can fail, and
+    // the only way to write this as an iterator is to answer a failed lookup
+    // with an empty vector — which is how a missing bar becomes a short bar.
+    let mut tracks: Vec<Track> = Vec::with_capacity(reference.tracks.len());
+    for (track, source_track) in reference.tracks.iter().enumerate() {
+        let mut voices: Vec<Voice> = Vec::with_capacity(source_track.voices.len());
+        for (voice, source_voice) in source_track.voices.iter().enumerate() {
+            let mut event_groups: Vec<EventGroup> = Vec::new();
+            for (bar, &candidate) in chosen.iter().enumerate() {
+                let supplier = ranked.get(candidate).ok_or(ChainError::MissingMaterial {
+                    candidate,
+                    track,
+                    voice,
+                    bar,
+                })?;
+                event_groups.extend(groups_in_bar(
+                    candidate,
+                    &supplier.value.score,
+                    track,
+                    voice,
+                    bar,
+                )?);
+            }
+            voices.push(Voice {
+                id: source_voice.id,
+                event_groups,
+            });
+        }
+        tracks.push(Track {
             name: source_track.name.clone(),
             channel: source_track.channel,
             tuning: source_track.tuning.clone(),
-            voices: source_track
-                .voices
-                .iter()
-                .enumerate()
-                .map(|(voice, source_voice)| Voice {
-                    id: source_voice.id,
-                    event_groups: chosen
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(bar, &candidate)| {
-                            ranked.get(candidate).map_or_else(Vec::new, |c| {
-                                groups_in_bar(&c.value.score, track, voice, bar)
-                            })
-                        })
-                        .collect(),
-                })
-                .collect(),
-        })
-        .collect();
+            voices,
+        });
+    }
     Ok(Score {
         ticks_per_quarter: reference.ticks_per_quarter,
         // The one timeline every candidate shares — never a layer winner's.
@@ -656,30 +665,45 @@ fn assemble(ranked: &[Scored<SetCandidate>], chosen: &[usize]) -> Result<Score, 
     })
 }
 
-/// The event groups of `track`/`voice` that live in `bar`, cloned verbatim.
+/// The event groups of `track`/`voice` that belong to `bar`, cloned verbatim.
 ///
-/// A group is attributed by its first atom's onset; validation has already
-/// guaranteed every atom of a group shares one bar.
-fn groups_in_bar(score: &Score, track: usize, voice: usize, bar: usize) -> Vec<EventGroup> {
-    let Some(range) = score.master_bars.get(bar).map(|b| b.tick_range) else {
-        return Vec::new();
+/// A group is attributed by [`group_bar`]; validation has already guaranteed
+/// every atom and span of a group lives in that one bar, so taking the group is
+/// taking all of it.
+///
+/// # Errors
+/// [`ChainError::MissingMaterial`] when the bar, track, or voice does not
+/// exist. That is not an empty bar: after compatibility validation it cannot
+/// happen, and if it ever does, answering "no groups" would turn an invariant
+/// violation into a silently shorter part.
+fn groups_in_bar(
+    candidate: usize,
+    score: &Score,
+    track: usize,
+    voice: usize,
+    bar: usize,
+) -> Result<Vec<EventGroup>, ChainError> {
+    let missing = ChainError::MissingMaterial {
+        candidate,
+        track,
+        voice,
+        bar,
     };
-    score
+    if bar >= score.master_bars.len() {
+        return Err(missing);
+    }
+    let source = score
         .tracks
         .get(track)
         .and_then(|t| t.voices.get(voice))
-        .map_or_else(Vec::new, |v| {
-            v.event_groups
-                .iter()
-                .filter(|g| {
-                    g.atoms.first().is_some_and(|a| {
-                        let onset = a.absolute_start().0;
-                        onset >= range.start.0 && onset < range.end.0
-                    })
-                })
-                .cloned()
-                .collect()
-        })
+        .ok_or(missing)?;
+    let mut kept = Vec::new();
+    for group in &source.event_groups {
+        if group_bar(candidate, score, group)?.0 == bar {
+            kept.push(group.clone());
+        }
+    }
+    Ok(kept)
 }
 
 /// The S6 baseline cost: ranked candidate 0 kept **intact** as one multi-bar
@@ -876,33 +900,26 @@ fn check_self_contained_bars(candidate: usize, score: &Score) -> Result<(), Chai
         .flat_map(|t| t.voices.iter())
         .flat_map(|v| v.event_groups.iter())
     {
-        // A group is lifted as a unit, so all its atoms must share one bar.
-        let mut group_bar: Option<usize> = None;
+        // The group's own bar, decided once, from its first atom. Everything the
+        // group holds is then measured against *that* bar rather than against
+        // whichever bar each piece happens to land in — the group is lifted
+        // whole, so a piece elsewhere is a piece in the wrong place.
+        let (bar, range) = group_bar(candidate, score, group)?;
         for atom in &group.atoms {
             let start = atom.absolute_start().0;
-            let end = start.saturating_add(atom.duration().0);
-            let bar =
-                bar_of(score, start).ok_or(ChainError::CrossBarMaterial { candidate, bar: 0 })?;
-            if *group_bar.get_or_insert(bar) != bar {
+            if start < range.start.0 || start >= range.end.0 {
                 return Err(ChainError::CrossBarMaterial { candidate, bar });
             }
-            let bar_end = score
-                .master_bars
-                .get(bar)
-                .map_or(start, |b| b.tick_range.end.0);
-            if end > bar_end {
+            if atom_end(atom) > u64::from(range.end.0) {
                 return Err(ChainError::CrossBarMaterial { candidate, bar });
             }
         }
         for span in &group.technique_spans {
             let start = span.tick_range.start.0;
-            let bar =
-                bar_of(score, start).ok_or(ChainError::CrossBarMaterial { candidate, bar: 0 })?;
-            let bar_end = score
-                .master_bars
-                .get(bar)
-                .map_or(start, |b| b.tick_range.end.0);
-            if span.tick_range.end.0 > bar_end {
+            if start < range.start.0 || start >= range.end.0 {
+                return Err(ChainError::CrossBarMaterial { candidate, bar });
+            }
+            if span.tick_range.end.0 > range.end.0 {
                 return Err(ChainError::CrossBarMaterial { candidate, bar });
             }
         }
@@ -910,12 +927,44 @@ fn check_self_contained_bars(candidate: usize, score: &Score) -> Result<(), Chai
     Ok(())
 }
 
-/// The index of the bar containing `tick`, if any.
-fn bar_of(score: &Score, tick: u32) -> Option<usize> {
+/// The bar an event group belongs to — its index and its ticks — decided by the
+/// group's first atom.
+///
+/// # Errors
+/// [`ChainError::EmptyEventGroup`] when the group has no atoms to place it by,
+/// and [`ChainError::MaterialOutsideTimeline`] when its first atom sits at a
+/// tick no bar covers — neither has a bar to be reported against.
+fn group_bar(
+    candidate: usize,
+    score: &Score,
+    group: &EventGroup,
+) -> Result<(usize, TickRange), ChainError> {
+    let first = group
+        .atoms
+        .first()
+        .ok_or(ChainError::EmptyEventGroup { candidate })?;
+    let tick = first.absolute_start().0;
+    bar_of(score, tick).ok_or(ChainError::MaterialOutsideTimeline { candidate, tick })
+}
+
+/// When an atom stops sounding, in absolute ticks.
+///
+/// Widened to `u64` for the same reason as [`sounding_end`]: a `u32` sum could
+/// wrap and let a note that runs past the end of the timeline validate as one
+/// that ends early.
+#[allow(clippy::arithmetic_side_effects)]
+fn atom_end(atom: &AtomEvent) -> u64 {
+    u64::from(atom.absolute_start().0) + u64::from(atom.duration().0)
+}
+
+/// The bar containing `tick` — its index and its ticks — if any.
+fn bar_of(score: &Score, tick: u32) -> Option<(usize, TickRange)> {
     score
         .master_bars
         .iter()
-        .position(|b| tick >= b.tick_range.start.0 && tick < b.tick_range.end.0)
+        .enumerate()
+        .find(|(_, b)| tick >= b.tick_range.start.0 && tick < b.tick_range.end.0)
+        .map(|(index, b)| (index, b.tick_range))
 }
 
 #[cfg(test)]
@@ -1587,10 +1636,7 @@ mod tests {
             score.tracks[0].voices[0]
                 .event_groups
                 .iter()
-                .filter(|g| {
-                    let onset = g.atoms[0].absolute_start().0;
-                    onset >= BAR && onset < BAR * 2
-                })
+                .filter(|g| (BAR..BAR * 2).contains(&g.atoms[0].absolute_start().0))
                 .cloned()
                 .collect()
         };
@@ -1628,7 +1674,7 @@ mod tests {
         let set = rich_borrowed_bar_set();
         let (_, assembled) = borrowed_bar(&set);
         assert_eq!(
-            assembled[0].atoms.iter().copied().collect::<Vec<_>>(),
+            assembled[0].atoms.clone(),
             vec![
                 assembled[0].atoms[0],
                 AtomEvent::Rest(AtomRest {
