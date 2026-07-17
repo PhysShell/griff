@@ -46,7 +46,7 @@ use audio::Synth;
 use griff_core::candidate_chain::{ChainError, MasterBarField, TrackField, TransitionFactError};
 use griff_core::layered_path::PathError;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
-use griff_ui_core::generate::{generate_run, GeneratedRun, GlobalChainOutcome};
+use griff_ui_core::generate::{generate_run, GeneratedRun, GlobalChainOutcome, PlannedGlobalChain};
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
 use griff_ui_core::theme::{cell_style, Rgb, Theme};
 use griff_ui_core::viewport::CurationDecision;
@@ -668,6 +668,92 @@ fn remap_loop_range(
     let lo = *bar_lines.get(a)?;
     let hi = *bar_lines.get(b.saturating_add(1).min(last))?;
     (lo < hi && hi <= tick_end).then_some((lo, hi))
+}
+
+/// The sidecar written beside an exported global chain.
+///
+/// Mirrors the entry's typed `GlobalChain` provenance, exactly as
+/// `KeptProvenance` mirrors a candidate's — the serialisable shape lives here,
+/// in the frontend that owns the file format, and the model stays typed.
+///
+/// The supplier map is the load-bearing part: a `.mid` of a chain is otherwise
+/// indistinguishable from a `.mid` of anything else, and "which candidate played
+/// bar 2" is the one question this export exists to be able to answer later.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, serde::Serialize)]
+struct KeptChain<'a> {
+    /// The seed score's identity.
+    source: Option<&'a str>,
+    /// The ask seed.
+    seed: u64,
+    /// Bars in the assembled chain.
+    bars: usize,
+    /// The chain policy the costs were weighed under.
+    policy_id: &'a str,
+    /// That policy's version.
+    policy_version: &'a u32,
+    /// Ranked candidate 0 kept intact, under the same policy.
+    baseline_cost: f64,
+    /// The planned chain's total.
+    total_cost: f64,
+    /// Which candidate supplied each output bar.
+    suppliers: Vec<KeptSupplier<'a>>,
+}
+
+/// One bar's supplier, as the sidecar writes it.
+///
+/// Mirrored rather than derived onto [`ChainSupplier`]: `history` is
+/// deliberately free of serialisation, so the model cannot quietly acquire a
+/// wire format and a compatibility obligation with it. The frontend that writes
+/// the file owns the file's shape.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, serde::Serialize)]
+struct KeptSupplier<'a> {
+    /// The output bar this candidate filled.
+    bar: usize,
+    /// The supplying candidate's ordinal in the ranked set.
+    candidate: usize,
+    /// That candidate's own 1-based rank.
+    rank: usize,
+    /// That candidate's strategy.
+    strategy: &'a str,
+    /// That candidate's derived variant seed — its reproduction key.
+    variant_seed: u64,
+}
+
+/// The run-level record of what a captured chain outcome came to.
+///
+/// A projection of the captured outcome, taken at capture time: the costs and
+/// the supplier map when planned, the core's own typed error when not. It holds
+/// no score — the assembled one lives on the history entry the audition records,
+/// and a refusal has none at all.
+fn chain_outcome_record(chain: &GlobalChainOutcome) -> ChainOutcomeRecord {
+    match chain {
+        GlobalChainOutcome::Planned(chain) => ChainOutcomeRecord::Planned {
+            policy_id: chain.plan.provenance.policy_id,
+            policy_version: chain.plan.provenance.policy_version,
+            baseline_cost: chain.baseline_cost,
+            total_cost: chain.plan.total_cost,
+            suppliers: chain_suppliers(chain),
+        },
+        GlobalChainOutcome::Refused(error) => ChainOutcomeRecord::Refused { error: *error },
+    }
+}
+
+/// Which candidate supplied each bar of a planned chain, from the core's steps.
+fn chain_suppliers(chain: &PlannedGlobalChain) -> Vec<ChainSupplier> {
+    chain
+        .plan
+        .steps
+        .iter()
+        .map(|step| ChainSupplier {
+            bar: step.state.bar,
+            candidate: step.state.candidate,
+            rank: step.state.rank,
+            strategy: format!("{:?}", step.state.strategy),
+            variant_seed: step.state.variant_seed.0,
+        })
+        .collect()
 }
 
 /// Why the S7 global chain could not be planned, in a sentence — built here, in
@@ -1362,6 +1448,11 @@ impl CockpitApp {
                 };
                 let n = set.rows.len();
                 let tones = set.summary.scale_tones;
+                // Against the run, once, whether or not the chain is ever
+                // auditioned — so "did this run have a chain, and if not why"
+                // outlives the run being replaced.
+                self.history
+                    .record_chain(context.run, chain_outcome_record(&chain));
                 self.gen_panel.active = Some(ActiveGenerateRun {
                     context,
                     set,
@@ -1409,18 +1500,7 @@ impl CockpitApp {
             policy_version: chain.plan.provenance.policy_version,
             baseline_cost: chain.baseline_cost,
             total_cost: chain.plan.total_cost,
-            suppliers: chain
-                .plan
-                .steps
-                .iter()
-                .map(|step| ChainSupplier {
-                    bar: step.state.bar,
-                    candidate: step.state.candidate,
-                    rank: step.state.rank,
-                    strategy: format!("{:?}", step.state.strategy),
-                    variant_seed: step.state.variant_seed.0,
-                })
-                .collect(),
+            suppliers: chain_suppliers(chain),
         };
         let run = ctx.run;
         let id = self.history.record(
@@ -1508,6 +1588,11 @@ impl CockpitApp {
         let title = entry.title.clone();
         self.history.select(id);
         self.remember_shown(AuditionCandidate::History(id));
+        // A snapshot is sounding, so no *live* row is. The replayed entry may
+        // even come from a run whose panel set is long gone — leaving a row of
+        // the current set marked would point at music that is not playing.
+        self.gen_panel.selected = None;
+        self.swang.selected = None;
         self.show_score(score, title);
     }
 
@@ -1615,6 +1700,37 @@ impl CockpitApp {
         Ok(mid.display().to_string())
     }
 
+    /// Writes the run's assembled global chain, recording it first if it has not
+    /// been auditioned yet — so what is written is a result that exists in the
+    /// history, not a fourth thing built at the moment of export.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_chain(&mut self) {
+        let Some(active) = self.gen_panel.active.as_ref() else {
+            return;
+        };
+        if !matches!(active.chain, GlobalChainOutcome::Planned(_)) {
+            return;
+        }
+        let run = active.context.run;
+        // `record` is keyed by (run, candidate_id) and a run has one chain, so
+        // this returns the audition's entry when there is one and mints it when
+        // there is not. Either way the export and the history agree.
+        self.show_global_chain();
+        let Some(id) = self
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.run == run && e.source == CandidateSource::GlobalChain)
+            .map(|e| e.id)
+        else {
+            return;
+        };
+        self.gen_panel.status = Some(match self.write_chain_keep(id) {
+            Ok(path) => format!("kept -> {path}"),
+            Err(err) => format!("keep failed: {err}"),
+        });
+    }
+
     /// Exports the global chain recorded as history entry `id` to `.mid`, plus
     /// a provenance sidecar; returns the written `.mid` path.
     ///
@@ -1625,9 +1741,59 @@ impl CockpitApp {
     /// # Errors
     /// When the entry is missing, is not a chain, or the write fails.
     #[cfg(not(target_arch = "wasm32"))]
-    fn write_chain_keep(&self, _id: HistoryId) -> Result<String, String> {
-        // Stub: the laws come first.
-        Err("not implemented".to_owned())
+    fn write_chain_keep(&self, id: HistoryId) -> Result<String, String> {
+        use std::fs;
+
+        use griff_core::midi::export_score;
+
+        // Everything below comes from the entry — the score and the provenance
+        // that describes it, recorded together and immutable since. The active
+        // run is not consulted: it may be a different run entirely by now.
+        let entry = self.history.get(id).ok_or("no such history entry")?;
+        let GeneratorProvenance::GlobalChain {
+            seed,
+            policy_id,
+            policy_version,
+            baseline_cost,
+            total_cost,
+            suppliers,
+            source,
+            ..
+        } = &entry.provenance.generator
+        else {
+            return Err("that entry is not a global chain".to_owned());
+        };
+        let sidecar = KeptChain {
+            source: source.as_deref(),
+            seed: *seed,
+            bars: suppliers.len(),
+            policy_id,
+            policy_version,
+            baseline_cost: *baseline_cost,
+            total_cost: *total_cost,
+            suppliers: suppliers
+                .iter()
+                .map(|s| KeptSupplier {
+                    bar: s.bar,
+                    candidate: s.candidate,
+                    rank: s.rank,
+                    strategy: &s.strategy,
+                    variant_seed: s.variant_seed,
+                })
+                .collect(),
+        };
+
+        fs::create_dir_all(&self.out_dir)
+            .map_err(|e| format!("cannot create {}: {e}", self.out_dir.display()))?;
+        let stem = format!("seed{seed}_global-chain_run{}", entry.run.0);
+        let mid = self.out_dir.join(format!("{stem}.mid"));
+        let json = self.out_dir.join(format!("{stem}.json"));
+
+        let bytes = export_score(&entry.score).map_err(|err| format!("{err:?}"))?;
+        fs::write(&mid, &bytes).map_err(|e| format!("cannot write {}: {e}", mid.display()))?;
+        let text = serde_json::to_string_pretty(&sidecar).map_err(|err| err.to_string())?;
+        fs::write(&json, text).map_err(|e| format!("cannot write {}: {e}", json.display()))?;
+        Ok(mid.display().to_string())
     }
 
     /// Hands the last kept `.mid` to the OS default handler — the cheap way to
@@ -1712,21 +1878,21 @@ impl CockpitApp {
         if acts.run {
             self.do_generate();
         }
-        if let Some(i) = acts.show {
-            self.show_candidate(i);
-        }
-        if acts.show_intact {
+        match acts.show {
+            Some(AuditionPick::Candidate(i)) => self.show_candidate(i),
             // The S6 winner is ranked candidate 0, always — the candidate the
             // chain's baseline cost is the cost of.
-            self.show_candidate(0);
-        }
-        if acts.show_chain {
-            self.show_global_chain();
+            Some(AuditionPick::Intact) => self.show_candidate(0),
+            Some(AuditionPick::Chain) => self.show_global_chain(),
+            None => {}
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
             if let Some(i) = acts.keep {
                 self.keep_candidate(i);
+            }
+            if acts.keep_chain {
+                self.keep_chain();
             }
             if let Some(i) = acts.open {
                 self.open_keep(i);
@@ -2078,7 +2244,7 @@ impl CockpitApp {
                 .on_hover_text("the whole candidate S6 ranked first")
                 .clicked()
             {
-                acts.show_intact = true;
+                acts.show = Some(AuditionPick::Intact);
             }
             match &active.chain {
                 GlobalChainOutcome::Planned(chain) => {
@@ -2092,7 +2258,16 @@ impl CockpitApp {
                         ))
                         .clicked()
                     {
-                        acts.show_chain = true;
+                        acts.show = Some(AuditionPick::Chain);
+                    }
+                    // Keeping is native-only, like the candidate keep beside it.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if ui
+                        .button("keep")
+                        .on_hover_text("write the assembled chain and its supplier map")
+                        .clicked()
+                    {
+                        acts.keep_chain = true;
                     }
                 }
                 GlobalChainOutcome::Refused(error) => {
@@ -2161,7 +2336,7 @@ impl CockpitApp {
                     .on_hover_text(hover)
                     .clicked()
                 {
-                    acts.show = Some(i);
+                    acts.show = Some(AuditionPick::Candidate(i));
                 }
             }
         });
@@ -2838,17 +3013,30 @@ struct SwangActions {
 struct GenerateActions {
     /// Run the pass again.
     run: bool,
-    /// Audition candidate `i` of the current set.
-    show: Option<usize>,
-    /// Audition the run's S6 intact winner — ranked candidate 0, the one the
-    /// chain's baseline cost measures.
-    show_intact: bool,
-    /// Audition the run's assembled global chain.
-    show_chain: bool,
+    /// What to audition, if anything.
+    show: Option<AuditionPick>,
+    /// Write the run's assembled global chain to disk.
+    keep_chain: bool,
     /// Write candidate `i` to disk.
     keep: Option<usize>,
     /// Open candidate `i`'s kept file.
     open: Option<usize>,
+}
+
+/// What one frame asked to audition.
+///
+/// An enum rather than a flag apiece: a frame chooses **one** thing to hear, and
+/// three independent booleans could describe a frame asking for three at once —
+/// which would resolve by whichever branch ran last, silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuditionPick {
+    /// Candidate `i` of the current set.
+    Candidate(usize),
+    /// The S6 intact winner — ranked candidate 0, the one the chain's baseline
+    /// cost measures.
+    Intact,
+    /// The run's assembled global chain.
+    Chain,
 }
 
 /// The pixel rect of grid position (`col`, `vis_row`).
@@ -3916,8 +4104,17 @@ mod tests {
     }
 
     /// A generated run whose chain was refused. Generation succeeded — the
-    /// candidates are all there and all playable; only the chaining of them
-    /// did not happen.
+    /// candidates are all there and all playable; only the chaining of them did
+    /// not happen.
+    ///
+    /// Staged rather than provoked: every candidate of a real run descends from
+    /// one generator and one import, so they always agree about the timeline and
+    /// nothing the panel can ask for produces a genuine refusal. The staging is
+    /// therefore a whole run — a fresh run id, its set, its refused outcome
+    /// recorded against it, and its intact winner recorded under it — because a
+    /// run whose captured chain says one thing and whose history says another is
+    /// not a state the code can reach, and a fixture that builds one tests
+    /// nothing that exists.
     fn app_with_refused_chain() -> (CockpitApp, ChainError) {
         let refusal = ChainError::CrossBarMaterial {
             candidate: 2,
@@ -3926,7 +4123,15 @@ mod tests {
         let mut app = demo_app();
         app.gen_panel.variants = 2;
         app.do_generate();
-        app.gen_panel.active.as_mut().expect("a run").chain = GlobalChainOutcome::Refused(refusal);
+        let run = app.history.begin_run();
+        {
+            let active = app.gen_panel.active.as_mut().expect("a run");
+            active.context.run = run;
+            active.chain = GlobalChainOutcome::Refused(refusal);
+        }
+        app.history
+            .record_chain(run, ChainOutcomeRecord::Refused { error: refusal });
+        app.show_candidate(0);
         (app, refusal)
     }
 
@@ -4206,7 +4411,7 @@ mod tests {
         let entries = app.history.entries().len();
 
         app.apply_generate_actions(&GenerateActions {
-            show_chain: true,
+            show: Some(AuditionPick::Chain),
             ..GenerateActions::default()
         });
 
@@ -4263,7 +4468,7 @@ mod tests {
         app.show_candidate(1); // browse another row
         app.show_global_chain();
         app.apply_generate_actions(&GenerateActions {
-            show_intact: true,
+            show: Some(AuditionPick::Intact),
             ..GenerateActions::default()
         });
         assert_eq!(
@@ -4386,8 +4591,6 @@ mod tests {
         // go with it.
         let (mut app, refusal) = app_with_refused_chain();
         let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
-        app.history
-            .record_chain(run_a, ChainOutcomeRecord::Refused { error: refusal });
 
         app.gen_panel.seed = 24_601;
         app.do_generate(); // run B replaces the active run entirely
@@ -4452,7 +4655,7 @@ mod tests {
             written, expected,
             "the bytes are the captured assembled score's, through the one canonical path",
         );
-        let _ = fs::remove_file(&path);
+        drop(fs::remove_file(&path));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4489,7 +4692,7 @@ mod tests {
             written, old_bytes,
             "the old entry exports the music it was recorded with",
         );
-        let _ = fs::remove_file(&path);
+        drop(fs::remove_file(&path));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4527,7 +4730,7 @@ mod tests {
             poison.to_bits(),
             "export read the snapshot; it did not ask the planner to try again",
         );
-        let _ = fs::remove_file(&path);
+        drop(fs::remove_file(&path));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4559,8 +4762,8 @@ mod tests {
             json.contains("\"policy_id\": \"candidate_chain\""),
             "under the policy that measured them: {json}",
         );
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(path.replace(".mid", ".json"));
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
     }
 
     // ── history replay does not leave a live row claiming to sound ───────────
