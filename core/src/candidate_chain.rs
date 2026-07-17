@@ -17,7 +17,7 @@ use crate::generate::{GenerationSeed, GenerationStrategy};
 use crate::layered_path::PathError;
 use crate::rerank::SetCandidate;
 use crate::score::Score;
-use crate::scoring::{Axes, Provenance, Rationale, Scored};
+use crate::scoring::{Axes, Provenance, Rationale, Scored, WeightPolicy};
 
 /// One state of the chain: bar `bar` as supplied by ranked candidate
 /// `candidate`.
@@ -120,6 +120,67 @@ pub struct S6Quality {
     pub provenance: Provenance,
     /// The derived rerank aggregate the local cost is monotonic in.
     pub aggregate: f64,
+}
+
+/// Local axis: how much this candidate's S6 quality costs the chain.
+pub const AXIS_CANDIDATE_QUALITY: &str = "candidate_quality";
+/// Transition axis: the boundary pitch jump, in semitones. **Absent** when the
+/// boundary is silent — an unmeasurable fact is omitted, never zeroed.
+pub const AXIS_BOUNDARY_JUMP: &str = "boundary_jump_semitones";
+/// Transition axis: `1.0` when a boundary has no sounding pitch on one side, so
+/// the jump could not be measured; `0.0` when it could.
+pub const AXIS_SILENT_BOUNDARY: &str = "silent_boundary";
+/// Transition axis: `1.0` when adjacent bars share an identical rhythm
+/// signature, `0.0` otherwise.
+pub const AXIS_RHYTHM_REPEAT: &str = "rhythm_repeat";
+
+/// The `candidate_chain` v1 weights — an **untuned, documented baseline**.
+///
+/// Not corpus-calibrated and not S9-learned; S7 consumes weights, S9 may one
+/// day tune them (ADR-0013 §4). Each term and its unit:
+///
+/// - [`AXIS_CANDIDATE_QUALITY`] `1.0` — the local preference. Value is
+///   `1 − s6_aggregate` (the S6 rerank aggregate is in `[0, 1]` under its
+///   uniform policy), so a better S6 candidate always costs less. Weight `1.0`
+///   makes it the reference scale every other term is expressed against.
+/// - [`AXIS_BOUNDARY_JUMP`] `0.05` — per **semitone** of pitch distance across
+///   the bar line, unwrapped. An octave-plus leap (13 st → `0.65`) therefore
+///   outweighs a whole S6 quality gap of `0.65`, while a step or two (`0.05`–
+///   `0.10`) is cheap enough that quality still decides.
+/// - [`AXIS_SILENT_BOUNDARY`] `0.25` — charged when the jump is *unmeasurable*
+///   (a silent bar edge). Deliberately not free: "no pitch here" is a real,
+///   mildly awkward fact, not perfect continuity.
+/// - [`AXIS_RHYTHM_REPEAT`] `0.40` — charged once when adjacent bars share an
+///   identical rhythm. Roughly a 8-semitone jump, so the chain will accept a
+///   moderate leap to avoid a literal rhythmic copy — the "four identical bars
+///   in a row" ADR-0013 complains about.
+#[must_use]
+pub fn chain_weights_v1() -> WeightPolicy {
+    unimplemented!("candidate_chain::chain_weights_v1")
+}
+
+/// The local cost facts for a candidate whose S6 rerank aggregate is `s6`.
+///
+/// The transform is `1 − s6`: strictly decreasing, so a better S6 aggregate can
+/// never earn a worse local cost. The S6 verdict is reused, never recomputed,
+/// and never replaced by the candidate's ordinal.
+#[must_use]
+pub fn local_facts(s6: f64) -> Axes {
+    let _ = s6;
+    unimplemented!("candidate_chain::local_facts")
+}
+
+/// The transition cost facts across the line between `from_bar` of `from` and
+/// `to_bar` of `to`.
+///
+/// Measured from canonical note events only. When either side has no sounding
+/// pitch the jump is *unmeasurable*: [`AXIS_BOUNDARY_JUMP`] is then **absent**
+/// and [`AXIS_SILENT_BOUNDARY`] carries the fact instead — an unavailable
+/// measurement is never a zero pretending to be perfect continuity.
+#[must_use]
+pub fn transition_facts(from: &Score, from_bar: usize, to: &Score, to_bar: usize) -> Axes {
+    let _ = (from, from_bar, to, to_bar);
+    unimplemented!("candidate_chain::transition_facts")
 }
 
 /// The layers of a chain problem: `layers[b][c]` is bar `b` of candidate `c`.
@@ -260,7 +321,10 @@ fn bar_of(score: &Score, tick: u32) -> Option<usize> {
     clippy::arithmetic_side_effects
 )]
 mod tests {
-    use super::{chain_layers, ChainError};
+    use super::{
+        chain_layers, chain_weights_v1, local_facts, transition_facts, ChainError,
+        AXIS_BOUNDARY_JUMP, AXIS_CANDIDATE_QUALITY, AXIS_RHYTHM_REPEAT, AXIS_SILENT_BOUNDARY,
+    };
     use crate::event::{
         NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning,
         Velocity,
@@ -524,5 +588,117 @@ mod tests {
             chain_layers(&ranked).is_ok(),
             "a full-bar note is not cross-bar"
         );
+    }
+
+    // ── the v1 cost model ────────────────────────────────────────────────────
+
+    #[test]
+    fn the_v1_policy_names_its_id_version_and_documented_weights() {
+        let p = chain_weights_v1();
+        assert_eq!(p.id, "candidate_chain");
+        assert_eq!(p.version, 1);
+        assert!((p.weight(AXIS_CANDIDATE_QUALITY) - 1.0).abs() < 1e-12);
+        assert!((p.weight(AXIS_BOUNDARY_JUMP) - 0.05).abs() < 1e-12);
+        assert!((p.weight(AXIS_SILENT_BOUNDARY) - 0.25).abs() < 1e-12);
+        assert!((p.weight(AXIS_RHYTHM_REPEAT) - 0.40).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_local_cost_is_monotonic_in_the_s6_aggregate() {
+        let cost = |s6: f64| local_facts(s6).get(AXIS_CANDIDATE_QUALITY).unwrap();
+        assert!(
+            cost(0.9) < cost(0.5),
+            "a better S6 aggregate never costs more"
+        );
+        assert!(cost(0.5) < cost(0.1));
+        assert!((cost(1.0) - 0.0).abs() < 1e-12, "the transform is 1 - s6");
+    }
+
+    #[test]
+    fn the_boundary_jump_separates_a_step_from_an_octave_leap() {
+        let a = score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]);
+        let b = score_of(&[&[(0, 480, 60)], &[(0, 480, 74)]]);
+        let step = transition_facts(&a, 0, &a, 1)
+            .get(AXIS_BOUNDARY_JUMP)
+            .unwrap();
+        let leap = transition_facts(&b, 0, &b, 1)
+            .get(AXIS_BOUNDARY_JUMP)
+            .unwrap();
+        assert!((step - 2.0).abs() < 1e-12, "two semitones, unwrapped");
+        assert!(
+            (leap - 14.0).abs() < 1e-12,
+            "fourteen semitones, never wrapped to two",
+        );
+        assert!(leap > step, "a >12-semitone jump is visibly dearer");
+    }
+
+    #[test]
+    fn a_silent_boundary_omits_the_jump_rather_than_zeroing_it() {
+        let s = score_of(&[&[(0, 480, 60)], &[]]);
+        let facts = transition_facts(&s, 0, &s, 1);
+        assert_eq!(
+            facts.get(AXIS_BOUNDARY_JUMP),
+            None,
+            "an unmeasurable jump is ABSENT, never a zero that reads as continuity",
+        );
+        assert!((facts.get(AXIS_SILENT_BOUNDARY).unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_measurable_boundary_records_a_zero_silent_fact() {
+        let s = score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]);
+        let facts = transition_facts(&s, 0, &s, 1);
+        assert!((facts.get(AXIS_SILENT_BOUNDARY).unwrap() - 0.0).abs() < 1e-12);
+        assert!(facts.get(AXIS_BOUNDARY_JUMP).is_some());
+    }
+
+    #[test]
+    fn the_same_rhythm_with_different_pitches_is_still_a_repeat() {
+        let s = score_of(&[
+            &[(0, 480, 60), (960, 480, 62)],
+            &[(0, 480, 71), (960, 480, 69)],
+        ]);
+        let repeat = transition_facts(&s, 0, &s, 1)
+            .get(AXIS_RHYTHM_REPEAT)
+            .unwrap();
+        assert!(
+            (repeat - 1.0).abs() < 1e-12,
+            "the signature is pitch-free: same onsets and durations is a repeat",
+        );
+    }
+
+    #[test]
+    fn different_durations_are_not_the_same_rhythm() {
+        let s = score_of(&[&[(0, 480, 60)], &[(0, 960, 60)]]);
+        let repeat = transition_facts(&s, 0, &s, 1)
+            .get(AXIS_RHYTHM_REPEAT)
+            .unwrap();
+        assert!(
+            (repeat - 0.0).abs() < 1e-12,
+            "same onset, different duration is a different rhythm",
+        );
+    }
+
+    #[test]
+    fn different_onsets_are_not_the_same_rhythm() {
+        let s = score_of(&[&[(0, 480, 60)], &[(480, 480, 60)]]);
+        let repeat = transition_facts(&s, 0, &s, 1)
+            .get(AXIS_RHYTHM_REPEAT)
+            .unwrap();
+        assert!(
+            (repeat - 0.0).abs() < 1e-12,
+            "the signature uses real onsets, not equal-step placeholders",
+        );
+    }
+
+    #[test]
+    fn two_silent_bars_share_the_explicit_empty_signature() {
+        let s = score_of(&[&[], &[]]);
+        let facts = transition_facts(&s, 0, &s, 1);
+        assert!(
+            (facts.get(AXIS_RHYTHM_REPEAT).unwrap() - 1.0).abs() < 1e-12,
+            "two silences are a rhythmic repeat — an explicit signature, not a gap",
+        );
+        assert!((facts.get(AXIS_SILENT_BOUNDARY).unwrap() - 1.0).abs() < 1e-12);
     }
 }
