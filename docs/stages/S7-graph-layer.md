@@ -167,6 +167,15 @@ untouched.
   actual notes. A characterization test that recomputes its expectations from
   the code under test proves only that the code equals itself.
 
+**Audible since 2026-07-17.** Slices A and B are core-only: they answer the
+question in numbers. The **Global Chain Audition** milestone (S8) surfaces both
+results in the cockpit — the intact S6 winner and the assembled chain, from one
+ranked set, A/B through the existing playback stack, with the per-bar suppliers
+and this stage's own cost explanations on screen, and the assembled score
+exportable to MIDI. The chain is planned once inside the generation pass; the
+cockpit never holds a `RankedSet` or the planner. See
+[`S8-preview-app.md`](S8-preview-app.md).
+
 Deliberately **not** in these slices: k-best, harmonic fit, style fit,
 playability, fret travel, `EnergyState`, corpus transition statistics,
 persistent nodes, and complement hyperedges.

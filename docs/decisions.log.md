@@ -1822,3 +1822,48 @@ Architectural decisions go to [`adr/`](adr/) instead.
   reports — reduced per-client state, the corrected complexity story, and the
   contracts above — are recorded as [`adr/0030`](adr/0030-reduced-state-layered-dp-clients.md),
   which amends ADR-0013 rather than editing it.
+
+- 2026-07-17 — In the context of the **Global Chain Audition** milestone (S8;
+  the S7 A/B core made audible), facing the fact that `plan_candidate_chain`
+  takes a `&RankedSet` while `generate_set` dropped that set before any frontend
+  saw it, we decided to **plan the chain inside the generation pass**
+  (`griff_ui_core::generate::generate_run`): one `ranked_candidates` call, the
+  chain planned from that same live set, and the set consumed there. The
+  alternative — keeping the set alive for the cockpit to plan from later —
+  would have needed `RankedSet: Clone` and would have left the frontend holding
+  the planner's input. The invariant "one immutable run, planned once" is
+  therefore a property of the code's topology rather than a rule someone must
+  remember: the cockpit has nothing to re-plan *from*. Accepting: the S6 winner
+  and the S7 chain are computed together even when only one is ever heard.
+  **Refusal is a run-level typed outcome.** `GlobalChainOutcome` is deliberately
+  not a `Result`, so a `ChainError` cannot be raised into a `GenerationInputError`
+  by a stray `?` — a set that cannot be chained is not a failed generation, and
+  its candidates are all still playable. `SessionHistory::record_chain` keys the
+  outcome to the `GenerationRunId`, append-only, first-write-wins, so the reason
+  a run had no chain outlives `ActiveGenerateRun` being replaced. We rejected
+  recording a `GlobalChain` history entry carrying the intact winner's score to
+  give the error somewhere to live: a refusal has no score, an entry needs one,
+  and that trade would have been the milestone's own lie — a result that does not
+  exist wearing the music of one that does.
+  **The frontend owns the wire format.** `KeptChain`/`KeptSupplier` mirror the
+  typed provenance in the cockpit rather than deriving `Serialize` onto
+  `griff_ui_core::history`, which stays backend-neutral and unserialisable. The
+  sidecar carries the whole captured contract (origin, run, source, the corpus's
+  actual contribution, seed, the ask's bars and variants, policy and version,
+  both costs, the ordered supplier map) and reads every field from the immutable
+  history entry — `bars` from the captured ask, never from `suppliers.len()`,
+  since a result may not be its own evidence.
+  **Explanations are projections, not a second cost model.**
+  `global_chain_summary` reads the run's record — which carries the core's own
+  steps and transitions — so a chain replayed from history explains itself after
+  the run that made it is gone, rather than being reconstructed from supplier ids
+  and whatever set is loaded now. `ChainOutcomeRecord` drops `PartialEq` to hold
+  that trace: the core's scored types are not comparable, and adding equality to
+  six `griff-core` types to shorten assertions is not a reason to touch a frozen
+  crate. Accepting: the untuned `candidate_chain` v1 weights are what the panel
+  shows, and the delta is reported as "lower/higher/equal under candidate_chain
+  v1" — a fact about the policy. **No claim is made that the chain sounds
+  better**; this milestone makes the comparison hearable and reproducible, which
+  is a different thing. No k-best, no weight tuning, no S9 adaptation, no S15,
+  no S17 rendering, and no new audio backend: A/B reuses the S8 Slice 2
+  playback stack unchanged, and export reuses the canonical `Score` → MIDI path.
