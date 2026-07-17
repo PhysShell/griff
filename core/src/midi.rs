@@ -802,6 +802,7 @@ mod tests {
         slice::TickRange,
     };
     use midly::{Format, MetaMessage, Smf, TrackEventKind};
+    use std::{fs, path::Path};
 
     /// Bytes of the `tempo_change` fixture (two-tempo file from the S0 corpus).
     const TEMPO_CHANGE_MID: &[u8] = include_bytes!(concat!(
@@ -974,12 +975,45 @@ mod tests {
         );
     }
 
-    /// The `midi_roundtrip` finding, verbatim (274 bytes). Shared with the
-    /// fuzz corpus so the seed and this contract cannot drift apart.
+    /// The `midi_roundtrip` finding, verbatim (274 bytes).
+    ///
+    /// Embedded from this package's own `tests/fixtures/`, not from the
+    /// sibling `fuzz/` corpus: `fuzz/` is deliberately outside the workspace
+    /// (ADR-0010) and so is absent from packaged `griff-core` source, where a
+    /// `../fuzz/...` path would fail to compile. The fuzz corpus keeps its own
+    /// copy — `f006_fixture_matches_the_fuzz_corpus_seed` pins the two
+    /// byte-identical wherever both exist.
     const F006_DELTA_EXCEEDS_VLQ: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../fuzz/corpus/midi_roundtrip/roundtrip_delta_exceeds_vlq.mid"
+        "/tests/fixtures/roundtrip_delta_exceeds_vlq.mid"
     ));
+
+    /// The packaged fixture and the fuzz corpus seed are the same finding and
+    /// must not drift.
+    ///
+    /// Two copies is the price of `fuzz/` living outside the workspace: the
+    /// unit test needs a package-local file, the gate needs a corpus entry.
+    /// This test removes the risk that price buys — it compares them wherever
+    /// the sibling corpus exists, which is every context where drift is
+    /// possible. In packaged source there is nothing to compare and it
+    /// returns; the regression test above still runs against the embedded
+    /// copy.
+    #[test]
+    fn f006_fixture_matches_the_fuzz_corpus_seed() {
+        let seed = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fuzz/corpus/midi_roundtrip/roundtrip_delta_exceeds_vlq.mid");
+        if !seed.exists() {
+            return; // packaged source: no sibling fuzz crate to compare against
+        }
+        let corpus = fs::read(&seed).expect("the sibling fuzz seed must be readable");
+        assert_eq!(
+            corpus,
+            F006_DELTA_EXCEEDS_VLQ,
+            "the packaged fixture and the fuzz corpus seed have drifted apart; \
+             they are the same {}-byte finding and must stay byte-identical",
+            F006_DELTA_EXCEEDS_VLQ.len(),
+        );
+    }
 
     /// F-006 (`docs/fuzzing.md`): the `midi_roundtrip` gate found a file whose
     /// exported bytes griff's *own* importer rejects — export claimed success

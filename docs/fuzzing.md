@@ -223,13 +223,19 @@ priority onto canonical stages:
   `0x0FFF_FFFF` provided every individual delta stays representable. Sparse
   meta tracks are the exposed case, since time-signature, tempo and
   end-of-track events can sit hundreds of millions of ticks apart.
-- **Reproducer / regression seed:**
-  `fuzz/corpus/midi_roundtrip/roundtrip_delta_exceeds_vlq.mid` (274 bytes, the
-  gate's own artifact, unminimized). Characterization tests:
-  `regression_f006_export_refuses_unrepresentable_delta` and
-  `export_never_returns_bytes_its_own_importer_rejects` in `core/src/midi.rs`,
-  both sharing the corpus file via `include_bytes!` so seed and contract cannot
-  drift.
+- **Reproducer / regression seed:** the gate's own 274-byte artifact,
+  unminimized, kept in **two** places —
+  `fuzz/corpus/midi_roundtrip/roundtrip_delta_exceeds_vlq.mid` for the gate and
+  `core/tests/fixtures/roundtrip_delta_exceeds_vlq.mid` for the crate.
+  Characterization tests `regression_f006_export_refuses_unrepresentable_delta`
+  and `export_never_returns_bytes_its_own_importer_rejects` in
+  `core/src/midi.rs` embed the **package-local** copy: `fuzz/` is outside the
+  workspace (ADR-0010) and absent from packaged `griff-core` source, so a
+  `../fuzz/...` `include_bytes!` would not compile there. The two copies are
+  not shared — they are pinned byte-identical by
+  `f006_fixture_matches_the_fuzz_corpus_seed`, which compares them wherever the
+  sibling corpus exists and returns where it cannot (packaged source, the one
+  place drift is impossible anyway).
 - **Found by:** the `midi_roundtrip` gate on PR #129 (run 29572853555), whose
   diff touches no `core/` file. Replaying the artifact reproduced identically
   on `main`'s tip (`2612bd8`), so the defect was live on `main` and merely
