@@ -19,7 +19,7 @@ use crate::generate::{GenerationSeed, GenerationStrategy};
 use crate::generation_input::RankedSet;
 use crate::layered_path::{self, EdgeId, PathError};
 use crate::rerank::SetCandidate;
-use crate::score::{AtomEvent, Score};
+use crate::score::{AtomEvent, EventGroup, LossReport, Score, Track, Voice};
 use crate::scoring::{Axes, Axis, Provenance, Rationale, Scored, WeightPolicy};
 
 /// One state of the chain: bar `bar` as supplied by ranked candidate
@@ -354,8 +354,164 @@ fn plan_ranked_with(
     ranked: &[Scored<SetCandidate>],
     policy: &WeightPolicy,
 ) -> Result<PlannedCandidateChain, ChainError> {
-    let _ = (ranked, policy);
-    unimplemented!("candidate_chain::plan_ranked_with")
+    let layers = chain_layers(ranked)?; // also validates chain-compatibility
+    let bars = layers.len();
+
+    // The facts. The engine computes none of them; it only weighs them.
+    let locals: Vec<Vec<Axes>> = layers
+        .iter()
+        .map(|layer| {
+            layer
+                .iter()
+                .map(|state| {
+                    let s6 = ranked.get(state.candidate).map_or(0.0, Scored::aggregate);
+                    local_facts(s6)
+                })
+                .collect()
+        })
+        .collect();
+    let transitions: Vec<Vec<Vec<Axes>>> = (0..bars.saturating_sub(1))
+        .map(|bar| {
+            ranked
+                .iter()
+                .map(|from| {
+                    ranked
+                        .iter()
+                        .map(|to| {
+                            transition_facts(
+                                &from.value.score,
+                                bar,
+                                &to.value.score,
+                                bar.saturating_add(1),
+                            )
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+        .collect();
+
+    let solution = layered_path::solve(&layered_path::LayeredProblem {
+        locals: &locals,
+        transitions: &transitions,
+        policy,
+    })?;
+
+    let state_at = |id: layered_path::StateId| -> Option<ChainState> {
+        layers.get(id.layer)?.get(id.ordinal).copied()
+    };
+    let steps: Vec<ChainStep> = solution
+        .steps
+        .iter()
+        .filter_map(|scored| {
+            let state = state_at(scored.value)?;
+            let source = ranked.get(state.candidate)?;
+            Some(ChainStep {
+                state,
+                local: scored.clone(),
+                // S6's verdict, carried through untouched.
+                s6: S6Quality {
+                    axes: source.axes.clone(),
+                    rationale: source.rationale.clone(),
+                    provenance: source.provenance,
+                    aggregate: source.aggregate(),
+                },
+            })
+        })
+        .collect();
+    let chain_transitions: Vec<ChainTransition> = solution
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            Some(ChainTransition {
+                from: state_at(edge.value.from)?,
+                to: state_at(edge.value.to)?,
+                cost: edge.clone(),
+            })
+        })
+        .collect();
+
+    let chosen: Vec<usize> = steps.iter().map(|s| s.state.candidate).collect();
+    let score = assemble(ranked, &chosen)?;
+
+    Ok(PlannedCandidateChain {
+        score,
+        steps,
+        transitions: chain_transitions,
+        total_cost: solution.total_cost,
+        provenance: solution.provenance,
+    })
+}
+
+/// Assembles the selected bars into one canonical score.
+///
+/// Every candidate already agreed on the master timeline (validated), so bar
+/// `b` occupies the same ticks in each of them: the selected bar's event groups
+/// are copied **verbatim**, with no rebasing, no re-quantising, and no MIDI
+/// round-trip. MIDI is a boundary, not an editing tool.
+fn assemble(ranked: &[Scored<SetCandidate>], chosen: &[usize]) -> Result<Score, ChainError> {
+    let reference = &ranked.first().ok_or(ChainError::EmptySet)?.value.score;
+    let tracks = reference
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(track, source_track)| Track {
+            name: source_track.name.clone(),
+            channel: source_track.channel,
+            tuning: source_track.tuning.clone(),
+            voices: source_track
+                .voices
+                .iter()
+                .enumerate()
+                .map(|(voice, source_voice)| Voice {
+                    id: source_voice.id,
+                    event_groups: chosen
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(bar, &candidate)| {
+                            ranked.get(candidate).map_or_else(Vec::new, |c| {
+                                groups_in_bar(&c.value.score, track, voice, bar)
+                            })
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect();
+    Ok(Score {
+        ticks_per_quarter: reference.ticks_per_quarter,
+        // The one timeline every candidate shares — never a layer winner's.
+        master_bars: reference.master_bars.clone(),
+        tracks,
+        source_meta: reference.source_meta.clone(),
+        loss: LossReport::new(),
+    })
+}
+
+/// The event groups of `track`/`voice` that live in `bar`, cloned verbatim.
+///
+/// A group is attributed by its first atom's onset; validation has already
+/// guaranteed every atom of a group shares one bar.
+fn groups_in_bar(score: &Score, track: usize, voice: usize, bar: usize) -> Vec<EventGroup> {
+    let Some(range) = score.master_bars.get(bar).map(|b| b.tick_range) else {
+        return Vec::new();
+    };
+    score
+        .tracks
+        .get(track)
+        .and_then(|t| t.voices.get(voice))
+        .map_or_else(Vec::new, |v| {
+            v.event_groups
+                .iter()
+                .filter(|g| {
+                    g.atoms.first().is_some_and(|a| {
+                        let onset = a.absolute_start().0;
+                        onset >= range.start.0 && onset < range.end.0
+                    })
+                })
+                .cloned()
+                .collect()
+        })
 }
 
 /// The S6 baseline cost: ranked candidate 0 kept **intact** as one multi-bar
@@ -374,8 +530,28 @@ fn intact_cost_with(
     ranked: &[Scored<SetCandidate>],
     policy: &WeightPolicy,
 ) -> Result<f64, ChainError> {
-    let _ = (ranked, policy);
-    unimplemented!("candidate_chain::intact_cost_with")
+    let bars = chain_layers(ranked)?.len();
+    let winner = ranked.first().ok_or(ChainError::EmptySet)?;
+    let score = &winner.value.score;
+    let s6 = winner.aggregate();
+
+    // The same facts and the same policy the planned chain is weighed under —
+    // one metric on both sides of the comparison.
+    let local: f64 = (0..bars)
+        .map(|_| Scored::new((), local_facts(s6), policy, None).aggregate())
+        .sum();
+    let transition: f64 = (0..bars.saturating_sub(1))
+        .map(|bar| {
+            Scored::new(
+                (),
+                transition_facts(score, bar, score, bar.saturating_add(1)),
+                policy,
+                None,
+            )
+            .aggregate()
+        })
+        .sum();
+    Ok(local + transition)
 }
 
 /// The layers of a chain problem: `layers[b][c]` is bar `b` of candidate `c`.
@@ -469,11 +645,16 @@ fn check_self_contained_bars(candidate: usize, score: &Score) -> Result<(), Chai
         .flat_map(|t| t.voices.iter())
         .flat_map(|v| v.event_groups.iter())
     {
+        // A group is lifted as a unit, so all its atoms must share one bar.
+        let mut group_bar: Option<usize> = None;
         for atom in &group.atoms {
             let start = atom.absolute_start().0;
             let end = start.saturating_add(atom.duration().0);
             let bar =
                 bar_of(score, start).ok_or(ChainError::CrossBarMaterial { candidate, bar: 0 })?;
+            if *group_bar.get_or_insert(bar) != bar {
+                return Err(ChainError::CrossBarMaterial { candidate, bar });
+            }
             let bar_end = score
                 .master_bars
                 .get(bar)
