@@ -112,6 +112,17 @@ pub enum PathError {
         /// The non-finite aggregate.
         cost: f64,
     },
+    /// Finite costs accumulated to a non-finite running total.
+    ///
+    /// Individually finite aggregates do not make a finite *path*: a sum can
+    /// still overflow to `±∞`. The solver refuses rather than clamp, and never
+    /// returns a solution whose total is not finite.
+    NonFiniteAccumulation {
+        /// The state whose completion (or running total) went non-finite.
+        state: StateId,
+        /// The offending accumulated value.
+        cost: f64,
+    },
 }
 
 /// The deterministic best path: one state per layer, with its explanation.
@@ -750,6 +761,112 @@ mod tests {
                 expected: (2, 1),
                 found: (1, 1),
             },
+        );
+    }
+
+    #[test]
+    fn two_finite_costs_overflowing_to_infinity_are_rejected() {
+        // Each aggregate is finite; their sum is not. The path is refused, not
+        // clamped, and not silently carried as an infinite total.
+        let big = f64::MAX * 0.75;
+        let locals = locals_of(&[&[big], &[big]]);
+        let transitions = transitions_of(&[&[&[0.0]]]);
+        let p = policy();
+        match solve(&LayeredProblem {
+            locals: &locals,
+            transitions: &transitions,
+            policy: &p,
+        }) {
+            Err(PathError::NonFiniteAccumulation { cost, .. }) => {
+                assert!(cost.is_infinite(), "the accumulation overflowed");
+            }
+            other => panic!("expected NonFiniteAccumulation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_finite_costs_underflowing_to_negative_infinity_are_rejected() {
+        let small = f64::MIN * 0.75;
+        let locals = locals_of(&[&[small], &[small]]);
+        let transitions = transitions_of(&[&[&[0.0]]]);
+        let p = policy();
+        match solve(&LayeredProblem {
+            locals: &locals,
+            transitions: &transitions,
+            policy: &p,
+        }) {
+            Err(PathError::NonFiniteAccumulation { cost, .. }) => {
+                assert!(
+                    cost.is_infinite() && cost.is_sign_negative(),
+                    "the accumulation underflowed",
+                );
+            }
+            other => panic!("expected NonFiniteAccumulation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overflow_does_not_collapse_distinct_alternatives_onto_ordinal_zero() {
+        // Left unchecked, both candidate completions become +inf, compare equal,
+        // and the lexicographic rule hands back ordinal 0 — a wrong answer
+        // wearing a plausible face. Refusing is the only honest option here.
+        let big = f64::MAX * 0.75;
+        let locals = locals_of(&[&[0.0, 0.0], &[big, big]]);
+        let transitions = transitions_of(&[&[&[big, big * 0.5], &[big, big]]]);
+        let p = policy();
+        assert!(
+            matches!(
+                solve(&LayeredProblem {
+                    locals: &locals,
+                    transitions: &transitions,
+                    policy: &p,
+                }),
+                Err(PathError::NonFiniteAccumulation { .. })
+            ),
+            "an overflowed comparison must never silently pick ordinal 0",
+        );
+    }
+
+    #[test]
+    fn an_overflow_in_a_later_suffix_layer_names_its_state() {
+        let big = f64::MAX * 0.75;
+        let locals = locals_of(&[&[0.0], &[big], &[big]]);
+        let transitions = transitions_of(&[&[&[0.0]], &[&[0.0]]]);
+        let p = policy();
+        match solve(&LayeredProblem {
+            locals: &locals,
+            transitions: &transitions,
+            policy: &p,
+        }) {
+            Err(PathError::NonFiniteAccumulation { state, .. }) => {
+                assert_eq!(
+                    state,
+                    StateId {
+                        layer: 1,
+                        ordinal: 0
+                    },
+                    "the layer whose completion overflowed is named",
+                );
+            }
+            other => panic!("expected NonFiniteAccumulation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_returned_solution_always_has_a_finite_total() {
+        let locals = locals_of(&[&[2.0, 5.0], &[3.0, 1.0], &[0.5, 4.0]]);
+        let transitions =
+            transitions_of(&[&[&[4.0, 0.5], &[1.0, 1.0]], &[&[2.0, 3.0], &[1.5, 0.25]]]);
+        let p = policy();
+        let solution = solve(&LayeredProblem {
+            locals: &locals,
+            transitions: &transitions,
+            policy: &p,
+        })
+        .expect("solves");
+        assert!(
+            solution.total_cost.is_finite(),
+            "the solver never returns a non-finite total",
         );
     }
 
