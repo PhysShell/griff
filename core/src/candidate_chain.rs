@@ -98,6 +98,11 @@ pub enum ChainError {
         /// The bar the material starts in.
         bar: usize,
     },
+    /// A boundary fact could not be measured because a bar address was invalid.
+    ///
+    /// After compatibility validation this is an invariant violation, not a
+    /// musical observation — it never surfaces as silence.
+    BoundaryFact(TransitionFactError),
     /// The layered engine rejected the problem the chain handed it.
     Path(PathError),
 }
@@ -105,6 +110,12 @@ pub enum ChainError {
 impl From<PathError> for ChainError {
     fn from(error: PathError) -> Self {
         Self::Path(error)
+    }
+}
+
+impl From<TransitionFactError> for ChainError {
+    fn from(error: TransitionFactError) -> Self {
+        Self::BoundaryFact(error)
     }
 }
 
@@ -253,6 +264,29 @@ pub fn local_facts(s6: f64) -> Axes {
     }])
 }
 
+/// Why boundary facts could not be measured.
+///
+/// An invalid bar address and a genuinely silent bar are different states: the
+/// first is a caller error, the second a musical observation. Conflating them
+/// would let a typo read as a legitimate `silent_boundary`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionFactError {
+    /// `from_bar` is not a bar of the `from` score.
+    MissingFromBar {
+        /// The requested bar.
+        bar: usize,
+        /// How many bars the score actually has.
+        bars: usize,
+    },
+    /// `to_bar` is not a bar of the `to` score.
+    MissingToBar {
+        /// The requested bar.
+        bar: usize,
+        /// How many bars the score actually has.
+        bars: usize,
+    },
+}
+
 /// The transition cost facts across the line between `from_bar` of `from` and
 /// `to_bar` of `to`.
 ///
@@ -260,8 +294,16 @@ pub fn local_facts(s6: f64) -> Axes {
 /// pitch the jump is *unmeasurable*: [`AXIS_BOUNDARY_JUMP`] is then **absent**
 /// and [`AXIS_SILENT_BOUNDARY`] carries the fact instead — an unavailable
 /// measurement is never a zero pretending to be perfect continuity.
-#[must_use]
-pub fn transition_facts(from: &Score, from_bar: usize, to: &Score, to_bar: usize) -> Axes {
+///
+/// # Errors
+/// [`TransitionFactError`] when either bar index is out of range. An invalid
+/// address is not silence.
+pub fn transition_facts(
+    from: &Score,
+    from_bar: usize,
+    to: &Score,
+    to_bar: usize,
+) -> Result<Axes, TransitionFactError> {
     let left = bar_notes(from, from_bar);
     let right = bar_notes(to, to_bar);
     let mut axes = Vec::with_capacity(3);
@@ -293,7 +335,7 @@ pub fn transition_facts(from: &Score, from_bar: usize, to: &Score, to_bar: usize
         label: AXIS_RHYTHM_REPEAT,
         value: repeat,
     });
-    Axes::new(axes)
+    Ok(Axes::new(axes))
 }
 
 /// One selected bar of the planned chain, with everything needed to say where
@@ -370,26 +412,23 @@ fn plan_ranked_with(
                 .collect()
         })
         .collect();
-    let transitions: Vec<Vec<Vec<Axes>>> = (0..bars.saturating_sub(1))
-        .map(|bar| {
-            ranked
-                .iter()
-                .map(|from| {
-                    ranked
-                        .iter()
-                        .map(|to| {
-                            transition_facts(
-                                &from.value.score,
-                                bar,
-                                &to.value.score,
-                                bar.saturating_add(1),
-                            )
-                        })
-                        .collect()
-                })
-                .collect()
-        })
-        .collect();
+    let mut transitions: Vec<Vec<Vec<Axes>>> = Vec::with_capacity(bars.saturating_sub(1));
+    for bar in 0..bars.saturating_sub(1) {
+        let mut table: Vec<Vec<Axes>> = Vec::with_capacity(ranked.len());
+        for from in ranked {
+            let mut row: Vec<Axes> = Vec::with_capacity(ranked.len());
+            for to in ranked {
+                row.push(transition_facts(
+                    &from.value.score,
+                    bar,
+                    &to.value.score,
+                    bar.saturating_add(1),
+                )?);
+            }
+            table.push(row);
+        }
+        transitions.push(table);
+    }
 
     let solution = layered_path::solve(&layered_path::LayeredProblem {
         locals: &locals,
@@ -540,17 +579,11 @@ fn intact_cost_with(
     let local: f64 = (0..bars)
         .map(|_| Scored::new((), local_facts(s6), policy, None).aggregate())
         .sum();
-    let transition: f64 = (0..bars.saturating_sub(1))
-        .map(|bar| {
-            Scored::new(
-                (),
-                transition_facts(score, bar, score, bar.saturating_add(1)),
-                policy,
-                None,
-            )
-            .aggregate()
-        })
-        .sum();
+    let mut transition = 0.0_f64;
+    for bar in 0..bars.saturating_sub(1) {
+        let facts = transition_facts(score, bar, score, bar.saturating_add(1))?;
+        transition += Scored::new((), facts, policy, None).aggregate();
+    }
     Ok(local + transition)
 }
 
@@ -699,8 +732,8 @@ fn bar_of(score: &Score, tick: u32) -> Option<usize> {
 mod tests {
     use super::{
         chain_layers, chain_weights_v1, intact_s6_cost, local_facts, plan_candidate_chain,
-        plan_ranked_with, transition_facts, ChainError, AXIS_BOUNDARY_JUMP, AXIS_CANDIDATE_QUALITY,
-        AXIS_RHYTHM_REPEAT, AXIS_SILENT_BOUNDARY,
+        plan_ranked_with, transition_facts, ChainError, TransitionFactError, AXIS_BOUNDARY_JUMP,
+        AXIS_CANDIDATE_QUALITY, AXIS_RHYTHM_REPEAT, AXIS_SILENT_BOUNDARY,
     };
     use crate::event::{
         NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning,
@@ -1000,9 +1033,11 @@ mod tests {
         let a = score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]);
         let b = score_of(&[&[(0, 480, 60)], &[(0, 480, 74)]]);
         let step = transition_facts(&a, 0, &a, 1)
+            .expect("valid bars")
             .get(AXIS_BOUNDARY_JUMP)
             .unwrap();
         let leap = transition_facts(&b, 0, &b, 1)
+            .expect("valid bars")
             .get(AXIS_BOUNDARY_JUMP)
             .unwrap();
         assert!((step - 2.0).abs() < 1e-12, "two semitones, unwrapped");
@@ -1016,7 +1051,7 @@ mod tests {
     #[test]
     fn a_silent_boundary_omits_the_jump_rather_than_zeroing_it() {
         let s = score_of(&[&[(0, 480, 60)], &[]]);
-        let facts = transition_facts(&s, 0, &s, 1);
+        let facts = transition_facts(&s, 0, &s, 1).expect("valid bars");
         assert_eq!(
             facts.get(AXIS_BOUNDARY_JUMP),
             None,
@@ -1028,7 +1063,7 @@ mod tests {
     #[test]
     fn a_measurable_boundary_records_a_zero_silent_fact() {
         let s = score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]);
-        let facts = transition_facts(&s, 0, &s, 1);
+        let facts = transition_facts(&s, 0, &s, 1).expect("valid bars");
         assert!((facts.get(AXIS_SILENT_BOUNDARY).unwrap() - 0.0).abs() < 1e-12);
         assert!(facts.get(AXIS_BOUNDARY_JUMP).is_some());
     }
@@ -1040,6 +1075,7 @@ mod tests {
             &[(0, 480, 71), (960, 480, 69)],
         ]);
         let repeat = transition_facts(&s, 0, &s, 1)
+            .expect("valid bars")
             .get(AXIS_RHYTHM_REPEAT)
             .unwrap();
         assert!(
@@ -1052,6 +1088,7 @@ mod tests {
     fn different_durations_are_not_the_same_rhythm() {
         let s = score_of(&[&[(0, 480, 60)], &[(0, 960, 60)]]);
         let repeat = transition_facts(&s, 0, &s, 1)
+            .expect("valid bars")
             .get(AXIS_RHYTHM_REPEAT)
             .unwrap();
         assert!(
@@ -1064,6 +1101,7 @@ mod tests {
     fn different_onsets_are_not_the_same_rhythm() {
         let s = score_of(&[&[(0, 480, 60)], &[(480, 480, 60)]]);
         let repeat = transition_facts(&s, 0, &s, 1)
+            .expect("valid bars")
             .get(AXIS_RHYTHM_REPEAT)
             .unwrap();
         assert!(
@@ -1075,12 +1113,62 @@ mod tests {
     #[test]
     fn two_silent_bars_share_the_explicit_empty_signature() {
         let s = score_of(&[&[], &[]]);
-        let facts = transition_facts(&s, 0, &s, 1);
+        let facts = transition_facts(&s, 0, &s, 1).expect("valid bars");
         assert!(
             (facts.get(AXIS_RHYTHM_REPEAT).unwrap() - 1.0).abs() < 1e-12,
             "two silences are a rhythmic repeat — an explicit signature, not a gap",
         );
         assert!((facts.get(AXIS_SILENT_BOUNDARY).unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    // ── boundary facts: valid bars, and the last SOUNDING note ───────────────
+
+    #[test]
+    fn the_boundary_pitch_is_the_last_note_still_sounding_not_the_last_onset() {
+        // Bar 0: pitch 60 rings the whole bar; pitch 48 starts later but stops
+        // before the line. The note still sounding at the boundary is 60, so the
+        // jump into bar 1's 60 is 0 — not the 12 a latest-onset rule would claim.
+        let s = score_of(&[&[(0, BAR, 60), (BAR - 480, 240, 48)], &[(0, 480, 60)]]);
+        let jump = transition_facts(&s, 0, &s, 1)
+            .expect("valid bars")
+            .get(AXIS_BOUNDARY_JUMP)
+            .unwrap();
+        assert!(
+            (jump - 0.0).abs() < 1e-12,
+            "the sustained note is what reaches the bar line, got {jump}",
+        );
+    }
+
+    #[test]
+    fn notes_ending_together_break_the_tie_on_the_highest_pitch() {
+        // Both stop at the same tick; the chord top is the documented winner.
+        let s = score_of(&[&[(0, 960, 60), (480, 480, 67)], &[(0, 480, 67)]]);
+        let jump = transition_facts(&s, 0, &s, 1)
+            .expect("valid bars")
+            .get(AXIS_BOUNDARY_JUMP)
+            .unwrap();
+        assert!(
+            (jump - 0.0).abs() < 1e-12,
+            "the highest of the equally-last notes (67) reaches the line, got {jump}",
+        );
+    }
+
+    #[test]
+    fn an_invalid_from_bar_is_rejected_not_reported_as_silence() {
+        let s = score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]);
+        assert_eq!(
+            transition_facts(&s, 7, &s, 1).unwrap_err(),
+            TransitionFactError::MissingFromBar { bar: 7, bars: 2 },
+        );
+    }
+
+    #[test]
+    fn an_invalid_to_bar_is_rejected_not_reported_as_silence() {
+        let s = score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]);
+        assert_eq!(
+            transition_facts(&s, 0, &s, 9).unwrap_err(),
+            TransitionFactError::MissingToBar { bar: 9, bars: 2 },
+        );
     }
 
     // ── planning, assembly, and the S6 baseline ──────────────────────────────
