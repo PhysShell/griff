@@ -45,7 +45,8 @@ holdout targets. It is not the headline product; the census is.
   non-dominated — and hypervolume there is both meaningless and exponential.
 - **Alignment deferred** (Phase 1.5, evidence-gated). Most useful axes are
   timeline-based and need no alignment at all.
-- **JSONL only**; Arrow/Parquet contradicts the lean dependency posture and is
+- **JSON/JSONL only** — JSONL for trial records, plain JSON for manifest and
+  summary files; Arrow/Parquet contradicts the lean dependency posture and is
   reconsidered only against measurements.
 - **Roadmap placement decided by an audit first**; no stage number is assigned
   or invented now (glossary §0 rule).
@@ -67,8 +68,9 @@ Revised in v2.1 (PR #131 review):
 
 ## 3. Relationship to the existing metric layer
 
-Phase 0 turns this section into a binding per-axis triage; the direction is
-fixed here.
+Phase 0 turns this section into a full per-axis triage. The direction below
+is what this proposal recommends; like everything else here, it binds nothing
+until the proposal is accepted (`docs/proposals/README.md`).
 
 | Module | What it provides | Decision |
 | --- | --- | --- |
@@ -102,6 +104,8 @@ pub struct TargetComparison {
 pub struct TargetMeasurementPolicy {
     pub id: &'static str,
     pub version: u32,
+    pub timeline_normalization: TimelineNormalization,
+    pub pitch_comparison: PitchComparisonMode,
     pub normalization_version: u32,
     pub fingerprint_version: u32,
     pub axis_formula_version: u32,
@@ -109,6 +113,13 @@ pub struct TargetMeasurementPolicy {
     pub pairing_rule: PairingRule,
     pub tie_break: PairingTieBreak,
 }
+```
+
+  The comparison modes are measurement inputs like any other: a given policy
+  `id` + `version` fixes them, so two runs under the same policy identity can
+  never produce different comparison facts.
+
+```rust
 ```
 
   Reusing `WeightPolicy` for this would create exactly the near-synonym this
@@ -139,8 +150,10 @@ struct RawDiagnostics {
   placement on the normalized master grid, *not* identical wall-clock
   playback timing: the tempo map is deliberately excluded, and the same note
   grid at 80 and 160 BPM is the same fragment for recovery purposes. The
-  signature is the ordered set of `(relative onset, duration, pitch)` after
-  normalization, plus matching bar count, the **ordered per-bar
+  signature is the canonical sequence of normalized
+  `(relative onset, duration, pitch)` tuples — sorted lexicographically by
+  onset, then pitch, then duration, duplicates preserved — plus matching bar
+  count, the **ordered per-bar
   time-signature sequence** (not one meter — targets may cross meter
   changes), and fragment bounds. Velocity is excluded in Phase 1: the
   current generator assigns velocity largely by strategy, so matching it
@@ -308,6 +321,9 @@ runs/
   artifacts/*.mid
 ```
 
+Trial records are JSONL (one `TrialRecord` per line); `manifest.json` and
+`summary.json` are plain JSON documents. Nothing here pulls in Arrow/Parquet.
+
 **The Lab owns its wire format.** Core `Axis`/`Axes` are an internal scoring
 vocabulary — `&'static str` labels, no `Serialize` — and stay that way: no
 serde enters `core::scoring` for the Lab's sake. The Lab/CLI defines its own
@@ -343,9 +359,12 @@ slips past an absolute fingerprint by design.
 The leakage contract is therefore channel-specific:
 
 - **Source provenance (primary):** every corpus contribution carries song id,
-  chunk id, and source range; `HoldoutTargetSong` / `HoldoutTargetFragment`
-  exclude material by these identities *before* rhythm templates or novelty
-  references are compiled.
+  chunk id, and source range. `HoldoutTargetSong` excludes every chunk of the
+  target song; `HoldoutTargetFragment` excludes every chunk of the same song
+  whose source range **overlaps or contains** the target fragment — not
+  merely exact range matches, since a larger chunk containing the target
+  leaks it just as surely. This deterministic identity-and-range filtering
+  happens *before* rhythm templates or novelty references are compiled.
 - **Rhythm channel (defence-in-depth):** rhythm-grid fingerprint of the
   target (onsets + durations, no pitch) checked against every supplied
   template, plus an onset/duration subsequence check.
@@ -354,8 +373,14 @@ The leakage contract is therefore channel-specific:
   n-gram/contiguous-run check against novelty references (reusing the
   `novelty.rs` transition machinery).
 
-`LeakyDiagnostic` runs are explicitly labelled control experiments. Phase 0
-must verify that source identities actually survive the current
+**Holdout modes fail closed.** If source-identity exclusion cannot be
+enforced, or a defence-in-depth check fires, a normal holdout run aborts with
+a typed error — it is never silently relabelled, or accidental leakage would
+wear the costume of a valid experiment. `LeakyDiagnostic` is exclusively an
+explicitly *requested* mode for labelled control experiments, never a
+post-hoc classification.
+
+Phase 0 must verify that source identities actually survive the current
 corpus-loading path; if they do not, that is a Phase 1 blocker to fix first.
 
 ### Out of scope for Phase 1
@@ -409,11 +434,13 @@ stages). Raw seed is provenance, not an ordinal feature. Nothing in Phases
    exactly when its exact producing trial — configuration *and* seed — lies
    in the sampled trials. (Configuration alone guarantees nothing: the same
    configuration under a different seed is a different candidate.)
-9. Holdout excludes target material by source identity before rhythm
-   templates and novelty references are compiled; the channel-specific
-   representation checks (rhythm-grid, interval + normalized-IOI) run as
-   defence-in-depth; any run that bypasses either layer is labelled
-   `LeakyDiagnostic`.
+9. Holdout excludes target material by source identity (song- and
+   overlap-aware, per §6) before rhythm templates and novelty references are
+   compiled; the channel-specific representation checks (rhythm-grid,
+   interval + normalized-IOI) run as defence-in-depth; a holdout run whose
+   exclusion cannot be enforced or whose checks fire **fails with a typed
+   error** — `LeakyDiagnostic` exists only as an explicitly requested mode
+   and is never assigned after the fact.
 10. No production generation path changes; `rerank.rs` is untouched.
 11. No report claims unreachability.
 12. Top-K results export to MIDI with full provenance.
