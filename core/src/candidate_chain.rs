@@ -14,7 +14,7 @@
 //! rationale, and rerank provenance travel into the result unchanged.
 
 use crate::generate::{GenerationSeed, GenerationStrategy};
-use crate::layered_path::{self, EdgeId, PathError};
+use crate::layered_path::PathError;
 use crate::rerank::SetCandidate;
 use crate::score::Score;
 use crate::scoring::{Axes, Provenance, Rationale, Scored};
@@ -45,7 +45,7 @@ pub struct ChainState {
 /// Every variant names the first offending fact. The planner never truncates to
 /// the shortest candidate, and never borrows meter or tempo from whichever
 /// candidate happens to win a layer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ChainError {
     /// The ranked set held no candidates.
     EmptySet,
@@ -129,8 +129,125 @@ pub struct S6Quality {
 /// set, no bars, a mismatched bar count / resolution / bar grid / track shape,
 /// or material crossing a bar line.
 pub fn chain_layers(ranked: &[Scored<SetCandidate>]) -> Result<Vec<Vec<ChainState>>, ChainError> {
-    let _ = ranked;
-    unimplemented!("candidate_chain::chain_layers")
+    let first = ranked.first().ok_or(ChainError::EmptySet)?;
+    let reference = &first.value.score;
+    let bars = reference.master_bars.len();
+    if bars == 0 {
+        return Err(ChainError::NoBars);
+    }
+
+    for (candidate, scored) in ranked.iter().enumerate() {
+        check_compatible(candidate, reference, &scored.value.score)?;
+        check_self_contained_bars(candidate, &scored.value.score)?;
+    }
+
+    Ok((0..bars)
+        .map(|bar| {
+            ranked
+                .iter()
+                .enumerate()
+                .map(|(candidate, scored)| ChainState {
+                    bar,
+                    candidate,
+                    strategy: scored.value.strategy,
+                    variant_seed: scored.value.seed,
+                    rank: candidate.saturating_add(1),
+                })
+                .collect()
+        })
+        .collect())
+}
+
+/// Rejects a candidate whose shape cannot share one timeline with `reference`.
+fn check_compatible(candidate: usize, reference: &Score, score: &Score) -> Result<(), ChainError> {
+    if score.master_bars.len() != reference.master_bars.len() {
+        return Err(ChainError::BarCountMismatch {
+            candidate,
+            expected: reference.master_bars.len(),
+            found: score.master_bars.len(),
+        });
+    }
+    if score.ticks_per_quarter != reference.ticks_per_quarter {
+        return Err(ChainError::PpqMismatch {
+            candidate,
+            expected: reference.ticks_per_quarter,
+            found: score.ticks_per_quarter,
+        });
+    }
+    // One master timeline, agreed by every candidate — not borrowed from
+    // whichever happens to win a layer.
+    for (bar, (want, got)) in reference
+        .master_bars
+        .iter()
+        .zip(score.master_bars.iter())
+        .enumerate()
+    {
+        let same = want.tick_range == got.tick_range
+            && want.time_signature == got.time_signature
+            && want.tempo.0.to_bits() == got.tempo.0.to_bits();
+        if !same {
+            return Err(ChainError::BarGridMismatch { candidate, bar });
+        }
+    }
+    let shape = |s: &Score| -> Vec<Vec<u8>> {
+        s.tracks
+            .iter()
+            .map(|t| t.voices.iter().map(|v| v.id).collect())
+            .collect()
+    };
+    if shape(score) != shape(reference) {
+        return Err(ChainError::TrackShapeMismatch { candidate });
+    }
+    Ok(())
+}
+
+/// Rejects a candidate carrying material across a bar line.
+///
+/// A bar may only be lifted out and set beside a bar from another candidate if
+/// it is self-contained: every note ends within the bar it starts in, and no
+/// technique span straddles a bar line.
+fn check_self_contained_bars(candidate: usize, score: &Score) -> Result<(), ChainError> {
+    for group in score
+        .tracks
+        .iter()
+        .flat_map(|t| t.voices.iter())
+        .flat_map(|v| v.event_groups.iter())
+    {
+        for atom in &group.atoms {
+            let start = atom.absolute_start().0;
+            let end = start.saturating_add(atom.duration().0);
+            let bar =
+                bar_of(score, start).ok_or(ChainError::CrossBarMaterial { candidate, bar: 0 })?;
+            let bar_end = score
+                .master_bars
+                .get(bar)
+                .map_or(start, |b| b.tick_range.end.0);
+            if end > bar_end {
+                return Err(ChainError::CrossBarMaterial { candidate, bar });
+            }
+        }
+        for span in &group.technique_spans {
+            let start = span.tick_range.start.0;
+            let bar =
+                bar_of(score, start).ok_or(ChainError::CrossBarMaterial { candidate, bar: 0 })?;
+            let bar_end = score
+                .master_bars
+                .get(bar)
+                .map_or(start, |b| b.tick_range.end.0);
+            if span.tick_range.end.0 > bar_end {
+                return Err(ChainError::CrossBarMaterial { candidate, bar });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The index of the bar containing `tick`, if any.
+fn bar_of(score: &Score, tick: u32) -> Option<usize> {
+    score
+        .master_bars
+        .iter()
+        .position(|b| tick >= b.tick_range.start.0 && tick < b.tick_range.end.0)
 }
 
 #[cfg(test)]
