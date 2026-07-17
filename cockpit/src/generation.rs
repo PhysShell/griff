@@ -17,7 +17,7 @@ use griff_core::corpus::ChunkMeta;
 #[cfg(not(target_arch = "wasm32"))]
 use griff_core::generation_input::CorpusMaterial;
 use griff_core::generation_input::GenerationAsk;
-use griff_ui_core::generate::CandidateSet;
+use griff_ui_core::generate::{CandidateRow, CandidateSet};
 use griff_ui_core::history::{CorpusContribution, GenerationRunId};
 
 /// A tab the panel can seed a generation from: its display name and the bytes
@@ -249,6 +249,35 @@ pub struct KeptProvenance<'a> {
     pub aggregate: f64,
     /// Each rerank axis and its value.
     pub axes: Vec<(&'static str, f64)>,
+}
+
+/// The one conversion from a captured run and an immutable row to the Keep
+/// sidecar.
+///
+/// The history provenance and the sidecar are two renderings of the same run,
+/// never two hand-written interpretations of it.
+///
+/// Every request/input field comes from `context` (captured when the set was
+/// produced); only the candidate's own result comes from `row`. `corpus` here
+/// means the corpus **actually contributed**, not that one was attached.
+#[must_use]
+pub fn kept_provenance<'a>(
+    context: &'a GenerateRunContext,
+    row: &'a CandidateRow,
+) -> KeptProvenance<'a> {
+    KeptProvenance {
+        source: context.source.as_deref().unwrap_or("displayed score"),
+        corpus: !context.corpus.is_seed_only(),
+        seed: context.seed,
+        bars: context.bars,
+        variants_per_strategy: context.variants_per_strategy,
+        gesture: context.corpus.gesture,
+        strategy: &row.strategy,
+        variant_seed: row.variant_seed,
+        rank: row.rank,
+        aggregate: row.aggregate,
+        axes: row.axes.clone(),
+    }
 }
 
 #[cfg(test)]

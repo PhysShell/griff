@@ -57,7 +57,7 @@ pub mod audio;
 pub mod generation;
 pub mod swang;
 
-use generation::{ActiveGenerateRun, GeneratePanel, GenerateRunContext, KeptProvenance};
+use generation::{kept_provenance, ActiveGenerateRun, GeneratePanel, GenerateRunContext};
 use swang::SwangPanel;
 
 /// Pixel width of one grid cell.
@@ -1317,33 +1317,24 @@ impl CockpitApp {
 
         use griff_core::midi::export_score;
 
-        let set = self.gen_panel.set().ok_or("nothing generated yet")?;
+        // The exported score and its provenance come from the SAME captured run
+        // — never from live panel state, which may have moved on since.
+        let active = self
+            .gen_panel
+            .active
+            .as_ref()
+            .ok_or("nothing generated yet")?;
+        let set = &active.set;
+        let context = &active.context;
         let row = set.rows.get(i).ok_or("no such candidate")?;
         let score = set.scores.get(i).ok_or("no such candidate")?;
-
-        let source = self
-            .gen_panel
-            .source_tab()
-            .map_or_else(|| self.title.clone(), |tab| tab.name.clone());
-        let provenance = KeptProvenance {
-            source: &source,
-            corpus: self.material.is_some(),
-            seed: self.gen_panel.seed,
-            bars: self.gen_panel.bars,
-            variants_per_strategy: self.gen_panel.variants,
-            gesture: set.summary.gesture.is_some(),
-            strategy: &row.strategy,
-            variant_seed: row.variant_seed,
-            rank: row.rank,
-            aggregate: row.aggregate,
-            axes: row.axes.clone(),
-        };
+        let provenance = kept_provenance(context, row);
 
         fs::create_dir_all(&self.out_dir)
             .map_err(|e| format!("cannot create {}: {e}", self.out_dir.display()))?;
         let stem = format!(
             "seed{}_{}_{:016x}",
-            self.gen_panel.seed, row.strategy, row.variant_seed
+            context.seed, row.strategy, row.variant_seed
         );
         let mid = self.out_dir.join(format!("{stem}.mid"));
         let json = self.out_dir.join(format!("{stem}.json"));
@@ -2811,6 +2802,7 @@ mod tests {
 
     use super::*;
     use std::collections::HashSet;
+    use std::{env, fs};
 
     use eframe::egui;
     use eframe::egui::epaint::ClippedShape;
@@ -3796,15 +3788,20 @@ mod tests {
 
     /// A deterministic, freshly-emptied out dir for one keep test.
     fn keep_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("griff-keep-test-{tag}"));
-        let _ = std::fs::remove_dir_all(&dir); // start clean, every run
+        let dir = env::temp_dir().join(format!("griff-keep-test-{tag}"));
+        drop(fs::remove_dir_all(&dir)); // start clean, every run
         dir
+    }
+
+    /// Removes a keep test's out dir, whether or not it exists.
+    fn drop_keep_dir(dir: &PathBuf) {
+        drop(fs::remove_dir_all(dir));
     }
 
     /// The sidecar JSON written beside a kept `.mid`.
     fn read_sidecar(mid: &str) -> serde_json::Value {
-        let json = mid.strip_suffix(".mid").expect("a .mid path").to_owned() + ".json";
-        let text = std::fs::read_to_string(&json).expect("the sidecar is written");
+        let stem = mid.strip_suffix(".mid").expect("a .mid path");
+        let text = fs::read_to_string(format!("{stem}.json")).expect("the sidecar is written");
         serde_json::from_str(&text).expect("the sidecar is JSON")
     }
 
@@ -3828,7 +3825,7 @@ mod tests {
             5,
             "the sidecar keeps the run's seed"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        drop_keep_dir(&dir);
     }
 
     #[test]
@@ -3844,7 +3841,7 @@ mod tests {
         let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
         assert_eq!(json["bars"], 4, "the sidecar keeps the run's bars");
         assert_eq!(json["variants_per_strategy"], 2, "and its variants");
-        let _ = std::fs::remove_dir_all(&dir);
+        drop_keep_dir(&dir);
     }
 
     #[test]
@@ -3865,7 +3862,7 @@ mod tests {
             json["source"], "tabA.mid",
             "the sidecar keeps the run's source"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        drop_keep_dir(&dir);
     }
 
     #[test]
@@ -3881,7 +3878,7 @@ mod tests {
             json["corpus"], false,
             "attachment after the run is not contribution"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        drop_keep_dir(&dir);
     }
 
     #[test]
@@ -3895,7 +3892,7 @@ mod tests {
         app.material = None; // detach afterwards
         let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
         assert_eq!(json["corpus"], true, "the run's real contribution survives");
-        let _ = std::fs::remove_dir_all(&dir);
+        drop_keep_dir(&dir);
     }
 
     #[test]
@@ -3910,14 +3907,14 @@ mod tests {
             (row.strategy.clone(), row.variant_seed)
         };
         let mid = app.write_keep(1).expect("keep writes");
-        assert!(std::path::Path::new(&mid).exists(), "the .mid is written");
+        assert!(Path::new(&mid).exists(), "the .mid is written");
         let json = read_sidecar(&mid);
         assert_eq!(
             json["strategy"], strategy,
             "the sidecar names the exported row"
         );
         assert_eq!(json["variant_seed"], variant_seed, "and its variant seed");
-        let _ = std::fs::remove_dir_all(&dir);
+        drop_keep_dir(&dir);
     }
 
     #[test]
@@ -3936,7 +3933,7 @@ mod tests {
             "the new run exports its own seed: {mid}"
         );
         assert_eq!(read_sidecar(&mid)["seed"], 42);
-        let _ = std::fs::remove_dir_all(&dir);
+        drop_keep_dir(&dir);
     }
 
     #[test]
