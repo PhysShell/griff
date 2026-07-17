@@ -11,12 +11,17 @@
 //! already-parsed corpus material, and owns its own I/O.
 
 use griff_core::candidate_chain::{
-    intact_s6_cost, plan_candidate_chain, ChainError, PlannedCandidateChain,
+    intact_s6_cost, plan_candidate_chain, ChainError, ChainStep, ChainTransition,
+    PlannedCandidateChain, AXIS_BOUNDARY_JUMP, AXIS_CANDIDATE_QUALITY, AXIS_RHYTHM_REPEAT,
+    AXIS_SILENT_BOUNDARY,
 };
 use griff_core::generation_input::{
     ranked_candidates, CorpusMaterial, GenerationAsk, GenerationInputError, RankedSet,
 };
 use griff_core::rerank::RERANK_AXIS_LABELS;
+use griff_core::scoring::RationaleEntry;
+
+use crate::history::ChainOutcomeRecord;
 use griff_core::score::{AtomEvent, Score};
 
 /// One candidate, as a table row.
@@ -228,6 +233,101 @@ fn plan_global_chain(set: &RankedSet) -> GlobalChainOutcome {
     }
 }
 
+/// A planned chain, arranged for display.
+///
+/// A **projection**, not a second cost model: every number here was computed by
+/// the core and is carried across unchanged. The only work done is turning core
+/// indices into the labels a person reads — bars counted from 1, ordinals kept
+/// distinct from ranks — and putting the facts in the order the music is in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlobalChainSummary {
+    /// The chain policy the costs were weighed under.
+    pub policy_id: &'static str,
+    /// That policy's version.
+    pub policy_version: u32,
+    /// Ranked candidate 0 kept intact, under the same policy.
+    pub baseline_cost: f64,
+    /// The planned chain's total.
+    pub total_cost: f64,
+    /// `total_cost − baseline_cost`. Signed, and named for the arithmetic
+    /// rather than for a verdict: under `candidate_chain` v1 a lower total is
+    /// the one the planner preferred, which is a fact about the policy and not
+    /// a claim about the music.
+    pub delta: f64,
+    /// One entry per output bar, in bar order.
+    pub bars: Vec<ChainBarView>,
+    /// One entry per bar line, in bar order.
+    pub boundaries: Vec<ChainBoundaryView>,
+}
+
+/// One output bar of a planned chain, arranged for display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainBarView {
+    /// The output bar, **1-based** — what a musician calls it. The core counts
+    /// from 0; this is the one place that translation happens.
+    pub bar_number: usize,
+    /// The supplying candidate's **ordinal** in the ranked set (`0` is rank 1).
+    /// Not its rank: the two coincide only for the winner.
+    pub candidate: usize,
+    /// The supplying candidate's own **1-based rank** in the ranked set.
+    pub rank: usize,
+    /// The supplying candidate's strategy.
+    pub strategy: String,
+    /// The supplying candidate's derived variant seed.
+    pub variant_seed: u64,
+    /// The chain-local cost the planner charged for using this candidate here.
+    pub local_aggregate: f64,
+    /// The `candidate_quality` axis behind it, if the policy scored one.
+    pub candidate_quality: Option<f64>,
+    /// The supplying candidate's untouched S6 rerank aggregate.
+    pub s6_aggregate: f64,
+    /// The chain-local rationale, verbatim from the core: axis, value, weight,
+    /// contribution.
+    pub local_rationale: Vec<RationaleEntry>,
+    /// The supplying candidate's S6 axes, verbatim.
+    pub s6_axes: Vec<(&'static str, f64)>,
+}
+
+/// One bar line of a planned chain, arranged for display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainBoundaryView {
+    /// The bar being left, 1-based.
+    pub from_bar_number: usize,
+    /// The bar being entered, 1-based.
+    pub to_bar_number: usize,
+    /// The candidate ordinal on the leaving side.
+    pub from_candidate: usize,
+    /// The candidate ordinal on the entering side.
+    pub to_candidate: usize,
+    /// The pitch distance across the line, in semitones — `None` when the core
+    /// could not measure it.
+    ///
+    /// **`None` is not zero and not silence.** The axis is absent from the
+    /// core's facts precisely so that an unmeasurable jump cannot be read as
+    /// perfect continuity; a renderer must say "not measured", never "0".
+    pub jump_semitones: Option<f64>,
+    /// Whether a side of the line had no sounding pitch.
+    pub silent_boundary: bool,
+    /// Whether the two bars share an identical rhythm signature.
+    pub rhythm_repeat: bool,
+    /// The transition cost the planner charged.
+    pub aggregate: f64,
+    /// The transition rationale, verbatim from the core.
+    pub rationale: Vec<RationaleEntry>,
+}
+
+/// Arranges a run's recorded chain outcome for display.
+///
+/// Reads the **run-level record**, which is why an old chain replayed from
+/// history can still explain itself after the run that made it is gone. Returns
+/// `None` for a refusal: there is no plan to explain, and an empty summary would
+/// be a chain of zero bars costing nothing.
+#[must_use]
+pub fn global_chain_summary(_outcome: &ChainOutcomeRecord) -> Option<GlobalChainSummary> {
+    // Stub: the laws come first.
+    None
+}
+
 /// Notes across a score's first track.
 fn note_count(score: &Score) -> usize {
     notes(score).count()
@@ -266,10 +366,15 @@ mod tests {
     )]
 
     use super::*;
+    use crate::history::ChainOutcomeRecord;
+    use griff_core::candidate_chain::AXIS_CANDIDATE_QUALITY;
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::generate::{GenerationSeed, GenerationStrategy};
+    use griff_core::rerank::SetCandidate;
     use griff_core::score::{
         AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Track, Voice,
     };
+    use griff_core::scoring::{Axes, Axis, Scored, WeightPolicy};
     use griff_core::slice::TickRange;
 
     const PPQN: u16 = 480;
@@ -322,6 +427,291 @@ mod tests {
             variants_per_strategy: 2,
             gesture: false,
         }
+    }
+
+    // ── the projection carries the core's trace, unchanged ───────────────────
+
+    /// The S7 non-greedy fixture, rebuilt here: three candidates over three
+    /// bars, one note each, identical rhythm throughout, so pitch alone decides.
+    /// Candidate 0 is locally cheapest everywhere but dives to 50 at bar 1 and
+    /// must climb 34 semitones back; candidate 1 costs more locally and sits at
+    /// 70, on the way.
+    ///
+    /// The real pass supplies `base` and `policy`; only `ranked` is replaced, so
+    /// the planner sees exactly the set the core's own law describes.
+    fn non_greedy_set() -> RankedSet {
+        let mut set = ranked_candidates(&source(), None, &ask(), None).expect("seeds");
+        set.ranked = vec![
+            chain_candidate(&[60, 50, 84], 0.9, 1),
+            chain_candidate(&[60, 70, 84], 0.8, 2),
+            chain_candidate(&[60, 50, 84], 0.7, 3),
+        ];
+        set
+    }
+
+    /// A ranked candidate whose bar `i` holds one note at `pitches[i]`.
+    fn chain_candidate(pitches: &[u8], quality: f64, seed: u64) -> Scored<SetCandidate> {
+        Scored::new(
+            SetCandidate {
+                score: bars_of(pitches),
+                strategy: GenerationStrategy::ShuffleMotifs,
+                seed: GenerationSeed(seed),
+                gesture: None,
+            },
+            Axes::new(vec![Axis {
+                label: "quality",
+                value: quality,
+            }]),
+            &WeightPolicy::new("test_rerank", 1, vec![("quality", 1.0)]),
+            Some(seed),
+        )
+    }
+
+    /// One 4/4 bar per pitch, one note at the downbeat.
+    fn bars_of(pitches: &[u8]) -> Score {
+        let mut master_bars = Vec::new();
+        let mut event_groups = Vec::new();
+        for (i, &pitch) in pitches.iter().enumerate() {
+            let start = u32::try_from(i).expect("small") * BAR;
+            master_bars.push(MasterBar {
+                index: i,
+                tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
+                time_signature: TimeSignature::new(4, 4).expect("4/4"),
+                tempo: Tempo::new(120.0).expect("120"),
+                repeat: RepeatMarker::default(),
+            });
+            event_groups.push(EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(AtomNote {
+                    absolute_start: Ticks(start),
+                    duration: Ticks(u32::from(PPQN)),
+                    pitch: Pitch::new(pitch).expect("valid"),
+                    velocity: Velocity::new(96).expect("valid"),
+                    marks: NoteMarks::empty(),
+                    position: None,
+                })],
+                technique_spans: Vec::new(),
+            });
+        }
+        Score {
+            ticks_per_quarter: PPQN,
+            master_bars,
+            tracks: vec![Track {
+                name: Some("guitar".to_owned()),
+                channel: 0,
+                voices: vec![Voice {
+                    id: 0,
+                    event_groups,
+                }],
+                tuning: Tuning::standard_e(),
+            }],
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    /// The non-greedy fixture's chain, as a run-level record.
+    fn non_greedy_record() -> ChainOutcomeRecord {
+        let GlobalChainOutcome::Planned(chain) = plan_global_chain(&non_greedy_set()) else {
+            panic!("the non-greedy fixture is chain-compatible");
+        };
+        ChainOutcomeRecord::Planned {
+            policy_id: chain.plan.provenance.policy_id,
+            policy_version: chain.plan.provenance.policy_version,
+            baseline_cost: chain.baseline_cost,
+            total_cost: chain.plan.total_cost,
+            steps: chain.plan.steps.clone(),
+            transitions: chain.plan.transitions.clone(),
+        }
+    }
+
+    #[test]
+    fn the_summary_shows_the_costs_the_core_measured() {
+        // The S7 evidence, arriving at the projection: intact 3.3, planned 2.4,
+        // via [0, 1, 0]. Literals, not a re-derivation — this asserts the
+        // mapping, not that the planner agrees with itself.
+        let summary = global_chain_summary(&non_greedy_record()).expect("a plan");
+        assert!(
+            (summary.baseline_cost - 3.3).abs() < 1e-9,
+            "baseline was {}",
+            summary.baseline_cost,
+        );
+        assert!(
+            (summary.total_cost - 2.4).abs() < 1e-9,
+            "planned was {}",
+            summary.total_cost,
+        );
+        assert!(
+            (summary.delta - (2.4 - 3.3)).abs() < 1e-9,
+            "the delta is the arithmetic, signed: {}",
+            summary.delta,
+        );
+        assert_eq!(summary.policy_id, "candidate_chain");
+        assert_eq!(summary.policy_version, 1);
+    }
+
+    #[test]
+    fn the_summary_shows_one_supplier_per_bar_in_bar_order() {
+        let summary = global_chain_summary(&non_greedy_record()).expect("a plan");
+        assert_eq!(
+            summary.bars.iter().map(|b| b.candidate).collect::<Vec<_>>(),
+            vec![0, 1, 0],
+            "the fixture's path, as the core chose it",
+        );
+        assert_eq!(
+            summary
+                .bars
+                .iter()
+                .map(|b| b.bar_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "bars are 1-based for a person; the core counts from 0",
+        );
+    }
+
+    #[test]
+    fn the_summary_keeps_ordinals_and_ranks_apart() {
+        // They coincide only for the winner. Showing an ordinal where a rank
+        // belongs would tell the user bar 2 came from rank 1 when it came from
+        // rank 2 — the exact thing the supplier map exists to say.
+        let summary = global_chain_summary(&non_greedy_record()).expect("a plan");
+        assert_eq!(
+            summary.bars.iter().map(|b| b.rank).collect::<Vec<_>>(),
+            vec![1, 2, 1],
+            "rank is 1-based and belongs to the supplying candidate",
+        );
+        for bar in &summary.bars {
+            assert_eq!(
+                bar.rank,
+                bar.candidate.saturating_add(1),
+                "in this fixture rank == ordinal + 1, and they are still two facts",
+            );
+        }
+    }
+
+    #[test]
+    fn each_bar_carries_its_suppliers_own_identity_and_the_cores_rationale() {
+        let summary = global_chain_summary(&non_greedy_record()).expect("a plan");
+        let bar2 = summary.bars.get(1).expect("three bars");
+        assert_eq!(bar2.variant_seed, 2, "candidate 1's own derived seed");
+        assert_eq!(bar2.strategy, "ShuffleMotifs");
+        assert!(
+            (bar2.s6_aggregate - 0.8).abs() < 1e-9,
+            "candidate 1's untouched S6 aggregate: {}",
+            bar2.s6_aggregate,
+        );
+        assert_eq!(
+            bar2.candidate_quality,
+            Some(1.0 - 0.8),
+            "the chain-local axis the core scored, not one recomputed here",
+        );
+        assert!(
+            !bar2.local_rationale.is_empty(),
+            "the core's weighted rationale travels with it",
+        );
+        assert_eq!(
+            bar2.local_rationale
+                .iter()
+                .map(|e| e.axis)
+                .collect::<Vec<_>>(),
+            vec![AXIS_CANDIDATE_QUALITY],
+            "verbatim: the axes the policy actually charged",
+        );
+    }
+
+    #[test]
+    fn the_summary_shows_one_boundary_per_bar_line_in_order() {
+        let summary = global_chain_summary(&non_greedy_record()).expect("a plan");
+        assert_eq!(summary.boundaries.len(), 2, "three bars, two lines");
+        let pairs: Vec<(usize, usize)> = summary
+            .boundaries
+            .iter()
+            .map(|b| (b.from_bar_number, b.to_bar_number))
+            .collect();
+        assert_eq!(pairs, vec![(1, 2), (2, 3)], "in the music's order, 1-based");
+        assert_eq!(
+            summary
+                .boundaries
+                .iter()
+                .map(|b| (b.from_candidate, b.to_candidate))
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (1, 0)],
+            "and each names the candidates on either side",
+        );
+    }
+
+    #[test]
+    fn a_measured_boundary_carries_its_jump_and_the_cores_rationale() {
+        // Bar 1 ends on 60, bar 2 opens on 70: ten semitones, as the core
+        // measured them.
+        let summary = global_chain_summary(&non_greedy_record()).expect("a plan");
+        let first = summary.boundaries.first().expect("two lines");
+        assert_eq!(first.jump_semitones, Some(10.0), "measured, and carried");
+        assert!(!first.silent_boundary, "both sides sound");
+        assert!(first.rhythm_repeat, "the fixture's rhythm is constant");
+        assert!(
+            !first.rationale.is_empty(),
+            "the core's transition rationale travels with it",
+        );
+    }
+
+    #[test]
+    fn an_unmeasurable_jump_is_absent_and_never_zero() {
+        // A silent side means the jump could not be measured. `None` says so.
+        // `0.0` would say "no distance at all" — the best possible boundary —
+        // which is the opposite of not knowing.
+        let mut set = non_greedy_set();
+        let silent = bars_of(&[60, 70, 84]);
+        let mut quiet = silent.clone();
+        quiet.tracks[0].voices[0].event_groups.remove(1); // bar 1 falls silent
+        set.ranked = vec![
+            chain_candidate(&[60, 50, 84], 0.9, 1),
+            Scored::new(
+                SetCandidate {
+                    score: quiet,
+                    strategy: GenerationStrategy::ShuffleMotifs,
+                    seed: GenerationSeed(2),
+                    gesture: None,
+                },
+                Axes::new(vec![Axis {
+                    label: "quality",
+                    value: 0.99,
+                }]),
+                &WeightPolicy::new("test_rerank", 1, vec![("quality", 1.0)]),
+                Some(2),
+            ),
+        ];
+        let GlobalChainOutcome::Planned(chain) = plan_global_chain(&set) else {
+            panic!("compatible");
+        };
+        let record = ChainOutcomeRecord::Planned {
+            policy_id: chain.plan.provenance.policy_id,
+            policy_version: chain.plan.provenance.policy_version,
+            baseline_cost: chain.baseline_cost,
+            total_cost: chain.plan.total_cost,
+            steps: chain.plan.steps.clone(),
+            transitions: chain.plan.transitions.clone(),
+        };
+        let summary = global_chain_summary(&record).expect("a plan");
+        let silent_line = summary
+            .boundaries
+            .iter()
+            .find(|b| b.silent_boundary)
+            .expect("the quiet candidate wins a bar, so a line is silent");
+        assert_eq!(
+            silent_line.jump_semitones, None,
+            "not measured — and not 0.0 pretending to be perfect continuity",
+        );
+    }
+
+    #[test]
+    fn a_refusal_has_no_summary_to_show() {
+        // Not an empty one: a chain of zero bars costing nothing is a result
+        // that does not exist, rendered as though it did.
+        let record = ChainOutcomeRecord::Refused {
+            error: ChainError::EmptySet,
+        };
+        assert!(global_chain_summary(&record).is_none());
     }
 
     // ── Global Chain Audition: one run, two results ──────────────────────────

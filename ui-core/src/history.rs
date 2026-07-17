@@ -10,7 +10,7 @@
 //! **typed** value, never a pre-baked UI string — a renderer builds its own
 //! description from it.
 
-use griff_core::candidate_chain::ChainError;
+use griff_core::candidate_chain::{ChainError, ChainStep, ChainTransition};
 use griff_core::score::Score;
 
 use crate::generate::SetSummary;
@@ -338,9 +338,15 @@ pub struct SessionHistory {
 /// The run id is the link. A candidate entry from the same run answers "was
 /// there a chain for this?" by asking here, and the answer outlives the panel
 /// state that produced it.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Deliberately not `PartialEq`: it holds the core's trace, and the core's
+/// scored types are not comparable. Deriving equality would mean adding it to
+/// six types in `griff-core` to make assertions here shorter, which is not a
+/// reason to touch a frozen crate — callers match on the shape they care about.
+#[derive(Debug, Clone)]
 pub enum ChainOutcomeRecord {
-    /// The run's chain was planned, and this is what it cost.
+    /// The run's chain was planned, and this is what it cost — with the core's
+    /// own trace of why.
     Planned {
         /// The chain policy the costs were weighed under.
         policy_id: &'static str,
@@ -350,8 +356,18 @@ pub enum ChainOutcomeRecord {
         baseline_cost: f64,
         /// The planned chain's total.
         total_cost: f64,
-        /// Which candidate supplied each output bar.
-        suppliers: Vec<ChainSupplier>,
+        /// The core's per-bar trace, verbatim: which candidate, its own
+        /// identity, the chain-local cost with its rationale, and the
+        /// supplying candidate's untouched S6 score.
+        ///
+        /// Kept here, at the run, rather than only on the live panel — an old
+        /// chain replayed from history must be able to explain itself after the
+        /// run that made it is gone, and the alternative is reconstructing the
+        /// trace from supplier ids and the current set, which is exactly the
+        /// reconstruction this milestone refuses.
+        steps: Vec<ChainStep>,
+        /// The core's per-boundary trace, verbatim.
+        transitions: Vec<ChainTransition>,
     },
     /// The run's set could not be chained, and this is the core's own reason.
     ///
@@ -496,7 +512,7 @@ impl SessionHistory {
 )]
 mod tests {
     use super::{
-        toggle, CandidateSource, ChainError, ChainOutcomeRecord, ChainSupplier, CorpusContribution,
+        toggle, CandidateSource, ChainError, ChainOutcomeRecord, CorpusContribution,
         GenerationRunId, GeneratorProvenance, Provenance, SessionHistory, Verdict,
         PROVENANCE_SCHEMA, PROVENANCE_VERSION,
     };
@@ -531,23 +547,34 @@ mod tests {
             policy_version: 1,
             baseline_cost: 3.3,
             total_cost: total,
-            suppliers: vec![ChainSupplier {
-                bar: 0,
-                candidate: 0,
-                rank: 1,
-                strategy: "ShuffleMotifs".to_owned(),
-                variant_seed: 7,
-            }],
+            steps: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 
+    const REFUSAL: ChainError = ChainError::PpqMismatch {
+        candidate: 1,
+        expected: 960,
+        found: 480,
+    };
+
     fn refused() -> ChainOutcomeRecord {
-        ChainOutcomeRecord::Refused {
-            error: ChainError::PpqMismatch {
-                candidate: 1,
-                expected: 960,
-                found: 480,
-            },
+        ChainOutcomeRecord::Refused { error: REFUSAL }
+    }
+
+    /// The recorded total, or `None` when the run's chain was refused.
+    fn planned_total(h: &SessionHistory, run: GenerationRunId) -> Option<f64> {
+        match h.chain_of(run)? {
+            ChainOutcomeRecord::Planned { total_cost, .. } => Some(*total_cost),
+            ChainOutcomeRecord::Refused { .. } => None,
+        }
+    }
+
+    /// The recorded refusal, or `None` when the run's chain was planned.
+    fn refusal(h: &SessionHistory, run: GenerationRunId) -> Option<ChainError> {
+        match h.chain_of(run)? {
+            ChainOutcomeRecord::Refused { error } => Some(*error),
+            ChainOutcomeRecord::Planned { .. } => None,
         }
     }
 
@@ -561,14 +588,15 @@ mod tests {
         let a = h.begin_run();
         h.record_chain(a, planned(2.4));
         h.record_chain(a, refused());
-        assert_eq!(h.chain_of(a), Some(&planned(2.4)), "the first write stands");
+        assert_eq!(planned_total(&h, a), Some(2.4), "the first write stands");
+        assert_eq!(refusal(&h, a), None, "the later refusal did not land");
 
         let b = h.begin_run();
         h.record_chain(b, refused());
         h.record_chain(b, planned(2.4));
         assert_eq!(
-            h.chain_of(b),
-            Some(&refused()),
+            refusal(&h, b),
+            Some(REFUSAL),
             "in either order — a refusal is not weaker than a plan",
         );
     }
@@ -580,8 +608,8 @@ mod tests {
         let b = h.begin_run();
         h.record_chain(a, planned(2.4));
         h.record_chain(b, refused());
-        assert_eq!(h.chain_of(a), Some(&planned(2.4)));
-        assert_eq!(h.chain_of(b), Some(&refused()));
+        assert_eq!(planned_total(&h, a), Some(2.4));
+        assert_eq!(refusal(&h, b), Some(REFUSAL));
     }
 
     #[test]
@@ -590,9 +618,8 @@ mod tests {
         let a = h.begin_run();
         let never_used = h.begin_run();
         h.record_chain(a, planned(2.4));
-        assert_eq!(
-            h.chain_of(never_used),
-            None,
+        assert!(
+            h.chain_of(never_used).is_none(),
             "no outcome is not the same fact as a refusal",
         );
     }
@@ -618,8 +645,8 @@ mod tests {
         h.record(a, "x".to_owned(), "t".to_owned(), score(), generate_gen());
         h.record(a, "y".to_owned(), "t".to_owned(), score(), generate_gen());
         assert_eq!(
-            h.chain_of(a),
-            Some(&refused()),
+            refusal(&h, a),
+            Some(REFUSAL),
             "candidates and the chain outcome are separate records of one run",
         );
         assert_eq!(h.entries().len(), 2);
