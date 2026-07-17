@@ -19,7 +19,7 @@ use crate::generate::{GenerationSeed, GenerationStrategy};
 use crate::generation_input::RankedSet;
 use crate::layered_path::{self, EdgeId, PathError};
 use crate::rerank::SetCandidate;
-use crate::score::{AtomEvent, EventGroup, LossReport, MasterBar, Score, Track, Voice};
+use crate::score::{AtomEvent, EventGroup, MasterBar, Score, Track, Voice};
 use crate::scoring::{Axes, Axis, Provenance, Rationale, Scored, WeightPolicy};
 use crate::slice::TickRange;
 
@@ -672,7 +672,10 @@ fn assemble(ranked: &[Scored<SetCandidate>], chosen: &[usize]) -> Result<Score, 
         master_bars: reference.master_bars.clone(),
         tracks,
         source_meta: reference.source_meta.clone(),
-        loss: LossReport::new(),
+        // Validated identical across the set, so this is the whole set's
+        // history, not the reference's version of it. A fresh report here would
+        // claim a clean conversion the import never delivered.
+        loss: reference.loss.clone(),
     })
 }
 
@@ -856,6 +859,10 @@ fn check_compatible(candidate: usize, reference: &Score, score: &Score) -> Resul
     let format = |s: &Score| s.source_meta.as_ref().and_then(|m| m.format.clone());
     if format(score) != format(reference) {
         return Err(ChainError::SourceMetaMismatch { candidate });
+    }
+    // ...and the reference's import history. One import upstream, one report.
+    if score.loss.warnings != reference.loss.warnings {
+        return Err(ChainError::LossReportMismatch { candidate });
     }
     Ok(())
 }
