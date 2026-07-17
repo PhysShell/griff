@@ -4733,6 +4733,185 @@ mod tests {
         drop(fs::remove_file(&path));
     }
 
+    /// Generates a run with known knobs, auditions its chain, exports it, and
+    /// returns the parsed sidecar beside the run's captured facts.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn exported_chain_sidecar(dir: &str) -> (CockpitApp, HistoryId, serde_json::Value) {
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join(dir);
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 77;
+        app.gen_panel.bars = 4;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was recorded")
+            .id;
+        let path = app.write_chain_keep(id).expect("exports");
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
+                .expect("the sidecar is json");
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+        (app, id, json)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_sidecar_preserves_the_captured_run_contract() {
+        // A sidecar exists to reproduce the export later, by someone who no
+        // longer has the session. Every field of the run's captured contract
+        // has to be in it, or "reproduce this" quietly means "regenerate
+        // something and hope".
+        let (app, _, json) = exported_chain_sidecar("griff-sidecar-contract");
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+
+        assert_eq!(json["origin"], "candidate_chain", "what this file is");
+        assert_eq!(json["run"], run.0, "which run made it");
+        assert!(json["source"].is_string(), "what seeded that run");
+        assert_eq!(json["seed"], 77, "the ask seed");
+        assert_eq!(json["bars"], 4, "the ask's bar count");
+        assert_eq!(json["variants_per_strategy"], 2, "the ask's variant count");
+        assert!(
+            json["corpus"]["templates"].is_number()
+                && json["corpus"]["references"].is_number()
+                && json["corpus"]["gesture"].is_boolean(),
+            "what the corpus actually contributed: {}",
+            json["corpus"],
+        );
+        assert_eq!(json["policy_id"], "candidate_chain");
+        assert_eq!(json["policy_version"], 1);
+        assert!(json["baseline_cost"].is_number());
+        assert!(json["total_cost"].is_number());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_sidecars_bars_come_from_the_captured_ask() {
+        // Not from suppliers.len(). They agree — and a law says so — but the
+        // ask is a fact the run recorded, and deriving it from the result would
+        // make a wrong result look self-consistent.
+        let (app, id, json) = exported_chain_sidecar("griff-sidecar-bars");
+        let GeneratorProvenance::GlobalChain {
+            bars, suppliers, ..
+        } = &app.history.get(id).expect("entry").provenance.generator
+        else {
+            panic!("a chain entry");
+        };
+        assert_eq!(json["bars"], *bars, "the sidecar's bars are the ask's");
+        assert_eq!(
+            *bars,
+            suppliers.len(),
+            "and the invariant holds: one supplier per asked bar",
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_sidecar_keeps_the_costs_and_the_supplier_map_in_bar_order() {
+        let (app, id, json) = exported_chain_sidecar("griff-sidecar-suppliers");
+        let GeneratorProvenance::GlobalChain {
+            suppliers,
+            baseline_cost,
+            total_cost,
+            ..
+        } = &app.history.get(id).expect("entry").provenance.generator
+        else {
+            panic!("a chain entry");
+        };
+        assert_eq!(
+            json["baseline_cost"].as_f64().expect("a number").to_bits(),
+            baseline_cost.to_bits(),
+            "the captured baseline, through json, unchanged",
+        );
+        assert_eq!(
+            json["total_cost"].as_f64().expect("a number").to_bits(),
+            total_cost.to_bits(),
+        );
+        let written = json["suppliers"].as_array().expect("an array");
+        assert_eq!(written.len(), suppliers.len());
+        for (i, (got, want)) in written.iter().zip(suppliers.iter()).enumerate() {
+            assert_eq!(got["bar"], want.bar, "supplier {i} is in output-bar order");
+            assert_eq!(got["candidate"], want.candidate);
+            assert_eq!(got["rank"], want.rank);
+            assert_eq!(got["strategy"], want.strategy);
+            assert_eq!(got["variant_seed"], want.variant_seed);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn moving_the_knobs_after_a_run_does_not_move_its_sidecar() {
+        // The sidecar describes the run that made the music, not the panel that
+        // happens to be open when the file is written.
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-sidecar-knobs");
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 77;
+        app.gen_panel.bars = 4;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+
+        app.gen_panel.seed = 5;
+        app.gen_panel.bars = 9;
+        app.gen_panel.variants = 7;
+
+        let path = app.write_chain_keep(id).expect("exports");
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
+                .expect("json");
+        assert_eq!(json["seed"], 77, "the run's seed, not the knob's");
+        assert_eq!(json["bars"], 4, "the run's bars, not the knob's");
+        assert_eq!(json["variants_per_strategy"], 2);
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_old_chains_sidecar_survives_a_later_generate() {
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-sidecar-old");
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 77;
+        app.gen_panel.bars = 4;
+        app.do_generate();
+        app.show_global_chain();
+        let old = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let old_run = app.gen_panel.active.as_ref().expect("a run").context.run;
+
+        app.gen_panel.seed = 999;
+        app.do_generate(); // a whole new run
+
+        let path = app
+            .write_chain_keep(old)
+            .expect("the old entry still exports");
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
+                .expect("json");
+        assert_eq!(json["run"], old_run.0, "the old run's id");
+        assert_eq!(json["seed"], 77, "and the old run's ask");
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_chain_sidecar_names_its_suppliers_and_both_costs() {
