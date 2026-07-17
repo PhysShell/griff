@@ -144,11 +144,13 @@ untouched.
   winner costs **3.3**, the planned chain **2.4** via `[0, 1, 0]`. A real
   fixed-seed `ranked_candidates` pass plans deterministically with complete
   explanations. No corpus-level musical superiority is claimed from one fixture.
-- 58 tests, plus `core/tests/s6_chain_baseline.rs`, which describes S6's ranked
-  output for a fixed seed. Its golden expectations are being recorded from a
-  detached worktree at the base S7 branched from; until they are, the file
-  proves the pass is **repeatable and contract-shaped**, not that it is
-  unchanged — a pass S7 had perturbed would agree with itself just as happily.
+- 58 tests, plus 6 in `core/tests/s6_chain_baseline.rs` pinning S6's ranked
+  output for a fixed seed against **literals recorded at base `a02355a`**, in a
+  detached worktree, before S7 existed: the ten candidates as `(strategy,
+  variant seed, aggregate bits)` in rank order — ties included, so the ADR-0017
+  §7 tie-break is recorded as it fell — the six axis labels, and the winner's
+  actual notes. A characterization test that recomputes its expectations from
+  the code under test proves only that the code equals itself.
 
 Deliberately **not** in these slices: k-best, harmonic fit, style fit,
 playability, fret travel, `EnergyState`, corpus transition statistics,

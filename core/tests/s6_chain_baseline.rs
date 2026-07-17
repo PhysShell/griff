@@ -5,17 +5,21 @@
 //! seed, and any future chain work that quietly reaches back into generation
 //! fails here rather than in someone's ears.
 //!
-//! What "characterization" requires, and what this file did not do until the
-//! golden below: the expectations must come from **before** the change. Asking
-//! the pass to run twice and comparing the answers proves the pass is
-//! repeatable, which is worth knowing but is not the claim — a pass that S7 had
-//! perturbed would agree with itself just as happily. The invariant checks
-//! (descending aggregate, one rationale entry per axis) are worth the same
-//! caveat: they describe a contract, not this pass's actual output.
+//! What "characterization" requires: the expectations must come from **before**
+//! the change. Asking the pass to run twice and comparing the answers proves
+//! the pass is repeatable, which is worth knowing but is not the claim — a pass
+//! that S7 had perturbed would agree with itself just as happily. The invariant
+//! checks (descending aggregate, one rationale entry per axis) carry the same
+//! caveat: they describe a contract, not this pass's actual output. Both are
+//! kept below, under names that say which of the two they are.
 //!
 //! The golden values are therefore recorded from a detached worktree at the
 //! merge commit S7 branched from, and pasted in as literals. Nothing here may
 //! recompute an expectation by calling the code under test.
+//!
+//! Re-recording: check the base out into a worktree of its own, print the
+//! values from a throwaway test there, and paste. Never bless from this branch
+//! — that turns the file back into "the code equals itself".
 //!
 //! Nothing in this file imports `candidate_chain` or `layered_path` on purpose:
 //! it describes S6 alone.
@@ -46,6 +50,12 @@ const BAR: u32 = 3840;
 
 /// A note as `(offset within its bar, duration, pitch)`.
 type Note = (u32, u32, u8);
+
+/// A recorded candidate: `(strategy, derived variant seed, aggregate bits)`.
+type GoldenCandidate = (&'static str, u64, u64);
+
+/// A recorded note: `(absolute start, duration, pitch, velocity)`.
+type GoldenNote = (u32, u32, u8, u8);
 
 /// The fixed source the pass is seeded from: two 4/4 bars of quarter notes.
 fn source() -> Score {
@@ -121,32 +131,107 @@ const fn ask() -> GenerationAsk {
 const GOLDEN_BASE: &str = "a02355a2b371b8e71b2dcf7c63d9999721d14bfa";
 
 /// `(policy id, policy version)`.
-///
-/// **Not yet recorded.** The values below are placeholders until they are
-/// captured from a detached worktree at [`GOLDEN_BASE`]; recording them from
-/// this branch would only prove the code equals itself.
-const GOLDEN_POLICY: (&str, u32) = ("", 0);
+const GOLDEN_POLICY: (&str, u32) = ("generation_rerank", 1);
 
 /// The winner's rerank axis labels, in order.
-const GOLDEN_AXES: &[&str] = &[];
+const GOLDEN_AXES: &[&str] = &[
+    "internal_continuity",
+    "ending_stability",
+    "final_lengthening",
+    "gap_fill",
+    "quote_novelty",
+    "ngram_novelty",
+];
 
 /// `(strategy, derived variant seed, rerank aggregate bits)`, in rank order.
 ///
 /// The aggregate is pinned by [`f64::to_bits`], not by a rounded decimal: a
 /// characterization test that compares within a tolerance cannot see the drift
 /// it exists to catch.
-const GOLDEN_RANKED: &[(&str, u64, u64)] = &[];
+///
+/// Ranks 1–2, 3–4, 5–6 and 8–9 are exact ties, so this also records the rank
+/// tie-break — ADR-0017 §7's ascending original index — as it actually fell,
+/// rather than as the contract says it should.
+const GOLDEN_RANKED: &[GoldenCandidate] = &[
+    (
+        "RhythmCopyPitchSubstitute",
+        13_679_457_532_755_275_413,
+        0x3FEC_4444_4444_4443,
+    ),
+    (
+        "ConstrainedRandomWalk",
+        14_141_660_008_401_062_150,
+        0x3FEC_4444_4444_4443,
+    ),
+    (
+        "MotifTransposeVariation",
+        2_949_826_092_126_892_291,
+        0x3FEB_3333_3333_3332,
+    ),
+    (
+        "MotifTransposeVariation",
+        13_441_012_166_899_430_009,
+        0x3FEB_3333_3333_3332,
+    ),
+    (
+        "RhythmCopyPitchSubstitute",
+        17_996_036_147_140_579_893,
+        0x3FEA_AAAA_AAAA_AAAA,
+    ),
+    (
+        "RepeatVariation",
+        701_532_786_141_963_250,
+        0x3FEA_AAAA_AAAA_AAAA,
+    ),
+    (
+        "ShuffleMotifs",
+        6_349_198_060_258_255_764,
+        0x3FEA_2222_2222_2221,
+    ),
+    (
+        "ConstrainedRandomWalk",
+        5_139_283_748_462_763_858,
+        0x3FE9_9999_9999_9999,
+    ),
+    (
+        "RepeatVariation",
+        4_691_677_783_938_580_081,
+        0x3FE9_9999_9999_9999,
+    ),
+    (
+        "ShuffleMotifs",
+        16_326_166_102_818_017_940,
+        0x3FE9_1111_1111_1110,
+    ),
+];
 
 /// The winner's bar count.
-const GOLDEN_WINNER_BARS: usize = 0;
+const GOLDEN_WINNER_BARS: usize = 4;
 
 /// The winner's tick resolution.
-const GOLDEN_WINNER_PPQ: u16 = 0;
+const GOLDEN_WINNER_PPQ: u16 = 960;
 
 /// `(absolute start, duration, pitch, velocity)` of every note the winner
 /// holds, in the order the canonical model holds them — the fingerprint of the
 /// actual music S6 produced, not merely of its score.
-const GOLDEN_WINNER_NOTES: &[(u32, u32, u8, u8)] = &[];
+const GOLDEN_WINNER_NOTES: &[GoldenNote] = &[
+    (0, 480, 62, 90),
+    (480, 480, 64, 90),
+    (960, 480, 65, 90),
+    (1440, 480, 67, 90),
+    (3840, 480, 65, 90),
+    (4320, 480, 64, 90),
+    (4800, 480, 62, 90),
+    (5280, 480, 60, 90),
+    (7680, 480, 62, 90),
+    (8160, 480, 64, 90),
+    (8640, 480, 65, 90),
+    (9120, 480, 67, 90),
+    (11520, 480, 65, 90),
+    (12000, 480, 64, 90),
+    (12480, 480, 62, 90),
+    (12960, 480, 60, 90),
+];
 
 #[test]
 fn the_ranked_set_matches_the_output_recorded_before_s7() {
