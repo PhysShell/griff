@@ -496,8 +496,9 @@ impl SessionHistory {
 )]
 mod tests {
     use super::{
-        toggle, CandidateSource, CorpusContribution, GenerationRunId, GeneratorProvenance,
-        Provenance, SessionHistory, Verdict, PROVENANCE_SCHEMA, PROVENANCE_VERSION,
+        toggle, CandidateSource, ChainError, ChainOutcomeRecord, ChainSupplier, CorpusContribution,
+        GenerationRunId, GeneratorProvenance, Provenance, SessionHistory, Verdict,
+        PROVENANCE_SCHEMA, PROVENANCE_VERSION,
     };
     use crate::generate::SetSummary;
     use griff_core::score::{LossReport, Score};
@@ -520,6 +521,108 @@ mod tests {
             source_meta: None,
             loss: LossReport::new(),
         }
+    }
+
+    // ── Law: a run's chain outcome is decided once ───────────────────────────
+
+    fn planned(total: f64) -> ChainOutcomeRecord {
+        ChainOutcomeRecord::Planned {
+            policy_id: "candidate_chain",
+            policy_version: 1,
+            baseline_cost: 3.3,
+            total_cost: total,
+            suppliers: vec![ChainSupplier {
+                bar: 0,
+                candidate: 0,
+                rank: 1,
+                strategy: "ShuffleMotifs".to_owned(),
+                variant_seed: 7,
+            }],
+        }
+    }
+
+    fn refused() -> ChainOutcomeRecord {
+        ChainOutcomeRecord::Refused {
+            error: ChainError::PpqMismatch {
+                candidate: 1,
+                expected: 960,
+                found: 480,
+            },
+        }
+    }
+
+    #[test]
+    fn a_runs_chain_outcome_is_written_once_and_never_rewritten() {
+        // A run's set is produced once, so its chain outcome is decided once.
+        // A second write is a later caller with a later opinion — and the whole
+        // reason this record exists is to answer what was true at capture, not
+        // what someone thinks now.
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        h.record_chain(a, planned(2.4));
+        h.record_chain(a, refused());
+        assert_eq!(h.chain_of(a), Some(&planned(2.4)), "the first write stands");
+
+        let b = h.begin_run();
+        h.record_chain(b, refused());
+        h.record_chain(b, planned(2.4));
+        assert_eq!(
+            h.chain_of(b),
+            Some(&refused()),
+            "in either order — a refusal is not weaker than a plan",
+        );
+    }
+
+    #[test]
+    fn chain_outcomes_of_different_runs_do_not_collide() {
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        let b = h.begin_run();
+        h.record_chain(a, planned(2.4));
+        h.record_chain(b, refused());
+        assert_eq!(h.chain_of(a), Some(&planned(2.4)));
+        assert_eq!(h.chain_of(b), Some(&refused()));
+    }
+
+    #[test]
+    fn an_unknown_run_has_no_chain_outcome() {
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        let never_used = h.begin_run();
+        h.record_chain(a, planned(2.4));
+        assert_eq!(
+            h.chain_of(never_used),
+            None,
+            "no outcome is not the same fact as a refusal",
+        );
+    }
+
+    #[test]
+    fn recording_a_chain_outcome_creates_no_candidate_entry() {
+        // The outcome is a fact about the run. An entry is a result someone can
+        // hear — and a refusal has none.
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        h.record_chain(a, refused());
+        assert!(
+            h.entries().is_empty(),
+            "a run-level record is not an auditionable result",
+        );
+    }
+
+    #[test]
+    fn recording_a_candidate_does_not_disturb_its_runs_chain_outcome() {
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        h.record_chain(a, refused());
+        h.record(a, "x".to_owned(), "t".to_owned(), score(), generate_gen());
+        h.record(a, "y".to_owned(), "t".to_owned(), score(), generate_gen());
+        assert_eq!(
+            h.chain_of(a),
+            Some(&refused()),
+            "candidates and the chain outcome are separate records of one run",
+        );
+        assert_eq!(h.entries().len(), 2);
     }
 
     fn generate_gen() -> GeneratorProvenance {
