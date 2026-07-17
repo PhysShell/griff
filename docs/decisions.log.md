@@ -1812,8 +1812,13 @@ Architectural decisions go to [`adr/`](adr/) instead.
   master bar, the whole track skeleton, the source format — not against the
   three fields the cost model happens to read; the unread fields are precisely
   the ones that would go missing without a sound changing. The unit of both
-  rejection and lifting is the **event group**. Also corrected: ADR-0013's
-  consequence that "exact DP is exponential in the state size" — over an
-  enumerated layered graph the recurrence is polynomial, and what explodes is
-  the number of states worth enumerating, so beam search remains the fallback
-  because the map grows, not because exact DP degrades.
+  rejection and lifting is the **event group**. Two further contracts followed
+  in a later round: one normative association for every path cost (float
+  addition is not associative, so "the same cost function" is not the same
+  metric until the order of the additions is fixed), and the intact baseline
+  evaluated *through* the solver rather than by a second summation of its own —
+  the two disagreed by an ULP on the very fixture the slice's evidence rests on.
+  This entry stays what it is, an implementation record; the decisions it
+  reports — reduced per-client state, the corrected complexity story, and the
+  contracts above — are recorded as [`adr/0030`](adr/0030-reduced-state-layered-dp-clients.md),
+  which amends ADR-0013 rather than editing it.

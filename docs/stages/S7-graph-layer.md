@@ -4,8 +4,9 @@ Status: in progress — chunk similarity edge (2026-06-10), then Slices A and B
 landed (2026-07-17: the layered-path engine and the multi-bar candidate chain);
 the full graph stays deliberately late
 Depends on: S6 acceptance
-ADRs: ADR-0013 (DP/Viterbi traversal), ADR-0018 (rich note model: fretboard +
-multi-technique with evidence; supersedes ADR-0014)
+ADRs: ADR-0013 (DP/Viterbi traversal) as amended by ADR-0030 (reduced-state
+layered DP clients), ADR-0018 (rich note model: fretboard + multi-technique with
+evidence; supersedes ADR-0014)
 
 > Progress: the similarity edge has its first concrete measure —
 > `core/src/similarity.rs` computes per-axis agreement (detected pattern
@@ -58,7 +59,10 @@ connected / possible); DP/Viterbi is the *route* (which sequence is best).
 - DP state carries running context: current candidate, fretboard position and
   last technique (ADR-0018 — the rich note model makes both expressible),
   `EnergyState`, rhythmic similarity to part A, and optional S15 harmonic state
-  once that contract is calibrated.
+  once that contract is calibrated. **Per ADR-0030 this is the richest
+  imaginable state, not a required one:** each client enumerates the smallest
+  state its own cost terms read, and a dimension arrives only with a client that
+  reads it. Slice B's chain carries `(bar, candidate)` and nothing else.
 - Cost function (inspectable, the same weights S9 later tunes):
   `harmonic_fit + rhythm_complement + style_fit + playability + phrase_continuity
   − mud_penalty − repetition_penalty − fret_jump_penalty`.
@@ -86,6 +90,11 @@ chain below is a client, not a special case.
 - The shape is validated exactly: `n` layers require exactly `n − 1` transition
   tables, checked before any scoring. Empty problems, empty layers, mismatched
   table counts and mismatched table shapes all return typed errors.
+- **One cost association** (`PATH_COST_ASSOCIATION`, ADR-0030 §6): float
+  addition is not associative, so a path's cost is undefined until the order of
+  the additions is. `local + (edge + suffix)`, folded from the last layer back,
+  is normative — the DP, the walk, the reported total and every client baseline
+  use it, and the reported total is therefore the number the search minimised.
 - Verified against a brute-force oracle over every tiny problem shape (1–4
   layers × 1–3 states), on both total and exact path.
 - 24 tests.
@@ -122,8 +131,11 @@ untouched.
   — on the first offending fact, which the error names: empty set, no bars,
   differing bar count or PPQ; any master-bar field (index, tick range, meter,
   tempo, repeat barlines); any track field (name, channel, tuning, voice count,
-  voice ids); the source format. The master timeline is the one every candidate
-  already agrees on, never borrowed from a layer winner.
+  voice ids); the source format; the import **loss report**, which is then
+  carried into the assembled score rather than replaced with a clean one — an
+  empty report must mean nothing was lost, not that nobody carried it. The
+  master timeline is the one every candidate already agrees on, never borrowed
+  from a layer winner.
 - **Cross-bar material is rejected, not clipped.** `slice::extract_bars` filters
   atoms by onset without shortening durations and clamps technique spans, so it
   is not a lossless concatenation contract. The unit of rejection is the **event
@@ -138,7 +150,10 @@ untouched.
   ranges — with no rebasing, no re-quantising, and no MIDI round-trip. A missing
   bar, track, or voice is a typed error, never an empty result that would leave
   the part quietly short.
-- **Baseline:** ranked candidate 0, intact, under the *same* policy. On the
+- **Baseline:** ranked candidate 0, intact, evaluated *through the solver* as a
+  one-state-per-layer problem under the *same* policy — not by a second
+  summation of its own, which is a second metric wearing the first one's name
+  (the two disagreed by an ULP). On the
   synthetic non-greedy fixture (candidate 0 is locally cheapest everywhere but
   its bar 1 dives to pitch 50 and must climb 34 semitones back) the intact
   winner costs **3.3**, the planned chain **2.4** via `[0, 1, 0]`. A real
@@ -204,6 +219,10 @@ counterevidence before reopening.
 - [`S15-tonal-context-and-harmonic-control.md`](S15-tonal-context-and-harmonic-control.md)
 - [`../glossary.md`](../glossary.md) §9
 - [`../adr/0013-dp-viterbi-traversal.md`](../adr/0013-dp-viterbi-traversal.md)
+  (the 2026-05-31 decision) and
+  [`../adr/0030-reduced-state-layered-dp-clients.md`](../adr/0030-reduced-state-layered-dp-clients.md)
+  (what amends it: per-client state, the cost association, and why exact DP is
+  polynomial over the graph it is handed)
 - [`../adr/0018-rich-note-model-fretboard-and-techniques.md`](../adr/0018-rich-note-model-fretboard-and-techniques.md)
   (fretboard position + multi-technique with evidence; supersedes ADR-0014)
 - [`S13-complementary-part-generation.md`](S13-complementary-part-generation.md)
