@@ -195,11 +195,12 @@ struct BarNote {
 
 /// The sounding notes of `bar` in `score`, ascending by onset then pitch.
 ///
-/// Rests are not sounding pitches and take no part.
-fn bar_notes(score: &Score, bar: usize) -> Vec<BarNote> {
-    let Some(range) = score.master_bars.get(bar).map(|b| b.tick_range) else {
-        return Vec::new();
-    };
+/// Rests are not sounding pitches and take no part. `None` — distinct from an
+/// empty vector — when `bar` is not a bar of `score` at all: a bar that does not
+/// exist has no notes to report, which is not the same fact as a bar that exists
+/// and is silent.
+fn bar_notes(score: &Score, bar: usize) -> Option<Vec<BarNote>> {
+    let range = score.master_bars.get(bar).map(|b| b.tick_range)?;
     let mut notes: Vec<BarNote> = score
         .tracks
         .iter()
@@ -218,7 +219,18 @@ fn bar_notes(score: &Score, bar: usize) -> Vec<BarNote> {
         })
         .collect();
     notes.sort_unstable_by_key(|n| (n.offset, n.pitch));
-    notes
+    Some(notes)
+}
+
+/// When the note stops sounding, in ticks from its bar's start.
+///
+/// Widened to `u64` on purpose: both terms are `u32`, so the sum is exact and
+/// overflow is *unrepresentable* rather than merely unlikely. Saturating or
+/// wrapping arithmetic would silently reorder notes at the top of the tick
+/// range — a measurement function must not hide its own overflow.
+#[allow(clippy::arithmetic_side_effects)]
+fn sounding_end(note: &BarNote) -> u64 {
+    u64::from(note.offset) + u64::from(note.duration)
 }
 
 /// The bar's rhythm signature: its `(offset, duration)` pairs, ascending.
@@ -233,12 +245,18 @@ fn rhythm_signature(notes: &[BarNote]) -> Vec<(u32, u32)> {
     signature
 }
 
-/// The bar's last sounding pitch: the latest onset, and among a chord sharing
-/// that onset, the highest pitch (the melodic top). `None` for a silent bar.
+/// The bar's last **sounding** pitch: the note still ringing latest into the bar
+/// line, measured by its end (`offset + duration`), not by its onset. `None` for
+/// a silent bar.
+///
+/// A held note that opened the bar and rings through it is what the ear carries
+/// across the line; a short note struck later and already stopped is not. Among
+/// notes ending together the tie-break is the **highest** pitch — the chord top,
+/// matching [`first_pitch`]'s convention on the other side of the line.
 fn last_pitch(notes: &[BarNote]) -> Option<u8> {
     notes
         .iter()
-        .max_by_key(|n| (n.offset, n.pitch))
+        .max_by_key(|n| (sounding_end(n), n.pitch))
         .map(|n| n.pitch)
 }
 
@@ -304,8 +322,14 @@ pub fn transition_facts(
     to: &Score,
     to_bar: usize,
 ) -> Result<Axes, TransitionFactError> {
-    let left = bar_notes(from, from_bar);
-    let right = bar_notes(to, to_bar);
+    let left = bar_notes(from, from_bar).ok_or(TransitionFactError::MissingFromBar {
+        bar: from_bar,
+        bars: from.master_bars.len(),
+    })?;
+    let right = bar_notes(to, to_bar).ok_or(TransitionFactError::MissingToBar {
+        bar: to_bar,
+        bars: to.master_bars.len(),
+    })?;
     let mut axes = Vec::with_capacity(3);
     if let (Some(a), Some(b)) = (last_pitch(&left), first_pitch(&right)) {
         // Semitones, unwrapped: a 14-semitone leap stays a 14-semitone leap.
