@@ -2473,14 +2473,14 @@ impl CockpitApp {
                 }
             }
         });
-        if let GlobalChainOutcome::Refused(error) = &active.chain {
-            ui.weak(format!(
-                "no global chain: {}",
-                chain_refusal_summary(*error)
-            ));
-            return;
+        // Two independent blocks, decided before anything is drawn. The active
+        // run's refusal and the sounding chain's explanation can both be true,
+        // and neither is a reason to withhold the other.
+        let evidence = self.chain_panel_evidence();
+        if let Some(error) = evidence.active_refusal {
+            ui.weak(format!("no global chain: {}", chain_refusal_summary(error)));
         }
-        if let Some(summary) = self.displayed_chain_summary() {
+        if let Some(summary) = evidence.displayed_summary {
             chain_summary_block(ui, &summary);
         }
     }
@@ -2494,19 +2494,13 @@ impl CockpitApp {
     /// true at once, and that is precisely the moment the panel is most tempted
     /// to say nothing.
     ///
-    /// Stub: still lets the refusal hide the summary.
     fn chain_panel_evidence(&self) -> ChainPanelEvidence {
-        let active_refusal = match self.gen_panel.active.as_ref().map(|a| &a.chain) {
-            Some(&GlobalChainOutcome::Refused(error)) => Some(error),
-            _ => None,
-        };
         ChainPanelEvidence {
-            active_refusal,
-            displayed_summary: if active_refusal.is_some() {
-                None
-            } else {
-                self.displayed_chain_summary()
+            active_refusal: match self.gen_panel.active.as_ref().map(|a| &a.chain) {
+                Some(&GlobalChainOutcome::Refused(error)) => Some(error),
+                _ => None,
             },
+            displayed_summary: self.displayed_chain_summary(),
         }
     }
 
