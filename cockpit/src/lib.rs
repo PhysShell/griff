@@ -682,22 +682,47 @@ fn remap_loop_range(
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, serde::Serialize)]
 struct KeptChain<'a> {
+    /// What this file is — so a reader who finds it alone can tell.
+    origin: &'static str,
+    /// The Generate run that produced the chain.
+    run: u64,
     /// The seed score's identity.
     source: Option<&'a str>,
+    /// What the corpus **actually** contributed to that run.
+    corpus: KeptCorpus,
     /// The ask seed.
     seed: u64,
-    /// Bars in the assembled chain.
+    /// Bars the run asked for. From the captured ask, never from
+    /// `suppliers.len()` — a result may not be its own evidence.
     bars: usize,
+    /// Seed variants per strategy the run asked for.
+    variants_per_strategy: usize,
     /// The chain policy the costs were weighed under.
     policy_id: &'a str,
     /// That policy's version.
-    policy_version: &'a u32,
+    policy_version: u32,
     /// Ranked candidate 0 kept intact, under the same policy.
     baseline_cost: f64,
     /// The planned chain's total.
     total_cost: f64,
     /// Which candidate supplied each output bar.
     suppliers: Vec<KeptSupplier<'a>>,
+}
+
+/// The `origin` marker a chain sidecar carries.
+#[cfg(not(target_arch = "wasm32"))]
+const CHAIN_SIDECAR_ORIGIN: &str = "candidate_chain";
+
+/// What the corpus contributed, as the sidecar writes it.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, serde::Serialize)]
+struct KeptCorpus {
+    /// Rhythm templates the corpus supplied.
+    templates: usize,
+    /// Novelty reference chunks it supplied.
+    references: usize,
+    /// Whether a corpus gesture was actually carved.
+    gesture: bool,
 }
 
 /// One bar's supplier, as the sidecar writes it.
@@ -719,6 +744,32 @@ struct KeptSupplier<'a> {
     strategy: &'a str,
     /// That candidate's derived variant seed — its reproduction key.
     variant_seed: u64,
+}
+
+/// A planned chain's typed provenance, from the run that captured it.
+///
+/// One construction shared by both paths that can record the chain — the
+/// audition and the export — so they cannot describe the same result
+/// differently. Every request field comes from the immutable context; every
+/// result field from the captured plan.
+fn chain_provenance(ctx: &GenerateRunContext, chain: &PlannedGlobalChain) -> GeneratorProvenance {
+    GeneratorProvenance::GlobalChain {
+        source: ctx.source.clone(),
+        corpus: ctx.corpus,
+        seed: ctx.seed,
+        bars: ctx.bars,
+        variants_per_strategy: ctx.variants_per_strategy,
+        policy_id: chain.plan.provenance.policy_id,
+        policy_version: chain.plan.provenance.policy_version,
+        baseline_cost: chain.baseline_cost,
+        total_cost: chain.plan.total_cost,
+        suppliers: chain_suppliers(chain),
+    }
+}
+
+/// The history title a planned chain wears.
+fn chain_title(chain: &PlannedGlobalChain) -> String {
+    format!("S7 global chain · {:.3}", chain.plan.total_cost)
 }
 
 /// The run-level record of what a captured chain outcome came to.
@@ -1489,22 +1540,10 @@ impl CockpitApp {
         };
         let ctx = &active.context;
         let score = chain.plan.score.clone();
-        let title = format!("S7 global chain · {:.3}", chain.plan.total_cost);
-        let generator = GeneratorProvenance::GlobalChain {
-            source: ctx.source.clone(),
-            corpus: ctx.corpus,
-            seed: ctx.seed,
-            bars: ctx.bars,
-            variants_per_strategy: ctx.variants_per_strategy,
-            policy_id: chain.plan.provenance.policy_id,
-            policy_version: chain.plan.provenance.policy_version,
-            baseline_cost: chain.baseline_cost,
-            total_cost: chain.plan.total_cost,
-            suppliers: chain_suppliers(chain),
-        };
-        let run = ctx.run;
+        let title = chain_title(chain);
+        let generator = chain_provenance(ctx, chain);
         let id = self.history.record(
-            run,
+            ctx.run,
             CHAIN_CANDIDATE_ID.to_owned(),
             title.clone(),
             score.clone(),
@@ -1705,30 +1744,42 @@ impl CockpitApp {
     /// history, not a fourth thing built at the moment of export.
     #[cfg(not(target_arch = "wasm32"))]
     fn keep_chain(&mut self) {
-        let Some(active) = self.gen_panel.active.as_ref() else {
-            return;
-        };
-        if !matches!(active.chain, GlobalChainOutcome::Planned(_)) {
-            return;
-        }
-        let run = active.context.run;
-        // `record` is keyed by (run, candidate_id) and a run has one chain, so
-        // this returns the audition's entry when there is one and mints it when
-        // there is not. Either way the export and the history agree.
-        self.show_global_chain();
-        let Some(id) = self
-            .history
-            .entries()
-            .iter()
-            .find(|e| e.run == run && e.source == CandidateSource::GlobalChain)
-            .map(|e| e.id)
-        else {
+        let Some(id) = self.ensure_chain_history_entry() else {
             return;
         };
         self.gen_panel.status = Some(match self.write_chain_keep(id) {
             Ok(path) => format!("kept -> {path}"),
             Err(err) => format!("keep failed: {err}"),
         });
+    }
+
+    /// The history entry for the active run's chain, recording it first if it
+    /// has not been auditioned yet.
+    ///
+    /// Deliberately *not* `show_global_chain`: exporting is a file action, and
+    /// it must not decide what the user is listening to. Keeping while the S6
+    /// winner plays writes the chain and leaves the S6 winner playing.
+    ///
+    /// `record` is keyed by `(run, candidate_id)` and a run has exactly one
+    /// chain, so this returns the audition's entry when there is one and mints
+    /// the same entry when there is not — the export and the history cannot
+    /// disagree about which result was written.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ensure_chain_history_entry(&mut self) -> Option<HistoryId> {
+        let active = self.gen_panel.active.as_ref()?;
+        let GlobalChainOutcome::Planned(chain) = &active.chain else {
+            return None;
+        };
+        let ctx = &active.context;
+        let generator = chain_provenance(ctx, chain);
+        let title = chain_title(chain);
+        Some(self.history.record(
+            ctx.run,
+            CHAIN_CANDIDATE_ID.to_owned(),
+            title,
+            chain.plan.score.clone(),
+            generator,
+        ))
     }
 
     /// Exports the global chain recorded as history entry `id` to `.mid`, plus
@@ -1752,23 +1803,36 @@ impl CockpitApp {
         let entry = self.history.get(id).ok_or("no such history entry")?;
         let GeneratorProvenance::GlobalChain {
             seed,
+            bars,
+            variants_per_strategy,
+            corpus,
             policy_id,
             policy_version,
             baseline_cost,
             total_cost,
             suppliers,
             source,
-            ..
         } = &entry.provenance.generator
         else {
             return Err("that entry is not a global chain".to_owned());
         };
         let sidecar = KeptChain {
+            origin: CHAIN_SIDECAR_ORIGIN,
+            run: entry.run.0,
             source: source.as_deref(),
+            corpus: KeptCorpus {
+                templates: corpus.templates,
+                references: corpus.references,
+                gesture: corpus.gesture,
+            },
             seed: *seed,
-            bars: suppliers.len(),
+            // The ask's own number. `suppliers.len()` agrees, and a law says so,
+            // but the ask is what the run recorded and the result is what it
+            // produced — evidence does not get to derive itself.
+            bars: *bars,
+            variants_per_strategy: *variants_per_strategy,
             policy_id,
-            policy_version,
+            policy_version: *policy_version,
             baseline_cost: *baseline_cost,
             total_cost: *total_cost,
             suppliers: suppliers
@@ -4731,6 +4795,78 @@ mod tests {
             "export read the snapshot; it did not ask the planner to try again",
         );
         drop(fs::remove_file(&path));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn keeping_the_chain_while_s6_sounds_does_not_change_what_is_playing() {
+        use griff_core::midi::export_score;
+        // Export is a file action. It must not decide what the user is
+        // listening to — pressing "keep" to get a .mid out should not swap the
+        // audio out from under them mid-comparison.
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-keep-no-side-effects");
+        app.gen_panel.variants = 2;
+        app.do_generate(); // S6 intact is showing and sounding
+        app.show_candidate(1);
+        app.show_candidate(0); // ab_other is Generate(1)
+        app.vp.playing = true;
+        app.advance_audio(0.3);
+        let sounding = app.player.active_count();
+        let tick = app.vp.play_tick;
+        let selected_row = app.gen_panel.selected;
+        let ab = app.ab_other;
+        let selected_entry = app.history.selected();
+
+        app.keep_chain();
+
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the S6 winner is still the audition",
+        );
+        assert_eq!(app.player.active_count(), sounding, "still sounding");
+        assert_eq!(app.vp.play_tick, tick, "the playhead did not move");
+        assert!(app.vp.playing, "and it is still playing");
+        assert_eq!(
+            app.gen_panel.selected, selected_row,
+            "the row is still marked"
+        );
+        assert_eq!(app.ab_other, ab, "and A/B still points where it did");
+        assert_eq!(
+            app.history.selected(),
+            selected_entry,
+            "the history selection did not move to the chain",
+        );
+
+        let chain = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was recorded so the export has a result to name");
+        assert!(
+            app.gen_panel
+                .status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("kept -> ")),
+            "and the file was written: {:?}",
+            app.gen_panel.status,
+        );
+        let path = app
+            .gen_panel
+            .status
+            .as_deref()
+            .and_then(|s| s.strip_prefix("kept -> "))
+            .expect("a path");
+        let written = fs::read(path).expect("the file is there");
+        let expected = export_score(&chain.score).expect("the snapshot exports");
+        assert_eq!(
+            written, expected,
+            "the bytes are the chain's, not the S6 winner's"
+        );
+        drop(fs::remove_file(path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
     }
 
     /// Generates a run with known knobs, auditions its chain, exports it, and
