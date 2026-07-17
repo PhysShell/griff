@@ -75,8 +75,14 @@ weighted random walk as the default. Beam search is retained only as an
   than a chain of locally-best fragments.
 - The DP cost function becomes the natural, explainable target for S9 feedback;
   S7 and S9 share one weight vector.
-- Accepted: exact DP is exponential in the state size; the state must be kept
-  small, and beam search is the fallback for large graphs.
+- Accepted: the cost is in the *state design*, not in the DP. Over an
+  enumerated layered graph the recurrence is polynomial —
+  `O(Σᵢ |L[i-1]| × |L[i]|)`, one visit per edge. What can explode is the number
+  of states worth enumerating: a state that is the product of independent
+  context dimensions (candidate × fret position × technique × energy × …) has a
+  layer size multiplying out with each dimension. So the state must be kept
+  small, and beam search is the fallback once a client needs a layer too wide
+  to enumerate — not because exact DP degrades, but because the map does.
 - Accepted: DP depends on a fretboard-aware model (ADR-0014) and a realised
   `EnergyState`; neither exists yet, so S7 cannot ship until they do.
 - Accepted: S13 v0 ships before DP and therefore cannot assemble coherent
@@ -101,7 +107,15 @@ ordered layers of caller-supplied [`Axes`], a versioned `WeightPolicy`, and
   what delivers that without storing prefixes, so the complexity claim holds.
   No epsilon "approximately equal" rule; no hash-map iteration order.
 - Non-finite costs (`NaN`, `±∞`) are rejected **before** the walk, naming the
-  exact state or edge, so the comparisons run on a genuine total order.
+  exact state or edge, so the comparisons run on a genuine total order. Finite
+  inputs are not enough: a sum of finite costs can still reach `±∞`, so every
+  accumulation — each suffix step and each step of the final total — is checked
+  as it is formed and reported as `NonFiniteAccumulation` naming the state it
+  overflowed at. An optimum computed over `∞ == ∞` is not an optimum.
+- The problem's shape is validated exactly, not permissively: `n` layers require
+  exactly `n − 1` transition tables. An extra table is a caller whose layers and
+  transitions disagree, and silently ignoring it would let a real cost go
+  unapplied.
 - The state carried is deliberately *smaller* than §1 of this ADR imagined:
   fretboard position, last technique, and `EnergyState` are **not** in it.
   They remain unbuilt, and the ADR's own §"Consequences" note that DP could
@@ -123,9 +137,34 @@ reranked, or re-seeded.
   present as zeroes — an unmeasured term is a lie with a weight attached.
 - §4 holds: the weights are data (`WeightPolicy`), so S9 can tune them without
   touching traversal. S7 consumes; S9 does not exist here.
+- **The boundary pitch is the last note still *sounding*, not the last onset.**
+  It is selected by note end (`offset + duration`, compared in `u64` so the sum
+  cannot wrap), ties going to the highest pitch — the chord top, the same
+  convention the next bar's first pitch uses. A note held across the bar is what
+  the ear carries over the line; a short note struck later and already stopped
+  is not.
+- **An invalid bar index is not silence.** `silent_boundary` is a musical
+  observation — this edge has no sounding pitch — and it must never be produced
+  by an out-of-range address. Boundary facts return a typed error naming the
+  offending side; a bar that does not exist and a bar that exists and is quiet
+  are different facts and are reported differently. The same rule holds one
+  layer down: assembly asking for a track, voice, or bar that is not there is an
+  invariant violation, not an empty bar.
+- **Compatibility covers everything assembly copies**, not everything the cost
+  model reads. The output is built on ranked candidate 0's skeleton — master
+  bars (index, tick range, meter, tempo, repeat barlines), track name, channel,
+  tuning, voice ids, source format — and then filled with bars from any
+  candidate, so every one of those facts must be one all candidates already
+  agree on. The errors name the field. The fields the cost model does *not* read
+  are exactly the ones that would otherwise go missing without a sound changing.
 - Cross-bar material is **rejected**, not clipped: `slice::extract_bars` cuts
   atoms by onset without shortening durations and clamps technique spans, so it
   offers no lossless concatenation contract for a note ringing past its bar.
+  The unit of rejection is the **event group**, because the group is the unit
+  assembly lifts: the group's bar is decided once, from its first atom, and
+  every atom and every technique span it holds must start and end inside that
+  bar. Material outside the timeline entirely is named by its tick, since there
+  is no bar to report it against.
 - Baseline: ranked candidate 0, kept intact, weighed under the *same* policy.
   On the synthetic non-greedy fixture the intact winner costs 3.3 and the
   planned chain 2.4.

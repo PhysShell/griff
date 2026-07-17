@@ -80,10 +80,15 @@ chain below is a client, not a special case.
 - **Tie-break:** the lexicographically smallest vector of state ordinals, decided
   front-to-back. All-equal costs therefore select ordinal `0` everywhere.
 - `NaN`/`±∞` are rejected before the walk, naming the state or edge, so the
-  comparisons run on a total order. Empty problems and mismatched transition
-  tables return typed errors.
+  comparisons run on a total order — and every *accumulation* is checked as it
+  is formed (`NonFiniteAccumulation`), because a sum of finite costs can still
+  reach `±∞` and an optimum over `∞ == ∞` is not an optimum.
+- The shape is validated exactly: `n` layers require exactly `n − 1` transition
+  tables, checked before any scoring. Empty problems, empty layers, mismatched
+  table counts and mismatched table shapes all return typed errors.
 - Verified against a brute-force oracle over every tiny problem shape (1–4
   layers × 1–3 states), on both total and exact path.
+- 24 tests.
 
 The already-accepted register track was **not** reopened to manufacture a
 client.
@@ -101,30 +106,58 @@ untouched.
   `candidate_quality` 1.0 (value `1 − s6_aggregate`, monotonic in S6's verdict),
   `boundary_jump_semitones` 0.05 per unwrapped semitone, `silent_boundary` 0.25,
   `rhythm_repeat` 0.40 (signature of real `(onset, duration)` pairs, pitch-free).
+- **The boundary pitch is the last note still sounding**, selected by note end
+  (`offset + duration`, widened to `u64` so the sum cannot wrap) with ties to
+  the highest pitch — not the last onset, which would hear a stopped note over a
+  held one.
 - **Silent-bar semantics:** when a bar edge has no sounding pitch the jump is
   unmeasurable, so `boundary_jump_semitones` is **absent** and `silent_boundary`
   carries the fact. An unavailable measurement is never a zero pretending to be
   perfect continuity. Two silent bars share the explicit empty rhythm signature.
-- **Compatibility:** the set is refused — never truncated — on the first
-  offending fact: empty set, no bars, differing bar count, PPQ, bar grid (tick
-  range/meter/tempo), or track-voice shape. The master timeline is the one every
-  candidate already agrees on, never borrowed from a layer winner.
+  An **invalid** bar index is not silence: it is a typed error naming the
+  offending side, because a bar that does not exist and a bar that is quiet are
+  different facts.
+- **Compatibility covers every fact assembly copies from ranked candidate 0**,
+  not just the three the cost model reads. The set is refused — never truncated
+  — on the first offending fact, which the error names: empty set, no bars,
+  differing bar count or PPQ; any master-bar field (index, tick range, meter,
+  tempo, repeat barlines); any track field (name, channel, tuning, voice count,
+  voice ids); the source format. The master timeline is the one every candidate
+  already agrees on, never borrowed from a layer winner.
 - **Cross-bar material is rejected, not clipped.** `slice::extract_bars` filters
   atoms by onset without shortening durations and clamps technique spans, so it
-  is not a lossless concatenation contract. A note ringing past its bar, a span
-  straddling a bar line, or a group whose atoms span bars is refused.
+  is not a lossless concatenation contract. The unit of rejection is the **event
+  group**, because the group is what assembly lifts: its bar is decided once,
+  from its first atom, and every atom and technique span it holds must start and
+  end in that bar. A note ringing past its bar, a span straddling or sitting
+  outside the group's bar, an atom in another bar, and a group with no atoms at
+  all are each refused; material outside the timeline is named by its tick.
 - **Assembly** copies the selected bars' event groups verbatim onto the shared
-  timeline — no rebasing, no re-quantising, and no MIDI round-trip.
+  timeline — group kind, rests, velocity, per-note marks, fretboard position and
+  its ADR-0019 evidence, technique spans with their evidence and exact unclamped
+  ranges — with no rebasing, no re-quantising, and no MIDI round-trip. A missing
+  bar, track, or voice is a typed error, never an empty result that would leave
+  the part quietly short.
 - **Baseline:** ranked candidate 0, intact, under the *same* policy. On the
   synthetic non-greedy fixture (candidate 0 is locally cheapest everywhere but
   its bar 1 dives to pitch 50 and must climb 34 semitones back) the intact
   winner costs **3.3**, the planned chain **2.4** via `[0, 1, 0]`. A real
   fixed-seed `ranked_candidates` pass plans deterministically with complete
   explanations. No corpus-level musical superiority is claimed from one fixture.
+- 58 tests, plus 3 in `core/tests/s6_chain_baseline.rs` pinning that S6's ranked
+  output — order, strategies, variant seeds, aggregates, winner — is exactly
+  what it was before S7 consumed it.
 
 Deliberately **not** in these slices: k-best, harmonic fit, style fit,
 playability, fret travel, `EnergyState`, corpus transition statistics,
 persistent nodes, and complement hyperedges.
+
+Both slices were built as RED→GREEN pairs, in order: the layered path's optimum
+and tie-break; the chain's layers from a `RankedSet`; the v1 cost model; lossless
+assembly; the S6 characterization; then, from review, the exact transition-table
+count, non-finite DP accumulations, the boundary facts' valid bars and last
+sounding note, the compatibility contract over the shared skeleton, and
+group-local lossless assembly.
 
 ### Slice C — deterministic k-best alternatives
 
