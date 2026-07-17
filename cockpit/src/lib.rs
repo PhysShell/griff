@@ -4381,6 +4381,49 @@ mod tests {
     }
 
     #[test]
+    fn generate_provenance_summary_names_its_source() {
+        use griff_ui_core::history::{
+            CorpusContribution, GenerationRunId, GeneratorProvenance, Provenance,
+        };
+        // Built from the typed provenance alone — no live app or panel state.
+        let summary_for = |source: Option<&str>| {
+            provenance_summary(&Provenance::new(
+                GenerationRunId(0),
+                0,
+                "auto#1".to_owned(),
+                GeneratorProvenance::Generate {
+                    source: source.map(ToOwned::to_owned),
+                    corpus: CorpusContribution {
+                        templates: 0,
+                        references: 0,
+                        gesture: false,
+                    },
+                    seed: 7,
+                    bars: 8,
+                    variants_per_strategy: 2,
+                    strategy: "auto".to_owned(),
+                    variant_seed: 1,
+                    rank: 1,
+                    aggregate: 0.5,
+                },
+            ))
+        };
+        let a = summary_for(Some("tabA.mid"));
+        let b = summary_for(Some("tabB.mid"));
+        assert!(a.contains("source tabA.mid"), "names its source: {a}");
+        assert!(b.contains("source tabB.mid"), "names its source: {b}");
+        assert_ne!(
+            a, b,
+            "two runs from different sources must not render identically",
+        );
+        let displayed = summary_for(None);
+        assert!(
+            displayed.contains("source displayed score"),
+            "no captured source reads as the displayed score: {displayed}",
+        );
+    }
+
+    #[test]
     fn provenance_summary_names_the_generator_and_the_ask() {
         use griff_ui_core::history::{GenerationRunId, GeneratorProvenance, Provenance};
         let g = Provenance::new(
