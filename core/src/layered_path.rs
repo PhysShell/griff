@@ -478,7 +478,7 @@ fn argmin_first(values: &[f64]) -> usize {
     clippy::arithmetic_side_effects
 )]
 mod tests {
-    use super::{solve, EdgeId, LayeredProblem, PathError, StateId};
+    use super::{solve, EdgeId, LayeredProblem, PathError, PathSolution, StateId};
     use crate::scoring::{Axes, Axis, Scored, WeightPolicy};
 
     /// The test policy: one local axis and one transition axis, each weighted
@@ -927,12 +927,101 @@ mod tests {
             policy: &p,
         })
         .expect("solves");
-        let summed: f64 = solution.steps.iter().map(Scored::aggregate).sum::<f64>()
-            + solution.edges.iter().map(Scored::aggregate).sum::<f64>();
-        assert!(
-            (summed - solution.total_cost).abs() < 1e-12,
-            "the trace explains the whole total",
+        // Folded in the recurrence's own association, and compared exactly.
+        // Summing the steps and the edges in two separate passes is a third
+        // grouping again, and "within 1e-12" is how a real disagreement about
+        // what the number means gets waved through as rounding.
+        assert_eq!(
+            canonical_total(&solution),
+            solution.total_cost,
+            "the trace explains the whole total, in the order it was optimised",
         );
+    }
+
+    /// The path cost of a solution's own trace, folded from the end in the
+    /// recurrence's association: `local + (edge + rest)`.
+    fn canonical_total(solution: &PathSolution) -> f64 {
+        let mut steps = solution.steps.iter().rev();
+        let mut total = steps.next().map_or(0.0, Scored::aggregate);
+        for (step, edge) in steps.zip(solution.edges.iter().rev()) {
+            total = edge.aggregate() + total;
+            total = step.aggregate() + total;
+        }
+        total
+    }
+
+    /// The selected state ordinals, layer by layer.
+    fn ordinals(solution: &PathSolution) -> Vec<usize> {
+        solution.steps.iter().map(|s| s.value.ordinal).collect()
+    }
+
+    #[test]
+    fn the_two_associations_really_do_disagree_here() {
+        // Guards the fixture below rather than the engine: `1e16` and `-1e16`
+        // cancel exactly, and the ulp at 1e16 is 2, so a 1.0 added *before* the
+        // cancellation is rounded away while the same 1.0 added *after* it
+        // survives. If f64 ever stopped behaving this way the laws below would
+        // pass while proving nothing.
+        assert_eq!(1e16 + (-1e16 + 1.0), 0.0, "the 1.0 is absorbed");
+        assert_eq!((1e16 + -1e16) + 1.0, 1.0, "the 1.0 survives");
+        assert_eq!(1e16 + (-1e16 + 0.5), 0.0);
+        assert_eq!((1e16 + -1e16) + 0.5, 0.5);
+    }
+
+    #[test]
+    fn the_reported_total_is_the_cost_the_recurrence_minimised() {
+        // One layer of one state, then two alternatives. Under the recurrence's
+        // association both alternatives cost 0.0 — the tail is absorbed — so
+        // the tie-break takes ordinal 0. Under a forward left-to-right sum they
+        // cost 1.0 and 0.5, and ordinal 1 would win.
+        //
+        // Two associations, two different winners and two different totals. The
+        // engine optimises the first, so the first is what it must report: a
+        // total from an arithmetic the selection did not use describes a path
+        // the engine did not choose for a reason it did not have.
+        let locals = locals_of(&[&[1e16], &[1.0, 0.5]]);
+        let transitions = transitions_of(&[&[&[-1e16, -1e16]]]);
+        let p = policy();
+        let solution = solve(&LayeredProblem {
+            locals: &locals,
+            transitions: &transitions,
+            policy: &p,
+        })
+        .expect("solves");
+
+        assert_eq!(
+            ordinals(&solution),
+            vec![0, 0],
+            "the recurrence sees a tie and the tie-break takes the lowest ordinal",
+        );
+        assert_eq!(
+            solution.total_cost, 0.0,
+            "reported: the cost the recurrence actually minimised",
+        );
+        assert_eq!(
+            canonical_total(&solution),
+            solution.total_cost,
+            "and the trace re-folds to the very same number",
+        );
+    }
+
+    #[test]
+    fn the_baseline_of_a_single_path_is_folded_the_same_way() {
+        // The same fixture with the alternative removed: no tie, no choice, and
+        // still the recurrence's association — `1e16 + (-1e16 + 1.0)` is 0.0,
+        // not 1.0. A one-state-per-layer problem is a cost evaluation rather
+        // than a search, and it must not quietly use different arithmetic from
+        // the search that it is the baseline for.
+        let locals = locals_of(&[&[1e16], &[1.0]]);
+        let transitions = transitions_of(&[&[&[-1e16]]]);
+        let p = policy();
+        let solution = solve(&LayeredProblem {
+            locals: &locals,
+            transitions: &transitions,
+            policy: &p,
+        })
+        .expect("solves");
+        assert_eq!(solution.total_cost, 0.0);
     }
 
     #[test]
