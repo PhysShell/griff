@@ -1,6 +1,6 @@
 # S8: Standalone preview app
 
-Status: in progress — interactive `ratatui` piano-roll landed (slices 1–2)
+Status: in progress — interactive `ratatui` piano-roll landed (slices 1–3)
 Depends on: S6
 ADRs: —
 
@@ -75,9 +75,15 @@ front-ends and audio build on them:
       compiler moved into `griff-core` for exactly this, and the move is proven
       output-identical (30/30 byte-identical `griff generate` runs).
       Remaining: register/playability/tonal hypotheses, S7 path explanations.
-- [ ] **Feedback/evolution surface** — like/dislike/favorite controls first;
-      parent/child lineage and generation history when the S9 Evolution Lab is
-      active. S8 displays and edits; S9 owns preference/evolution semantics.
+- [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16** (PR
+      pending review): favorite/reject controls (mutually exclusive) and a
+      session **history** of every auditioned candidate with typed provenance,
+      in `griff_ui_core::history` (append-only `SessionHistory`, stable
+      `HistoryId`, `Verdict` toggle, generator-split `Provenance`); the cockpit
+      records on show and replays a history snapshot through the Slice 2
+      transport (`AuditionCandidate::History`). Session-local + in-memory; no
+      ranking/learning/persistence. Remaining for S9: parent/child lineage and
+      preference/evolution semantics. S8 displays and edits; S9 owns evolution.
 - [ ] Curation actions feeding the S5 corpus schema — **first slice landed
       2026-06-11**: approve/reject intents in the interaction core
       (`Viewport::decision`, ADR-0016 — repeat to undo), 'a'/'x' keys and a
@@ -105,11 +111,13 @@ front-ends and audio build on them:
       (same source, consecutive bar ranges; the absorbed partner file is
       removed). Both reset the reviewer and the whole-extent measurements
       — see the 2026-06-12 split/merge decision.
-- [ ] Boundary overlays (S4) and candidate history — **overlays landed
+- [~] Boundary overlays (S4) and candidate history — **overlays landed
       2026-06-11**: `Analysis.boundaries` carries the S4 start ticks under a
       PPQN-scaled default config, the scene places `BoundaryMark` columns
       (sections keep precedence on shared columns), the TUI styles them.
-      Remaining: candidate history.
+      **Candidate history landed 2026-07-16** (S8 Slice 3): the cockpit's
+      session `SessionHistory` window (`y`) — a newest-first feed with
+      provenance and favorite/reject.
 - [x] Scrollable inspector dock (2026-06-11): `Viewport.inspector_scroll`
       steps via `InspectorScrollUp/Down` (PgUp/PgDn in the TUI), hiding the
       dock resets it, renderers clamp to their own content overflow — the

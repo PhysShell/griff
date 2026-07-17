@@ -36,6 +36,10 @@ use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
+use griff_ui_core::history::{
+    CandidateSource, CorpusContribution, GenerationRunId, GeneratorProvenance, HistoryId,
+    Provenance, SessionHistory, Verdict,
+};
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
@@ -53,7 +57,7 @@ pub mod audio;
 pub mod generation;
 pub mod swang;
 
-use generation::{GeneratePanel, KeptProvenance};
+use generation::{kept_provenance, ActiveGenerateRun, GeneratePanel, GenerateRunContext};
 use swang::SwangPanel;
 
 /// Pixel width of one grid cell.
@@ -471,12 +475,57 @@ fn tag_wire(tag: SwancoreTag) -> Option<String> {
 /// A candidate the roll can show, tagged by which set it belongs to — so A/B
 /// remembers the last one viewed across **both** generators and swaps back to
 /// the right source, never a same-index candidate of the wrong set.
+/// Where a Swang run's seed score **actually** came from.
+///
+/// Native reads the program's declared `source` path; the browser has no
+/// filesystem and seeds from the displayed score instead. Recording which one
+/// happened keeps provenance honest — the web target must not claim it read a
+/// path it never opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SwangSourceOrigin {
+    /// The declared path was read from disk (native).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only native resolves a path
+    ResolvedPath(String),
+    /// The displayed score seeded the run (the browser's defined semantics).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // only wasm seeds this way
+    DisplayedScore,
+}
+
+impl SwangSourceOrigin {
+    /// The path provenance should record: the resolved path, or `None` when the
+    /// displayed score seeded the run (which a UI renders as "displayed score").
+    fn provenance_path(&self) -> Option<String> {
+        match self {
+            Self::ResolvedPath(path) => Some(path.clone()),
+            Self::DisplayedScore => None,
+        }
+    }
+}
+
+/// The **immutable** identity of one successful Swang run: the run id, the
+/// exact evaluated program text, and the resolved source. A candidate's
+/// provenance reads these — never the live editor text — so editing the program
+/// after a run cannot rewrite an already-made candidate's origin.
+#[derive(Debug, Clone)]
+struct SwangRunContext {
+    /// The run this evaluated set belongs to.
+    run: GenerationRunId,
+    /// The exact program text that was evaluated.
+    program: String,
+    /// The resolved source path, if the frontend read one.
+    source_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuditionCandidate {
     /// Index into the Generate panel's set.
     Generate(usize),
     /// Index into the Swang panel's set.
     Swang(usize),
+    /// A recorded candidate replayed from the session history, by its stable id
+    /// (S8 Slice 3) — so A/B and the playhead survive a switch to an entry from
+    /// an earlier generation whose panel set is long gone.
+    History(HistoryId),
 }
 
 /// The egui cockpit application: a `Scene` renderer over the shared core.
@@ -541,6 +590,17 @@ pub struct CockpitApp {
     /// The A/B "other" candidate — the last one viewed before `current`, of
     /// either source — that a single key swaps back to without regenerating.
     ab_other: Option<AuditionCandidate>,
+    /// The session's append-only candidate history: every candidate shown is
+    /// recorded here with its provenance and the curator's verdict (S8 Slice 3).
+    /// A new generation adds to it; it is never destroyed within a session.
+    history: SessionHistory,
+    /// The current Swang run's immutable context — its run id, evaluated
+    /// program, and resolved source — captured on a successful `swang_run`, so
+    /// a candidate's provenance never reads the live editor text (S8 Slice 3).
+    /// The Generate run's context lives with its set in `gen_panel.active`.
+    swang_ctx: Option<SwangRunContext>,
+    /// Whether the history window is shown (the `y` key toggles it).
+    history_open: bool,
     /// The playhead tick at the end of the last frame — so an input that
     /// seeks the head (a section jump) is noticed and the audio repositioned.
     last_play_tick: u32,
@@ -596,6 +656,124 @@ fn remap_loop_range(
     let lo = *bar_lines.get(a)?;
     let hi = *bar_lines.get(b.saturating_add(1).min(last))?;
     (lo < hi && hi <= tick_end).then_some((lo, hi))
+}
+
+/// A one-line human description of a candidate's typed provenance — built here,
+/// in the UI layer, so the model stays a typed value and never a baked string.
+/// Names the generator, the ask (Generate) or the source (Swang), and the
+/// candidate's rank — enough to tell where a history row came from at a glance.
+fn provenance_summary(p: &Provenance) -> String {
+    match &p.generator {
+        GeneratorProvenance::Generate {
+            source,
+            seed,
+            bars,
+            corpus,
+            rank,
+            strategy,
+            ..
+        } => {
+            let src = source.as_deref().unwrap_or("displayed score");
+            let contribution = if corpus.is_seed_only() {
+                "seed only".to_owned()
+            } else {
+                let gesture = if corpus.gesture { ", gesture" } else { "" };
+                format!(
+                    "corpus {} templates, {} refs{gesture}",
+                    corpus.templates, corpus.references
+                )
+            };
+            format!(
+                "generate · {strategy} · #{rank} · source {src} · seed {seed} · {bars} bars · {contribution}"
+            )
+        }
+        GeneratorProvenance::Swang {
+            source_path,
+            rank,
+            strategy,
+            ..
+        } => {
+            let src = source_path.as_deref().unwrap_or("displayed score");
+            format!("swang · {strategy} · #{rank} · source {src}")
+        }
+    }
+}
+
+/// A history row's display data, snapshotted so the window closure holds no
+/// borrow of the app while it paints.
+struct HistoryRow {
+    id: HistoryId,
+    sequence: u64,
+    source: CandidateSource,
+    verdict: Option<Verdict>,
+    summary: String,
+}
+
+/// What the curator clicked on a history row this frame (at most one).
+enum HistoryAction {
+    /// Audition the row's snapshot.
+    Audition(HistoryId),
+    /// Toggle the row's favorite verdict.
+    Favorite(HistoryId),
+    /// Toggle the row's rejected verdict.
+    Reject(HistoryId),
+}
+
+/// Paints one history row — selection/playing marker, source, verdict (glyph
+/// AND word, never colour alone), the provenance line, and the actions — and
+/// returns whatever the curator clicked.
+fn history_row(
+    ui: &mut egui::Ui,
+    row: &HistoryRow,
+    is_selected: bool,
+    playing: bool,
+) -> Option<HistoryAction> {
+    let mut action = None;
+    ui.horizontal(|ui| {
+        let marker = if is_selected && playing {
+            "▶ playing"
+        } else if is_selected {
+            "◉ selected"
+        } else {
+            "  ·"
+        };
+        ui.monospace(marker);
+        let source = match row.source {
+            CandidateSource::Generate => "gen",
+            CandidateSource::Swang => "swang",
+        };
+        ui.monospace(format!("#{:<3} [{source:>5}]", row.sequence));
+        if ui
+            .button("audition")
+            .on_hover_text("play this one (b to A/B)")
+            .clicked()
+        {
+            action = Some(HistoryAction::Audition(row.id));
+        }
+        if ui
+            .selectable_label(row.verdict == Some(Verdict::Favorite), "★ fav")
+            .on_hover_text("favorite (clears reject)")
+            .clicked()
+        {
+            action = Some(HistoryAction::Favorite(row.id));
+        }
+        if ui
+            .selectable_label(row.verdict == Some(Verdict::Rejected), "⊘ rej")
+            .on_hover_text("reject (clears favorite)")
+            .clicked()
+        {
+            action = Some(HistoryAction::Reject(row.id));
+        }
+        // The verdict in words too, for the colour-blind and screen readers.
+        ui.label(match row.verdict {
+            Some(Verdict::Favorite) => "favorite",
+            Some(Verdict::Rejected) => "rejected",
+            None => "—",
+        });
+    });
+    ui.weak(&row.summary);
+    ui.separator();
+    action
 }
 
 /// The most loop revolutions one frame may play before the transport takes a
@@ -719,6 +897,9 @@ impl CockpitApp {
             loop_range: None,
             current: None,
             ab_other: None,
+            history: SessionHistory::new(),
+            swang_ctx: None,
+            history_open: false,
             last_play_tick: 0,
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -925,6 +1106,7 @@ impl CockpitApp {
         self.focus_on_track(focus); // rebuilds view/analysis/ctx/vp for the focus track
         self.stop_playback(); // a new file plays from its start
         self.reset_audition(); // and at its own tempo, no stale loop or A/B
+        self.history.clear_selection(); // no history row is active on a fresh file
         Ok(())
     }
 
@@ -984,9 +1166,28 @@ impl CockpitApp {
         match outcome {
             Ok(set) => {
                 self.reset_audition(); // a new candidate set starts fresh (no stale A/B)
+                                       // Capture the run's request/input identity NOW, from the state
+                                       // that produced the set — the source seed, the ask, and the
+                                       // corpus's actual contribution — so no later knob change can
+                                       // rewrite a candidate's origin.
+                let context = GenerateRunContext {
+                    run: self.history.begin_run(),
+                    source: Some(
+                        self.gen_panel
+                            .source_tab()
+                            .map_or_else(|| self.title.clone(), |tab| tab.name.clone()),
+                    ),
+                    seed: ask.seed,
+                    bars: ask.bars,
+                    variants_per_strategy: ask.variants_per_strategy,
+                    corpus: CorpusContribution::from_pass(
+                        self.material.as_ref().map_or(0, |m| m.rhythms.len()),
+                        &set.summary,
+                    ),
+                };
                 let n = set.rows.len();
                 let tones = set.summary.scale_tones;
-                self.gen_panel.set = Some(set);
+                self.gen_panel.active = Some(ActiveGenerateRun { context, set });
                 self.gen_panel.status = Some(format!(
                     "{n} candidates ranked · {tones}-tone scale · seed {}",
                     ask.seed
@@ -994,22 +1195,48 @@ impl CockpitApp {
                 self.show_candidate(0);
             }
             Err(err) => {
-                self.gen_panel.set = None;
+                self.gen_panel.active = None;
                 self.gen_panel.selected = None;
                 self.gen_panel.status = Some(format!("generate failed: {err}"));
             }
         }
     }
 
-    /// Paints candidate `i` of the current set into the roll.
+    /// Paints candidate `i` of the current set into the roll, recording it in
+    /// the session history with its Generate provenance.
+    ///
+    /// The request/input fields come only from the run's immutable
+    /// [`GenerateRunContext`] — never from live panel state — so re-showing a
+    /// row (or showing one after a knob change) cannot rewrite its origin. Only
+    /// the candidate-specific result (strategy, variant seed, rank, aggregate)
+    /// is read from the row.
     fn show_candidate(&mut self, i: usize) {
-        let Some(set) = self.gen_panel.set.as_ref() else {
+        let Some(active) = self.gen_panel.active.as_ref() else {
             return;
         };
+        let set = &active.set;
+        let ctx = &active.context;
         let (Some(score), Some(row)) = (set.scores.get(i).cloned(), set.rows.get(i)) else {
             return;
         };
         let title = format!("#{} {} · {:.3}", row.rank, row.strategy, row.aggregate);
+        let candidate_id = row.id.clone();
+        let generator = GeneratorProvenance::Generate {
+            source: ctx.source.clone(),
+            corpus: ctx.corpus,
+            seed: ctx.seed,
+            bars: ctx.bars,
+            variants_per_strategy: ctx.variants_per_strategy,
+            strategy: row.strategy.clone(),
+            variant_seed: row.variant_seed,
+            rank: row.rank,
+            aggregate: row.aggregate,
+        };
+        let run = ctx.run;
+        let id = self
+            .history
+            .record(run, candidate_id, title.clone(), score.clone(), generator);
+        self.history.select(id);
         // Remember the candidate we are leaving (of either source) so `b` can
         // A/B back to it without a fresh generation pass.
         self.remember_shown(AuditionCandidate::Generate(i));
@@ -1019,12 +1246,84 @@ impl CockpitApp {
 
     /// A/B: swaps to the other of the last two candidates viewed — routing to
     /// the correct source, so a Swang candidate after a Generate one swaps back
-    /// to the Swang set, not a same-index Generate row. Keeps the playhead so
-    /// the comparison lands at the same spot. No regeneration.
+    /// to the Swang set (and a history entry back to its snapshot), never a
+    /// same-index row of the wrong set. Keeps the playhead so the comparison
+    /// lands at the same spot. No regeneration.
     fn ab_swap(&mut self) {
         match self.ab_other {
             Some(AuditionCandidate::Generate(i)) => self.show_candidate(i),
             Some(AuditionCandidate::Swang(i)) => self.swang_show(i),
+            Some(AuditionCandidate::History(id)) => self.select_history(id),
+            None => {}
+        }
+    }
+
+    /// Replays a recorded history candidate by its stable id: switches the roll
+    /// to its immutable snapshot through the same safe path as any score change
+    /// (`show_score` → `focus_on_track`: All Notes Off, loop remap, tempo, and
+    /// playhead all handled), and marks it selected. A no-op for an unknown id.
+    fn select_history(&mut self, id: HistoryId) {
+        let Some(entry) = self.history.get(id) else {
+            return;
+        };
+        let score = entry.score.clone();
+        let title = entry.title.clone();
+        self.history.select(id);
+        self.remember_shown(AuditionCandidate::History(id));
+        self.show_score(score, title);
+    }
+
+    /// The session history window (S8 Slice 3): a newest-first feed of every
+    /// candidate shown, each with its source, verdict, and a one-line
+    /// provenance, plus audition / favorite / reject actions. State is
+    /// distinguished by text and glyph, never colour alone.
+    fn history_window(&mut self, ctx: &egui::Context) {
+        // Snapshot what the list needs, so the closure holds no borrow of self
+        // and the actions apply cleanly afterwards.
+        let selected = self.history.selected();
+        let playing = self.vp.playing;
+        let rows: Vec<HistoryRow> = self
+            .history
+            .entries()
+            .iter()
+            .rev()
+            .map(|e| HistoryRow {
+                id: e.id,
+                sequence: e.sequence,
+                source: e.source,
+                verdict: e.verdict,
+                summary: provenance_summary(&e.provenance),
+            })
+            .collect();
+
+        let mut action: Option<HistoryAction> = None;
+        egui::Window::new("history · session")
+            .default_width(440.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                if rows.is_empty() {
+                    ui.weak("no candidates yet — generate (g) or run a Swang program (e)");
+                    return;
+                }
+                ui.weak(format!(
+                    "{} candidate(s) this session — newest first",
+                    rows.len()
+                ));
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for row in &rows {
+                        let hit = history_row(ui, row, selected == Some(row.id), playing);
+                        if action.is_none() {
+                            action = hit;
+                        }
+                    }
+                });
+            });
+
+        match action {
+            Some(HistoryAction::Favorite(id)) => self.history.set_verdict(id, Verdict::Favorite),
+            Some(HistoryAction::Reject(id)) => self.history.set_verdict(id, Verdict::Rejected),
+            Some(HistoryAction::Audition(id)) => self.select_history(id),
             None => {}
         }
     }
@@ -1049,33 +1348,24 @@ impl CockpitApp {
 
         use griff_core::midi::export_score;
 
-        let set = self.gen_panel.set.as_ref().ok_or("nothing generated yet")?;
+        // The exported score and its provenance come from the SAME captured run
+        // — never from live panel state, which may have moved on since.
+        let active = self
+            .gen_panel
+            .active
+            .as_ref()
+            .ok_or("nothing generated yet")?;
+        let set = &active.set;
+        let context = &active.context;
         let row = set.rows.get(i).ok_or("no such candidate")?;
         let score = set.scores.get(i).ok_or("no such candidate")?;
-
-        let source = self
-            .gen_panel
-            .source_tab()
-            .map_or_else(|| self.title.clone(), |tab| tab.name.clone());
-        let provenance = KeptProvenance {
-            source: &source,
-            corpus: self.material.is_some(),
-            seed: self.gen_panel.seed,
-            bars: self.gen_panel.bars,
-            variants_per_strategy: self.gen_panel.variants,
-            gesture: set.summary.gesture.is_some(),
-            strategy: &row.strategy,
-            variant_seed: row.variant_seed,
-            rank: row.rank,
-            aggregate: row.aggregate,
-            axes: row.axes.clone(),
-        };
+        let provenance = kept_provenance(context, row);
 
         fs::create_dir_all(&self.out_dir)
             .map_err(|e| format!("cannot create {}: {e}", self.out_dir.display()))?;
         let stem = format!(
             "seed{}_{}_{:016x}",
-            self.gen_panel.seed, row.strategy, row.variant_seed
+            context.seed, row.strategy, row.variant_seed
         );
         let mid = self.out_dir.join(format!("{stem}.mid"));
         let json = self.out_dir.join(format!("{stem}.json"));
@@ -1335,8 +1625,8 @@ impl CockpitApp {
         let Some(compiled) = self.swang.compile() else {
             return; // `compile` filled the span diagnostics and cleared the run
         };
-        let source = match self.resolve_swang_source(&compiled) {
-            Ok(score) => score,
+        let (source, origin) = match self.resolve_swang_source(&compiled) {
+            Ok(resolved) => resolved,
             Err(err) => {
                 self.swang.invalidate_run();
                 self.swang.diagnostics.clear();
@@ -1349,6 +1639,16 @@ impl CockpitApp {
         self.swang.apply(&compiled, source, None);
         if let Some(i) = self.swang.selected {
             self.reset_audition(); // a new Swang generation session starts A/B fresh
+                                   // Capture the run's identity from the program just evaluated — its
+                                   // exact text and declared source — so later edits cannot rewrite a
+                                   // recorded candidate's provenance.
+            self.swang_ctx = Some(SwangRunContext {
+                run: self.history.begin_run(),
+                program: self.swang.text.clone(),
+                // What the frontend ACTUALLY resolved — a path on native, the
+                // displayed score (and so no path) in the browser.
+                source_path: origin.provenance_path(),
+            });
             self.swang_show(i);
         }
     }
@@ -1363,22 +1663,33 @@ impl CockpitApp {
         clippy::unused_self,
         reason = "mirrors the wasm signature, which reads self.score"
     )]
-    fn resolve_swang_source(&self, compiled: &eval::CompiledProgram) -> Result<Score, String> {
+    fn resolve_swang_source(
+        &self,
+        compiled: &eval::CompiledProgram,
+    ) -> Result<(Score, SwangSourceOrigin), String> {
         use std::fs;
 
         let path = compiled.source_path();
         let bytes = fs::read(path).map_err(|e| format!("cannot read source \"{path}\": {e}"))?;
-        import_score_auto(&bytes).map_err(|e| format!("cannot import \"{path}\": {e}"))
+        let score =
+            import_score_auto(&bytes).map_err(|e| format!("cannot import \"{path}\": {e}"))?;
+        // The path really was read — provenance may name it.
+        Ok((score, SwangSourceOrigin::ResolvedPath(path.to_owned())))
     }
 
     /// The web target has no filesystem: the displayed score seeds the run by
     /// defined frontend semantics (the declared `source` path is not read in
-    /// the browser this slice).
+    /// the browser this slice) — so the origin is the displayed score, and
+    /// provenance must not claim the declared path.
     #[cfg(target_arch = "wasm32")]
-    fn resolve_swang_source(&self, _compiled: &eval::CompiledProgram) -> Result<Score, String> {
-        self.score
-            .clone()
-            .ok_or_else(|| "load a score first — browser Swang uses the displayed file".to_owned())
+    fn resolve_swang_source(
+        &self,
+        _compiled: &eval::CompiledProgram,
+    ) -> Result<(Score, SwangSourceOrigin), String> {
+        let score = self.score.clone().ok_or_else(|| {
+            "load a score first — browser Swang uses the displayed file".to_owned()
+        })?;
+        Ok((score, SwangSourceOrigin::DisplayedScore))
     }
 
     /// Paints Swang candidate `i` into the roll.
@@ -1394,6 +1705,26 @@ impl CockpitApp {
             "swang #{} {} · {:.3}",
             row.rank, row.strategy, row.aggregate
         );
+        let candidate_id = row.id.clone();
+        // Program + source come from the run's captured context, never the live
+        // editor text. Without a context (no successful run yet) there is
+        // nothing honest to record.
+        let Some(ctx) = self.swang_ctx.as_ref() else {
+            return;
+        };
+        let generator = GeneratorProvenance::Swang {
+            program: ctx.program.clone(),
+            source_path: ctx.source_path.clone(),
+            strategy: row.strategy.clone(),
+            variant_seed: row.variant_seed,
+            rank: row.rank,
+            aggregate: row.aggregate,
+        };
+        let run = ctx.run;
+        let id = self
+            .history
+            .record(run, candidate_id, title.clone(), score.clone(), generator);
+        self.history.select(id);
         // Swang candidates record into A/B too, so `b` can compare a Swang take
         // against the last candidate of either source.
         self.remember_shown(AuditionCandidate::Swang(i));
@@ -1468,7 +1799,7 @@ impl CockpitApp {
         keep: &mut Option<usize>,
         open: &mut Option<usize>,
     ) {
-        let Some(set) = self.gen_panel.set.as_ref() else {
+        let Some(set) = self.gen_panel.set() else {
             ui.separator();
             ui.weak(match self.material {
                 Some(_) => "a corpus is loaded — generate to rank a candidate set",
@@ -1770,6 +2101,9 @@ impl CockpitApp {
         if ctx.input(|i| i.key_pressed(Key::E)) {
             self.swang.open = !self.swang.open;
         }
+        if ctx.input(|i| i.key_pressed(Key::Y)) {
+            self.history_open = !self.history_open; // the session candidate history
+        }
         if ctx.input(|i| i.key_pressed(Key::B)) {
             self.ab_swap(); // A/B between the last two candidates
         }
@@ -1880,6 +2214,39 @@ impl CockpitApp {
     /// The top toolbar — the discoverable surface, so the controls aren't hidden
     /// behind hotkeys: a track selector (the roll shows one part at a time),
     /// play/pause, and toggles for the capture form and the corpus dock.
+    /// The corpus dock and the three panel toggles (generate, swang, history)
+    /// — the windowed views the toolbar and their hotkeys open.
+    fn window_toggle_buttons(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .button("📚 corpus")
+            .on_hover_text("browse the captured corpus (c)")
+            .clicked()
+        {
+            self.show_dock = !self.show_dock;
+        }
+        if ui
+            .button("⚙ generate")
+            .on_hover_text("rank a candidate set from the corpus (g)")
+            .clicked()
+        {
+            self.gen_panel.open = !self.gen_panel.open;
+        }
+        if ui
+            .button("✎ swang")
+            .on_hover_text("write a Swang program and run it (e)")
+            .clicked()
+        {
+            self.swang.open = !self.swang.open;
+        }
+        if ui
+            .button("🕮 history")
+            .on_hover_text("browse this session's candidates (y)")
+            .clicked()
+        {
+            self.history_open = !self.history_open;
+        }
+    }
+
     fn toolbar_bar(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let mut focus: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
@@ -1917,27 +2284,7 @@ impl CockpitApp {
             {
                 self.vp.show_inspector = !self.vp.show_inspector;
             }
-            if ui
-                .button("📚 corpus")
-                .on_hover_text("browse the captured corpus (c)")
-                .clicked()
-            {
-                self.show_dock = !self.show_dock;
-            }
-            if ui
-                .button("⚙ generate")
-                .on_hover_text("rank a candidate set from the corpus (g)")
-                .clicked()
-            {
-                self.gen_panel.open = !self.gen_panel.open;
-            }
-            if ui
-                .button("✎ swang")
-                .on_hover_text("write a Swang program and run it (e)")
-                .clicked()
-            {
-                self.swang.open = !self.swang.open;
-            }
+            self.window_toggle_buttons(ui);
             let mode = if self.is_dark() {
                 "◑ light"
             } else {
@@ -2242,6 +2589,9 @@ impl eframe::App for CockpitApp {
         if self.swang.open {
             self.swang_window(&ctx);
         }
+        if self.history_open {
+            self.history_window(&ctx);
+        }
     }
 }
 
@@ -2496,6 +2846,7 @@ mod tests {
 
     use super::*;
     use std::collections::HashSet;
+    use std::{env, fs};
 
     use eframe::egui;
     use eframe::egui::epaint::ClippedShape;
@@ -3235,7 +3586,12 @@ mod tests {
         let mut app = demo_app();
         app.gen_panel.variants = 2;
         app.do_generate(); // shows Generate(0)
-        app.swang.set = app.gen_panel.set.clone(); // give Swang a set to paint
+        app.swang.set = app.gen_panel.set().cloned(); // give Swang a set to paint
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(),
+            program: app.swang.text.clone(),
+            source_path: None,
+        });
         app.swang_show(1); // now viewing Swang(1); leaving Generate(0)
         assert_eq!(
             app.ab_other,
@@ -3273,6 +3629,863 @@ mod tests {
         );
     }
 
+    // ── S8 Slice 3: history / favorite-reject / provenance ────────────────────
+
+    #[test]
+    fn showing_a_generate_candidate_records_it_with_generate_provenance() {
+        use griff_ui_core::history::{CandidateSource, GeneratorProvenance};
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 7;
+        app.do_generate(); // shows candidate 0 → records it
+        assert_eq!(
+            app.history.entries().len(),
+            1,
+            "the shown candidate is recorded"
+        );
+        let entry = &app.history.entries()[0];
+        assert_eq!(entry.source, CandidateSource::Generate);
+        assert_eq!(entry.verdict, None, "recorded undecided");
+        match &entry.provenance.generator {
+            GeneratorProvenance::Generate { seed, bars, .. } => {
+                assert_eq!(*seed, 7, "the ask seed is captured honestly");
+                assert_eq!(*bars, app.gen_panel.bars);
+            }
+            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+        }
+    }
+
+    #[test]
+    fn a_no_corpus_generate_records_seed_only_provenance() {
+        // Finding 3 (#1/#7): with no corpus attached, the recorded contribution
+        // is seed-only and the UI summary says so — never "corpus".
+        use griff_ui_core::history::GeneratorProvenance;
+        let mut app = demo_app();
+        assert!(app.material.is_none(), "the demo app has no corpus");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let entry = &app.history.entries()[0];
+        match &entry.provenance.generator {
+            GeneratorProvenance::Generate { corpus, .. } => {
+                assert!(corpus.is_seed_only(), "no corpus contributes nothing");
+                assert_eq!(corpus.templates, 0);
+                assert_eq!(corpus.references, 0);
+                assert!(!corpus.gesture);
+            }
+            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+        }
+        assert!(
+            provenance_summary(&entry.provenance).contains("seed only"),
+            "the summary reads seed-only, not corpus",
+        );
+    }
+
+    // ── S8 Slice 3 re-review: Generate provenance is captured at run time ─────
+
+    /// The Generate provenance of the last-recorded candidate.
+    fn last_generate(app: &CockpitApp) -> (Option<String>, u64, usize, usize, bool) {
+        use griff_ui_core::history::GeneratorProvenance;
+        match &app
+            .history
+            .entries()
+            .last()
+            .expect("an entry")
+            .provenance
+            .generator
+        {
+            GeneratorProvenance::Generate {
+                source,
+                seed,
+                bars,
+                variants_per_strategy,
+                corpus,
+                ..
+            } => (
+                source.clone(),
+                *seed,
+                *bars,
+                *variants_per_strategy,
+                corpus.is_seed_only(),
+            ),
+            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+        }
+    }
+
+    fn two_rhythm_material() -> CorpusMaterial {
+        use griff_core::event::Ticks;
+        use griff_core::generate::RhythmTemplate;
+        CorpusMaterial {
+            rhythms: vec![
+                RhythmTemplate::from_durations(&[Ticks(480)]),
+                RhythmTemplate::from_durations(&[Ticks(240)]),
+            ],
+            references: Vec::new(),
+            gesture: None,
+            skipped: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn generate_source_is_the_run_seed_not_a_shown_candidate_title() {
+        // P1: showing candidate 1 after candidate 0 must record the run's seed
+        // score ("demo"), not candidate 0's display title (which show_score set).
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // shows candidate 0 → title becomes its own
+        app.show_candidate(1);
+        assert_eq!(
+            last_generate(&app).0.as_deref(),
+            Some("demo"),
+            "the source is the seed score, not a shown candidate's title",
+        );
+    }
+
+    #[test]
+    fn generate_provenance_keeps_the_runs_seed_after_a_knob_change() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        app.gen_panel.seed = 99; // change the knob after the set was produced
+        app.show_candidate(1);
+        assert_eq!(last_generate(&app).1, 5, "the old row keeps the run's seed");
+    }
+
+    #[test]
+    fn generate_provenance_keeps_the_runs_bars_and_variants() {
+        let mut app = demo_app();
+        app.gen_panel.bars = 4;
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.gen_panel.bars = 16;
+        app.gen_panel.variants = 5;
+        app.show_candidate(1);
+        let (_, _, bars, variants, _) = last_generate(&app);
+        assert_eq!(bars, 4, "the old row keeps the run's bars");
+        assert_eq!(variants, 2, "the old row keeps the run's variants");
+    }
+
+    #[test]
+    fn generate_provenance_keeps_seed_only_after_a_corpus_is_attached() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // no corpus → seed-only
+        app.material = Some(two_rhythm_material()); // attach one afterwards
+        app.show_candidate(1);
+        assert!(
+            last_generate(&app).4,
+            "the old row's contribution stays seed-only — attachment is not the run",
+        );
+    }
+
+    #[test]
+    fn generate_source_keeps_the_run_tab_after_the_selection_changes() {
+        let mut app = demo_app();
+        app.gen_panel.sources = vec![generation::SourceTab {
+            name: "tabA.mid".to_owned(),
+            bytes: include_bytes!("../assets/demo.mid").to_vec(),
+        }];
+        app.gen_panel.source = Some(0);
+        app.gen_panel.variants = 2;
+        app.do_generate(); // seeded from tabA.mid
+        app.gen_panel.source = None; // change the selection afterwards
+        app.show_candidate(1);
+        assert_eq!(
+            last_generate(&app).0.as_deref(),
+            Some("tabA.mid"),
+            "the old row keeps the tab that seeded its run",
+        );
+    }
+
+    #[test]
+    fn re_showing_a_row_does_not_rewrite_its_provenance() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        let before = app.history.entries()[0].provenance.clone();
+        app.gen_panel.seed = 999; // mutate, then re-show the same row
+        app.show_candidate(0);
+        assert_eq!(
+            app.history.entries()[0].provenance,
+            before,
+            "re-showing a row of its run does not rewrite its origin",
+        );
+    }
+
+    #[test]
+    fn a_new_generate_run_captures_the_changed_settings() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        app.gen_panel.seed = 42;
+        app.do_generate(); // a fresh run reads the new settings
+        assert_eq!(
+            last_generate(&app).1,
+            42,
+            "the new run captures the new seed"
+        );
+    }
+
+    // ── S8 Slice 3 re-review: Keep exports the captured run, not live knobs ───
+
+    /// A deterministic, freshly-emptied out dir for one keep test.
+    fn keep_dir(tag: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("griff-keep-test-{tag}"));
+        drop(fs::remove_dir_all(&dir)); // start clean, every run
+        dir
+    }
+
+    /// Removes a keep test's out dir, whether or not it exists.
+    fn drop_keep_dir(dir: &PathBuf) {
+        drop(fs::remove_dir_all(dir));
+    }
+
+    /// The sidecar JSON written beside a kept `.mid`.
+    fn read_sidecar(mid: &str) -> serde_json::Value {
+        let stem = mid.strip_suffix(".mid").expect("a .mid path");
+        let text = fs::read_to_string(format!("{stem}.json")).expect("the sidecar is written");
+        serde_json::from_str(&text).expect("the sidecar is JSON")
+    }
+
+    #[test]
+    fn keep_sidecar_and_filename_use_the_runs_seed_not_the_live_knob() {
+        let dir = keep_dir("seed");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        app.gen_panel.seed = 99; // change the knob after the run
+        let mid = app.write_keep(1).expect("keep writes");
+        assert!(
+            mid.contains("seed5_"),
+            "the filename uses the run's seed: {mid}"
+        );
+        assert!(!mid.contains("seed99_"), "not the live knob: {mid}");
+        assert_eq!(
+            read_sidecar(&mid)["seed"],
+            5,
+            "the sidecar keeps the run's seed"
+        );
+        drop_keep_dir(&dir);
+    }
+
+    #[test]
+    fn keep_sidecar_keeps_the_runs_bars_and_variants() {
+        let dir = keep_dir("bars");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.bars = 4;
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.gen_panel.bars = 16;
+        app.gen_panel.variants = 5;
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        assert_eq!(json["bars"], 4, "the sidecar keeps the run's bars");
+        assert_eq!(json["variants_per_strategy"], 2, "and its variants");
+        drop_keep_dir(&dir);
+    }
+
+    #[test]
+    fn keep_sidecar_keeps_the_run_source_tab() {
+        let dir = keep_dir("source");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.sources = vec![generation::SourceTab {
+            name: "tabA.mid".to_owned(),
+            bytes: include_bytes!("../assets/demo.mid").to_vec(),
+        }];
+        app.gen_panel.source = Some(0);
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.gen_panel.source = None; // change the selection afterwards
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        assert_eq!(
+            json["source"], "tabA.mid",
+            "the sidecar keeps the run's source"
+        );
+        drop_keep_dir(&dir);
+    }
+
+    #[test]
+    fn keep_sidecar_stays_seed_only_when_a_corpus_is_attached_later() {
+        let dir = keep_dir("attach");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.variants = 2;
+        app.do_generate(); // no corpus → seed-only
+        app.material = Some(two_rhythm_material()); // attach afterwards
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        assert_eq!(
+            json["corpus"], false,
+            "attachment after the run is not contribution"
+        );
+        drop_keep_dir(&dir);
+    }
+
+    #[test]
+    fn keep_sidecar_keeps_a_real_contribution_after_the_corpus_is_detached() {
+        let dir = keep_dir("detach");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.material = Some(two_rhythm_material()); // a corpus that contributes
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.material = None; // detach afterwards
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        assert_eq!(json["corpus"], true, "the run's real contribution survives");
+        drop_keep_dir(&dir);
+    }
+
+    #[test]
+    fn keep_midi_and_sidecar_come_from_the_same_run() {
+        let dir = keep_dir("pair");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let (strategy, variant_seed) = {
+            let row = &app.gen_panel.set().expect("a set").rows[1];
+            (row.strategy.clone(), row.variant_seed)
+        };
+        let mid = app.write_keep(1).expect("keep writes");
+        assert!(Path::new(&mid).exists(), "the .mid is written");
+        let json = read_sidecar(&mid);
+        assert_eq!(
+            json["strategy"], strategy,
+            "the sidecar names the exported row"
+        );
+        assert_eq!(json["variant_seed"], variant_seed, "and its variant seed");
+        drop_keep_dir(&dir);
+    }
+
+    #[test]
+    fn a_new_generate_run_keeps_the_newly_changed_values() {
+        let dir = keep_dir("newrun");
+        let mut app = demo_app();
+        app.set_out_dir(dir.clone());
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 5;
+        app.do_generate();
+        app.gen_panel.seed = 42;
+        app.do_generate(); // a fresh run
+        let mid = app.write_keep(0).expect("keep writes");
+        assert!(
+            mid.contains("seed42_"),
+            "the new run exports its own seed: {mid}"
+        );
+        assert_eq!(read_sidecar(&mid)["seed"], 42);
+        drop_keep_dir(&dir);
+    }
+
+    // ── S8 Slice 3 re-review: Swang records the resolved frontend source ──────
+
+    #[test]
+    fn a_resolved_native_path_is_recorded_as_that_path() {
+        assert_eq!(
+            SwangSourceOrigin::ResolvedPath("riff.mid".to_owned()).provenance_path(),
+            Some("riff.mid".to_owned()),
+        );
+    }
+
+    #[test]
+    fn a_displayed_score_origin_records_no_path() {
+        assert_eq!(
+            SwangSourceOrigin::DisplayedScore.provenance_path(),
+            None,
+            "the browser never read the declared path — it must not claim one",
+        );
+    }
+
+    #[test]
+    fn a_displayed_score_swang_summary_says_displayed_score() {
+        use griff_ui_core::history::{GenerationRunId, GeneratorProvenance, Provenance};
+        let p = Provenance::new(
+            GenerationRunId(0),
+            0,
+            "auto#1".to_owned(),
+            GeneratorProvenance::Swang {
+                program: "swang 1".to_owned(),
+                source_path: SwangSourceOrigin::DisplayedScore.provenance_path(),
+                strategy: "auto".to_owned(),
+                variant_seed: 1,
+                rank: 1,
+                aggregate: 0.5,
+            },
+        );
+        let line = provenance_summary(&p);
+        assert!(
+            line.contains("source displayed score"),
+            "the summary names the displayed score, not a path: {line}",
+        );
+    }
+
+    #[test]
+    fn a_web_style_swang_run_context_cannot_claim_the_declared_path() {
+        let ctx = SwangRunContext {
+            run: GenerationRunId(0),
+            program: "swang 1\n\ngenerate { source \"declared.mid\" }".to_owned(),
+            source_path: SwangSourceOrigin::DisplayedScore.provenance_path(),
+        };
+        assert_eq!(
+            ctx.source_path, None,
+            "a displayed-score run records no path, whatever the program declares",
+        );
+    }
+
+    #[test]
+    fn editing_the_program_does_not_change_the_captured_source_origin() {
+        use griff_ui_core::history::GeneratorProvenance;
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.swang.set = app.gen_panel.set().cloned();
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(),
+            program: "swang 1\n// evaluated\n".to_owned(),
+            source_path: SwangSourceOrigin::ResolvedPath("riff.mid".to_owned()).provenance_path(),
+        });
+        app.swang_show(0);
+        app.swang.text = "swang 1\n// EDITED, declaring another source\n".to_owned();
+        app.swang_show(1); // another row of the same run
+        let entry = app.history.entries().last().expect("a swang entry");
+        match &entry.provenance.generator {
+            GeneratorProvenance::Swang { source_path, .. } => {
+                assert_eq!(
+                    source_path.as_deref(),
+                    Some("riff.mid"),
+                    "the captured origin survives an edit",
+                );
+            }
+            GeneratorProvenance::Generate { .. } => panic!("expected a Swang candidate"),
+        }
+    }
+
+    #[test]
+    fn swang_provenance_is_tied_to_the_evaluated_program_not_live_text() {
+        use griff_ui_core::history::GeneratorProvenance;
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // borrow a 2-row set to stand in for a Swang set
+        app.swang.set = app.gen_panel.set().cloned();
+        let evaluated = "swang 1\n\n// the program that was evaluated\n".to_owned();
+        app.swang.text = evaluated.clone();
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(),
+            program: evaluated.clone(),
+            source_path: None,
+        });
+        app.swang_show(0); // record row 0 under the evaluated program
+                           // The editor text changes; then A/B lands on another row of the SAME
+                           // run — its provenance must be the evaluated program, not the live edit.
+        app.swang.text = "swang 1\n\n// EDITED AFTERWARDS\n".to_owned();
+        app.swang_show(1);
+        let entry = app.history.entries().last().expect("a swang entry");
+        match &entry.provenance.generator {
+            GeneratorProvenance::Swang { program, .. } => {
+                assert_eq!(
+                    *program, evaluated,
+                    "the program is the run's evaluated text"
+                );
+            }
+            GeneratorProvenance::Generate { .. } => panic!("expected a Swang candidate"),
+        }
+    }
+
+    #[test]
+    fn showing_a_swang_candidate_records_it_with_swang_provenance() {
+        use griff_ui_core::history::{CandidateSource, GeneratorProvenance};
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.swang.set = app.gen_panel.set().cloned(); // give Swang a set to paint
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(),
+            program: app.swang.text.clone(),
+            source_path: None,
+        });
+        app.swang_show(0);
+        let swang_entry = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::Swang)
+            .expect("the Swang candidate is recorded");
+        match &swang_entry.provenance.generator {
+            GeneratorProvenance::Swang { program, .. } => {
+                assert!(!program.is_empty(), "the program text is captured");
+            }
+            GeneratorProvenance::Generate { .. } => panic!("a Swang candidate is not Generate"),
+        }
+    }
+
+    #[test]
+    fn a_new_generation_appends_to_history_without_destroying_it() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 1;
+        app.do_generate();
+        app.show_candidate(1); // a second distinct candidate this run
+        let after_first = app.history.entries().len();
+        assert!(after_first >= 2);
+        app.gen_panel.seed = 999; // a different ask → different candidates
+        app.do_generate();
+        assert!(
+            app.history.entries().len() > after_first,
+            "the new generation appends; the earlier run's entries survive",
+        );
+    }
+
+    #[test]
+    fn re_running_the_same_generate_ask_makes_a_separate_history_entry() {
+        // Finding 1: two runs of the identical ask share a candidate key but are
+        // distinct runs, so the winner is recorded twice — never collapsed onto
+        // the earlier entry (which would drop the new run's provenance).
+        let mut app = demo_app();
+        app.gen_panel.variants = 1;
+        app.gen_panel.seed = 7;
+        app.do_generate(); // run A → winner recorded
+        let a = app.history.entries()[0].id;
+        let a_run = app.history.entries()[0].run;
+        let after_a = app.history.entries().len();
+        app.do_generate(); // run B, identical ask → winner recorded again
+        assert!(
+            app.history.entries().len() > after_a,
+            "the identical re-run appends a new entry, not a dedupe",
+        );
+        let b = app.history.entries().last().expect("run B entry").id;
+        let b_run = app.history.entries().last().expect("run B entry").run;
+        assert_ne!(a, b, "distinct history ids");
+        assert_ne!(a_run, b_run, "distinct generation runs");
+    }
+
+    #[test]
+    fn re_showing_a_row_within_the_same_generate_run_dedupes() {
+        // Finding 1: re-showing the same row of the current set returns the same
+        // entry (same run + key), so no duplicate accrues.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let before = app.history.entries().len();
+        app.show_candidate(0); // re-show the same row of the same run
+        assert_eq!(
+            app.history.entries().len(),
+            before,
+            "re-showing a row of the live run does not duplicate it",
+        );
+    }
+
+    #[test]
+    fn a_swang_run_is_a_distinct_run_from_a_generate_run() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let gen_run = app.history.entries()[0].run;
+        app.swang.set = app.gen_panel.set().cloned();
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(), // a Swang run mints its own
+            program: app.swang.text.clone(),
+            source_path: None,
+        });
+        app.swang_show(0);
+        let swang_entry = app
+            .history
+            .entries()
+            .iter()
+            .rev()
+            .find(|e| e.source == CandidateSource::Swang)
+            .expect("a Swang entry");
+        assert_ne!(
+            swang_entry.run, gen_run,
+            "Swang and Generate are separate runs"
+        );
+    }
+
+    #[test]
+    fn a_fresh_load_clears_the_history_selection_but_keeps_the_record() {
+        // Finding 2: after loading a new score, no history row may read as
+        // selected or playing — but the entries and verdicts are preserved.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // records + selects a history entry
+        let id = app.history.entries()[0].id;
+        app.history.set_verdict(id, Verdict::Favorite);
+        assert!(
+            app.history.selected().is_some(),
+            "a row is selected pre-load"
+        );
+        let before = app.history.entries().len();
+
+        app.load("fresh.mid".to_owned(), include_bytes!("../assets/demo.mid"))
+            .expect("the demo bytes load");
+
+        assert_eq!(
+            app.history.entries().len(),
+            before,
+            "the record is preserved"
+        );
+        assert_eq!(
+            app.history.get(id).unwrap().verdict,
+            Some(Verdict::Favorite),
+            "verdicts survive a fresh load",
+        );
+        assert_eq!(app.history.selected(), None, "no history row is selected");
+        assert_eq!(app.current, None, "no active audition candidate");
+        app.vp.playing = true;
+        assert!(
+            app.history.selected().is_none(),
+            "with nothing selected, no row can read as playing",
+        );
+    }
+
+    #[test]
+    fn a_generate_after_a_fresh_load_selects_its_winner() {
+        // Finding 2 regression: a new successful run after the reset still
+        // selects the shown winner immediately.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.load("fresh.mid".to_owned(), include_bytes!("../assets/demo.mid"))
+            .expect("the demo bytes load");
+        assert_eq!(app.history.selected(), None);
+        app.do_generate(); // a fresh run after the load
+        assert!(
+            app.history.selected().is_some(),
+            "the new run's winner becomes the selected history row",
+        );
+    }
+
+    #[test]
+    fn selecting_from_history_switches_the_score_and_silences_the_old() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // Generate(0) recorded as the first entry
+        let first = app.history.entries()[0].id;
+        app.show_candidate(1); // a second entry; now playing this one
+        app.vp.play_tick = 300;
+        app.vp.playing = true;
+        app.advance_audio(0.2); // sound some notes
+        app.select_history(first); // jump back to the first via history
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the old score's notes are silenced on a history switch",
+        );
+        assert_eq!(app.history.selected(), Some(first), "the entry is selected");
+        assert!(
+            app.vp.play_tick <= app.ctx.tick_end,
+            "the playhead belongs to the active score",
+        );
+    }
+
+    #[test]
+    fn ab_swaps_between_a_history_entry_and_a_panel_candidate() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let first = app.history.entries()[0].id;
+        app.select_history(first); // now current = History(first)
+        app.show_candidate(1); // leaving History(first) for Generate(1)
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::History(first)),
+            "the history entry is the A/B target",
+        );
+        app.ab_swap(); // back to the history entry
+        assert_eq!(
+            app.history.selected(),
+            Some(first),
+            "routed to the history entry"
+        );
+    }
+
+    #[test]
+    fn selecting_a_shorter_history_snapshot_remaps_the_loop() {
+        use griff_ui_core::history::GeneratorProvenance;
+        let mut app = CockpitApp::from_score(n_bar_score(2), "A".to_owned());
+        app.set_loop_bars(true, 1, 1); // loop A's second bar
+        assert!(app.loop_range.is_some());
+        // Inject a one-bar snapshot into history and jump to it.
+        let run = app.history.begin_run();
+        let short = app.history.record(
+            run,
+            "short#1".to_owned(),
+            "B".to_owned(),
+            n_bar_score(1),
+            GeneratorProvenance::Generate {
+                source: None,
+                corpus: CorpusContribution {
+                    templates: 0,
+                    references: 0,
+                    gesture: false,
+                },
+                seed: 0,
+                bars: 1,
+                variants_per_strategy: 1,
+                strategy: "auto".to_owned(),
+                variant_seed: 1,
+                rank: 1,
+                aggregate: 0.0,
+            },
+        );
+        app.vp.playing = true;
+        app.select_history(short);
+        let end = app.ctx.tick_end;
+        assert!(end <= 3840, "B is one bar");
+        if let Some((lo, hi)) = app.loop_range {
+            assert!(lo < hi && hi <= end, "a kept loop is clamped inside B");
+        }
+        for _ in 0..40 {
+            app.advance_audio(0.05);
+            assert!(app.vp.play_tick <= end, "playback never exceeds B's end");
+        }
+    }
+
+    #[test]
+    fn fast_successive_history_switches_leave_no_hung_notes() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 3;
+        app.do_generate();
+        app.show_candidate(1);
+        app.show_candidate(2); // three entries recorded
+        let ids: Vec<_> = app.history.entries().iter().map(|e| e.id).collect();
+        app.vp.playing = true;
+        for &id in ids.iter().cycle().take(12) {
+            app.advance_audio(0.03);
+            app.select_history(id);
+            assert_eq!(
+                app.player.active_count(),
+                0,
+                "every rapid switch silences the old score",
+            );
+        }
+        assert_eq!(app.history.selected(), ids.last().copied());
+    }
+
+    #[test]
+    fn set_verdict_on_a_history_entry_toggles_favorite_and_reject() {
+        use griff_ui_core::history::Verdict;
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let id = app.history.entries()[0].id;
+        app.history.set_verdict(id, Verdict::Favorite);
+        assert_eq!(
+            app.history.get(id).unwrap().verdict,
+            Some(Verdict::Favorite)
+        );
+        app.history.set_verdict(id, Verdict::Rejected);
+        assert_eq!(
+            app.history.get(id).unwrap().verdict,
+            Some(Verdict::Rejected),
+            "reject supplants favorite",
+        );
+    }
+
+    #[test]
+    fn generate_provenance_summary_names_its_source() {
+        use griff_ui_core::history::{
+            CorpusContribution, GenerationRunId, GeneratorProvenance, Provenance,
+        };
+        // Built from the typed provenance alone — no live app or panel state.
+        let summary_for = |source: Option<&str>| {
+            provenance_summary(&Provenance::new(
+                GenerationRunId(0),
+                0,
+                "auto#1".to_owned(),
+                GeneratorProvenance::Generate {
+                    source: source.map(ToOwned::to_owned),
+                    corpus: CorpusContribution {
+                        templates: 0,
+                        references: 0,
+                        gesture: false,
+                    },
+                    seed: 7,
+                    bars: 8,
+                    variants_per_strategy: 2,
+                    strategy: "auto".to_owned(),
+                    variant_seed: 1,
+                    rank: 1,
+                    aggregate: 0.5,
+                },
+            ))
+        };
+        let a = summary_for(Some("tabA.mid"));
+        let b = summary_for(Some("tabB.mid"));
+        assert!(a.contains("source tabA.mid"), "names its source: {a}");
+        assert!(b.contains("source tabB.mid"), "names its source: {b}");
+        assert_ne!(
+            a, b,
+            "two runs from different sources must not render identically",
+        );
+        let displayed = summary_for(None);
+        assert!(
+            displayed.contains("source displayed score"),
+            "no captured source reads as the displayed score: {displayed}",
+        );
+    }
+
+    #[test]
+    fn provenance_summary_names_the_generator_and_the_ask() {
+        use griff_ui_core::history::{GenerationRunId, GeneratorProvenance, Provenance};
+        let g = Provenance::new(
+            GenerationRunId(0),
+            0,
+            "auto#1".to_owned(),
+            GeneratorProvenance::Generate {
+                source: Some("riff.mid".to_owned()),
+                corpus: CorpusContribution {
+                    templates: 2,
+                    references: 1,
+                    gesture: true,
+                },
+                seed: 7,
+                bars: 8,
+                variants_per_strategy: 2,
+                strategy: "auto".to_owned(),
+                variant_seed: 1,
+                rank: 3,
+                aggregate: 0.5,
+            },
+        );
+        let gen_line = provenance_summary(&g);
+        assert!(
+            gen_line.contains("generate"),
+            "names the generator: {gen_line}"
+        );
+        assert!(gen_line.contains('7'), "carries the ask seed: {gen_line}");
+        assert!(gen_line.contains('3'), "carries the rank: {gen_line}");
+        assert!(
+            gen_line.contains("corpus") && gen_line.contains("gesture"),
+            "reports the actual corpus contribution: {gen_line}",
+        );
+
+        let s = Provenance::new(
+            GenerationRunId(1),
+            1,
+            "auto#1".to_owned(),
+            GeneratorProvenance::Swang {
+                program: "swang 1".to_owned(),
+                source_path: Some("riff.mid".to_owned()),
+                strategy: "auto".to_owned(),
+                variant_seed: 1,
+                rank: 2,
+                aggregate: 0.5,
+            },
+        );
+        let swang_line = provenance_summary(&s);
+        assert!(
+            swang_line.contains("swang"),
+            "names the Swang generator: {swang_line}"
+        );
+        assert!(
+            !swang_line.contains("seed 7"),
+            "a Swang line never shows a Generate-only ask: {swang_line}",
+        );
+    }
+
     /// #123 defect 4: a program whose declared `source` cannot be read must
     /// **error**, never silently seed the run from the displayed score — a
     /// program's provenance may not describe music made from a different file.
@@ -3304,11 +4517,7 @@ mod tests {
         app.gen_panel.variants = 2;
         app.do_generate();
 
-        let set = app
-            .gen_panel
-            .set
-            .as_ref()
-            .expect("the demo seeds a request");
+        let set = app.gen_panel.set().expect("the demo seeds a request");
         assert!(
             !set.rows.is_empty(),
             "five strategies contribute candidates"
@@ -3331,12 +4540,12 @@ mod tests {
     fn selecting_a_candidate_paints_that_candidate() {
         let mut app = demo_app();
         app.do_generate();
-        let n = app.gen_panel.set.as_ref().expect("generated").rows.len();
+        let n = app.gen_panel.set().expect("generated").rows.len();
         assert!(n > 1, "more than one candidate to choose between");
 
         app.show_candidate(n - 1);
         assert_eq!(app.gen_panel.selected, Some(n - 1));
-        let last = &app.gen_panel.set.as_ref().expect("generated").rows[n - 1];
+        let last = &app.gen_panel.set().expect("generated").rows[n - 1];
         assert!(
             app.title.contains(&last.strategy),
             "the roll follows the selection: {}",
@@ -3350,7 +4559,7 @@ mod tests {
         app.gen_panel.source = Some(3); // no sources loaded — an impossible pick
         app.do_generate();
         assert!(
-            app.gen_panel.set.is_some(),
+            app.gen_panel.set().is_some(),
             "an out-of-range pick seeds from the displayed score, it does not fail",
         );
     }
@@ -3425,6 +4634,16 @@ mod tests {
         let before = app.vp.show_inspector;
         press(&mut app, Key::I);
         assert_eq!(app.vp.show_inspector, !before, "`i` toggles the inspector");
+    }
+
+    #[test]
+    fn the_history_key_toggles_the_history_window() {
+        let mut app = demo_app();
+        assert!(!app.history_open, "the history window starts closed");
+        press(&mut app, Key::Y);
+        assert!(app.history_open, "`y` opens it");
+        press(&mut app, Key::Y);
+        assert!(!app.history_open, "`y` toggles it shut");
     }
 
     #[test]
