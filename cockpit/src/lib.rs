@@ -665,6 +665,7 @@ fn remap_loop_range(
 fn provenance_summary(p: &Provenance) -> String {
     match &p.generator {
         GeneratorProvenance::Generate {
+            source,
             seed,
             bars,
             corpus,
@@ -672,6 +673,7 @@ fn provenance_summary(p: &Provenance) -> String {
             strategy,
             ..
         } => {
+            let src = source.as_deref().unwrap_or("displayed score");
             let contribution = if corpus.is_seed_only() {
                 "seed only".to_owned()
             } else {
@@ -681,7 +683,9 @@ fn provenance_summary(p: &Provenance) -> String {
                     corpus.templates, corpus.references
                 )
             };
-            format!("generate · {strategy} · #{rank} · seed {seed} · {bars} bars · {contribution}")
+            format!(
+                "generate · {strategy} · #{rank} · source {src} · seed {seed} · {bars} bars · {contribution}"
+            )
         }
         GeneratorProvenance::Swang {
             source_path,
