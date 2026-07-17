@@ -475,6 +475,28 @@ fn tag_wire(tag: SwancoreTag) -> Option<String> {
 /// A candidate the roll can show, tagged by which set it belongs to — so A/B
 /// remembers the last one viewed across **both** generators and swaps back to
 /// the right source, never a same-index candidate of the wrong set.
+/// Where a Swang run's seed score **actually** came from.
+///
+/// Native reads the program's declared `source` path; the browser has no
+/// filesystem and seeds from the displayed score instead. Recording which one
+/// happened keeps provenance honest — the web target must not claim it read a
+/// path it never opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SwangSourceOrigin {
+    /// The declared path was read from disk (native).
+    ResolvedPath(String),
+    /// The displayed score seeded the run (the browser's defined semantics).
+    DisplayedScore,
+}
+
+impl SwangSourceOrigin {
+    /// The path provenance should record: the resolved path, or `None` when the
+    /// displayed score seeded the run (which a UI renders as "displayed score").
+    fn provenance_path(&self) -> Option<String> {
+        unimplemented!("SwangSourceOrigin::provenance_path")
+    }
+}
+
 /// The **immutable** identity of one successful Swang run: the run id, the
 /// exact evaluated program text, and the resolved source. A candidate's
 /// provenance reads these — never the live editor text — so editing the program
@@ -3934,6 +3956,89 @@ mod tests {
         );
         assert_eq!(read_sidecar(&mid)["seed"], 42);
         drop_keep_dir(&dir);
+    }
+
+    // ── S8 Slice 3 re-review: Swang records the resolved frontend source ──────
+
+    #[test]
+    fn a_resolved_native_path_is_recorded_as_that_path() {
+        assert_eq!(
+            SwangSourceOrigin::ResolvedPath("riff.mid".to_owned()).provenance_path(),
+            Some("riff.mid".to_owned()),
+        );
+    }
+
+    #[test]
+    fn a_displayed_score_origin_records_no_path() {
+        assert_eq!(
+            SwangSourceOrigin::DisplayedScore.provenance_path(),
+            None,
+            "the browser never read the declared path — it must not claim one",
+        );
+    }
+
+    #[test]
+    fn a_displayed_score_swang_summary_says_displayed_score() {
+        use griff_ui_core::history::{GenerationRunId, GeneratorProvenance, Provenance};
+        let p = Provenance::new(
+            GenerationRunId(0),
+            0,
+            "auto#1".to_owned(),
+            GeneratorProvenance::Swang {
+                program: "swang 1".to_owned(),
+                source_path: SwangSourceOrigin::DisplayedScore.provenance_path(),
+                strategy: "auto".to_owned(),
+                variant_seed: 1,
+                rank: 1,
+                aggregate: 0.5,
+            },
+        );
+        let line = provenance_summary(&p);
+        assert!(
+            line.contains("source displayed score"),
+            "the summary names the displayed score, not a path: {line}",
+        );
+    }
+
+    #[test]
+    fn a_web_style_swang_run_context_cannot_claim_the_declared_path() {
+        let ctx = SwangRunContext {
+            run: GenerationRunId(0),
+            program: "swang 1\n\ngenerate { source \"declared.mid\" }".to_owned(),
+            source_path: SwangSourceOrigin::DisplayedScore.provenance_path(),
+        };
+        assert_eq!(
+            ctx.source_path, None,
+            "a displayed-score run records no path, whatever the program declares",
+        );
+    }
+
+    #[test]
+    fn editing_the_program_does_not_change_the_captured_source_origin() {
+        use griff_ui_core::history::GeneratorProvenance;
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.swang.set = app.gen_panel.set().cloned();
+        app.swang_ctx = Some(SwangRunContext {
+            run: app.history.begin_run(),
+            program: "swang 1\n// evaluated\n".to_owned(),
+            source_path: SwangSourceOrigin::ResolvedPath("riff.mid".to_owned()).provenance_path(),
+        });
+        app.swang_show(0);
+        app.swang.text = "swang 1\n// EDITED, declaring another source\n".to_owned();
+        app.swang_show(1); // another row of the same run
+        let entry = app.history.entries().last().expect("a swang entry");
+        match &entry.provenance.generator {
+            GeneratorProvenance::Swang { source_path, .. } => {
+                assert_eq!(
+                    source_path.as_deref(),
+                    Some("riff.mid"),
+                    "the captured origin survives an edit",
+                );
+            }
+            GeneratorProvenance::Generate { .. } => panic!("expected a Swang candidate"),
+        }
     }
 
     #[test]
