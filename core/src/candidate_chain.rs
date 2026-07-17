@@ -712,12 +712,23 @@ fn groups_in_bar(
 /// This is what the planned chain must beat — the same metric on both sides.
 ///
 /// # Errors
-/// [`ChainError`] when the set is not chain-compatible.
+/// [`ChainError`] when the set is not chain-compatible, or
+/// [`ChainError::Path`] when the intact candidate's own costs are not a
+/// well-formed problem (a non-finite local, an accumulation past `f64`'s
+/// range). The baseline is a path like any other and fails like one.
 pub fn intact_s6_cost(set: &RankedSet) -> Result<f64, ChainError> {
     intact_cost_with(&set.ranked, &chain_weights_v1())
 }
 
 /// The intact-candidate-0 cost under an explicit policy.
+///
+/// Evaluated **through [`layered_path::solve`]** on a one-state-per-layer
+/// problem — every bar's only choice is candidate 0 — rather than by adding the
+/// terms up here. A baseline computed with its own arithmetic is not the metric
+/// it is compared against: float addition is not associative, so a second
+/// summation is a second answer (it differed by an ULP on the non-greedy
+/// fixture), and it would need its own copy of every finiteness check to boot.
+/// One path, one engine, one association ([`layered_path::PATH_COST_ASSOCIATION`]).
 fn intact_cost_with(
     ranked: &[Scored<SetCandidate>],
     policy: &WeightPolicy,
@@ -727,17 +738,21 @@ fn intact_cost_with(
     let score = &winner.value.score;
     let s6 = winner.aggregate();
 
-    // The same facts and the same policy the planned chain is weighed under —
-    // one metric on both sides of the comparison.
-    let local: f64 = (0..bars)
-        .map(|_| Scored::new((), local_facts(s6), policy, None).aggregate())
-        .sum();
-    let mut transition = 0.0_f64;
+    // One state per layer: the intact candidate, bar after bar, with no
+    // alternative to choose from. The same facts the planned chain is weighed
+    // under, so the DP has nothing to search and simply prices the one path.
+    let locals: Vec<Vec<Axes>> = (0..bars).map(|_| vec![local_facts(s6)]).collect();
+    let mut transitions: Vec<Vec<Vec<Axes>>> = Vec::with_capacity(bars.saturating_sub(1));
     for bar in 0..bars.saturating_sub(1) {
         let facts = transition_facts(score, bar, score, bar.saturating_add(1))?;
-        transition += Scored::new((), facts, policy, None).aggregate();
+        transitions.push(vec![vec![facts]]);
     }
-    Ok(local + transition)
+    let solution = layered_path::solve(&layered_path::LayeredProblem {
+        locals: &locals,
+        transitions: &transitions,
+        policy,
+    })?;
+    Ok(solution.total_cost)
 }
 
 /// The layers of a chain problem: `layers[b][c]` is bar `b` of candidate `c`.
