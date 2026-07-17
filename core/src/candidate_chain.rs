@@ -112,16 +112,53 @@ pub enum ChainError {
         /// The offending candidate's ordinal.
         candidate: usize,
     },
-    /// A candidate carries material crossing a bar line — a note sounding past
-    /// its bar's end, or a technique span straddling bars.
+    /// A candidate carries material that does not fit inside the bar its event
+    /// group belongs to — a note sounding past the bar's end, an atom in another
+    /// bar than its group's, or a technique span outside the group's bar.
     ///
-    /// The slicing contract this v1 reuses cuts by onset and clamps spans, so it
-    /// cannot concatenate such material losslessly. Rather than clip, shorten,
-    /// or silently drop a musical event, the chain refuses the set.
+    /// The whole group is lifted into one output bar, so everything it holds
+    /// must live in that bar. The slicing contract this v1 reuses cuts by onset
+    /// and clamps spans, so it cannot concatenate such material losslessly.
+    /// Rather than clip, shorten, or silently drop a musical event, the chain
+    /// refuses the set.
     CrossBarMaterial {
         /// The offending candidate's ordinal.
         candidate: usize,
-        /// The bar the material starts in.
+        /// The bar the offending group belongs to.
+        bar: usize,
+    },
+    /// A candidate holds an event group with no atoms.
+    ///
+    /// A group is the unit assembly lifts, and it is attributed to a bar by the
+    /// atoms it holds. A group with none belongs to no bar, so it would be
+    /// dropped by every bar — silently, and exactly once per assembled score.
+    EmptyEventGroup {
+        /// The offending candidate's ordinal.
+        candidate: usize,
+    },
+    /// A candidate holds material at a tick outside its own master timeline.
+    ///
+    /// There is no bar to name, so this cannot be reported as cross-bar
+    /// material without inventing one.
+    MaterialOutsideTimeline {
+        /// The offending candidate's ordinal.
+        candidate: usize,
+        /// The offending tick.
+        tick: u32,
+    },
+    /// Assembly asked a candidate for material it does not have.
+    ///
+    /// After compatibility validation this is an invariant violation, not an
+    /// empty bar: a missing track, voice, or bar is a different fact from a
+    /// silent one.
+    MissingMaterial {
+        /// The candidate the bar was selected from.
+        candidate: usize,
+        /// The track asked for.
+        track: usize,
+        /// The voice asked for.
+        voice: usize,
+        /// The bar asked for.
         bar: usize,
     },
     /// A boundary fact could not be measured because a bar address was invalid.
@@ -898,8 +935,8 @@ mod tests {
         AXIS_SILENT_BOUNDARY,
     };
     use crate::event::{
-        NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning,
-        Velocity,
+        FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, SpanTechnique,
+        TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
     };
     use crate::generate::{
         GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial,
@@ -908,8 +945,8 @@ mod tests {
     use crate::generation_input::{ranked_candidates, GenerationAsk, RankedSet};
     use crate::rerank::SetCandidate;
     use crate::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, SourceMeta, TechniqueSpan, Track, Voice,
+        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, SourceMeta, TechniqueSpan, Track, Voice,
     };
     use crate::scoring::{Axes, Axis, Scored, WeightPolicy};
     use crate::slice::TickRange;
@@ -1375,6 +1412,320 @@ mod tests {
                 bar: 0,
             },
         );
+    }
+
+    // ── the group is the unit that is lifted ─────────────────────────────────
+
+    #[test]
+    fn an_event_group_with_no_atoms_is_rejected_rather_than_dropped() {
+        // A group with no atoms belongs to no bar, so every bar's filter passes
+        // over it and it disappears from the assembled score without a word.
+        assert_eq!(
+            rejected_for(|s| {
+                s.tracks[0].voices[0].event_groups.push(EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: Vec::new(),
+                    technique_spans: Vec::new(),
+                });
+            }),
+            ChainError::EmptyEventGroup { candidate: 1 },
+        );
+    }
+
+    #[test]
+    fn material_outside_the_master_timeline_is_rejected_by_its_tick() {
+        // Past the last bar there is no bar to name — reporting this as bar 0
+        // would be a measurement invented to fit the error type.
+        assert_eq!(
+            rejected_for(|s| {
+                s.tracks[0].voices[0].event_groups.push(EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![AtomEvent::Note(AtomNote {
+                        absolute_start: Ticks(BAR * 5),
+                        duration: Ticks(480),
+                        pitch: Pitch(60),
+                        velocity: Velocity(96),
+                        marks: NoteMarks::empty(),
+                        position: None,
+                    })],
+                    technique_spans: Vec::new(),
+                });
+            }),
+            ChainError::MaterialOutsideTimeline {
+                candidate: 1,
+                tick: BAR * 5,
+            },
+        );
+    }
+
+    #[test]
+    fn a_group_whose_atoms_sit_in_different_bars_is_rejected() {
+        // Bar 0's group gains a note in bar 1. The group is lifted whole, so
+        // whichever bar takes it also takes the other bar's note.
+        assert_eq!(
+            rejected_for(|s| {
+                s.tracks[0].voices[0].event_groups[0]
+                    .atoms
+                    .push(AtomEvent::Note(AtomNote {
+                        absolute_start: Ticks(BAR),
+                        duration: Ticks(480),
+                        pitch: Pitch(62),
+                        velocity: Velocity(96),
+                        marks: NoteMarks::empty(),
+                        position: None,
+                    }));
+            }),
+            ChainError::CrossBarMaterial {
+                candidate: 1,
+                bar: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn a_technique_span_living_in_another_bar_than_its_group_is_rejected() {
+        // The span is entirely inside bar 1 and fits it, but it hangs off bar
+        // 0's group: it travels wherever bar 0 goes, and vanishes when bar 0 is
+        // taken from someone else.
+        assert_eq!(
+            rejected_for(|s| {
+                s.tracks[0].voices[0].event_groups[0]
+                    .technique_spans
+                    .push(TechniqueSpan {
+                        technique: SpanTechnique::PalmMute,
+                        tick_range: TickRange::new(Ticks(BAR), Ticks(BAR + 480)).unwrap(),
+                        evidence: TechniqueEvidence::explicit(),
+                    });
+            }),
+            ChainError::CrossBarMaterial {
+                candidate: 1,
+                bar: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn a_technique_span_starting_before_its_groups_bar_is_rejected() {
+        assert_eq!(
+            rejected_for(|s| {
+                s.tracks[0].voices[0].event_groups[1]
+                    .technique_spans
+                    .push(TechniqueSpan {
+                        technique: SpanTechnique::Slide,
+                        tick_range: TickRange::new(Ticks(BAR - 240), Ticks(BAR + 480)).unwrap(),
+                        evidence: TechniqueEvidence::explicit(),
+                    });
+            }),
+            ChainError::CrossBarMaterial {
+                candidate: 1,
+                bar: 1,
+            },
+        );
+    }
+
+    // ── what a borrowed bar keeps ────────────────────────────────────────────
+
+    /// The non-greedy fixture, with candidate 1's bar 1 — the one bar the chain
+    /// borrows — carrying every fact assembly could lose: a group kind, a rest,
+    /// a velocity, per-note marks, a fretboard position with its evidence, and
+    /// a technique span with its own evidence and exact range.
+    fn rich_borrowed_bar_set() -> RankedSet {
+        let mut rich = score_of(&[&[(0, 480, 60)], &[(0, 480, 70)], &[(0, 480, 84)]]);
+        let group = &mut rich.tracks[0].voices[0].event_groups[1];
+        group.kind = EventGroupKind::Chord;
+        let mut marks = NoteMarks::empty();
+        marks.insert(NoteMark::Accent);
+        marks.insert(NoteMark::Staccato);
+        if let AtomEvent::Note(note) = &mut group.atoms[0] {
+            note.velocity = Velocity(37);
+            note.marks = marks;
+            note.position = Some(NotePosition::explicit(FretboardPosition {
+                string: 3,
+                fret: 11,
+            }));
+        } else {
+            panic!("the fixture's first atom is a note");
+        }
+        group.atoms.push(AtomEvent::Rest(AtomRest {
+            absolute_start: Ticks(BAR + 480),
+            duration: Ticks(480),
+        }));
+        group.technique_spans.push(TechniqueSpan {
+            technique: SpanTechnique::PalmMute,
+            tick_range: TickRange::new(Ticks(BAR), Ticks(BAR + 960)).unwrap(),
+            evidence: TechniqueEvidence::inferred(0.42),
+        });
+        ranked_set(vec![
+            candidate(
+                score_of(&[&[(0, 480, 60)], &[(0, 480, 50)], &[(0, 480, 84)]]),
+                0.9,
+                1,
+            ),
+            candidate(rich, 0.8, 2),
+            candidate(
+                score_of(&[&[(0, 480, 60)], &[(0, 480, 50)], &[(0, 480, 84)]]),
+                0.7,
+                3,
+            ),
+        ])
+    }
+
+    /// The borrowed bar as it left candidate 1, and as it arrived in the plan.
+    fn borrowed_bar(set: &RankedSet) -> (Vec<EventGroup>, Vec<EventGroup>) {
+        let planned = plan_candidate_chain(set).expect("plannable");
+        assert_eq!(
+            planned
+                .steps
+                .iter()
+                .map(|s| s.state.candidate)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0],
+            "bar 1 is borrowed from candidate 1 — rests and spans are pitch-free \
+             and must not have moved the plan",
+        );
+        let in_bar = |score: &Score| -> Vec<EventGroup> {
+            score.tracks[0].voices[0]
+                .event_groups
+                .iter()
+                .filter(|g| {
+                    let onset = g.atoms[0].absolute_start().0;
+                    onset >= BAR && onset < BAR * 2
+                })
+                .cloned()
+                .collect()
+        };
+        let source = in_bar(&set.ranked[1].value.score);
+        let assembled = in_bar(&planned.score);
+        (source, assembled)
+    }
+
+    #[test]
+    fn a_borrowed_bar_arrives_as_the_exact_event_groups_it_left_as() {
+        // The whole contract in one line: assembly copies, it does not edit.
+        let set = rich_borrowed_bar_set();
+        let (source, assembled) = borrowed_bar(&set);
+        assert_eq!(
+            assembled, source,
+            "every group of the borrowed bar, verbatim and in order",
+        );
+    }
+
+    #[test]
+    fn a_borrowed_group_keeps_its_kind() {
+        let set = rich_borrowed_bar_set();
+        let (_, assembled) = borrowed_bar(&set);
+        assert_eq!(
+            assembled[0].kind,
+            EventGroupKind::Chord,
+            "a chord does not arrive as a single note",
+        );
+    }
+
+    #[test]
+    fn a_borrowed_group_keeps_its_rests() {
+        // Rests carry no pitch, so nothing in the cost model would notice their
+        // loss; the assembled bar would simply be shorter.
+        let set = rich_borrowed_bar_set();
+        let (_, assembled) = borrowed_bar(&set);
+        assert_eq!(
+            assembled[0].atoms.iter().copied().collect::<Vec<_>>(),
+            vec![
+                assembled[0].atoms[0],
+                AtomEvent::Rest(AtomRest {
+                    absolute_start: Ticks(BAR + 480),
+                    duration: Ticks(480),
+                }),
+            ],
+            "the rest is an atom of the group, not decoration",
+        );
+    }
+
+    #[test]
+    fn a_borrowed_note_keeps_its_velocity_and_marks() {
+        let set = rich_borrowed_bar_set();
+        let (_, assembled) = borrowed_bar(&set);
+        let AtomEvent::Note(note) = assembled[0].atoms[0] else {
+            panic!("the first atom is a note");
+        };
+        assert_eq!(
+            note.velocity,
+            Velocity(37),
+            "dynamics are not re-normalised"
+        );
+        assert!(note.marks.contains(NoteMark::Accent));
+        assert!(note.marks.contains(NoteMark::Staccato));
+    }
+
+    #[test]
+    fn a_borrowed_note_keeps_its_fretboard_position_and_evidence() {
+        let set = rich_borrowed_bar_set();
+        let (_, assembled) = borrowed_bar(&set);
+        let AtomEvent::Note(note) = assembled[0].atoms[0] else {
+            panic!("the first atom is a note");
+        };
+        let position = note.position.expect("the fixture's note is fretted");
+        assert_eq!(position.position.string, 3);
+        assert_eq!(position.position.fret, 11);
+        assert_eq!(
+            position.evidence,
+            TechniqueEvidence::explicit(),
+            "the position's evidence travels with it (ADR-0019)",
+        );
+    }
+
+    #[test]
+    fn a_borrowed_group_keeps_its_technique_spans_with_their_evidence() {
+        let set = rich_borrowed_bar_set();
+        let (_, assembled) = borrowed_bar(&set);
+        let spans = &assembled[0].technique_spans;
+        assert_eq!(spans.len(), 1, "the span is not dropped");
+        assert_eq!(spans[0].technique, SpanTechnique::PalmMute);
+        assert_eq!(
+            spans[0].evidence,
+            TechniqueEvidence::inferred(0.42),
+            "an inferred span does not arrive as fact",
+        );
+    }
+
+    #[test]
+    fn a_borrowed_span_keeps_its_exact_tick_range() {
+        // Not clamped to the bar, not re-based, not rounded to the grid.
+        let set = rich_borrowed_bar_set();
+        let (_, assembled) = borrowed_bar(&set);
+        assert_eq!(
+            assembled[0].technique_spans[0].tick_range,
+            TickRange::new(Ticks(BAR), Ticks(BAR + 960)).unwrap(),
+        );
+    }
+
+    #[test]
+    fn every_group_of_every_selected_bar_is_assembled() {
+        // Counted end to end: the assembled voice holds exactly the groups of
+        // the selected bars — none dropped, none duplicated.
+        let set = rich_borrowed_bar_set();
+        let planned = plan_candidate_chain(&set).expect("plannable");
+        let expected: usize = planned
+            .steps
+            .iter()
+            .map(|step| {
+                let source = &set.ranked[step.state.candidate].value.score;
+                source.tracks[0].voices[0]
+                    .event_groups
+                    .iter()
+                    .filter(|g| {
+                        let onset = g.atoms[0].absolute_start().0;
+                        let bar = u32::try_from(step.state.bar).unwrap();
+                        onset >= bar * BAR && onset < (bar + 1) * BAR
+                    })
+                    .count()
+            })
+            .sum();
+        assert_eq!(
+            planned.score.tracks[0].voices[0].event_groups.len(),
+            expected,
+            "one assembled group per selected-bar group",
+        );
+        assert_eq!(expected, 3, "the fixture has one group per bar");
     }
 
     #[test]
