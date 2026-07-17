@@ -19,7 +19,7 @@ use crate::generate::{GenerationSeed, GenerationStrategy};
 use crate::generation_input::RankedSet;
 use crate::layered_path::{self, EdgeId, PathError};
 use crate::rerank::SetCandidate;
-use crate::score::{AtomEvent, EventGroup, LossReport, Score, Track, Voice};
+use crate::score::{AtomEvent, EventGroup, LossReport, MasterBar, Score, Track, Voice};
 use crate::scoring::{Axes, Axis, Provenance, Rationale, Scored, WeightPolicy};
 
 /// One state of the chain: bar `bar` as supplied by ranked candidate
@@ -71,26 +71,6 @@ pub enum ChainError {
         expected: u16,
         /// The offending candidate's resolution.
         found: u16,
-    },
-    /// A candidate's bar grid — tick range, meter, or tempo — differs from the
-    /// first candidate's, so the master timelines cannot be one timeline.
-    ///
-    /// Superseded by [`ChainError::MasterBarMismatch`], which names the field;
-    /// this variant survives only until the laws below are green.
-    BarGridMismatch {
-        /// The offending candidate's ordinal.
-        candidate: usize,
-        /// The bar whose grid differs.
-        bar: usize,
-    },
-    /// A candidate's track/voice shape differs from the first candidate's, so
-    /// bars from the two cannot be assembled into one part.
-    ///
-    /// Superseded by [`ChainError::TrackCountMismatch`] and
-    /// [`ChainError::TrackMetadataMismatch`].
-    TrackShapeMismatch {
-        /// The offending candidate's ordinal.
-        candidate: usize,
     },
     /// A candidate's master bar differs from the first candidate's in the named
     /// field, so the master timelines cannot be one timeline.
@@ -703,8 +683,10 @@ fn intact_cost_with(
 ///
 /// # Errors
 /// [`ChainError`] on the first fact that makes the set unchainable: an empty
-/// set, no bars, a mismatched bar count / resolution / bar grid / track shape,
-/// or material crossing a bar line.
+/// set, no bars, a mismatched bar count or resolution, a disagreement about any
+/// master-bar or track fact assembly copies from ranked candidate 0
+/// ([`MasterBarField`], [`TrackField`], the source format), or material
+/// crossing a bar line.
 pub fn chain_layers(ranked: &[Scored<SetCandidate>]) -> Result<Vec<Vec<ChainState>>, ChainError> {
     let first = ranked.first().ok_or(ChainError::EmptySet)?;
     let reference = &first.value.score;
@@ -759,23 +741,90 @@ fn check_compatible(candidate: usize, reference: &Score, score: &Score) -> Resul
         .zip(score.master_bars.iter())
         .enumerate()
     {
-        let same = want.tick_range == got.tick_range
-            && want.time_signature == got.time_signature
-            && want.tempo.0.to_bits() == got.tempo.0.to_bits();
-        if !same {
-            return Err(ChainError::BarGridMismatch { candidate, bar });
+        if let Some(field) = master_bar_disagreement(want, got) {
+            return Err(ChainError::MasterBarMismatch {
+                candidate,
+                bar,
+                field,
+            });
         }
     }
-    let shape = |s: &Score| -> Vec<Vec<u8>> {
-        s.tracks
-            .iter()
-            .map(|t| t.voices.iter().map(|v| v.id).collect())
-            .collect()
-    };
-    if shape(score) != shape(reference) {
-        return Err(ChainError::TrackShapeMismatch { candidate });
+    if score.tracks.len() != reference.tracks.len() {
+        return Err(ChainError::TrackCountMismatch {
+            candidate,
+            expected: reference.tracks.len(),
+            found: score.tracks.len(),
+        });
+    }
+    for (track, (want, got)) in reference.tracks.iter().zip(score.tracks.iter()).enumerate() {
+        if let Some(field) = track_disagreement(want, got) {
+            return Err(ChainError::TrackMetadataMismatch {
+                candidate,
+                track,
+                field,
+            });
+        }
+    }
+    // Assembly claims the reference's origin for every bar it borrows.
+    let format = |s: &Score| s.source_meta.as_ref().and_then(|m| m.format.clone());
+    if format(score) != format(reference) {
+        return Err(ChainError::SourceMetaMismatch { candidate });
     }
     Ok(())
+}
+
+/// The first master-bar fact `got` disagrees with `want` about, if any.
+///
+/// Exhaustive over what `assemble` copies from ranked candidate 0 — the cost
+/// model reads three of these five, and the other two are the ones a borrowed
+/// bar would lose without a sound changing anywhere the tests look.
+fn master_bar_disagreement(want: &MasterBar, got: &MasterBar) -> Option<MasterBarField> {
+    if want.index != got.index {
+        return Some(MasterBarField::Index);
+    }
+    if want.tick_range != got.tick_range {
+        return Some(MasterBarField::TickRange);
+    }
+    if want.time_signature != got.time_signature {
+        return Some(MasterBarField::TimeSignature);
+    }
+    // Bitwise: two tempos are the same tempo or they are not, and `Tempo` is an
+    // f64 whose equality would otherwise be an approximation question.
+    if want.tempo.0.to_bits() != got.tempo.0.to_bits() {
+        return Some(MasterBarField::Tempo);
+    }
+    if want.repeat != got.repeat {
+        return Some(MasterBarField::Repeat);
+    }
+    None
+}
+
+/// The first track fact `got` disagrees with `want` about, if any.
+///
+/// Event groups are deliberately absent: they are what the candidates are
+/// *supposed* to differ in. Everything else in a `Track` is skeleton.
+fn track_disagreement(want: &Track, got: &Track) -> Option<TrackField> {
+    if want.name != got.name {
+        return Some(TrackField::Name);
+    }
+    if want.channel != got.channel {
+        return Some(TrackField::Channel);
+    }
+    if want.tuning != got.tuning {
+        return Some(TrackField::Tuning);
+    }
+    if want.voices.len() != got.voices.len() {
+        return Some(TrackField::VoiceCount);
+    }
+    if want
+        .voices
+        .iter()
+        .zip(got.voices.iter())
+        .any(|(a, b)| a.id != b.id)
+    {
+        return Some(TrackField::VoiceId);
+    }
+    None
 }
 
 /// Rejects a candidate carrying material across a bar line.
