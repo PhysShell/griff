@@ -74,6 +74,9 @@ pub enum ChainError {
     },
     /// A candidate's bar grid — tick range, meter, or tempo — differs from the
     /// first candidate's, so the master timelines cannot be one timeline.
+    ///
+    /// Superseded by [`ChainError::MasterBarMismatch`], which names the field;
+    /// this variant survives only until the laws below are green.
     BarGridMismatch {
         /// The offending candidate's ordinal.
         candidate: usize,
@@ -82,7 +85,50 @@ pub enum ChainError {
     },
     /// A candidate's track/voice shape differs from the first candidate's, so
     /// bars from the two cannot be assembled into one part.
+    ///
+    /// Superseded by [`ChainError::TrackCountMismatch`] and
+    /// [`ChainError::TrackMetadataMismatch`].
     TrackShapeMismatch {
+        /// The offending candidate's ordinal.
+        candidate: usize,
+    },
+    /// A candidate's master bar differs from the first candidate's in the named
+    /// field, so the master timelines cannot be one timeline.
+    ///
+    /// The field is named because assembly copies the whole master bar from
+    /// ranked candidate 0: any field that differs is a field a selected bar
+    /// would silently lose.
+    MasterBarMismatch {
+        /// The offending candidate's ordinal.
+        candidate: usize,
+        /// The bar whose fact differs.
+        bar: usize,
+        /// Which fact differs.
+        field: MasterBarField,
+    },
+    /// A candidate has a different number of tracks than the first candidate,
+    /// so bars from the two cannot be assembled into one part.
+    TrackCountMismatch {
+        /// The offending candidate's ordinal.
+        candidate: usize,
+        /// The track count the first candidate set.
+        expected: usize,
+        /// The offending candidate's track count.
+        found: usize,
+    },
+    /// A candidate's track differs from the first candidate's in the named
+    /// field, so the assembled part would misdescribe the borrowed bars.
+    TrackMetadataMismatch {
+        /// The offending candidate's ordinal.
+        candidate: usize,
+        /// The track whose fact differs.
+        track: usize,
+        /// Which fact differs.
+        field: TrackField,
+    },
+    /// A candidate names a different source format than the first candidate's,
+    /// which assembly would otherwise claim for every borrowed bar.
+    SourceMetaMismatch {
         /// The offending candidate's ordinal.
         candidate: usize,
     },
@@ -105,6 +151,48 @@ pub enum ChainError {
     BoundaryFact(TransitionFactError),
     /// The layered engine rejected the problem the chain handed it.
     Path(PathError),
+}
+
+/// A master-bar fact the assembled score copies from ranked candidate 0.
+///
+/// Every variant is a field `assemble` clones off candidate 0's master bar and
+/// then applies to a bar that may have come from any candidate. Validating the
+/// whole struct rather than the three fields the cost model happens to read is
+/// the point: the ones it does not read are exactly the ones that would go
+/// missing quietly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MasterBarField {
+    /// [`MasterBar::index`](crate::score::MasterBar::index).
+    Index,
+    /// [`MasterBar::tick_range`](crate::score::MasterBar::tick_range).
+    TickRange,
+    /// [`MasterBar::time_signature`](crate::score::MasterBar::time_signature).
+    TimeSignature,
+    /// [`MasterBar::tempo`](crate::score::MasterBar::tempo), compared bitwise.
+    Tempo,
+    /// [`MasterBar::repeat`](crate::score::MasterBar::repeat) — the repeat
+    /// barlines. A borrowed bar under a foreign repeat structure is played a
+    /// different number of times than its candidate meant.
+    Repeat,
+}
+
+/// A track fact the assembled score copies from ranked candidate 0.
+///
+/// As with [`MasterBarField`], each variant is something `assemble` takes from
+/// candidate 0 and applies to bars sourced from elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackField {
+    /// [`Track::name`](crate::score::Track::name).
+    Name,
+    /// [`Track::channel`](crate::score::Track::channel).
+    Channel,
+    /// [`Track::tuning`](crate::score::Track::tuning) — a bar's fretboard
+    /// positions mean nothing under another tuning (ADR-0018).
+    Tuning,
+    /// The track's number of voices.
+    VoiceCount,
+    /// [`Voice::id`](crate::score::Voice::id).
+    VoiceId,
 }
 
 impl From<PathError> for ChainError {
@@ -756,8 +844,9 @@ fn bar_of(score: &Score, tick: u32) -> Option<usize> {
 mod tests {
     use super::{
         chain_layers, chain_weights_v1, intact_s6_cost, local_facts, plan_candidate_chain,
-        plan_ranked_with, transition_facts, ChainError, TransitionFactError, AXIS_BOUNDARY_JUMP,
-        AXIS_CANDIDATE_QUALITY, AXIS_RHYTHM_REPEAT, AXIS_SILENT_BOUNDARY,
+        plan_ranked_with, transition_facts, ChainError, MasterBarField, TrackField,
+        TransitionFactError, AXIS_BOUNDARY_JUMP, AXIS_CANDIDATE_QUALITY, AXIS_RHYTHM_REPEAT,
+        AXIS_SILENT_BOUNDARY,
     };
     use crate::event::{
         NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning,
@@ -771,7 +860,7 @@ mod tests {
     use crate::rerank::SetCandidate;
     use crate::score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, TechniqueSpan, Track, Voice,
+        Score, SourceMeta, TechniqueSpan, Track, Voice,
     };
     use crate::scoring::{Axes, Axis, Scored, WeightPolicy};
     use crate::slice::TickRange;
@@ -938,35 +1027,260 @@ mod tests {
         );
     }
 
+    /// Two identical two-bar candidates; `mutate` breaks the second one's
+    /// agreement with the first in exactly one place.
+    fn rejected_for(mutate: impl FnOnce(&mut Score)) -> ChainError {
+        let bars: [&[Note]; 2] = [&[(0, 480, 60)], &[(0, 480, 62)]];
+        let mut odd = score_of(&bars);
+        mutate(&mut odd);
+        let ranked = vec![candidate(score_of(&bars), 0.9, 1), candidate(odd, 0.5, 2)];
+        chain_layers(&ranked).unwrap_err()
+    }
+
+    // Below: one law per fact `assemble` copies off ranked candidate 0. The cost
+    // model reads three of them; assembly copies all of them, and the ones it
+    // copies without reading are the ones that would vanish quietly.
+
     #[test]
-    fn a_mismatched_bar_grid_is_rejected() {
-        let mut odd = score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]);
-        odd.master_bars[1].tempo = Tempo::new(180.0).unwrap();
-        let ranked = vec![
-            candidate(score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]), 0.9, 1),
-            candidate(odd, 0.5, 2),
-        ];
+    fn a_mismatched_bar_index_is_rejected() {
         assert_eq!(
-            chain_layers(&ranked).unwrap_err(),
-            ChainError::BarGridMismatch {
+            rejected_for(|s| s.master_bars[1].index = 7),
+            ChainError::MasterBarMismatch {
                 candidate: 1,
                 bar: 1,
+                field: MasterBarField::Index,
             },
         );
     }
 
     #[test]
-    fn a_mismatched_track_shape_is_rejected() {
-        let mut odd = score_of(&[&[(0, 480, 60)]]);
-        odd.tracks.push(odd.tracks[0].clone());
-        let ranked = vec![
-            candidate(score_of(&[&[(0, 480, 60)]]), 0.9, 1),
-            candidate(odd, 0.5, 2),
-        ];
+    fn a_mismatched_bar_tick_range_is_rejected() {
         assert_eq!(
-            chain_layers(&ranked).unwrap_err(),
-            ChainError::TrackShapeMismatch { candidate: 1 },
+            rejected_for(|s| {
+                s.master_bars[1].tick_range = TickRange::new(Ticks(BAR), Ticks(BAR * 3)).unwrap();
+            }),
+            ChainError::MasterBarMismatch {
+                candidate: 1,
+                bar: 1,
+                field: MasterBarField::TickRange,
+            },
         );
+    }
+
+    #[test]
+    fn a_mismatched_time_signature_is_rejected() {
+        assert_eq!(
+            rejected_for(|s| s.master_bars[1].time_signature = TimeSignature::new(7, 8).unwrap()),
+            ChainError::MasterBarMismatch {
+                candidate: 1,
+                bar: 1,
+                field: MasterBarField::TimeSignature,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_tempo_is_rejected() {
+        assert_eq!(
+            rejected_for(|s| s.master_bars[1].tempo = Tempo::new(180.0).unwrap()),
+            ChainError::MasterBarMismatch {
+                candidate: 1,
+                bar: 1,
+                field: MasterBarField::Tempo,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_repeat_marker_is_rejected() {
+        // Nothing in the cost model reads repeats, which is exactly why an
+        // unvalidated one would survive to the assembled score and change how
+        // many times the borrowed bar is played.
+        assert_eq!(
+            rejected_for(|s| {
+                s.master_bars[1].repeat = RepeatMarker {
+                    start: false,
+                    play_count: 2,
+                };
+            }),
+            ChainError::MasterBarMismatch {
+                candidate: 1,
+                bar: 1,
+                field: MasterBarField::Repeat,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_track_count_is_rejected() {
+        assert_eq!(
+            rejected_for(|s| {
+                let extra = s.tracks[0].clone();
+                s.tracks.push(extra);
+            }),
+            ChainError::TrackCountMismatch {
+                candidate: 1,
+                expected: 1,
+                found: 2,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_track_name_is_rejected() {
+        assert_eq!(
+            rejected_for(|s| s.tracks[0].name = Some("lead".to_owned())),
+            ChainError::TrackMetadataMismatch {
+                candidate: 1,
+                track: 0,
+                field: TrackField::Name,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_channel_is_rejected() {
+        assert_eq!(
+            rejected_for(|s| s.tracks[0].channel = 4),
+            ChainError::TrackMetadataMismatch {
+                candidate: 1,
+                track: 0,
+                field: TrackField::Channel,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_tuning_is_rejected() {
+        // Drop D. The bars would look identical and mean different notes under
+        // the fretboard model (ADR-0018).
+        assert_eq!(
+            rejected_for(|s| {
+                s.tracks[0].tuning = Tuning::new(vec![
+                    Pitch(64),
+                    Pitch(59),
+                    Pitch(55),
+                    Pitch(50),
+                    Pitch(45),
+                    Pitch(38),
+                ]);
+            }),
+            ChainError::TrackMetadataMismatch {
+                candidate: 1,
+                track: 0,
+                field: TrackField::Tuning,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_voice_count_is_rejected() {
+        assert_eq!(
+            rejected_for(|s| {
+                s.tracks[0].voices.push(Voice {
+                    id: 1,
+                    event_groups: Vec::new(),
+                });
+            }),
+            ChainError::TrackMetadataMismatch {
+                candidate: 1,
+                track: 0,
+                field: TrackField::VoiceCount,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_voice_id_is_rejected() {
+        assert_eq!(
+            rejected_for(|s| s.tracks[0].voices[0].id = 3),
+            ChainError::TrackMetadataMismatch {
+                candidate: 1,
+                track: 0,
+                field: TrackField::VoiceId,
+            },
+        );
+    }
+
+    #[test]
+    fn a_mismatched_source_format_is_rejected() {
+        // Assembly claims candidate 0's source for every bar it borrows.
+        assert_eq!(
+            rejected_for(|s| {
+                s.source_meta = Some(SourceMeta {
+                    format: Some("GP5".to_owned()),
+                });
+            }),
+            ChainError::SourceMetaMismatch { candidate: 1 },
+        );
+    }
+
+    #[test]
+    fn the_assembled_score_carries_the_metadata_every_candidate_agreed_on() {
+        // The other side of the rejection laws: when the set is accepted, the
+        // metadata copied off candidate 0 is not a substitution, because every
+        // supplying candidate carried the identical fact. Proven against the
+        // non-greedy fixture, whose chain really does borrow bar 1 elsewhere.
+        let set = non_greedy_set();
+        let planned = plan_candidate_chain(&set).expect("plannable");
+        assert_eq!(
+            planned
+                .steps
+                .iter()
+                .map(|s| s.state.candidate)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0],
+            "the fixture's chain does borrow from another candidate",
+        );
+
+        let assembled = &planned.score;
+        for supplier in &set.ranked {
+            let source = &supplier.value.score;
+            assert_eq!(assembled.ticks_per_quarter, source.ticks_per_quarter);
+            assert_eq!(
+                assembled
+                    .master_bars
+                    .iter()
+                    .map(bar_facts)
+                    .collect::<Vec<_>>(),
+                source.master_bars.iter().map(bar_facts).collect::<Vec<_>>(),
+                "every master-bar fact of the assembled score is one this supplier also holds",
+            );
+            assert_eq!(
+                assembled.tracks.iter().map(track_facts).collect::<Vec<_>>(),
+                source.tracks.iter().map(track_facts).collect::<Vec<_>>(),
+                "every track fact of the assembled score is one this supplier also holds",
+            );
+            assert_eq!(
+                assembled
+                    .source_meta
+                    .as_ref()
+                    .and_then(|m| m.format.clone()),
+                source.source_meta.as_ref().and_then(|m| m.format.clone()),
+            );
+        }
+    }
+
+    /// Every fact of a master bar, in a comparable form (`MasterBar` is not
+    /// `PartialEq`, and `Tempo` holds an `f64`).
+    fn bar_facts(bar: &MasterBar) -> (usize, TickRange, TimeSignature, u64, RepeatMarker) {
+        (
+            bar.index,
+            bar.tick_range,
+            bar.time_signature,
+            bar.tempo.0.to_bits(),
+            bar.repeat,
+        )
+    }
+
+    /// Every track fact assembly copies, minus the event groups themselves.
+    fn track_facts(track: &Track) -> (Option<String>, u8, Tuning, Vec<u8>) {
+        (
+            track.name.clone(),
+            track.channel,
+            track.tuning.clone(),
+            track.voices.iter().map(|v| v.id).collect(),
+        )
     }
 
     #[test]
