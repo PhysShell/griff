@@ -161,6 +161,15 @@ pub fn solve(problem: &LayeredProblem<'_>) -> Result<PathSolution, PathError> {
             return Err(PathError::EmptyLayer { layer });
         }
     }
+    // The outer count first: an unreachable extra table must never get to
+    // report its own contents as the problem.
+    let expected = layers.saturating_sub(1);
+    if problem.transitions.len() != expected {
+        return Err(PathError::TransitionCount {
+            expected,
+            found: problem.transitions.len(),
+        });
+    }
     check_transition_shapes(problem)?;
 
     let local = score_locals(problem)?;
@@ -695,12 +704,12 @@ mod tests {
         let locals = locals_of(&[&[1.0], &[1.0], &[1.0]]);
         let transitions = transitions_of(&[&[&[0.0]], &[&[0.0]]]);
         let p = policy();
-        assert!(solve(&LayeredProblem {
+        solve(&LayeredProblem {
             locals: &locals,
             transitions: &transitions,
             policy: &p,
         })
-        .is_ok());
+        .expect("the exact count solves");
     }
 
     #[test]
