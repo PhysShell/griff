@@ -783,6 +783,20 @@ fn chain_summary_block(ui: &mut egui::Ui, summary: &GlobalChainSummary) {
     }
 }
 
+/// What the chain panel shows, decided before anything is drawn.
+///
+/// Two independent facts. Keeping them as state rather than as two branches in
+/// a paint function is what lets a law prove they do not exclude each other —
+/// the previous version of that law tested the helper beside the control flow
+/// and missed an early `return` sitting between them.
+#[derive(Debug, Clone, PartialEq)]
+struct ChainPanelEvidence {
+    /// Why the **active** run has no chain, if it has none.
+    active_refusal: Option<ChainError>,
+    /// The explanation of the chain that is **sounding**, if one is.
+    displayed_summary: Option<GlobalChainSummary>,
+}
+
 /// How the chain's total compares to the intact winner's, in one word.
 ///
 /// Three outcomes, not two: costing exactly the same is neither lower nor
@@ -2468,6 +2482,31 @@ impl CockpitApp {
         }
         if let Some(summary) = self.displayed_chain_summary() {
             chain_summary_block(ui, &summary);
+        }
+    }
+
+    /// Everything the chain panel has to say, as state rather than as drawing.
+    ///
+    /// The two facts are independent, and the renderer draws them as two blocks:
+    /// the active run's refusal explains why *its* S7 chip is disabled, and the
+    /// sounding chain's summary explains what is playing. Neither is a reason to
+    /// suppress the other — a refused active run and a replayed chain are both
+    /// true at once, and that is precisely the moment the panel is most tempted
+    /// to say nothing.
+    ///
+    /// Stub: still lets the refusal hide the summary.
+    fn chain_panel_evidence(&self) -> ChainPanelEvidence {
+        let active_refusal = match self.gen_panel.active.as_ref().map(|a| &a.chain) {
+            Some(&GlobalChainOutcome::Refused(error)) => Some(error),
+            _ => None,
+        };
+        ChainPanelEvidence {
+            active_refusal,
+            displayed_summary: if active_refusal.is_some() {
+                None
+            } else {
+                self.displayed_chain_summary()
+            },
         }
     }
 
@@ -4884,6 +4923,78 @@ mod tests {
     }
 
     #[test]
+    fn an_active_refusal_does_not_hide_a_replayed_chain_explanation() {
+        // Both facts are true at once: run B has no chain, and chain A is
+        // playing. The panel owes the user both, and this goes through the
+        // state the renderer draws from rather than past it — the last version
+        // of this law checked the helper and missed an early return sitting
+        // between the helper and the screen.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 11;
+        app.do_generate();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.show_global_chain();
+        let chain_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let summary_a = summary_of(&app, run_a);
+
+        app.gen_panel.seed = 22;
+        app.do_generate();
+        let run_b = app.history.begin_run();
+        {
+            let active = app.gen_panel.active.as_mut().expect("a run");
+            active.context.run = run_b;
+            active.chain = GlobalChainOutcome::Refused(ChainError::EmptySet);
+        }
+        app.history.record_chain(
+            run_b,
+            ChainOutcomeRecord::Refused {
+                error: ChainError::EmptySet,
+            },
+        );
+        app.select_history(chain_a);
+
+        let evidence = app.chain_panel_evidence();
+        assert_eq!(
+            evidence.active_refusal,
+            Some(ChainError::EmptySet),
+            "the active run's chip is disabled, and the panel says why",
+        );
+        assert_eq!(
+            evidence.displayed_summary,
+            Some(summary_a),
+            "and the chain that is actually playing is still explained",
+        );
+    }
+
+    #[test]
+    fn a_live_refusal_alone_leaves_nothing_to_explain() {
+        // The ordinary refusal case: nothing is playing but the intact winner,
+        // so there is a reason and no summary — not an empty summary.
+        let (app, refusal) = app_with_refused_chain();
+        let evidence = app.chain_panel_evidence();
+        assert_eq!(evidence.active_refusal, Some(refusal));
+        assert_eq!(evidence.displayed_summary, None);
+    }
+
+    #[test]
+    fn a_planned_live_run_has_a_summary_and_no_refusal() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let evidence = app.chain_panel_evidence();
+        assert_eq!(evidence.active_refusal, None);
+        assert_eq!(evidence.displayed_summary, Some(summary_of(&app, run)));
+    }
+
+    #[test]
     fn an_equal_cost_delta_is_not_called_higher() {
         // The chain costing exactly what the intact winner costs is neither
         // lower nor higher, and a panel that says "higher" in confident
@@ -4892,6 +5003,11 @@ mod tests {
         assert_eq!(delta_relation(0.0), "equal");
         assert_eq!(delta_relation(-0.9), "lower");
         assert_eq!(delta_relation(0.9), "higher");
+        // The fourth arm is part of the contract, so it is not left living on
+        // the honesty of a comment. Unreachable while the engine rejects
+        // non-finite costs — which is a claim about the engine, not a licence
+        // to call a NaN "equal" if that ever changes.
+        assert_eq!(delta_relation(f64::NAN), "not comparable");
     }
 
     #[test]
