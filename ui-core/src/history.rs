@@ -10,6 +10,7 @@
 //! **typed** value, never a pre-baked UI string — a renderer builds its own
 //! description from it.
 
+use griff_core::candidate_chain::{ChainError, ChainStep, ChainTransition};
 use griff_core::score::Score;
 
 use crate::generate::SetSummary;
@@ -50,6 +51,8 @@ pub enum CandidateSource {
     Generate,
     /// A Swang program's evaluated set.
     Swang,
+    /// The S7 global chain assembled from a Generate run's ranked set.
+    GlobalChain,
 }
 
 /// The generator-specific origin of a candidate — only the fields the pipeline
@@ -83,6 +86,36 @@ pub enum GeneratorProvenance {
         /// Its weighted aggregate over the rerank axes.
         aggregate: f64,
     },
+    /// The S7 global chain assembled from a Generate run's ranked set.
+    ///
+    /// Deliberately not a `Generate` with odd fields: a chain has no single
+    /// strategy, variant seed, rank or rerank aggregate — it is made of bars
+    /// from several candidates, each with their own. Its result fields are the
+    /// two costs the comparison turns on and the per-bar suppliers. The ask
+    /// fields are the run's, because the chain came from the same run.
+    GlobalChain {
+        /// The seed the pass was given (a tab name, or the displayed score).
+        source: Option<String>,
+        /// What the corpus **actually** contributed to the run.
+        corpus: CorpusContribution,
+        /// The deterministic ask seed.
+        seed: u64,
+        /// Bars generated.
+        bars: usize,
+        /// Seed variants per strategy.
+        variants_per_strategy: usize,
+        /// The chain policy the costs were weighed under.
+        policy_id: &'static str,
+        /// That policy's version.
+        policy_version: u32,
+        /// Ranked candidate 0 kept intact, under the same policy — what the
+        /// chain is compared against.
+        baseline_cost: f64,
+        /// The planned chain's total under that policy.
+        total_cost: f64,
+        /// Which candidate supplied each output bar.
+        suppliers: Vec<ChainSupplier>,
+    },
     /// A Swang candidate: the program that made it and its rerank result.
     Swang {
         /// The exact program text that produced the set.
@@ -98,6 +131,26 @@ pub enum GeneratorProvenance {
         /// Its weighted aggregate over the rerank axes.
         aggregate: f64,
     },
+}
+
+/// Which candidate supplied one bar of an assembled global chain.
+///
+/// The candidate's *own* identity, carried from the chain step: its ordinal in
+/// the run's ranked set, the rank it held there, and the strategy and derived
+/// variant seed it was generated under. Not the chain's — the chain has none of
+/// those, which is the whole point of the map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainSupplier {
+    /// The output bar this candidate filled.
+    pub bar: usize,
+    /// The supplying candidate's ordinal in the ranked set (`0` is rank 1).
+    pub candidate: usize,
+    /// That candidate's own 1-based rank.
+    pub rank: usize,
+    /// That candidate's strategy.
+    pub strategy: String,
+    /// That candidate's derived variant seed — its reproduction key.
+    pub variant_seed: u64,
 }
 
 /// What a corpus **actually** contributed to a generation — not merely whether
@@ -144,9 +197,13 @@ impl CorpusContribution {
 /// sidecar, a diff tool) can tell the shape apart from other records.
 pub const PROVENANCE_SCHEMA: &str = "griff.candidate-provenance";
 
-/// The current [`Provenance`] shape version. v2 adds the generation-run
-/// identity and distinguishes it from the history sequence.
-pub const PROVENANCE_VERSION: u32 = 2;
+/// The current [`Provenance`] shape version.
+///
+/// v2 added the generation-run identity and distinguished it from the history
+/// sequence. v3 adds the [`GeneratorProvenance::GlobalChain`] origin, whose
+/// result is two costs and a per-bar supplier map rather than one candidate's
+/// rank and aggregate.
+pub const PROVENANCE_VERSION: u32 = 3;
 
 /// A candidate's typed, backend-neutral origin — enough to answer where it came
 /// from, what made it, and under what request, without a word of UI in it.
@@ -200,6 +257,7 @@ impl Provenance {
         match self.generator {
             GeneratorProvenance::Generate { .. } => CandidateSource::Generate,
             GeneratorProvenance::Swang { .. } => CandidateSource::Swang,
+            GeneratorProvenance::GlobalChain { .. } => CandidateSource::GlobalChain,
         }
     }
 }
@@ -259,12 +317,67 @@ pub struct HistoryEntry {
 pub struct SessionHistory {
     /// Entries in creation order.
     entries: Vec<HistoryEntry>,
+    /// What each run's global chain came to, in run order.
+    chains: Vec<(GenerationRunId, ChainOutcomeRecord)>,
     /// The next id to hand out — monotonic, never reused.
     next_id: u64,
     /// The next generation-run id to hand out — monotonic, never reused.
     next_run_id: u64,
     /// The currently selected entry, if any (a view pointer, not identity).
     selected: Option<HistoryId>,
+}
+
+/// What one Generate run's S7 global chain came to.
+///
+/// Recorded against the **run**, not against a candidate, because a refusal has
+/// no score — and an entry needs one. Inventing a `GlobalChain` entry holding
+/// the intact winner's score, so that the error had somewhere to live, would be
+/// the exact lie this milestone exists to avoid: a result that does not exist,
+/// wearing the music of one that does.
+///
+/// The run id is the link. A candidate entry from the same run answers "was
+/// there a chain for this?" by asking here, and the answer outlives the panel
+/// state that produced it.
+///
+/// Deliberately not `PartialEq`: it holds the core's trace, and the core's
+/// scored types are not comparable. Deriving equality would mean adding it to
+/// six types in `griff-core` to make assertions here shorter, which is not a
+/// reason to touch a frozen crate — callers match on the shape they care about.
+#[derive(Debug, Clone)]
+pub enum ChainOutcomeRecord {
+    /// The run's chain was planned, and this is what it cost — with the core's
+    /// own trace of why.
+    Planned {
+        /// The chain policy the costs were weighed under.
+        policy_id: &'static str,
+        /// That policy's version.
+        policy_version: u32,
+        /// Ranked candidate 0 kept intact, under the same policy.
+        baseline_cost: f64,
+        /// The planned chain's total.
+        total_cost: f64,
+        /// The core's per-bar trace, verbatim: which candidate, its own
+        /// identity, the chain-local cost with its rationale, and the
+        /// supplying candidate's untouched S6 score.
+        ///
+        /// Kept here, at the run, rather than only on the live panel — an old
+        /// chain replayed from history must be able to explain itself after the
+        /// run that made it is gone, and the alternative is reconstructing the
+        /// trace from supplier ids and the current set, which is exactly the
+        /// reconstruction this milestone refuses.
+        steps: Vec<ChainStep>,
+        /// The core's per-boundary trace, verbatim.
+        transitions: Vec<ChainTransition>,
+    },
+    /// The run's set could not be chained, and this is the core's own reason.
+    ///
+    /// Kept typed. A sentence for a human is a projection built at render time
+    /// ([`crate::generate::GlobalChainOutcome`] carries the same value); storing
+    /// the sentence instead would throw away the fact and keep the paraphrase.
+    Refused {
+        /// The typed error the core returned.
+        error: ChainError,
+    },
 }
 
 impl SessionHistory {
@@ -329,6 +442,26 @@ impl SessionHistory {
         id
     }
 
+    /// Records what `run`'s global chain came to.
+    ///
+    /// Append-only like everything else here: the first record for a run stands,
+    /// and a second call is ignored rather than allowed to rewrite history. A
+    /// run's chain outcome is decided once, when its set is produced.
+    pub fn record_chain(&mut self, run: GenerationRunId, outcome: ChainOutcomeRecord) {
+        if !self.chains.iter().any(|(id, _)| *id == run) {
+            self.chains.push((run, outcome));
+        }
+    }
+
+    /// What `run`'s global chain came to, if the run recorded one.
+    #[must_use]
+    pub fn chain_of(&self, run: GenerationRunId) -> Option<&ChainOutcomeRecord> {
+        self.chains
+            .iter()
+            .find(|(id, _)| *id == run)
+            .map(|(_, outcome)| outcome)
+    }
+
     /// The entries, in creation order.
     #[must_use]
     pub fn entries(&self) -> &[HistoryEntry] {
@@ -379,8 +512,9 @@ impl SessionHistory {
 )]
 mod tests {
     use super::{
-        toggle, CandidateSource, CorpusContribution, GenerationRunId, GeneratorProvenance,
-        Provenance, SessionHistory, Verdict, PROVENANCE_SCHEMA, PROVENANCE_VERSION,
+        toggle, CandidateSource, ChainError, ChainOutcomeRecord, CorpusContribution,
+        GenerationRunId, GeneratorProvenance, Provenance, SessionHistory, Verdict,
+        PROVENANCE_SCHEMA, PROVENANCE_VERSION,
     };
     use crate::generate::SetSummary;
     use griff_core::score::{LossReport, Score};
@@ -403,6 +537,119 @@ mod tests {
             source_meta: None,
             loss: LossReport::new(),
         }
+    }
+
+    // ── Law: a run's chain outcome is decided once ───────────────────────────
+
+    fn planned(total: f64) -> ChainOutcomeRecord {
+        ChainOutcomeRecord::Planned {
+            policy_id: "candidate_chain",
+            policy_version: 1,
+            baseline_cost: 3.3,
+            total_cost: total,
+            steps: Vec::new(),
+            transitions: Vec::new(),
+        }
+    }
+
+    const REFUSAL: ChainError = ChainError::PpqMismatch {
+        candidate: 1,
+        expected: 960,
+        found: 480,
+    };
+
+    fn refused() -> ChainOutcomeRecord {
+        ChainOutcomeRecord::Refused { error: REFUSAL }
+    }
+
+    /// The recorded total, or `None` when the run's chain was refused.
+    fn planned_total(h: &SessionHistory, run: GenerationRunId) -> Option<f64> {
+        match h.chain_of(run)? {
+            ChainOutcomeRecord::Planned { total_cost, .. } => Some(*total_cost),
+            ChainOutcomeRecord::Refused { .. } => None,
+        }
+    }
+
+    /// The recorded refusal, or `None` when the run's chain was planned.
+    fn refusal(h: &SessionHistory, run: GenerationRunId) -> Option<ChainError> {
+        match h.chain_of(run)? {
+            ChainOutcomeRecord::Refused { error } => Some(*error),
+            ChainOutcomeRecord::Planned { .. } => None,
+        }
+    }
+
+    #[test]
+    fn a_runs_chain_outcome_is_written_once_and_never_rewritten() {
+        // A run's set is produced once, so its chain outcome is decided once.
+        // A second write is a later caller with a later opinion — and the whole
+        // reason this record exists is to answer what was true at capture, not
+        // what someone thinks now.
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        h.record_chain(a, planned(2.4));
+        h.record_chain(a, refused());
+        assert_eq!(planned_total(&h, a), Some(2.4), "the first write stands");
+        assert_eq!(refusal(&h, a), None, "the later refusal did not land");
+
+        let b = h.begin_run();
+        h.record_chain(b, refused());
+        h.record_chain(b, planned(2.4));
+        assert_eq!(
+            refusal(&h, b),
+            Some(REFUSAL),
+            "in either order — a refusal is not weaker than a plan",
+        );
+    }
+
+    #[test]
+    fn chain_outcomes_of_different_runs_do_not_collide() {
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        let b = h.begin_run();
+        h.record_chain(a, planned(2.4));
+        h.record_chain(b, refused());
+        assert_eq!(planned_total(&h, a), Some(2.4));
+        assert_eq!(refusal(&h, b), Some(REFUSAL));
+    }
+
+    #[test]
+    fn an_unknown_run_has_no_chain_outcome() {
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        let never_used = h.begin_run();
+        h.record_chain(a, planned(2.4));
+        assert!(
+            h.chain_of(never_used).is_none(),
+            "no outcome is not the same fact as a refusal",
+        );
+    }
+
+    #[test]
+    fn recording_a_chain_outcome_creates_no_candidate_entry() {
+        // The outcome is a fact about the run. An entry is a result someone can
+        // hear — and a refusal has none.
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        h.record_chain(a, refused());
+        assert!(
+            h.entries().is_empty(),
+            "a run-level record is not an auditionable result",
+        );
+    }
+
+    #[test]
+    fn recording_a_candidate_does_not_disturb_its_runs_chain_outcome() {
+        let mut h = SessionHistory::new();
+        let a = h.begin_run();
+        h.record_chain(a, refused());
+        h.record(a, "x".to_owned(), "t".to_owned(), score(), generate_gen());
+        h.record(a, "y".to_owned(), "t".to_owned(), score(), generate_gen());
+        assert_eq!(
+            refusal(&h, a),
+            Some(REFUSAL),
+            "candidates and the chain outcome are separate records of one run",
+        );
+        assert_eq!(h.entries().len(), 2);
     }
 
     fn generate_gen() -> GeneratorProvenance {
@@ -495,7 +742,7 @@ mod tests {
         let g = Provenance::new(GenerationRunId(0), 0, "x".to_owned(), generate_gen());
         match g.generator {
             GeneratorProvenance::Generate { seed, .. } => assert_eq!(seed, 42),
-            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+            other => panic!("a Generate candidate is not {other:?}"),
         }
         let s = Provenance::new(GenerationRunId(0), 0, "x".to_owned(), swang_gen());
         match s.generator {
@@ -507,7 +754,7 @@ mod tests {
                 assert!(program.contains("swang"));
                 assert_eq!(source_path.as_deref(), Some("riff.mid"));
             }
-            GeneratorProvenance::Generate { .. } => panic!("a Swang candidate is not Generate"),
+            other => panic!("a Swang candidate is not {other:?}"),
         }
     }
 

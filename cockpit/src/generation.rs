@@ -17,7 +17,7 @@ use griff_core::corpus::ChunkMeta;
 #[cfg(not(target_arch = "wasm32"))]
 use griff_core::generation_input::CorpusMaterial;
 use griff_core::generation_input::GenerationAsk;
-use griff_ui_core::generate::{CandidateRow, CandidateSet};
+use griff_ui_core::generate::{CandidateRow, CandidateSet, GlobalChainOutcome};
 use griff_ui_core::history::{CorpusContribution, GenerationRunId};
 
 /// A tab the panel can seed a generation from: its display name and the bytes
@@ -55,12 +55,20 @@ pub struct GenerateRunContext {
 
 /// A produced Generate set bound to the immutable context that made it — so the
 /// set and its provenance identity cannot drift apart.
+///
+/// The S7 global chain is bound in here for the same reason. It is planned once,
+/// when the set is produced, from the very `RankedSet` the set was presented
+/// from; afterwards it is a snapshot like any other. Nothing — auditioning,
+/// playback, export, favourite/reject, opening a history entry — re-plans it,
+/// because there is no longer a `RankedSet` to plan from.
 #[derive(Debug)]
 pub struct ActiveGenerateRun {
     /// The immutable run context.
     pub context: GenerateRunContext,
     /// The reranked candidate set.
     pub set: CandidateSet,
+    /// The global chain this run's set yielded — planned, or typed-refused.
+    pub chain: GlobalChainOutcome,
 }
 
 /// The Generate panel's state.

@@ -74,7 +74,53 @@ front-ends and audio build on them:
       `griff_core::generation_input::ranked_candidates` the CLI does — the
       compiler moved into `griff-core` for exactly this, and the move is proven
       output-identical (30/30 byte-identical `griff generate` runs).
-      Remaining: register/playability/tonal hypotheses, S7 path explanations.
+      **S7 path explanations landed 2026-07-17** — see *Global Chain Audition*
+      below. Remaining: register/playability/tonal hypotheses.
+- [~] **Global Chain Audition** — **landed 2026-07-17**. The S7 A/B core
+      (ADR-0013 as amended by ADR-0030) was headless; this makes it audible.
+      After a Generate, the panel offers two audition variants from **one**
+      ranked set: **S6 Intact** (ranked candidate 0, the whole candidate S6 put
+      first) and **S7 Global Chain** (one candidate per bar, chosen for the
+      sequence). Not "original" and "alternative": a user cannot choose between
+      two things they cannot tell apart.
+      - **S6 stays the default.** Generate still shows the intact winner; the
+        chain is an explicit second thing to ask for, never a substitution.
+      - **One immutable run.** `griff_ui_core::generate::generate_run` calls
+        `ranked_candidates` once and plans the chain from that same live
+        `RankedSet`, which then dies inside the function. The cockpit never holds
+        a `RankedSet` or the planner, so re-planning on an A/B switch, an export,
+        or a history open is unrepresentable rather than merely discouraged.
+      - **Refusal is a typed, run-level outcome.** `plan_candidate_chain` can
+        refuse a set (a candidate disagreeing about the timeline, material
+        crossing a bar line); that is not a failed Generate.
+        `GlobalChainOutcome` is not a `Result`, so a `ChainError` cannot become a
+        generation error. `SessionHistory::record_chain` keys the outcome to the
+        `GenerationRunId` — append-only, first write wins — so the reason a run
+        had no chain outlives the run. No fake chain entry holding the intact
+        winner's score: a refusal has no score, and an entry needs one.
+      - **A/B is the Slice 2 stack, unchanged.** Both variants route through
+        `show_score`, inheriting All-Notes-Off, the rebuilt voice, the held
+        playhead, the loop remap and the tempo map. Both stand on the master
+        timeline every candidate already agreed on — which is why a loop over
+        bar 2 is the same bar 2 in either.
+      - **Export writes the captured snapshot** through
+        `griff_core::midi::export_score`, from the history entry, never the
+        active run — and never re-plans. `keep` does not audition: exporting is a
+        file action and must not decide what the user is listening to.
+      - **Explanations are the core's**, projected by `global_chain_summary`
+        from the run's record: both costs, a signed delta, one row per output bar
+        naming the supplier's ordinal *and* its distinct rank, strategy and
+        variant seed, with the chain-local and S6 rationales. Bars read 1-based;
+        the core counts from 0 and the projection is the only place that
+        translates. An unmeasured boundary jump shows as **not measured**, never
+        `0` — the core omits the axis so it cannot read as perfect continuity.
+      - **The sidecar is the cockpit's wire contract** (`KeptChain`), mirrored
+        rather than derived onto the backend-neutral history model, which stays
+        free of serialisation.
+      - Deliberately **not** here: any claim that the chain sounds better (the
+        delta says "lower under `candidate_chain` v1", which is a fact about the
+        policy), k-best or Slice C, weight tuning or sliders, S9 learning, S15
+        harmony, and S17 rendering.
 - [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16** (PR
       pending review): favorite/reject controls (mutually exclusive) and a
       session **history** of every auditioned candidate with typed provenance,

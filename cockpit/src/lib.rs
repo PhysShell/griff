@@ -37,14 +37,20 @@ use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
 use griff_ui_core::history::{
-    CandidateSource, CorpusContribution, GenerationRunId, GeneratorProvenance, HistoryId,
-    Provenance, SessionHistory, Verdict,
+    CandidateSource, ChainOutcomeRecord, ChainSupplier, CorpusContribution, GenerationRunId,
+    GeneratorProvenance, HistoryId, Provenance, SessionHistory, Verdict,
 };
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
+use griff_core::candidate_chain::{ChainError, MasterBarField, TrackField, TransitionFactError};
+use griff_core::layered_path::PathError;
+use griff_core::scoring::RationaleEntry;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
-use griff_ui_core::generate::generate_set;
+use griff_ui_core::generate::{
+    generate_run, global_chain_summary, ChainBarView, ChainBoundaryView, GeneratedRun,
+    GlobalChainOutcome, GlobalChainSummary, PlannedGlobalChain,
+};
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
 use griff_ui_core::theme::{cell_style, Rgb, Theme};
 use griff_ui_core::viewport::CurationDecision;
@@ -520,6 +526,9 @@ struct SwangRunContext {
 enum AuditionCandidate {
     /// Index into the Generate panel's set.
     Generate(usize),
+    /// The active Generate run's assembled S7 global chain. Carries no index: a
+    /// run has exactly one chain, planned when the set was produced.
+    GlobalChain,
     /// Index into the Swang panel's set.
     Swang(usize),
     /// A recorded candidate replayed from the session history, by its stable id
@@ -527,6 +536,13 @@ enum AuditionCandidate {
     /// an earlier generation whose panel set is long gone.
     History(HistoryId),
 }
+
+/// The history dedupe key for a run's global chain.
+///
+/// A run has exactly one chain, so a constant is the honest key: re-auditioning
+/// it must land on the same entry rather than pile up duplicates, and the run id
+/// beside it already distinguishes one run's chain from another's.
+const CHAIN_CANDIDATE_ID: &str = "global-chain";
 
 /// The egui cockpit application: a `Scene` renderer over the shared core.
 #[derive(Debug)]
@@ -658,6 +674,405 @@ fn remap_loop_range(
     (lo < hi && hi <= tick_end).then_some((lo, hi))
 }
 
+/// The sidecar written beside an exported global chain.
+///
+/// Mirrors the entry's typed `GlobalChain` provenance, exactly as
+/// `KeptProvenance` mirrors a candidate's — the serialisable shape lives here,
+/// in the frontend that owns the file format, and the model stays typed.
+///
+/// The supplier map is the load-bearing part: a `.mid` of a chain is otherwise
+/// indistinguishable from a `.mid` of anything else, and "which candidate played
+/// bar 2" is the one question this export exists to be able to answer later.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, serde::Serialize)]
+struct KeptChain<'a> {
+    /// What this file is — so a reader who finds it alone can tell.
+    origin: &'static str,
+    /// The Generate run that produced the chain.
+    run: u64,
+    /// The seed score's identity.
+    source: Option<&'a str>,
+    /// What the corpus **actually** contributed to that run.
+    corpus: KeptCorpus,
+    /// The ask seed.
+    seed: u64,
+    /// Bars the run asked for. From the captured ask, never from
+    /// `suppliers.len()` — a result may not be its own evidence.
+    bars: usize,
+    /// Seed variants per strategy the run asked for.
+    variants_per_strategy: usize,
+    /// The chain policy the costs were weighed under.
+    policy_id: &'a str,
+    /// That policy's version.
+    policy_version: u32,
+    /// Ranked candidate 0 kept intact, under the same policy.
+    baseline_cost: f64,
+    /// The planned chain's total.
+    total_cost: f64,
+    /// Which candidate supplied each output bar.
+    suppliers: Vec<KeptSupplier<'a>>,
+}
+
+/// The `origin` marker a chain sidecar carries.
+#[cfg(not(target_arch = "wasm32"))]
+const CHAIN_SIDECAR_ORIGIN: &str = "candidate_chain";
+
+/// What the corpus contributed, as the sidecar writes it.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, serde::Serialize)]
+struct KeptCorpus {
+    /// Rhythm templates the corpus supplied.
+    templates: usize,
+    /// Novelty reference chunks it supplied.
+    references: usize,
+    /// Whether a corpus gesture was actually carved.
+    gesture: bool,
+}
+
+/// One bar's supplier, as the sidecar writes it.
+///
+/// Mirrored rather than derived onto [`ChainSupplier`]: `history` is
+/// deliberately free of serialisation, so the model cannot quietly acquire a
+/// wire format and a compatibility obligation with it. The frontend that writes
+/// the file owns the file's shape.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, serde::Serialize)]
+struct KeptSupplier<'a> {
+    /// The output bar this candidate filled.
+    bar: usize,
+    /// The supplying candidate's ordinal in the ranked set.
+    candidate: usize,
+    /// That candidate's own 1-based rank.
+    rank: usize,
+    /// That candidate's strategy.
+    strategy: &'a str,
+    /// That candidate's derived variant seed — its reproduction key.
+    variant_seed: u64,
+}
+
+/// Paints a planned chain's costs, supplier map, and the core's own rationales.
+///
+/// Every number here was measured by the core and carried through
+/// [`global_chain_summary`]. This function's whole job is layout: it does not
+/// weigh, sum, or compare anything.
+fn chain_summary_block(ui: &mut egui::Ui, summary: &GlobalChainSummary) {
+    ui.monospace(format!("Baseline cost: {:.3}", summary.baseline_cost));
+    ui.monospace(format!("Chain cost:    {:.3}", summary.total_cost));
+    // Signed arithmetic, named for what it is. "improvement" would be a verdict
+    // the policy did not deliver: `candidate_chain` v1 prefers a lower total,
+    // and preferring is not the same as sounding better.
+    ui.monospace(format!(
+        "Delta:         {:+.3}  ({} under {} v{})",
+        summary.delta,
+        delta_relation(summary.delta),
+        summary.policy_id,
+        summary.policy_version,
+    ));
+    ui.separator();
+
+    for (i, bar) in summary.bars.iter().enumerate() {
+        ui.monospace(format!(
+            "Bar {}  candidate {} · rank {} · {} · seed {:016x}",
+            bar.bar_number, bar.candidate, bar.rank, bar.strategy, bar.variant_seed,
+        ))
+        .on_hover_text(bar_hover(bar));
+        if let Some(boundary) = summary.boundaries.get(i) {
+            ui.monospace(format!("   ┆ {}", boundary_line(boundary)))
+                .on_hover_text(rationale_hover(&boundary.rationale));
+        }
+    }
+}
+
+/// What the chain panel shows, decided before anything is drawn.
+///
+/// Two independent facts. Keeping them as state rather than as two branches in
+/// a paint function is what lets a law prove they do not exclude each other —
+/// the previous version of that law tested the helper beside the control flow
+/// and missed an early `return` sitting between them.
+#[derive(Debug, Clone, PartialEq)]
+struct ChainPanelEvidence {
+    /// Why the **active** run has no chain, if it has none.
+    active_refusal: Option<ChainError>,
+    /// The explanation of the chain that is **sounding**, if one is.
+    displayed_summary: Option<GlobalChainSummary>,
+}
+
+/// How the chain's total compares to the intact winner's, in one word.
+///
+/// Three outcomes, not two: costing exactly the same is neither lower nor
+/// higher. The fourth arm is for a comparison that cannot be made at all —
+/// the engine rejects non-finite costs, so it should be unreachable, and
+/// "equal" is not what to say if it ever is.
+fn delta_relation(delta: f64) -> &'static str {
+    if delta < 0.0 {
+        "lower"
+    } else if delta > 0.0 {
+        "higher"
+    } else if delta == 0.0 {
+        "equal"
+    } else {
+        "not comparable"
+    }
+}
+
+/// A bar's local explanation, as hover text.
+fn bar_hover(bar: &ChainBarView) -> String {
+    // `candidate_quality` is only there if the policy charged it; absent stays
+    // absent here too rather than becoming a printed zero.
+    let quality = bar.candidate_quality.map_or_else(String::new, |quality| {
+        format!("candidate_quality {quality:.3}\n")
+    });
+    let axes = bar
+        .s6_axes
+        .iter()
+        .map(|(label, value)| format!("  {label} {value:.3}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "chain local {:.3}\nS6 aggregate {:.3}\n{quality}{}\n\nS6 axes:\n{axes}",
+        bar.local_aggregate,
+        bar.s6_aggregate,
+        rationale_hover(&bar.local_rationale),
+    )
+}
+
+/// A boundary's facts, in one line.
+///
+/// An unmeasured jump says so. It is not rendered as `0`, which would read as
+/// the smoothest possible join rather than as an unanswered question.
+fn boundary_line(boundary: &ChainBoundaryView) -> String {
+    let jump = boundary.jump_semitones.map_or_else(
+        || "jump not measured".to_owned(),
+        |semitones| format!("jump {semitones:.0} st"),
+    );
+    let silent = if boundary.silent_boundary {
+        " · silent boundary"
+    } else {
+        ""
+    };
+    let repeat = if boundary.rhythm_repeat {
+        " · rhythm repeat"
+    } else {
+        ""
+    };
+    format!("{jump}{silent}{repeat} · cost {:.3}", boundary.aggregate)
+}
+
+/// The core's weighted rationale, as hover text.
+fn rationale_hover(rationale: &[RationaleEntry]) -> String {
+    rationale
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {:.3} × {:.2} = {:.3}",
+                e.axis, e.value, e.weight, e.contribution
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A planned chain's typed provenance, from the run that captured it.
+///
+/// One construction shared by both paths that can record the chain — the
+/// audition and the export — so they cannot describe the same result
+/// differently. Every request field comes from the immutable context; every
+/// result field from the captured plan.
+fn chain_provenance(ctx: &GenerateRunContext, chain: &PlannedGlobalChain) -> GeneratorProvenance {
+    GeneratorProvenance::GlobalChain {
+        source: ctx.source.clone(),
+        corpus: ctx.corpus,
+        seed: ctx.seed,
+        bars: ctx.bars,
+        variants_per_strategy: ctx.variants_per_strategy,
+        policy_id: chain.plan.provenance.policy_id,
+        policy_version: chain.plan.provenance.policy_version,
+        baseline_cost: chain.baseline_cost,
+        total_cost: chain.plan.total_cost,
+        suppliers: chain_suppliers(chain),
+    }
+}
+
+/// The history title a planned chain wears.
+fn chain_title(chain: &PlannedGlobalChain) -> String {
+    format!("S7 global chain · {:.3}", chain.plan.total_cost)
+}
+
+/// The run-level record of what a captured chain outcome came to.
+///
+/// A projection of the captured outcome, taken at capture time: the costs and
+/// the supplier map when planned, the core's own typed error when not. It holds
+/// no score — the assembled one lives on the history entry the audition records,
+/// and a refusal has none at all.
+fn chain_outcome_record(chain: &GlobalChainOutcome) -> ChainOutcomeRecord {
+    match chain {
+        GlobalChainOutcome::Planned(chain) => ChainOutcomeRecord::Planned {
+            policy_id: chain.plan.provenance.policy_id,
+            policy_version: chain.plan.provenance.policy_version,
+            baseline_cost: chain.baseline_cost,
+            total_cost: chain.plan.total_cost,
+            // The core's trace, so an old chain can still explain itself once
+            // the run that made it has been replaced.
+            steps: chain.plan.steps.clone(),
+            transitions: chain.plan.transitions.clone(),
+        },
+        GlobalChainOutcome::Refused(error) => ChainOutcomeRecord::Refused { error: *error },
+    }
+}
+
+/// Which candidate supplied each bar of a planned chain, from the core's steps.
+fn chain_suppliers(chain: &PlannedGlobalChain) -> Vec<ChainSupplier> {
+    chain
+        .plan
+        .steps
+        .iter()
+        .map(|step| ChainSupplier {
+            bar: step.state.bar,
+            candidate: step.state.candidate,
+            rank: step.state.rank,
+            strategy: format!("{:?}", step.state.strategy),
+            variant_seed: step.state.variant_seed.0,
+        })
+        .collect()
+}
+
+/// Why the S7 global chain could not be planned, in a sentence — built here, in
+/// the UI layer, from the core's typed error, exactly as [`provenance_summary`]
+/// is built from typed provenance.
+///
+/// `format!("{err:?}")` is a Rust value printed at a person: it names variants
+/// and braces, and explains nothing. A refusal is usually about the *set* rather
+/// than about anything the user did, so it has to say which candidate and which
+/// fact, in words.
+fn chain_refusal_summary(error: ChainError) -> String {
+    match error {
+        ChainError::EmptySet => "the set has no candidates to chain".to_owned(),
+        ChainError::NoBars => "the candidates have no bars to chain".to_owned(),
+        ChainError::BarCountMismatch {
+            candidate,
+            expected,
+            found,
+        } => format!(
+            "candidate {candidate} is {found} bars long, not {expected} — \
+             the chain is never truncated to the shortest candidate"
+        ),
+        ChainError::PpqMismatch {
+            candidate,
+            expected,
+            found,
+        } => format!(
+            "candidate {candidate} measures time at {found} ticks per quarter, not {expected}"
+        ),
+        ChainError::MasterBarMismatch {
+            candidate,
+            bar,
+            field,
+        } => format!(
+            "candidate {candidate} disagrees about bar {bar}'s {} — \
+             the candidates must share one timeline to be chained",
+            master_bar_field_name(field),
+        ),
+        ChainError::TrackCountMismatch {
+            candidate,
+            expected,
+            found,
+        } => format!("candidate {candidate} has {found} tracks, not {expected}"),
+        ChainError::TrackMetadataMismatch {
+            candidate,
+            track,
+            field,
+        } => format!(
+            "candidate {candidate} disagrees about track {track}'s {}",
+            track_field_name(field),
+        ),
+        ChainError::SourceMetaMismatch { candidate } => {
+            format!("candidate {candidate} names a different source format")
+        }
+        ChainError::LossReportMismatch { candidate } => format!(
+            "candidate {candidate} carries a different import loss report — \
+             the chain will not merge two histories into one"
+        ),
+        ChainError::CrossBarMaterial { candidate, bar } => format!(
+            "candidate {candidate} has material in bar {bar} that does not fit inside \
+             the bar line — a bar cannot be lifted out without cutting it"
+        ),
+        ChainError::EmptyEventGroup { candidate } => {
+            format!("candidate {candidate} has an event group with no notes or rests in it")
+        }
+        ChainError::MaterialOutsideTimeline { candidate, tick } => format!(
+            "candidate {candidate} has material at tick {tick}, which is past the end \
+             of its own timeline"
+        ),
+        ChainError::MissingMaterial {
+            candidate,
+            track,
+            voice,
+            bar,
+        } => format!("candidate {candidate} has no track {track}, voice {voice}, bar {bar}"),
+        ChainError::BoundaryFact(TransitionFactError::MissingFromBar { bar, bars }) => {
+            format!("a boundary was measured from bar {bar} of a {bars}-bar candidate")
+        }
+        ChainError::BoundaryFact(TransitionFactError::MissingToBar { bar, bars }) => {
+            format!("a boundary was measured into bar {bar} of a {bars}-bar candidate")
+        }
+        ChainError::Path(path) => path_error_summary(path),
+    }
+}
+
+/// The name of a master-bar fact, in the words a musician uses for it.
+const fn master_bar_field_name(field: MasterBarField) -> &'static str {
+    match field {
+        MasterBarField::Index => "number",
+        MasterBarField::TickRange => "position",
+        MasterBarField::TimeSignature => "time signature",
+        MasterBarField::Tempo => "tempo",
+        MasterBarField::Repeat => "repeat barlines",
+    }
+}
+
+/// The name of a track fact, in the words a musician uses for it.
+const fn track_field_name(field: TrackField) -> &'static str {
+    match field {
+        TrackField::Name => "name",
+        TrackField::Channel => "channel",
+        TrackField::Tuning => "tuning",
+        TrackField::VoiceCount => "voice count",
+        TrackField::VoiceId => "voice numbering",
+    }
+}
+
+/// Why the layered solver rejected the problem the chain handed it.
+///
+/// These are invariant violations rather than facts about the music, so they
+/// say so plainly instead of pretending the set did something musical wrong.
+fn path_error_summary(error: PathError) -> String {
+    match error {
+        PathError::NoLayers => "the chain problem had no bars".to_owned(),
+        PathError::EmptyLayer { layer } => format!("bar {layer} had no candidates to choose from"),
+        PathError::TransitionCount { expected, found } => {
+            format!("the chain problem had {found} boundary tables, not {expected}")
+        }
+        PathError::TransitionShape {
+            layer,
+            expected,
+            found,
+        } => format!("bar {layer}'s boundary table is {found:?}, not {expected:?}"),
+        PathError::NonFiniteLocal { state, cost } => format!(
+            "bar {}'s candidate {} scored {cost}, which is not a number the chain can compare",
+            state.layer, state.ordinal,
+        ),
+        PathError::NonFiniteTransition { edge, cost } => format!(
+            "the boundary from bar {} into bar {} scored {cost}, \
+             which is not a number the chain can compare",
+            edge.from.layer, edge.to.layer,
+        ),
+        PathError::NonFiniteAccumulation { state, cost } => format!(
+            "the costs stopped adding up at bar {} (reached {cost})",
+            state.layer,
+        ),
+    }
+}
+
 /// A one-line human description of a candidate's typed provenance — built here,
 /// in the UI layer, so the model stays a typed value and never a baked string.
 /// Names the generator, the ask (Generate) or the source (Swang), and the
@@ -685,6 +1100,28 @@ fn provenance_summary(p: &Provenance) -> String {
             };
             format!(
                 "generate · {strategy} · #{rank} · source {src} · seed {seed} · {bars} bars · {contribution}"
+            )
+        }
+        GeneratorProvenance::GlobalChain {
+            source,
+            seed,
+            bars,
+            baseline_cost,
+            total_cost,
+            suppliers,
+            ..
+        } => {
+            // The suppliers, not a rank: a chain has no rank of its own, and the
+            // bar map is the one fact that says what it actually is.
+            let map = suppliers
+                .iter()
+                .map(|s| s.candidate.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "global chain · bars [{map}] · {total_cost:.3} vs intact {baseline_cost:.3} · \
+                 source {} · seed {seed} · {bars} bars",
+                source.as_deref().unwrap_or("displayed score"),
             )
         }
         GeneratorProvenance::Swang {
@@ -740,6 +1177,7 @@ fn history_row(
         ui.monospace(marker);
         let source = match row.source {
             CandidateSource::Generate => "gen",
+            CandidateSource::GlobalChain => "chain",
             CandidateSource::Swang => "swang",
         };
         ui.monospace(format!("#{:<3} [{source:>5}]", row.sequence));
@@ -1160,11 +1598,14 @@ impl CockpitApp {
     /// order — rank 1 is the candidate the CLI would have written.
     fn do_generate(&mut self) {
         let ask = self.gen_panel.ask();
+        // One pass: the ranked set and the chain planned from it, together. The
+        // `RankedSet` lives and dies inside `generate_run`, so what comes back
+        // is already a pair of snapshots.
         let outcome = self.generation_source().and_then(|score| {
-            generate_set(&score, self.material.as_ref(), &ask).map_err(|err| format!("{err:?}"))
+            generate_run(&score, self.material.as_ref(), &ask).map_err(|err| format!("{err:?}"))
         });
         match outcome {
-            Ok(set) => {
+            Ok(GeneratedRun { set, chain }) => {
                 self.reset_audition(); // a new candidate set starts fresh (no stale A/B)
                                        // Capture the run's request/input identity NOW, from the state
                                        // that produced the set — the source seed, the ask, and the
@@ -1187,7 +1628,16 @@ impl CockpitApp {
                 };
                 let n = set.rows.len();
                 let tones = set.summary.scale_tones;
-                self.gen_panel.active = Some(ActiveGenerateRun { context, set });
+                // Against the run, once, whether or not the chain is ever
+                // auditioned — so "did this run have a chain, and if not why"
+                // outlives the run being replaced.
+                self.history
+                    .record_chain(context.run, chain_outcome_record(&chain));
+                self.gen_panel.active = Some(ActiveGenerateRun {
+                    context,
+                    set,
+                    chain,
+                });
                 self.gen_panel.status = Some(format!(
                     "{n} candidates ranked · {tones}-tone scale · seed {}",
                     ask.seed
@@ -1200,6 +1650,41 @@ impl CockpitApp {
                 self.gen_panel.status = Some(format!("generate failed: {err}"));
             }
         }
+    }
+
+    /// Paints the run's assembled S7 global chain into the roll, recording it in
+    /// history as its own audition result.
+    ///
+    /// The chain is a **snapshot**: this reads the one planned when the set was
+    /// produced and plans nothing. A refused chain shows nothing rather than
+    /// substituting the intact winner — the S6 result is a different result, and
+    /// handing it over under the chain's name would be the one lie this whole
+    /// comparison exists to avoid.
+    fn show_global_chain(&mut self) {
+        let Some(active) = self.gen_panel.active.as_ref() else {
+            return;
+        };
+        let GlobalChainOutcome::Planned(chain) = &active.chain else {
+            return;
+        };
+        let ctx = &active.context;
+        let score = chain.plan.score.clone();
+        let title = chain_title(chain);
+        let generator = chain_provenance(ctx, chain);
+        let id = self.history.record(
+            ctx.run,
+            CHAIN_CANDIDATE_ID.to_owned(),
+            title.clone(),
+            score.clone(),
+            generator,
+        );
+        self.history.select(id);
+        self.remember_shown(AuditionCandidate::GlobalChain);
+        // No row is the audition now. The table's highlight is a claim about
+        // what is sounding, and the chain is bars from several candidates —
+        // leaving a row marked would name one supplier as the whole result.
+        self.gen_panel.selected = None;
+        self.show_score(score, title);
     }
 
     /// Paints candidate `i` of the current set into the roll, recording it in
@@ -1252,6 +1737,7 @@ impl CockpitApp {
     fn ab_swap(&mut self) {
         match self.ab_other {
             Some(AuditionCandidate::Generate(i)) => self.show_candidate(i),
+            Some(AuditionCandidate::GlobalChain) => self.show_global_chain(),
             Some(AuditionCandidate::Swang(i)) => self.swang_show(i),
             Some(AuditionCandidate::History(id)) => self.select_history(id),
             None => {}
@@ -1270,6 +1756,11 @@ impl CockpitApp {
         let title = entry.title.clone();
         self.history.select(id);
         self.remember_shown(AuditionCandidate::History(id));
+        // A snapshot is sounding, so no *live* row is. The replayed entry may
+        // even come from a run whose panel set is long gone — leaving a row of
+        // the current set marked would point at music that is not playing.
+        self.gen_panel.selected = None;
+        self.swang.selected = None;
         self.show_score(score, title);
     }
 
@@ -1377,6 +1868,127 @@ impl CockpitApp {
         Ok(mid.display().to_string())
     }
 
+    /// Writes the run's assembled global chain, recording it first if it has not
+    /// been auditioned yet — so what is written is a result that exists in the
+    /// history, not a fourth thing built at the moment of export.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_chain(&mut self) {
+        let Some(id) = self.ensure_chain_history_entry() else {
+            return;
+        };
+        self.gen_panel.status = Some(match self.write_chain_keep(id) {
+            Ok(path) => format!("kept -> {path}"),
+            Err(err) => format!("keep failed: {err}"),
+        });
+    }
+
+    /// The history entry for the active run's chain, recording it first if it
+    /// has not been auditioned yet.
+    ///
+    /// Deliberately *not* `show_global_chain`: exporting is a file action, and
+    /// it must not decide what the user is listening to. Keeping while the S6
+    /// winner plays writes the chain and leaves the S6 winner playing.
+    ///
+    /// `record` is keyed by `(run, candidate_id)` and a run has exactly one
+    /// chain, so this returns the audition's entry when there is one and mints
+    /// the same entry when there is not — the export and the history cannot
+    /// disagree about which result was written.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ensure_chain_history_entry(&mut self) -> Option<HistoryId> {
+        let active = self.gen_panel.active.as_ref()?;
+        let GlobalChainOutcome::Planned(chain) = &active.chain else {
+            return None;
+        };
+        let ctx = &active.context;
+        let generator = chain_provenance(ctx, chain);
+        let title = chain_title(chain);
+        Some(self.history.record(
+            ctx.run,
+            CHAIN_CANDIDATE_ID.to_owned(),
+            title,
+            chain.plan.score.clone(),
+            generator,
+        ))
+    }
+
+    /// Exports the global chain recorded as history entry `id` to `.mid`, plus
+    /// a provenance sidecar; returns the written `.mid` path.
+    ///
+    /// Exports the **snapshot**, through the one canonical `Score` → MIDI path.
+    /// The planner is not consulted: what was auditioned is what is written,
+    /// however far the panel has moved on since.
+    ///
+    /// # Errors
+    /// When the entry is missing, is not a chain, or the write fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_chain_keep(&self, id: HistoryId) -> Result<String, String> {
+        use std::fs;
+
+        use griff_core::midi::export_score;
+
+        // Everything below comes from the entry — the score and the provenance
+        // that describes it, recorded together and immutable since. The active
+        // run is not consulted: it may be a different run entirely by now.
+        let entry = self.history.get(id).ok_or("no such history entry")?;
+        let GeneratorProvenance::GlobalChain {
+            seed,
+            bars,
+            variants_per_strategy,
+            corpus,
+            policy_id,
+            policy_version,
+            baseline_cost,
+            total_cost,
+            suppliers,
+            source,
+        } = &entry.provenance.generator
+        else {
+            return Err("that entry is not a global chain".to_owned());
+        };
+        let sidecar = KeptChain {
+            origin: CHAIN_SIDECAR_ORIGIN,
+            run: entry.run.0,
+            source: source.as_deref(),
+            corpus: KeptCorpus {
+                templates: corpus.templates,
+                references: corpus.references,
+                gesture: corpus.gesture,
+            },
+            seed: *seed,
+            // The ask's own number. `suppliers.len()` agrees, and a law says so,
+            // but the ask is what the run recorded and the result is what it
+            // produced — evidence does not get to derive itself.
+            bars: *bars,
+            variants_per_strategy: *variants_per_strategy,
+            policy_id,
+            policy_version: *policy_version,
+            baseline_cost: *baseline_cost,
+            total_cost: *total_cost,
+            suppliers: suppliers
+                .iter()
+                .map(|s| KeptSupplier {
+                    bar: s.bar,
+                    candidate: s.candidate,
+                    rank: s.rank,
+                    strategy: &s.strategy,
+                    variant_seed: s.variant_seed,
+                })
+                .collect(),
+        };
+
+        fs::create_dir_all(&self.out_dir)
+            .map_err(|e| format!("cannot create {}: {e}", self.out_dir.display()))?;
+        let stem = format!("seed{seed}_global-chain_run{}", entry.run.0);
+        let mid = self.out_dir.join(format!("{stem}.mid"));
+        let json = self.out_dir.join(format!("{stem}.json"));
+
+        let bytes = export_score(&entry.score).map_err(|err| format!("{err:?}"))?;
+        fs::write(&mid, &bytes).map_err(|e| format!("cannot write {}: {e}", mid.display()))?;
+        let text = serde_json::to_string_pretty(&sidecar).map_err(|err| err.to_string())?;
+        fs::write(&json, text).map_err(|e| format!("cannot write {}: {e}", json.display()))?;
+        Ok(mid.display().to_string())
+    }
+
     /// Hands the last kept `.mid` to the OS default handler — the cheap way to
     /// *hear* a candidate (a notation editor or DAW is already registered for
     /// `.mid`). The cockpit does not synthesise audio.
@@ -1394,11 +2006,7 @@ impl CockpitApp {
     /// The Generate panel (S8): the ask, the ranked candidate table, and the
     /// keep actions. Rank 1 is what `griff generate` would have written.
     fn generate_window(&mut self, ctx: &egui::Context) {
-        let mut show: Option<usize> = None;
-        let mut keep: Option<usize> = None;
-        let mut open: Option<usize> = None;
-        let mut run = false;
-
+        let mut acts = GenerateActions::default();
         egui::Window::new("generate · candidates")
             .default_width(460.0)
             .default_height(420.0)
@@ -1436,11 +2044,11 @@ impl CockpitApp {
                 });
                 ui.horizontal(|ui| {
                     if ui.button("⚙ generate").clicked() {
-                        run = true;
+                        acts.run = true;
                     }
                     if ui.button("🎲 next seed").clicked() {
                         self.gen_panel.seed = self.gen_panel.seed.wrapping_add(1);
-                        run = true;
+                        acts.run = true;
                     }
                     if let Some(status) = &self.gen_panel.status {
                         ui.weak(status);
@@ -1452,26 +2060,39 @@ impl CockpitApp {
                     "mode: seed only — no corpus (run with --corpus for rhythms)"
                 });
 
-                self.generate_candidates(ui, &mut show, &mut keep, &mut open);
+                self.generate_candidates(ui, &mut acts);
             });
+        self.apply_generate_actions(&acts);
+    }
 
-        if run {
+    /// Acts on what the Generate window asked for, once it is no longer holding
+    /// a borrow of the panel it asked about.
+    fn apply_generate_actions(&mut self, acts: &GenerateActions) {
+        if acts.run {
             self.do_generate();
         }
-        if let Some(i) = show {
-            self.show_candidate(i);
+        match acts.show {
+            Some(AuditionPick::Candidate(i)) => self.show_candidate(i),
+            // The S6 winner is ranked candidate 0, always — the candidate the
+            // chain's baseline cost is the cost of.
+            Some(AuditionPick::Intact) => self.show_candidate(0),
+            Some(AuditionPick::Chain) => self.show_global_chain(),
+            None => {}
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let Some(i) = keep {
+            if let Some(i) = acts.keep {
                 self.keep_candidate(i);
             }
-            if let Some(i) = open {
+            if acts.keep_chain {
+                self.keep_chain();
+            }
+            if let Some(i) = acts.open {
                 self.open_keep(i);
             }
         }
         #[cfg(target_arch = "wasm32")]
-        if keep.is_some() || open.is_some() {
+        if acts.keep.is_some() || acts.open.is_some() {
             self.gen_panel.status = Some("keep is native-only in this slice".to_owned());
         }
     }
@@ -1792,13 +2413,128 @@ impl CockpitApp {
     /// rows, and the keep actions for the selected one. Reports what the user
     /// asked for through `show` / `keep` / `open`, so the window applies every
     /// action after the panel closes its borrow of the panel state.
-    fn generate_candidates(
-        &self,
-        ui: &mut egui::Ui,
-        show: &mut Option<usize>,
-        keep: &mut Option<usize>,
-        open: &mut Option<usize>,
-    ) {
+    /// The run's two audition variants: the intact S6 winner, and the S7 global
+    /// chain assembled from the same set.
+    ///
+    /// Named for what they are, not "original" and "alternative" — one is a
+    /// whole candidate S6 ranked first, the other is a part built from bars of
+    /// several. The intact winner stays the default; the chain is an explicit
+    /// second thing to ask for.
+    fn generate_audition_variants(&self, ui: &mut egui::Ui, acts: &mut GenerateActions) {
+        let Some(active) = self.gen_panel.active.as_ref() else {
+            return;
+        };
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.monospace("audition");
+            // Ranked candidate 0 specifically — the candidate `baseline_cost`
+            // measures. Browsing another row is the table's job, not this
+            // chip's, and highlighting it for any Generate row would say the
+            // baseline is measuring whatever is playing.
+            let intact = self.current == Some(AuditionCandidate::Generate(0));
+            if ui
+                .selectable_label(intact, "S6 Intact")
+                .on_hover_text("the whole candidate S6 ranked first")
+                .clicked()
+            {
+                acts.show = Some(AuditionPick::Intact);
+            }
+            match &active.chain {
+                GlobalChainOutcome::Planned(chain) => {
+                    let showing = self.current == Some(AuditionCandidate::GlobalChain);
+                    if ui
+                        .selectable_label(showing, "S7 Global Chain")
+                        .on_hover_text(format!(
+                            "one candidate per bar, chosen for the whole sequence\n\
+                             chain {:.3} vs intact {:.3}",
+                            chain.plan.total_cost, chain.baseline_cost,
+                        ))
+                        .clicked()
+                    {
+                        acts.show = Some(AuditionPick::Chain);
+                    }
+                    // Keeping is native-only, like the candidate keep beside it.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if ui
+                        .button("keep")
+                        .on_hover_text("write the assembled chain and its supplier map")
+                        .clicked()
+                    {
+                        acts.keep_chain = true;
+                    }
+                }
+                GlobalChainOutcome::Refused(error) => {
+                    // Shown, disabled, with the reason — not hidden, which would
+                    // leave the user wondering, and not substituted with the
+                    // intact winner, which would be a lie.
+                    ui.add_enabled(false, egui::Button::new("S7 Global Chain"))
+                        .on_disabled_hover_text(chain_refusal_summary(*error));
+                    ui.weak("unavailable");
+                }
+            }
+        });
+        // Two independent blocks, decided before anything is drawn. The active
+        // run's refusal and the sounding chain's explanation can both be true,
+        // and neither is a reason to withhold the other.
+        let evidence = self.chain_panel_evidence();
+        if let Some(error) = evidence.active_refusal {
+            ui.weak(format!("no global chain: {}", chain_refusal_summary(error)));
+        }
+        if let Some(summary) = evidence.displayed_summary {
+            chain_summary_block(ui, &summary);
+        }
+    }
+
+    /// Everything the chain panel has to say, as state rather than as drawing.
+    ///
+    /// The two facts are independent, and the renderer draws them as two blocks:
+    /// the active run's refusal explains why *its* S7 chip is disabled, and the
+    /// sounding chain's summary explains what is playing. Neither is a reason to
+    /// suppress the other — a refused active run and a replayed chain are both
+    /// true at once, and that is precisely the moment the panel is most tempted
+    /// to say nothing.
+    ///
+    fn chain_panel_evidence(&self) -> ChainPanelEvidence {
+        ChainPanelEvidence {
+            active_refusal: match self.gen_panel.active.as_ref().map(|a| &a.chain) {
+                Some(&GlobalChainOutcome::Refused(error)) => Some(error),
+                _ => None,
+            },
+            displayed_summary: self.displayed_chain_summary(),
+        }
+    }
+
+    /// The explanation of the chain that is **sounding**, if one is.
+    ///
+    /// The one function the renderer and its laws share. Nothing else may reach
+    /// for `active.context.run` to explain a chain: the run that is open and the
+    /// chain that is playing are different questions, and answering the second
+    /// with the first pairs one chain's music with another's supplier map.
+    fn displayed_chain_summary(&self) -> Option<GlobalChainSummary> {
+        self.history
+            .chain_of(self.sounding_chain_run()?)
+            .and_then(global_chain_summary)
+    }
+
+    /// Which run's chain the panel is explaining: the one being heard.
+    ///
+    /// A replayed chain snapshot answers for itself — it may be from a run whose
+    /// panel state is long gone, which is exactly when getting this wrong is
+    /// least visible. A replayed *candidate* is not a chain and says nothing
+    /// about which chain to explain, so the active run's stands.
+    fn sounding_chain_run(&self) -> Option<GenerationRunId> {
+        let replayed = match self.current {
+            Some(AuditionCandidate::History(id)) => self
+                .history
+                .get(id)
+                .filter(|entry| entry.source == CandidateSource::GlobalChain)
+                .map(|entry| entry.run),
+            _ => None,
+        };
+        replayed.or_else(|| self.gen_panel.active.as_ref().map(|a| a.context.run))
+    }
+
+    fn generate_candidates(&self, ui: &mut egui::Ui, acts: &mut GenerateActions) {
         let Some(set) = self.gen_panel.set() else {
             ui.separator();
             ui.weak(match self.material {
@@ -1825,6 +2561,7 @@ impl CockpitApp {
                 format!(" · {} records skipped", set.summary.skipped.len())
             },
         ));
+        self.generate_audition_variants(ui, acts);
         ui.separator();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1845,7 +2582,7 @@ impl CockpitApp {
                     .on_hover_text(hover)
                     .clicked()
                 {
-                    *show = Some(i);
+                    acts.show = Some(AuditionPick::Candidate(i));
                 }
             }
         });
@@ -1854,14 +2591,14 @@ impl CockpitApp {
             ui.separator();
             ui.horizontal(|ui| {
                 if ui.button("⤓ keep .mid").clicked() {
-                    *keep = Some(i);
+                    acts.keep = Some(i);
                 }
                 if ui
                     .button("🔊 open")
                     .on_hover_text("write it and hand it to your .mid app")
                     .clicked()
                 {
-                    *open = Some(i);
+                    acts.open = Some(i);
                 }
             });
         }
@@ -2511,6 +3248,41 @@ enum SwangAction {
 struct SwangActions {
     action: SwangAction,
     click: Option<usize>,
+}
+
+/// What the Generate window's frame asked for, applied after it closes.
+///
+/// The window paints while holding a borrow of the panel, so every action is
+/// recorded here and acted on afterwards — the same deferral the Swang panel
+/// uses, and the reason none of these can be a method call mid-paint.
+#[derive(Debug, Default)]
+struct GenerateActions {
+    /// Run the pass again.
+    run: bool,
+    /// What to audition, if anything.
+    show: Option<AuditionPick>,
+    /// Write the run's assembled global chain to disk.
+    keep_chain: bool,
+    /// Write candidate `i` to disk.
+    keep: Option<usize>,
+    /// Open candidate `i`'s kept file.
+    open: Option<usize>,
+}
+
+/// What one frame asked to audition.
+///
+/// An enum rather than a flag apiece: a frame chooses **one** thing to hear, and
+/// three independent booleans could describe a frame asking for three at once —
+/// which would resolve by whichever branch ran last, silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuditionPick {
+    /// Candidate `i` of the current set.
+    Candidate(usize),
+    /// The S6 intact winner — ranked candidate 0, the one the chain's baseline
+    /// cost measures.
+    Intact,
+    /// The run's assembled global chain.
+    Chain,
 }
 
 /// The pixel rect of grid position (`col`, `vis_row`).
@@ -3577,6 +4349,1661 @@ mod tests {
         assert_eq!(app.gen_panel.selected, Some(1), "and back again — a toggle");
     }
 
+    /// A generated run whose chain was refused. Generation succeeded — the
+    /// candidates are all there and all playable; only the chaining of them did
+    /// not happen.
+    ///
+    /// Staged rather than provoked: every candidate of a real run descends from
+    /// one generator and one import, so they always agree about the timeline and
+    /// nothing the panel can ask for produces a genuine refusal. The staging is
+    /// therefore a whole run — a fresh run id, its set, its refused outcome
+    /// recorded against it, and its intact winner recorded under it — because a
+    /// run whose captured chain says one thing and whose history says another is
+    /// not a state the code can reach, and a fixture that builds one tests
+    /// nothing that exists.
+    fn app_with_refused_chain() -> (CockpitApp, ChainError) {
+        let refusal = ChainError::CrossBarMaterial {
+            candidate: 2,
+            bar: 1,
+        };
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.history.begin_run();
+        {
+            let active = app.gen_panel.active.as_mut().expect("a run");
+            active.context.run = run;
+            active.chain = GlobalChainOutcome::Refused(refusal);
+        }
+        app.history
+            .record_chain(run, ChainOutcomeRecord::Refused { error: refusal });
+        app.show_candidate(0);
+        (app, refusal)
+    }
+
+    #[test]
+    fn a_refused_chain_leaves_the_intact_audition_available() {
+        // The S6 winner is not downstream of the chain. A set that cannot be
+        // chained is still a set of candidates someone wants to hear.
+        let (mut app, _) = app_with_refused_chain();
+        assert!(
+            !app.gen_panel
+                .active
+                .as_ref()
+                .expect("a run")
+                .set
+                .rows
+                .is_empty(),
+            "generate succeeded — the refusal is about chaining what it made",
+        );
+        app.show_candidate(0);
+        assert_eq!(app.gen_panel.selected, Some(0), "the intact winner shows");
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "and is the audition",
+        );
+        assert!(
+            !app.player.is_silent(),
+            "and it plays: the S6 path is untouched by the chain's absence",
+        );
+    }
+
+    #[test]
+    fn a_refused_chain_is_never_auditioned_as_an_empty_chain() {
+        // Neither a silent score, nor the intact winner wearing the chain's
+        // name. Asking for a chain that does not exist gets nothing at all.
+        let (mut app, _) = app_with_refused_chain();
+        app.show_candidate(0);
+        let before = app.history.entries().len();
+        app.show_global_chain();
+        assert_eq!(
+            app.history.entries().len(),
+            before,
+            "nothing was recorded — there was no result to record",
+        );
+        assert!(
+            !app.history
+                .entries()
+                .iter()
+                .any(|e| e.source == CandidateSource::GlobalChain),
+            "and no entry claims to be a chain",
+        );
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the intact winner is still what is playing",
+        );
+    }
+
+    #[test]
+    fn a_refused_chain_keeps_its_typed_error_on_the_run() {
+        // Kept typed, on the run that produced it — not flattened to a string
+        // at the moment of failure, and not recomputed later by asking the
+        // planner to try again.
+        let (app, refusal) = app_with_refused_chain();
+        let GlobalChainOutcome::Refused(error) =
+            &app.gen_panel.active.as_ref().expect("a run").chain
+        else {
+            panic!("staged as refused");
+        };
+        assert_eq!(*error, refusal, "the exact typed error the core returned");
+    }
+
+    #[test]
+    fn a_refusal_explains_itself_without_a_debug_dump() {
+        // A structured sentence built from the typed value — the same rule
+        // provenance_summary follows. `{err:?}` is a Rust value printed at a
+        // human: it names private-looking variants and braces, and it is not an
+        // explanation of anything.
+        let summary = chain_refusal_summary(ChainError::CrossBarMaterial {
+            candidate: 2,
+            bar: 1,
+        });
+        assert!(
+            !summary.contains('{') && !summary.contains("CrossBarMaterial"),
+            "not a debug dump: {summary}",
+        );
+        assert!(
+            summary.contains("candidate 2") && summary.contains("bar 1"),
+            "but it still names the offending fact: {summary}",
+        );
+        assert!(
+            summary.to_lowercase().contains("bar line"),
+            "in words that say what went wrong: {summary}",
+        );
+    }
+
+    #[test]
+    fn every_refusal_reason_has_a_sentence() {
+        // No reason may fall through to a debug dump. If the core gains an
+        // error, this fails until someone says what it means.
+        let reasons = [
+            ChainError::EmptySet,
+            ChainError::NoBars,
+            ChainError::BarCountMismatch {
+                candidate: 1,
+                expected: 4,
+                found: 3,
+            },
+            ChainError::PpqMismatch {
+                candidate: 1,
+                expected: 960,
+                found: 480,
+            },
+            ChainError::MasterBarMismatch {
+                candidate: 1,
+                bar: 2,
+                field: MasterBarField::Tempo,
+            },
+            ChainError::TrackCountMismatch {
+                candidate: 1,
+                expected: 1,
+                found: 2,
+            },
+            ChainError::TrackMetadataMismatch {
+                candidate: 1,
+                track: 0,
+                field: TrackField::Tuning,
+            },
+            ChainError::SourceMetaMismatch { candidate: 1 },
+            ChainError::LossReportMismatch { candidate: 1 },
+            ChainError::CrossBarMaterial {
+                candidate: 1,
+                bar: 0,
+            },
+            ChainError::EmptyEventGroup { candidate: 1 },
+            ChainError::MaterialOutsideTimeline {
+                candidate: 1,
+                tick: 99,
+            },
+            ChainError::MissingMaterial {
+                candidate: 1,
+                track: 0,
+                voice: 0,
+                bar: 3,
+            },
+            ChainError::BoundaryFact(TransitionFactError::MissingToBar { bar: 9, bars: 4 }),
+            ChainError::Path(PathError::NoLayers),
+        ];
+        for reason in reasons {
+            let summary = chain_refusal_summary(reason);
+            assert!(
+                !summary.is_empty() && !summary.contains('{'),
+                "{reason:?} has no sentence: {summary}",
+            );
+        }
+    }
+
+    #[test]
+    fn switching_to_the_global_chain_silences_the_old_source_and_keeps_the_playhead() {
+        // The Slice 2 contract, inherited: one sounding source at a time, and
+        // the comparison lands at the same spot in the bar.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.play_tick = 300;
+        app.vp.playing = true;
+        app.advance_audio(0.2); // this moves the playhead — the switch must not
+        let tick = app.vp.play_tick;
+        app.show_global_chain();
+        assert_eq!(
+            app.vp.play_tick, tick,
+            "the playhead holds across the variant switch",
+        );
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the intact winner's notes are silenced — no leak into the chain",
+        );
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::GlobalChain),
+            "and exactly one source is active",
+        );
+    }
+
+    #[test]
+    fn ab_alternates_between_the_intact_winner_and_the_chain() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // shows Generate(0)
+        app.show_global_chain(); // leaving Generate(0)
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::Generate(0)),
+            "the intact winner we left is the A/B target",
+        );
+        app.ab_swap();
+        assert_eq!(app.current, Some(AuditionCandidate::Generate(0)));
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::GlobalChain),
+            "and the chain is now the other",
+        );
+        app.ab_swap();
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::GlobalChain),
+            "b routes back to the chain, not to a same-index row",
+        );
+    }
+
+    #[test]
+    fn switching_variants_does_not_grow_the_history() {
+        // A/B is a comparison, not an event. Each variant is one result, and
+        // re-hearing it is the same result — the (run, candidate_id) key says
+        // so. A history that grows on every keypress is a log, not a record.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let after_both = app.history.entries().len();
+        assert_eq!(after_both, 2, "the intact winner and the chain");
+        for _ in 0..5 {
+            app.ab_swap();
+        }
+        assert_eq!(
+            app.history.entries().len(),
+            after_both,
+            "five swaps recorded nothing new",
+        );
+    }
+
+    #[test]
+    fn the_loop_and_a_seek_survive_a_switch_to_the_chain() {
+        // Both variants stand on the master timeline every candidate agreed on,
+        // so a loop over bar 2 is the same bar 2 in either.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let bars = app.view.bar_lines.clone();
+        assert!(bars.len() >= 3, "the demo has bars to loop over");
+        app.loop_range = Some((bars[1], bars[2]));
+        app.vp.play_tick = bars[1] + 10;
+        app.show_global_chain();
+        assert_eq!(
+            app.loop_range,
+            Some((bars[1], bars[2])),
+            "the loop is the same span of the same timeline",
+        );
+        assert_eq!(app.vp.play_tick, bars[1] + 10, "and the seek holds");
+    }
+
+    #[test]
+    fn switching_variants_while_stopped_does_not_start_playing() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.playing = false;
+        app.show_global_chain();
+        assert!(!app.vp.playing, "auditioning is not playing");
+        assert_eq!(app.player.active_count(), 0, "and nothing sounds");
+    }
+
+    // ── the reducer refuses, not just the button ─────────────────────────────
+
+    #[test]
+    fn a_refused_chain_cannot_be_activated_by_an_action() {
+        // A disabled button is not a type system. The action must be refused
+        // where it is applied, or a stale frame, a keybinding, or a future
+        // caller reaches a result that does not exist.
+        let (mut app, _) = app_with_refused_chain();
+        app.show_candidate(0);
+        app.vp.playing = true;
+        app.advance_audio(0.2);
+        let sounding = app.player.active_count();
+        let tick = app.vp.play_tick;
+        let entries = app.history.entries().len();
+
+        app.apply_generate_actions(&GenerateActions {
+            show: Some(AuditionPick::Chain),
+            ..GenerateActions::default()
+        });
+
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the active source is still the intact winner",
+        );
+        assert_eq!(
+            app.player.active_count(),
+            sounding,
+            "and playback was not reset — the source never changed",
+        );
+        assert_eq!(app.vp.play_tick, tick, "nor the playhead");
+        assert_eq!(
+            app.history.entries().len(),
+            entries,
+            "and nothing was recorded",
+        );
+    }
+
+    #[test]
+    fn ab_cannot_route_to_a_refused_chain() {
+        // The stale-target case: an A/B target pointing at a chain the run does
+        // not have. Nothing happens, rather than something empty happening.
+        let (mut app, _) = app_with_refused_chain();
+        app.show_candidate(0);
+        app.ab_other = Some(AuditionCandidate::GlobalChain);
+        app.ab_swap();
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the intact winner is still what is playing",
+        );
+        assert!(
+            !app.history
+                .entries()
+                .iter()
+                .any(|e| e.source == CandidateSource::GlobalChain),
+            "and no chain entry was invented",
+        );
+    }
+
+    // ── the panel says what is actually sounding ─────────────────────────────
+
+    #[test]
+    fn the_intact_variant_action_returns_to_ranked_candidate_0() {
+        // "S6 Intact" means ranked candidate 0 — the whole candidate S6 put
+        // first, and the one `baseline_cost` measures. Not "whichever row was
+        // last clicked".
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_candidate(1); // browse another row
+        app.show_global_chain();
+        app.apply_generate_actions(&GenerateActions {
+            show: Some(AuditionPick::Intact),
+            ..GenerateActions::default()
+        });
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the intact winner is the baseline's candidate, not the last browsed row",
+        );
+    }
+
+    #[test]
+    fn the_candidate_table_stops_marking_a_row_while_the_chain_plays() {
+        // The table's highlight is a claim about what is sounding. While the
+        // chain plays, no row is: the chain is made of bars from several of
+        // them, and pointing at one would name a supplier as the whole result.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        assert_eq!(app.gen_panel.selected, Some(0), "the winner is marked");
+        app.show_global_chain();
+        assert_eq!(
+            app.gen_panel.selected, None,
+            "no row is the audition while the chain is",
+        );
+        app.ab_swap();
+        assert_eq!(
+            app.gen_panel.selected,
+            Some(0),
+            "and the mark comes back with the row",
+        );
+    }
+
+    #[test]
+    fn the_chain_replays_from_history_after_a_later_generate() {
+        // Source-aware replay: the chain's snapshot outlives the run that made
+        // it, because history holds the score rather than a way to rebuild it.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let chain_entry = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was recorded")
+            .id;
+        let notes = app
+            .history
+            .get(chain_entry)
+            .expect("entry")
+            .score
+            .master_bars
+            .len();
+
+        app.gen_panel.seed = 31_337;
+        app.do_generate(); // a whole new run
+        app.select_history(chain_entry);
+
+        assert_eq!(
+            app.history
+                .get(chain_entry)
+                .expect("entry")
+                .score
+                .master_bars
+                .len(),
+            notes,
+            "the old chain snapshot is untouched by a later run",
+        );
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::History(chain_entry)),
+            "and it is what is playing",
+        );
+    }
+
+    /// The summary of `run`'s chain — for building expectations, never for
+    /// asking the panel what it shows.
+    fn summary_of(app: &CockpitApp, run: GenerationRunId) -> GlobalChainSummary {
+        app.history
+            .chain_of(run)
+            .and_then(global_chain_summary)
+            .expect("the run planned a chain, so it has an explanation")
+    }
+
+    #[test]
+    fn history_replay_shows_the_replayed_chains_explanation() {
+        // The panel must explain what is *sounding*. Replaying chain A while
+        // run B is active and reading B's record would put A's music beside B's
+        // supplier map — every number true, and the pairing a lie.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 11;
+        app.do_generate();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.show_global_chain();
+        let chain_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let summary_a = summary_of(&app, run_a);
+
+        app.gen_panel.seed = 22;
+        app.do_generate();
+        let run_b = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let summary_b = summary_of(&app, run_b);
+        assert_ne!(
+            summary_a, summary_b,
+            "the fixture needs two runs that chain differently — pick other seeds",
+        );
+
+        app.select_history(chain_a);
+        let shown = app
+            .displayed_chain_summary()
+            .expect("the sounding chain has an explanation");
+        assert_eq!(shown, summary_a, "the replayed chain's own explanation");
+        assert_ne!(shown, summary_b, "not the active run's");
+    }
+
+    #[test]
+    fn a_replayed_chain_explains_itself_even_when_the_active_run_refused() {
+        // The sharper case: the active run has no chain at all. Reading the
+        // active run would find a refusal and show nothing, so the chain that
+        // is actually playing would go unexplained.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 11;
+        app.do_generate();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.show_global_chain();
+        let chain_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let summary_a = summary_of(&app, run_a);
+
+        // Run B: generated, but staged as a run whose chain was refused.
+        app.gen_panel.seed = 22;
+        app.do_generate();
+        let run_b = app.history.begin_run();
+        {
+            let active = app.gen_panel.active.as_mut().expect("a run");
+            active.context.run = run_b;
+            active.chain = GlobalChainOutcome::Refused(ChainError::EmptySet);
+        }
+        app.history.record_chain(
+            run_b,
+            ChainOutcomeRecord::Refused {
+                error: ChainError::EmptySet,
+            },
+        );
+
+        app.select_history(chain_a);
+        assert_eq!(
+            app.displayed_chain_summary(),
+            Some(summary_a),
+            "the playing chain explains itself, whatever the active run came to",
+        );
+    }
+
+    #[test]
+    fn the_live_chain_is_explained_by_the_active_run() {
+        // The other side of the rule: nothing replayed, so the active run's
+        // chain is the one on show.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        assert_eq!(app.displayed_chain_summary(), Some(summary_of(&app, run)));
+        app.show_global_chain();
+        assert_eq!(
+            app.displayed_chain_summary(),
+            Some(summary_of(&app, run)),
+            "auditioning the live chain does not change whose explanation it is",
+        );
+    }
+
+    #[test]
+    fn replaying_a_candidate_still_explains_the_active_runs_chain() {
+        // A replayed *candidate* is not a chain, so it says nothing about which
+        // chain to explain: the active run's stands.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let candidate = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::Generate)
+            .expect("recorded")
+            .id;
+        app.select_history(candidate);
+        assert_eq!(app.displayed_chain_summary(), Some(summary_of(&app, run)));
+    }
+
+    /// Prints the chain evidence the report quotes: both costs, the delta, the
+    /// supplier map, and every boundary's facts with the core's own rationale.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn print_chain_evidence(summary: &GlobalChainSummary) {
+        println!("S7 global chain available: yes");
+        println!("policy: {} v{}", summary.policy_id, summary.policy_version);
+        println!("baseline cost: {:.6}", summary.baseline_cost);
+        println!("chain cost:    {:.6}", summary.total_cost);
+        println!(
+            "delta:         {:+.6} ({})",
+            summary.delta,
+            delta_relation(summary.delta),
+        );
+        println!("supplier map:");
+        for bar in &summary.bars {
+            println!(
+                "  bar {} <- candidate {} (rank {}) · {} · seed {:016x} · local {:.4} · s6 {:.4}",
+                bar.bar_number,
+                bar.candidate,
+                bar.rank,
+                bar.strategy,
+                bar.variant_seed,
+                bar.local_aggregate,
+                bar.s6_aggregate,
+            );
+        }
+        println!("transitions:");
+        for b in &summary.boundaries {
+            println!(
+                "  bar {} -> bar {} · cand {} -> {} · {} · silent {} · repeat {} · cost {:.4}",
+                b.from_bar_number,
+                b.to_bar_number,
+                b.from_candidate,
+                b.to_candidate,
+                b.jump_semitones.map_or_else(
+                    || "jump not measured".to_owned(),
+                    |j| format!("jump {j} st")
+                ),
+                b.silent_boundary,
+                b.rhythm_repeat,
+                b.aggregate,
+            );
+            println!(
+                "    rationale: {}",
+                rationale_hover(&b.rationale).replace('\n', " | ")
+            );
+        }
+    }
+
+    /// The acceptance scenario's transport leg: play the intact winner, switch
+    /// to the chain mid-note, seek, loop, and A/B inside the loop.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn acceptance_transport(app: &mut CockpitApp) {
+        app.vp.playing = true;
+        app.advance_audio(0.5);
+        let sounding = app.player.active_count();
+        app.show_global_chain();
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "no notes leak across the switch"
+        );
+        println!("A/B playback: pass (S6 held {sounding} notes; 0 leaked into S7)");
+
+        let bars = app.view.bar_lines.clone();
+        app.vp.play_tick = bars[1] + 17;
+        let seeked = app.vp.play_tick;
+        app.loop_range = Some((bars[1], bars[2]));
+        app.ab_swap();
+        assert_eq!(app.vp.play_tick, seeked, "the seek survives the switch");
+        assert_eq!(
+            app.loop_range,
+            Some((bars[1], bars[2])),
+            "and so does the loop",
+        );
+        assert_eq!(app.current, Some(AuditionCandidate::Generate(0)));
+        println!("seek/loop: pass (A/B inside a loop keeps both)");
+        println!("All Notes Off on switch: pass");
+
+        // Paused, mid-note.
+        app.vp.playing = true;
+        app.advance_audio(0.4);
+        app.vp.playing = false;
+        app.show_global_chain();
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "paused switch releases held notes"
+        );
+        println!("paused switch: pass");
+    }
+
+    /// The milestone's acceptance scenario, end to end, on one real fixed-seed
+    /// Generate — not the synthetic non-greedy fixture.
+    ///
+    /// Every law in this file checks one fact in isolation. This walks the
+    /// vertical a person actually walks: generate, see both variants, read the
+    /// supplier map, play one, switch mid-playback, seek, loop, A/B inside the
+    /// loop, export, replay from history, move the knobs, and confirm the old
+    /// result did not move. It prints its evidence so the numbers in the report
+    /// are reproducible rather than asserted.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_global_chain_audition_scenario_on_a_real_generate_run() {
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-acceptance");
+        app.gen_panel.seed = 2026;
+        app.gen_panel.bars = 4;
+        app.gen_panel.variants = 2;
+        app.gen_panel.gesture = false;
+
+        // 1-2. Generate.
+        app.do_generate();
+
+        let active = app.gen_panel.active.as_ref().expect("a run");
+        println!("\n== Global Chain Audition — fixed-seed acceptance run ==");
+        println!(
+            "source: demo.mid · seed {} · bars {} · variants/strategy {} · gesture off",
+            active.context.seed, active.context.bars, active.context.variants_per_strategy,
+        );
+        println!(
+            "corpus contribution: templates {} · references {} · gesture {}",
+            active.context.corpus.templates,
+            active.context.corpus.references,
+            active.context.corpus.gesture,
+        );
+        println!("candidates ranked: {}", active.set.rows.len());
+
+        // 3. S6 intact is the default.
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "S6 intact is what Generate shows",
+        );
+        println!("S6 intact available: yes (rank 1, the default)");
+
+        // 4-6. The chain, its costs, its supplier map.
+        let evidence = app.chain_panel_evidence();
+        assert_eq!(evidence.active_refusal, None);
+        let summary = evidence.displayed_summary.expect("this run plans a chain");
+        print_chain_evidence(&summary);
+        assert_eq!(summary.bars.len(), 4, "one supplier per asked bar");
+        assert_eq!(summary.boundaries.len(), 3, "one per bar line");
+
+        // 7-12. Play, switch mid-playback, seek, loop, A/B inside the loop.
+        acceptance_transport(&mut app);
+
+        // 13-16. Export, keep, replay, and confirm the old result did not move.
+        acceptance_export_and_history(&mut app, &summary);
+
+        // 17. Typed refusal keeps S6 available. A different run, by necessity:
+        // a real run's candidates all descend from one generator and agree, so
+        // nothing the panel can ask for refuses.
+        acceptance_refusal();
+        println!("== end ==\n");
+    }
+
+    /// The acceptance scenario's export and history leg.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn acceptance_export_and_history(app: &mut CockpitApp, summary: &GlobalChainSummary) {
+        use griff_core::midi::export_score;
+
+        let chain_id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was auditioned")
+            .id;
+        let path = app.write_chain_keep(chain_id).expect("the chain exports");
+        let written = fs::read(&path).expect("the file is there");
+        let expected = export_score(&app.history.get(chain_id).expect("entry").score)
+            .expect("the snapshot exports");
+        assert_eq!(written, expected, "the bytes are the captured snapshot's");
+        let sidecar: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
+                .expect("json");
+        println!(
+            "MIDI export: pass ({} bytes, {} bars)",
+            written.len(),
+            sidecar["bars"],
+        );
+        println!(
+            "sidecar complete: origin {} · run {} · seed {} · variants {} · policy {} v{}",
+            sidecar["origin"],
+            sidecar["run"],
+            sidecar["seed"],
+            sidecar["variants_per_strategy"],
+            sidecar["policy_id"],
+            sidecar["policy_version"],
+        );
+
+        // Keep without audition side effects.
+        app.show_candidate(0);
+        let before = (app.current, app.ab_other, app.gen_panel.selected);
+        app.keep_chain();
+        assert_eq!(
+            (app.current, app.ab_other, app.gen_panel.selected),
+            before,
+            "keeping does not change what is playing",
+        );
+        println!("keep without audition side effects: pass");
+
+        // 14-16. Replay from history, move the knobs, confirm nothing moved.
+        app.gen_panel.seed = 4096;
+        app.do_generate();
+        app.select_history(chain_id);
+        assert_eq!(app.gen_panel.selected, None, "no live row claims to sound");
+        let replayed = app
+            .displayed_chain_summary()
+            .expect("the replayed chain explains itself");
+        assert_eq!(
+            &replayed, summary,
+            "the old chain's own explanation, unmoved"
+        );
+        let again = app.write_chain_keep(chain_id).expect("still exports");
+        assert_eq!(
+            fs::read(&again).expect("read"),
+            expected,
+            "and still exports the old music",
+        );
+        println!("history replay: pass");
+        println!("old history explanation after new run: pass");
+        println!("history snapshot immutability: pass");
+
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+        drop(fs::remove_file(&again));
+        drop(fs::remove_file(again.replace(".mid", ".json")));
+    }
+
+    /// The acceptance scenario's refusal leg.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn acceptance_refusal() {
+        let (mut refused, reason) = app_with_refused_chain();
+        assert_eq!(
+            refused.chain_panel_evidence().active_refusal,
+            Some(reason),
+            "the refusal is reported",
+        );
+        refused.show_global_chain();
+        assert!(
+            !refused
+                .history
+                .entries()
+                .iter()
+                .any(|e| e.source == CandidateSource::GlobalChain),
+            "and no empty chain is invented",
+        );
+        assert_eq!(refused.current, Some(AuditionCandidate::Generate(0)));
+        assert!(!refused.player.is_silent(), "S6 still plays");
+        println!(
+            "typed refusal keeps S6 available: pass ({})",
+            chain_refusal_summary(reason),
+        );
+    }
+
+    #[test]
+    fn an_active_refusal_does_not_hide_a_replayed_chain_explanation() {
+        // Both facts are true at once: run B has no chain, and chain A is
+        // playing. The panel owes the user both, and this goes through the
+        // state the renderer draws from rather than past it — the last version
+        // of this law checked the helper and missed an early return sitting
+        // between the helper and the screen.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 11;
+        app.do_generate();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.show_global_chain();
+        let chain_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let summary_a = summary_of(&app, run_a);
+
+        app.gen_panel.seed = 22;
+        app.do_generate();
+        let run_b = app.history.begin_run();
+        {
+            let active = app.gen_panel.active.as_mut().expect("a run");
+            active.context.run = run_b;
+            active.chain = GlobalChainOutcome::Refused(ChainError::EmptySet);
+        }
+        app.history.record_chain(
+            run_b,
+            ChainOutcomeRecord::Refused {
+                error: ChainError::EmptySet,
+            },
+        );
+        app.select_history(chain_a);
+
+        let evidence = app.chain_panel_evidence();
+        assert_eq!(
+            evidence.active_refusal,
+            Some(ChainError::EmptySet),
+            "the active run's chip is disabled, and the panel says why",
+        );
+        assert_eq!(
+            evidence.displayed_summary,
+            Some(summary_a),
+            "and the chain that is actually playing is still explained",
+        );
+    }
+
+    #[test]
+    fn a_live_refusal_alone_leaves_nothing_to_explain() {
+        // The ordinary refusal case: nothing is playing but the intact winner,
+        // so there is a reason and no summary — not an empty summary.
+        let (app, refusal) = app_with_refused_chain();
+        let evidence = app.chain_panel_evidence();
+        assert_eq!(evidence.active_refusal, Some(refusal));
+        assert_eq!(evidence.displayed_summary, None);
+    }
+
+    #[test]
+    fn a_planned_live_run_has_a_summary_and_no_refusal() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let evidence = app.chain_panel_evidence();
+        assert_eq!(evidence.active_refusal, None);
+        assert_eq!(evidence.displayed_summary, Some(summary_of(&app, run)));
+    }
+
+    #[test]
+    fn an_equal_cost_delta_is_not_called_higher() {
+        // The chain costing exactly what the intact winner costs is neither
+        // lower nor higher, and a panel that says "higher" in confident
+        // monospace is wrong in the one place it is trying hardest to be
+        // trusted.
+        assert_eq!(delta_relation(0.0), "equal");
+        assert_eq!(delta_relation(-0.9), "lower");
+        assert_eq!(delta_relation(0.9), "higher");
+        // The fourth arm is part of the contract, so it is not left living on
+        // the honesty of a comment. Unreachable while the engine rejects
+        // non-finite costs — which is a claim about the engine, not a licence
+        // to call a NaN "equal" if that ever changes.
+        assert_eq!(delta_relation(f64::NAN), "not comparable");
+    }
+
+    #[test]
+    fn the_visible_explanation_comes_from_the_runs_record() {
+        // Not from ActiveGenerateRun. The panel and a replayed history entry
+        // must give the same answer about the same chain, and only one of them
+        // has a live run to ask.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let summary = summary_of(&app, run);
+
+        let GlobalChainOutcome::Planned(chain) =
+            &app.gen_panel.active.as_ref().expect("a run").chain
+        else {
+            panic!("planned");
+        };
+        assert_eq!(
+            summary.total_cost.to_bits(),
+            chain.plan.total_cost.to_bits(),
+            "the same number the capture holds, bit for bit",
+        );
+        assert_eq!(
+            summary.baseline_cost.to_bits(),
+            chain.baseline_cost.to_bits(),
+        );
+        assert_eq!(summary.bars.len(), app.gen_panel.bars, "one row per bar");
+        assert_eq!(
+            summary.boundaries.len(),
+            app.gen_panel.bars.saturating_sub(1),
+            "one row per bar line",
+        );
+    }
+
+    #[test]
+    fn an_old_chain_still_explains_itself_after_a_later_generate() {
+        // The reason the trace lives on the run record. Replaying an old chain
+        // must show that chain's own explanation, and by then its
+        // ActiveGenerateRun is gone.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 11;
+        app.do_generate();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.show_global_chain();
+        let chain_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let before = summary_of(&app, run_a);
+
+        app.gen_panel.seed = 22;
+        app.do_generate(); // run A's ActiveGenerateRun is gone
+        app.select_history(chain_a);
+
+        let entry_run = app.history.get(chain_a).expect("entry").run;
+        assert_eq!(entry_run, run_a, "the entry knows which run made it");
+        let after = summary_of(&app, entry_run);
+        assert_eq!(
+            after.total_cost.to_bits(),
+            before.total_cost.to_bits(),
+            "the old chain's explanation is the old chain's",
+        );
+        assert_eq!(
+            after.bars.iter().map(|b| b.candidate).collect::<Vec<_>>(),
+            before.bars.iter().map(|b| b.candidate).collect::<Vec<_>>(),
+            "including its supplier map",
+        );
+    }
+
+    #[test]
+    fn moving_the_knobs_does_not_move_the_visible_explanation() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let before = summary_of(&app, run);
+        app.gen_panel.seed = 4_242;
+        app.gen_panel.bars = 2;
+        app.gen_panel.variants = 5;
+        let after = summary_of(&app, run);
+        assert_eq!(
+            after, before,
+            "the explanation belongs to the run, not the panel"
+        );
+    }
+
+    #[test]
+    fn a_refused_run_has_no_explanation_block_to_show() {
+        let (app, _) = app_with_refused_chain();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        assert!(
+            app.history
+                .chain_of(run)
+                .and_then(global_chain_summary)
+                .is_none(),
+            "nothing to explain, so nothing is drawn — not an empty block",
+        );
+    }
+
+    #[test]
+    fn a_runs_chain_outcome_is_recorded_against_the_run() {
+        // Not against a candidate: a refusal has no score, and an entry needs
+        // one. The run id is the link that survives the panel.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let Some(ChainOutcomeRecord::Planned {
+            total_cost,
+            baseline_cost,
+            steps,
+            policy_id,
+            ..
+        }) = app.history.chain_of(run)
+        else {
+            panic!(
+                "the demo run planned a chain: {:?}",
+                app.history.chain_of(run)
+            );
+        };
+        assert_eq!(*policy_id, "candidate_chain");
+        assert_eq!(steps.len(), app.gen_panel.bars, "one step per output bar");
+        let GlobalChainOutcome::Planned(chain) =
+            &app.gen_panel.active.as_ref().expect("a run").chain
+        else {
+            panic!("planned");
+        };
+        assert_eq!(
+            total_cost.to_bits(),
+            chain.plan.total_cost.to_bits(),
+            "the recorded costs are the captured ones, bit for bit",
+        );
+        assert_eq!(baseline_cost.to_bits(), chain.baseline_cost.to_bits());
+    }
+
+    #[test]
+    fn a_refused_runs_outcome_survives_a_later_generate() {
+        // The whole reason the record is run-level. ActiveGenerateRun is
+        // replaced by the next Generate; the reason run A had no chain must not
+        // go with it.
+        let (mut app, refusal) = app_with_refused_chain();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+
+        app.gen_panel.seed = 24_601;
+        app.do_generate(); // run B replaces the active run entirely
+        let run_b = app.gen_panel.active.as_ref().expect("a run").context.run;
+        assert_ne!(run_a, run_b, "a new run");
+
+        let Some(ChainOutcomeRecord::Refused { error }) = app.history.chain_of(run_a) else {
+            panic!(
+                "run A's chain is still refused: {:?}",
+                app.history.chain_of(run_a)
+            );
+        };
+        assert_eq!(
+            *error, refusal,
+            "run A's refusal is still the typed error it always was",
+        );
+        assert!(
+            matches!(
+                app.history.chain_of(run_b),
+                Some(&ChainOutcomeRecord::Planned { .. })
+            ),
+            "and run B recorded its own outcome",
+        );
+        assert!(
+            !app.history
+                .entries()
+                .iter()
+                .any(|e| e.run == run_a && e.source == CandidateSource::GlobalChain),
+            "run A never got a chain entry — a refusal has no score to hang one on",
+        );
+        let intact_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.run == run_a)
+            .expect("run A's intact winner is still in history");
+        assert!(
+            !intact_a.score.master_bars.is_empty(),
+            "and its music is untouched by run B",
+        );
+    }
+
+    // ── export writes the snapshot, never a re-plan ──────────────────────────
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_exports_the_captured_assembled_score() {
+        use griff_core::midi::export_score;
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-chain-export-test");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was recorded")
+            .id;
+
+        let path = app.write_chain_keep(id).expect("the chain exports");
+        let written = fs::read(&path).expect("the file is there");
+        let expected =
+            export_score(&app.history.get(id).expect("entry").score).expect("the snapshot exports");
+        assert_eq!(
+            written, expected,
+            "the bytes are the captured assembled score's, through the one canonical path",
+        );
+        drop(fs::remove_file(&path));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn exporting_an_old_chain_after_a_new_generate_writes_the_old_music() {
+        // The immutability law. The UI moves on — a new run, new knobs, a
+        // different candidate — and the old export is still the old music,
+        // because it was never a recipe to re-derive, only a snapshot.
+        use griff_core::midi::export_score;
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-chain-export-old");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let old = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let old_bytes = export_score(&app.history.get(old).expect("entry").score).expect("exports");
+
+        app.gen_panel.seed = 8_675_309;
+        app.gen_panel.bars = 3;
+        app.do_generate();
+        app.show_candidate(1);
+
+        let path = app
+            .write_chain_keep(old)
+            .expect("the old chain still exports");
+        let written = fs::read(&path).expect("the file is there");
+        assert_eq!(
+            written, old_bytes,
+            "the old entry exports the music it was recorded with",
+        );
+        drop(fs::remove_file(&path));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn exporting_the_chain_does_not_replan_it() {
+        // The poisoned snapshot again, this time through the export path.
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-chain-export-noreplan");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let poison = 4321.0_f64;
+        {
+            let run = app.gen_panel.active.as_mut().expect("a run");
+            let GlobalChainOutcome::Planned(chain) = &mut run.chain else {
+                panic!("planned");
+            };
+            chain.plan.total_cost = poison;
+        }
+        let path = app.write_chain_keep(id).expect("exports");
+        let GlobalChainOutcome::Planned(chain) =
+            &app.gen_panel.active.as_ref().expect("a run").chain
+        else {
+            panic!("planned");
+        };
+        assert_eq!(
+            chain.plan.total_cost.to_bits(),
+            poison.to_bits(),
+            "export read the snapshot; it did not ask the planner to try again",
+        );
+        drop(fs::remove_file(&path));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn keeping_the_chain_while_s6_sounds_does_not_change_what_is_playing() {
+        use griff_core::midi::export_score;
+        // Export is a file action. It must not decide what the user is
+        // listening to — pressing "keep" to get a .mid out should not swap the
+        // audio out from under them mid-comparison.
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-keep-no-side-effects");
+        app.gen_panel.variants = 2;
+        app.do_generate(); // S6 intact is showing and sounding
+        app.show_candidate(1);
+        app.show_candidate(0); // ab_other is Generate(1)
+        app.vp.playing = true;
+        app.advance_audio(0.3);
+        let sounding = app.player.active_count();
+        let tick = app.vp.play_tick;
+        let selected_row = app.gen_panel.selected;
+        let ab = app.ab_other;
+        let selected_entry = app.history.selected();
+
+        app.keep_chain();
+
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the S6 winner is still the audition",
+        );
+        assert_eq!(app.player.active_count(), sounding, "still sounding");
+        assert_eq!(app.vp.play_tick, tick, "the playhead did not move");
+        assert!(app.vp.playing, "and it is still playing");
+        assert_eq!(
+            app.gen_panel.selected, selected_row,
+            "the row is still marked"
+        );
+        assert_eq!(app.ab_other, ab, "and A/B still points where it did");
+        assert_eq!(
+            app.history.selected(),
+            selected_entry,
+            "the history selection did not move to the chain",
+        );
+
+        let chain = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was recorded so the export has a result to name");
+        assert!(
+            app.gen_panel
+                .status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("kept -> ")),
+            "and the file was written: {:?}",
+            app.gen_panel.status,
+        );
+        let path = app
+            .gen_panel
+            .status
+            .as_deref()
+            .and_then(|s| s.strip_prefix("kept -> "))
+            .expect("a path");
+        let written = fs::read(path).expect("the file is there");
+        let expected = export_score(&chain.score).expect("the snapshot exports");
+        assert_eq!(
+            written, expected,
+            "the bytes are the chain's, not the S6 winner's"
+        );
+        drop(fs::remove_file(path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+    }
+
+    /// Generates a run with known knobs, auditions its chain, exports it, and
+    /// returns the parsed sidecar beside the run's captured facts.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn exported_chain_sidecar(dir: &str) -> (CockpitApp, HistoryId, serde_json::Value) {
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join(dir);
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 77;
+        app.gen_panel.bars = 4;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was recorded")
+            .id;
+        let path = app.write_chain_keep(id).expect("exports");
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
+                .expect("the sidecar is json");
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+        (app, id, json)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_sidecar_preserves_the_captured_run_contract() {
+        // A sidecar exists to reproduce the export later, by someone who no
+        // longer has the session. Every field of the run's captured contract
+        // has to be in it, or "reproduce this" quietly means "regenerate
+        // something and hope".
+        let (app, _, json) = exported_chain_sidecar("griff-sidecar-contract");
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+
+        assert_eq!(json["origin"], "candidate_chain", "what this file is");
+        assert_eq!(json["run"], run.0, "which run made it");
+        assert!(json["source"].is_string(), "what seeded that run");
+        assert_eq!(json["seed"], 77, "the ask seed");
+        assert_eq!(json["bars"], 4, "the ask's bar count");
+        assert_eq!(json["variants_per_strategy"], 2, "the ask's variant count");
+        assert!(
+            json["corpus"]["templates"].is_number()
+                && json["corpus"]["references"].is_number()
+                && json["corpus"]["gesture"].is_boolean(),
+            "what the corpus actually contributed: {}",
+            json["corpus"],
+        );
+        assert_eq!(json["policy_id"], "candidate_chain");
+        assert_eq!(json["policy_version"], 1);
+        assert!(json["baseline_cost"].is_number());
+        assert!(json["total_cost"].is_number());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_sidecars_bars_come_from_the_captured_ask() {
+        // Not from suppliers.len(). They agree — and a law says so — but the
+        // ask is a fact the run recorded, and deriving it from the result would
+        // make a wrong result look self-consistent.
+        let (app, id, json) = exported_chain_sidecar("griff-sidecar-bars");
+        let GeneratorProvenance::GlobalChain {
+            bars, suppliers, ..
+        } = &app.history.get(id).expect("entry").provenance.generator
+        else {
+            panic!("a chain entry");
+        };
+        assert_eq!(json["bars"], *bars, "the sidecar's bars are the ask's");
+        assert_eq!(
+            *bars,
+            suppliers.len(),
+            "and the invariant holds: one supplier per asked bar",
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_sidecar_keeps_the_costs_and_the_supplier_map_in_bar_order() {
+        let (app, id, json) = exported_chain_sidecar("griff-sidecar-suppliers");
+        let GeneratorProvenance::GlobalChain {
+            suppliers,
+            baseline_cost,
+            total_cost,
+            ..
+        } = &app.history.get(id).expect("entry").provenance.generator
+        else {
+            panic!("a chain entry");
+        };
+        assert_eq!(
+            json["baseline_cost"].as_f64().expect("a number").to_bits(),
+            baseline_cost.to_bits(),
+            "the captured baseline, through json, unchanged",
+        );
+        assert_eq!(
+            json["total_cost"].as_f64().expect("a number").to_bits(),
+            total_cost.to_bits(),
+        );
+        let written = json["suppliers"].as_array().expect("an array");
+        assert_eq!(written.len(), suppliers.len());
+        for (i, (got, want)) in written.iter().zip(suppliers.iter()).enumerate() {
+            assert_eq!(got["bar"], want.bar, "supplier {i} is in output-bar order");
+            assert_eq!(got["candidate"], want.candidate);
+            assert_eq!(got["rank"], want.rank);
+            assert_eq!(got["strategy"], want.strategy);
+            assert_eq!(got["variant_seed"], want.variant_seed);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn moving_the_knobs_after_a_run_does_not_move_its_sidecar() {
+        // The sidecar describes the run that made the music, not the panel that
+        // happens to be open when the file is written.
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-sidecar-knobs");
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 77;
+        app.gen_panel.bars = 4;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+
+        app.gen_panel.seed = 5;
+        app.gen_panel.bars = 9;
+        app.gen_panel.variants = 7;
+
+        let path = app.write_chain_keep(id).expect("exports");
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
+                .expect("json");
+        assert_eq!(json["seed"], 77, "the run's seed, not the knob's");
+        assert_eq!(json["bars"], 4, "the run's bars, not the knob's");
+        assert_eq!(json["variants_per_strategy"], 2);
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_old_chains_sidecar_survives_a_later_generate() {
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-sidecar-old");
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 77;
+        app.gen_panel.bars = 4;
+        app.do_generate();
+        app.show_global_chain();
+        let old = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let old_run = app.gen_panel.active.as_ref().expect("a run").context.run;
+
+        app.gen_panel.seed = 999;
+        app.do_generate(); // a whole new run
+
+        let path = app
+            .write_chain_keep(old)
+            .expect("the old entry still exports");
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
+                .expect("json");
+        assert_eq!(json["run"], old_run.0, "the old run's id");
+        assert_eq!(json["seed"], 77, "and the old run's ask");
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_sidecar_names_its_suppliers_and_both_costs() {
+        // A sidecar that cannot say which candidate played which bar does not
+        // reproduce the export; it just sits beside it looking official.
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-chain-sidecar");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let path = app.write_chain_keep(id).expect("exports");
+        let json = fs::read_to_string(path.replace(".mid", ".json")).expect("a sidecar");
+        assert!(json.contains("\"suppliers\""), "the bar map: {json}");
+        assert!(json.contains("\"total_cost\""), "the chain's cost: {json}");
+        assert!(
+            json.contains("\"baseline_cost\""),
+            "and what it is compared against: {json}",
+        );
+        assert!(
+            json.contains("\"policy_id\": \"candidate_chain\""),
+            "under the policy that measured them: {json}",
+        );
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+    }
+
+    // ── history replay does not leave a live row claiming to sound ───────────
+
+    #[test]
+    fn replaying_a_chain_from_history_clears_the_live_candidate_selection() {
+        // The review's finding: the same defect through the side door. A row of
+        // run B's live table stays highlighted while run A's chain snapshot
+        // sounds, so the panel points at music that is not playing.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let chain = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+
+        app.gen_panel.seed = 1_234;
+        app.do_generate(); // run B — the table now marks row 0
+        assert_eq!(app.gen_panel.selected, Some(0), "run B marked its winner");
+
+        app.select_history(chain); // run A's chain sounds
+        assert_eq!(
+            app.gen_panel.selected, None,
+            "no live row is the active source while a snapshot plays",
+        );
+        assert_eq!(app.current, Some(AuditionCandidate::History(chain)));
+    }
+
+    #[test]
+    fn replaying_any_history_entry_clears_the_live_candidate_selection() {
+        // The general rule, not just the chain case: a live table selection is
+        // a claim about the active source, and a replayed snapshot is not it.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let first = app.history.entries().first().expect("recorded").id;
+        app.show_candidate(1);
+        assert_eq!(app.gen_panel.selected, Some(1));
+        app.select_history(first);
+        assert_eq!(
+            app.gen_panel.selected, None,
+            "the row stops claiming to be what is sounding",
+        );
+    }
+
+    #[test]
+    fn switching_variants_while_paused_mid_note_silences_the_held_notes() {
+        // The gap the review spotted in the matrix: seek() silences
+        // unconditionally, so a paused mid-note switch cannot leave a note
+        // hanging — but nothing said so.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.playing = true;
+        app.advance_audio(0.4);
+        app.vp.playing = false; // paused, mid-note
+        assert!(
+            app.player.active_count() > 0,
+            "the fixture is paused with notes held",
+        );
+        app.show_global_chain();
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the held notes are released by the switch, not left ringing",
+        );
+        assert!(!app.vp.playing, "and it is still paused");
+    }
+
+    #[test]
+    fn the_generate_run_captures_its_global_chain_once() {
+        // Both audition variants come from one run: the intact winner is row 0
+        // of the captured set, the chain is planned from the same RankedSet at
+        // capture time. Nothing later has a RankedSet to re-plan from.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run was captured");
+        let GlobalChainOutcome::Planned(chain) = &run.chain else {
+            panic!("the demo set is chain-compatible: {:?}", run.chain);
+        };
+        assert_eq!(
+            chain.plan.steps.len(),
+            app.gen_panel.bars,
+            "one selected bar per asked bar, captured with the run",
+        );
+        assert!(
+            !run.set.rows.is_empty(),
+            "and the intact winner's set is captured beside it",
+        );
+    }
+
+    #[test]
+    fn auditioning_playback_and_history_never_replan_the_chain() {
+        // The proof is a poisoned snapshot: if anything downstream re-plans,
+        // the planted value is overwritten by a real one. A chain that is
+        // recomputed on demand is a chain that can disagree with the set it
+        // claims to be made of.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let poison = 1234.5_f64;
+        {
+            let run = app.gen_panel.active.as_mut().expect("a run");
+            let GlobalChainOutcome::Planned(chain) = &mut run.chain else {
+                panic!("chain-compatible");
+            };
+            chain.plan.total_cost = poison;
+        }
+
+        app.show_global_chain(); // audition the chain
+        app.show_candidate(0); // back to the intact winner
+        app.ab_swap(); // and A/B between them
+        app.advance_audio(0.25); // play a little
+        app.stop_playback();
+        let id = app.history.entries().first().expect("recorded").id;
+        app.select_history(id); // replay a history snapshot
+        app.gen_panel.seed = 999; // and change the live knobs
+        app.gen_panel.bars = 3;
+
+        let run = app.gen_panel.active.as_ref().expect("still the same run");
+        let GlobalChainOutcome::Planned(chain) = &run.chain else {
+            panic!("chain-compatible");
+        };
+        assert_eq!(
+            chain.plan.total_cost.to_bits(),
+            poison.to_bits(),
+            "the captured chain is the one planted at capture — nothing re-planned it",
+        );
+    }
+
+    #[test]
+    fn a_new_generate_run_replaces_the_chain_without_mutating_the_old_history() {
+        // A new run is a new run: new id, newly planned chain. The entries the
+        // old run recorded keep their own snapshots.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let first_run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let first_entries: Vec<(HistoryId, usize)> = app
+            .history
+            .entries()
+            .iter()
+            .map(|e| (e.id, e.score.master_bars.len()))
+            .collect();
+        assert!(!first_entries.is_empty(), "the first run recorded entries");
+
+        app.gen_panel.seed = 4242;
+        app.do_generate();
+        let second_run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        assert_ne!(first_run, second_run, "a new Generate is a new run");
+
+        for (id, bars) in first_entries {
+            let entry = app.history.get(id).expect("the old entry survives");
+            assert_eq!(
+                entry.score.master_bars.len(),
+                bars,
+                "an old snapshot is not touched by a later run",
+            );
+            assert_eq!(entry.run, first_run, "and still belongs to its own run");
+        }
+    }
+
     #[test]
     fn ab_swaps_across_generate_and_swang_sources() {
         // #125 re-review 2: A/B remembers the last candidate viewed regardless
@@ -3651,7 +6078,7 @@ mod tests {
                 assert_eq!(*seed, 7, "the ask seed is captured honestly");
                 assert_eq!(*bars, app.gen_panel.bars);
             }
-            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+            other => panic!("a Generate candidate is not {other:?}"),
         }
     }
 
@@ -3672,7 +6099,7 @@ mod tests {
                 assert_eq!(corpus.references, 0);
                 assert!(!corpus.gesture);
             }
-            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+            other => panic!("a Generate candidate is not {other:?}"),
         }
         assert!(
             provenance_summary(&entry.provenance).contains("seed only"),
@@ -3707,7 +6134,7 @@ mod tests {
                 *variants_per_strategy,
                 corpus.is_seed_only(),
             ),
-            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+            other => panic!("a Generate candidate is not {other:?}"),
         }
     }
 
@@ -4059,7 +6486,7 @@ mod tests {
                     "the captured origin survives an edit",
                 );
             }
-            GeneratorProvenance::Generate { .. } => panic!("expected a Swang candidate"),
+            other => panic!("expected a Swang candidate, got {other:?}"),
         }
     }
 
@@ -4090,7 +6517,7 @@ mod tests {
                     "the program is the run's evaluated text"
                 );
             }
-            GeneratorProvenance::Generate { .. } => panic!("expected a Swang candidate"),
+            other => panic!("expected a Swang candidate, got {other:?}"),
         }
     }
 
@@ -4117,7 +6544,7 @@ mod tests {
             GeneratorProvenance::Swang { program, .. } => {
                 assert!(!program.is_empty(), "the program text is captured");
             }
-            GeneratorProvenance::Generate { .. } => panic!("a Swang candidate is not Generate"),
+            other => panic!("a Swang candidate is not {other:?}"),
         }
     }
 
