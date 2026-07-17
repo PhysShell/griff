@@ -43,7 +43,8 @@ use griff_ui_core::history::{
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
-use griff_core::candidate_chain::ChainError;
+use griff_core::candidate_chain::{ChainError, MasterBarField, TrackField, TransitionFactError};
+use griff_core::layered_path::PathError;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
 use griff_ui_core::generate::{generate_run, GeneratedRun, GlobalChainOutcome};
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
@@ -677,9 +678,133 @@ fn remap_loop_range(
 /// and braces, and explains nothing. A refusal is usually about the *set* rather
 /// than about anything the user did, so it has to say which candidate and which
 /// fact, in words.
-fn chain_refusal_summary(_error: ChainError) -> String {
-    // Stub: the laws come first.
-    String::new()
+fn chain_refusal_summary(error: ChainError) -> String {
+    match error {
+        ChainError::EmptySet => "the set has no candidates to chain".to_owned(),
+        ChainError::NoBars => "the candidates have no bars to chain".to_owned(),
+        ChainError::BarCountMismatch {
+            candidate,
+            expected,
+            found,
+        } => format!(
+            "candidate {candidate} is {found} bars long, not {expected} — \
+             the chain is never truncated to the shortest candidate"
+        ),
+        ChainError::PpqMismatch {
+            candidate,
+            expected,
+            found,
+        } => format!(
+            "candidate {candidate} measures time at {found} ticks per quarter, not {expected}"
+        ),
+        ChainError::MasterBarMismatch {
+            candidate,
+            bar,
+            field,
+        } => format!(
+            "candidate {candidate} disagrees about bar {bar}'s {} — \
+             the candidates must share one timeline to be chained",
+            master_bar_field_name(field),
+        ),
+        ChainError::TrackCountMismatch {
+            candidate,
+            expected,
+            found,
+        } => format!("candidate {candidate} has {found} tracks, not {expected}"),
+        ChainError::TrackMetadataMismatch {
+            candidate,
+            track,
+            field,
+        } => format!(
+            "candidate {candidate} disagrees about track {track}'s {}",
+            track_field_name(field),
+        ),
+        ChainError::SourceMetaMismatch { candidate } => {
+            format!("candidate {candidate} names a different source format")
+        }
+        ChainError::LossReportMismatch { candidate } => format!(
+            "candidate {candidate} carries a different import loss report — \
+             the chain will not merge two histories into one"
+        ),
+        ChainError::CrossBarMaterial { candidate, bar } => format!(
+            "candidate {candidate} has material in bar {bar} that does not fit inside \
+             the bar line — a bar cannot be lifted out without cutting it"
+        ),
+        ChainError::EmptyEventGroup { candidate } => {
+            format!("candidate {candidate} has an event group with no notes or rests in it")
+        }
+        ChainError::MaterialOutsideTimeline { candidate, tick } => format!(
+            "candidate {candidate} has material at tick {tick}, which is past the end \
+             of its own timeline"
+        ),
+        ChainError::MissingMaterial {
+            candidate,
+            track,
+            voice,
+            bar,
+        } => format!("candidate {candidate} has no track {track}, voice {voice}, bar {bar}"),
+        ChainError::BoundaryFact(TransitionFactError::MissingFromBar { bar, bars }) => {
+            format!("a boundary was measured from bar {bar} of a {bars}-bar candidate")
+        }
+        ChainError::BoundaryFact(TransitionFactError::MissingToBar { bar, bars }) => {
+            format!("a boundary was measured into bar {bar} of a {bars}-bar candidate")
+        }
+        ChainError::Path(path) => path_error_summary(path),
+    }
+}
+
+/// The name of a master-bar fact, in the words a musician uses for it.
+const fn master_bar_field_name(field: MasterBarField) -> &'static str {
+    match field {
+        MasterBarField::Index => "number",
+        MasterBarField::TickRange => "position",
+        MasterBarField::TimeSignature => "time signature",
+        MasterBarField::Tempo => "tempo",
+        MasterBarField::Repeat => "repeat barlines",
+    }
+}
+
+/// The name of a track fact, in the words a musician uses for it.
+const fn track_field_name(field: TrackField) -> &'static str {
+    match field {
+        TrackField::Name => "name",
+        TrackField::Channel => "channel",
+        TrackField::Tuning => "tuning",
+        TrackField::VoiceCount => "voice count",
+        TrackField::VoiceId => "voice numbering",
+    }
+}
+
+/// Why the layered solver rejected the problem the chain handed it.
+///
+/// These are invariant violations rather than facts about the music, so they
+/// say so plainly instead of pretending the set did something musical wrong.
+fn path_error_summary(error: PathError) -> String {
+    match error {
+        PathError::NoLayers => "the chain problem had no bars".to_owned(),
+        PathError::EmptyLayer { layer } => format!("bar {layer} had no candidates to choose from"),
+        PathError::TransitionCount { expected, found } => {
+            format!("the chain problem had {found} boundary tables, not {expected}")
+        }
+        PathError::TransitionShape {
+            layer,
+            expected,
+            found,
+        } => format!("bar {layer}'s boundary table is {found:?}, not {expected:?}"),
+        PathError::NonFiniteLocal { state, cost } => format!(
+            "bar {}'s candidate {} scored {cost}, which is not a number the chain can compare",
+            state.layer, state.ordinal,
+        ),
+        PathError::NonFiniteTransition { edge, cost } => format!(
+            "the boundary from bar {} into bar {} scored {cost}, \
+             which is not a number the chain can compare",
+            edge.from.layer, edge.to.layer,
+        ),
+        PathError::NonFiniteAccumulation { state, cost } => format!(
+            "the costs stopped adding up at bar {} (reached {cost})",
+            state.layer,
+        ),
+    }
 }
 
 /// A one-line human description of a candidate's typed provenance — built here,
@@ -1503,11 +1628,7 @@ impl CockpitApp {
     /// The Generate panel (S8): the ask, the ranked candidate table, and the
     /// keep actions. Rank 1 is what `griff generate` would have written.
     fn generate_window(&mut self, ctx: &egui::Context) {
-        let mut show: Option<usize> = None;
-        let mut keep: Option<usize> = None;
-        let mut open: Option<usize> = None;
-        let mut run = false;
-
+        let mut acts = GenerateActions::default();
         egui::Window::new("generate · candidates")
             .default_width(460.0)
             .default_height(420.0)
@@ -1545,11 +1666,11 @@ impl CockpitApp {
                 });
                 ui.horizontal(|ui| {
                     if ui.button("⚙ generate").clicked() {
-                        run = true;
+                        acts.run = true;
                     }
                     if ui.button("🎲 next seed").clicked() {
                         self.gen_panel.seed = self.gen_panel.seed.wrapping_add(1);
-                        run = true;
+                        acts.run = true;
                     }
                     if let Some(status) = &self.gen_panel.status {
                         ui.weak(status);
@@ -1561,26 +1682,34 @@ impl CockpitApp {
                     "mode: seed only — no corpus (run with --corpus for rhythms)"
                 });
 
-                self.generate_candidates(ui, &mut show, &mut keep, &mut open);
+                self.generate_candidates(ui, &mut acts);
             });
+        self.apply_generate_actions(&acts);
+    }
 
-        if run {
+    /// Acts on what the Generate window asked for, once it is no longer holding
+    /// a borrow of the panel it asked about.
+    fn apply_generate_actions(&mut self, acts: &GenerateActions) {
+        if acts.run {
             self.do_generate();
         }
-        if let Some(i) = show {
+        if let Some(i) = acts.show {
             self.show_candidate(i);
+        }
+        if acts.show_chain {
+            self.show_global_chain();
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let Some(i) = keep {
+            if let Some(i) = acts.keep {
                 self.keep_candidate(i);
             }
-            if let Some(i) = open {
+            if let Some(i) = acts.open {
                 self.open_keep(i);
             }
         }
         #[cfg(target_arch = "wasm32")]
-        if keep.is_some() || open.is_some() {
+        if acts.keep.is_some() || acts.open.is_some() {
             self.gen_panel.status = Some("keep is native-only in this slice".to_owned());
         }
     }
@@ -1901,13 +2030,57 @@ impl CockpitApp {
     /// rows, and the keep actions for the selected one. Reports what the user
     /// asked for through `show` / `keep` / `open`, so the window applies every
     /// action after the panel closes its borrow of the panel state.
-    fn generate_candidates(
-        &self,
-        ui: &mut egui::Ui,
-        show: &mut Option<usize>,
-        keep: &mut Option<usize>,
-        open: &mut Option<usize>,
-    ) {
+    /// The run's two audition variants: the intact S6 winner, and the S7 global
+    /// chain assembled from the same set.
+    ///
+    /// Named for what they are, not "original" and "alternative" — one is a
+    /// whole candidate S6 ranked first, the other is a part built from bars of
+    /// several. The intact winner stays the default; the chain is an explicit
+    /// second thing to ask for.
+    fn generate_audition_variants(&self, ui: &mut egui::Ui, show_chain: &mut bool) {
+        let Some(active) = self.gen_panel.active.as_ref() else {
+            return;
+        };
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.monospace("audition");
+            let intact = matches!(self.current, Some(AuditionCandidate::Generate(_)));
+            ui.selectable_label(intact, "S6 Intact")
+                .on_hover_text("the whole candidate S6 ranked first");
+            match &active.chain {
+                GlobalChainOutcome::Planned(chain) => {
+                    let showing = self.current == Some(AuditionCandidate::GlobalChain);
+                    if ui
+                        .selectable_label(showing, "S7 Global Chain")
+                        .on_hover_text(format!(
+                            "one candidate per bar, chosen for the whole sequence\n\
+                             chain {:.3} vs intact {:.3}",
+                            chain.plan.total_cost, chain.baseline_cost,
+                        ))
+                        .clicked()
+                    {
+                        *show_chain = true;
+                    }
+                }
+                GlobalChainOutcome::Refused(error) => {
+                    // Shown, disabled, with the reason — not hidden, which would
+                    // leave the user wondering, and not substituted with the
+                    // intact winner, which would be a lie.
+                    ui.add_enabled(false, egui::Button::new("S7 Global Chain"))
+                        .on_disabled_hover_text(chain_refusal_summary(*error));
+                    ui.weak("unavailable");
+                }
+            }
+        });
+        if let GlobalChainOutcome::Refused(error) = &active.chain {
+            ui.weak(format!(
+                "no global chain: {}",
+                chain_refusal_summary(*error)
+            ));
+        }
+    }
+
+    fn generate_candidates(&self, ui: &mut egui::Ui, acts: &mut GenerateActions) {
         let Some(set) = self.gen_panel.set() else {
             ui.separator();
             ui.weak(match self.material {
@@ -1934,6 +2107,7 @@ impl CockpitApp {
                 format!(" · {} records skipped", set.summary.skipped.len())
             },
         ));
+        self.generate_audition_variants(ui, &mut acts.show_chain);
         ui.separator();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1954,7 +2128,7 @@ impl CockpitApp {
                     .on_hover_text(hover)
                     .clicked()
                 {
-                    *show = Some(i);
+                    acts.show = Some(i);
                 }
             }
         });
@@ -1963,14 +2137,14 @@ impl CockpitApp {
             ui.separator();
             ui.horizontal(|ui| {
                 if ui.button("⤓ keep .mid").clicked() {
-                    *keep = Some(i);
+                    acts.keep = Some(i);
                 }
                 if ui
                     .button("🔊 open")
                     .on_hover_text("write it and hand it to your .mid app")
                     .clicked()
                 {
-                    *open = Some(i);
+                    acts.open = Some(i);
                 }
             });
         }
@@ -2622,6 +2796,25 @@ struct SwangActions {
     click: Option<usize>,
 }
 
+/// What the Generate window's frame asked for, applied after it closes.
+///
+/// The window paints while holding a borrow of the panel, so every action is
+/// recorded here and acted on afterwards — the same deferral the Swang panel
+/// uses, and the reason none of these can be a method call mid-paint.
+#[derive(Debug, Default)]
+struct GenerateActions {
+    /// Run the pass again.
+    run: bool,
+    /// Audition candidate `i` of the current set.
+    show: Option<usize>,
+    /// Audition the run's assembled global chain.
+    show_chain: bool,
+    /// Write candidate `i` to disk.
+    keep: Option<usize>,
+    /// Open candidate `i`'s kept file.
+    open: Option<usize>,
+}
+
 /// The pixel rect of grid position (`col`, `vis_row`).
 fn cell_rect(origin: egui::Pos2, col: u16, vis_row: u16) -> Rect {
     let x = origin.x + f32::from(col) * CELL_W;
@@ -2954,8 +3147,6 @@ mod tests {
     )]
 
     use super::*;
-    use griff_core::candidate_chain::{MasterBarField, TrackField, TransitionFactError};
-    use griff_core::layered_path::PathError;
     use std::collections::HashSet;
     use std::{env, fs};
 
@@ -3857,7 +4048,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[test]
     fn the_generate_run_captures_its_global_chain_once() {
         // Both audition variants come from one run: the intact winner is row 0
