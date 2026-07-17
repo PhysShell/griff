@@ -20,6 +20,7 @@ pub mod gesture;
 pub mod gp;
 pub mod harmony;
 pub mod import;
+pub mod layered_path;
 pub mod midi;
 pub mod novelty;
 pub mod pitch;
