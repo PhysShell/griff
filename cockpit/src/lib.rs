@@ -2807,6 +2807,9 @@ struct GenerateActions {
     run: bool,
     /// Audition candidate `i` of the current set.
     show: Option<usize>,
+    /// Audition the run's S6 intact winner — ranked candidate 0, the one the
+    /// chain's baseline cost measures.
+    show_intact: bool,
     /// Audition the run's assembled global chain.
     show_chain: bool,
     /// Write candidate `i` to disk.
@@ -4046,6 +4049,261 @@ mod tests {
                 "{reason:?} has no sentence: {summary}",
             );
         }
+    }
+
+    #[test]
+    fn switching_to_the_global_chain_silences_the_old_source_and_keeps_the_playhead() {
+        // The Slice 2 contract, inherited: one sounding source at a time, and
+        // the comparison lands at the same spot in the bar.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.play_tick = 300;
+        app.vp.playing = true;
+        app.advance_audio(0.2); // this moves the playhead — the switch must not
+        let tick = app.vp.play_tick;
+        app.show_global_chain();
+        assert_eq!(
+            app.vp.play_tick, tick,
+            "the playhead holds across the variant switch",
+        );
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the intact winner's notes are silenced — no leak into the chain",
+        );
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::GlobalChain),
+            "and exactly one source is active",
+        );
+    }
+
+    #[test]
+    fn ab_alternates_between_the_intact_winner_and_the_chain() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate(); // shows Generate(0)
+        app.show_global_chain(); // leaving Generate(0)
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::Generate(0)),
+            "the intact winner we left is the A/B target",
+        );
+        app.ab_swap();
+        assert_eq!(app.current, Some(AuditionCandidate::Generate(0)));
+        assert_eq!(
+            app.ab_other,
+            Some(AuditionCandidate::GlobalChain),
+            "and the chain is now the other",
+        );
+        app.ab_swap();
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::GlobalChain),
+            "b routes back to the chain, not to a same-index row",
+        );
+    }
+
+    #[test]
+    fn switching_variants_does_not_grow_the_history() {
+        // A/B is a comparison, not an event. Each variant is one result, and
+        // re-hearing it is the same result — the (run, candidate_id) key says
+        // so. A history that grows on every keypress is a log, not a record.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let after_both = app.history.entries().len();
+        assert_eq!(after_both, 2, "the intact winner and the chain");
+        for _ in 0..5 {
+            app.ab_swap();
+        }
+        assert_eq!(
+            app.history.entries().len(),
+            after_both,
+            "five swaps recorded nothing new",
+        );
+    }
+
+    #[test]
+    fn the_loop_and_a_seek_survive_a_switch_to_the_chain() {
+        // Both variants stand on the master timeline every candidate agreed on,
+        // so a loop over bar 2 is the same bar 2 in either.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let bars = app.view.bar_lines.clone();
+        assert!(bars.len() >= 3, "the demo has bars to loop over");
+        app.loop_range = Some((bars[1], bars[2]));
+        app.vp.play_tick = bars[1] + 10;
+        app.show_global_chain();
+        assert_eq!(
+            app.loop_range,
+            Some((bars[1], bars[2])),
+            "the loop is the same span of the same timeline",
+        );
+        assert_eq!(app.vp.play_tick, bars[1] + 10, "and the seek holds");
+    }
+
+    #[test]
+    fn switching_variants_while_stopped_does_not_start_playing() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.playing = false;
+        app.show_global_chain();
+        assert!(!app.vp.playing, "auditioning is not playing");
+        assert_eq!(app.player.active_count(), 0, "and nothing sounds");
+    }
+
+    // ── the reducer refuses, not just the button ─────────────────────────────
+
+    #[test]
+    fn a_refused_chain_cannot_be_activated_by_an_action() {
+        // A disabled button is not a type system. The action must be refused
+        // where it is applied, or a stale frame, a keybinding, or a future
+        // caller reaches a result that does not exist.
+        let (mut app, _) = app_with_refused_chain();
+        app.show_candidate(0);
+        app.vp.playing = true;
+        app.advance_audio(0.2);
+        let sounding = app.player.active_count();
+        let tick = app.vp.play_tick;
+        let entries = app.history.entries().len();
+
+        app.apply_generate_actions(&GenerateActions {
+            show_chain: true,
+            ..GenerateActions::default()
+        });
+
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the active source is still the intact winner",
+        );
+        assert_eq!(
+            app.player.active_count(),
+            sounding,
+            "and playback was not reset — the source never changed",
+        );
+        assert_eq!(app.vp.play_tick, tick, "nor the playhead");
+        assert_eq!(
+            app.history.entries().len(),
+            entries,
+            "and nothing was recorded",
+        );
+    }
+
+    #[test]
+    fn ab_cannot_route_to_a_refused_chain() {
+        // The stale-target case: an A/B target pointing at a chain the run does
+        // not have. Nothing happens, rather than something empty happening.
+        let (mut app, _) = app_with_refused_chain();
+        app.show_candidate(0);
+        app.ab_other = Some(AuditionCandidate::GlobalChain);
+        app.ab_swap();
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the intact winner is still what is playing",
+        );
+        assert!(
+            !app.history
+                .entries()
+                .iter()
+                .any(|e| e.source == CandidateSource::GlobalChain),
+            "and no chain entry was invented",
+        );
+    }
+
+    // ── the panel says what is actually sounding ─────────────────────────────
+
+    #[test]
+    fn the_intact_variant_action_returns_to_ranked_candidate_0() {
+        // "S6 Intact" means ranked candidate 0 — the whole candidate S6 put
+        // first, and the one `baseline_cost` measures. Not "whichever row was
+        // last clicked".
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_candidate(1); // browse another row
+        app.show_global_chain();
+        app.apply_generate_actions(&GenerateActions {
+            show_intact: true,
+            ..GenerateActions::default()
+        });
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the intact winner is the baseline's candidate, not the last browsed row",
+        );
+    }
+
+    #[test]
+    fn the_candidate_table_stops_marking_a_row_while_the_chain_plays() {
+        // The table's highlight is a claim about what is sounding. While the
+        // chain plays, no row is: the chain is made of bars from several of
+        // them, and pointing at one would name a supplier as the whole result.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        assert_eq!(app.gen_panel.selected, Some(0), "the winner is marked");
+        app.show_global_chain();
+        assert_eq!(
+            app.gen_panel.selected, None,
+            "no row is the audition while the chain is",
+        );
+        app.ab_swap();
+        assert_eq!(
+            app.gen_panel.selected,
+            Some(0),
+            "and the mark comes back with the row",
+        );
+    }
+
+    #[test]
+    fn the_chain_replays_from_history_after_a_later_generate() {
+        // Source-aware replay: the chain's snapshot outlives the run that made
+        // it, because history holds the score rather than a way to rebuild it.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let chain_entry = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was recorded")
+            .id;
+        let notes = app
+            .history
+            .get(chain_entry)
+            .expect("entry")
+            .score
+            .master_bars
+            .len();
+
+        app.gen_panel.seed = 31_337;
+        app.do_generate(); // a whole new run
+        app.select_history(chain_entry);
+
+        assert_eq!(
+            app.history
+                .get(chain_entry)
+                .expect("entry")
+                .score
+                .master_bars
+                .len(),
+            notes,
+            "the old chain snapshot is untouched by a later run",
+        );
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::History(chain_entry)),
+            "and it is what is playing",
+        );
     }
 
     #[test]
