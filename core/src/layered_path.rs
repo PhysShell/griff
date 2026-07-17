@@ -68,7 +68,7 @@ pub struct LayeredProblem<'a> {
 ///
 /// Every variant names *where* the problem is, so a caller can point at the
 /// offending layer, state, or edge rather than guess.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PathError {
     /// The problem had no layers at all.
     NoLayers,
@@ -140,9 +140,255 @@ impl PathSolution {
 /// # Errors
 /// [`PathError`] when the problem has no layers, an empty layer, a transition
 /// table whose shape does not match its layers, or any non-finite cost.
-pub fn solve(problem: &LayeredProblem) -> Result<PathSolution, PathError> {
-    let _ = problem;
-    unimplemented!("layered_path::solve")
+pub fn solve(problem: &LayeredProblem<'_>) -> Result<PathSolution, PathError> {
+    let layers = problem.locals.len();
+    if layers == 0 {
+        return Err(PathError::NoLayers);
+    }
+    for (layer, states) in problem.locals.iter().enumerate() {
+        if states.is_empty() {
+            return Err(PathError::EmptyLayer { layer });
+        }
+    }
+    check_transition_shapes(problem)?;
+
+    let local = score_locals(problem)?;
+    let transition = score_transitions(problem)?;
+
+    // Backward pass: `suffix[i][s]` is the cheapest completion from state `s`
+    // of layer `i` to the end, its own local cost included.
+    let suffix = suffix_costs(&local, &transition);
+
+    // Forward pass: walk the optimum, taking the lowest ordinal among exact
+    // ties at every layer. Deciding front-to-back is what makes the winner the
+    // lexicographically smallest optimal path rather than merely *an* optimum.
+    let chosen = walk_lexicographic(&transition, &suffix);
+
+    let steps: Vec<Scored<StateId>> = chosen
+        .iter()
+        .enumerate()
+        .filter_map(|(layer, &ordinal)| local.get(layer)?.get(ordinal).map(|c| c.scored.clone()))
+        .collect();
+    let edges: Vec<Scored<EdgeId>> = chosen
+        .windows(2)
+        .enumerate()
+        .filter_map(|(layer, pair)| {
+            let (from, to) = (*pair.first()?, *pair.get(1)?);
+            transition
+                .get(layer)?
+                .get(from)?
+                .get(to)
+                .map(|c| c.scored.clone())
+        })
+        .collect();
+
+    // Derived from the retained rationale — the trace is the truth (ADR-0017 §2).
+    let total_cost = steps.iter().map(Scored::aggregate).sum::<f64>()
+        + edges.iter().map(Scored::aggregate).sum::<f64>();
+
+    Ok(PathSolution {
+        steps,
+        edges,
+        total_cost,
+        provenance: Provenance {
+            policy_id: problem.policy.id,
+            policy_version: problem.policy.version,
+            seed: None,
+        },
+    })
+}
+
+/// A scored cost with its aggregate kept beside it, so the DP inner loops read
+/// a number instead of re-summing a rationale.
+#[derive(Debug, Clone)]
+struct Cost<T> {
+    scored: Scored<T>,
+    aggregate: f64,
+}
+
+/// Per layer, per state: the weighed local cost.
+type LocalCosts = Vec<Vec<Cost<StateId>>>;
+
+/// Per adjacent layer pair, per `(from, to)`: the weighed transition cost.
+type TransitionCosts = Vec<Vec<Vec<Cost<EdgeId>>>>;
+
+/// A borrowed view of [`LocalCosts`].
+type LocalCostSlice = [Vec<Cost<StateId>>];
+
+/// A borrowed view of [`TransitionCosts`].
+type TransitionCostSlice = [Vec<Vec<Cost<EdgeId>>>];
+
+/// Rejects a transition table whose shape does not match the layers it joins.
+fn check_transition_shapes(problem: &LayeredProblem<'_>) -> Result<(), PathError> {
+    for layer in 0..problem.locals.len().saturating_sub(1) {
+        let expected = (
+            problem.locals.get(layer).map_or(0, Vec::len),
+            problem
+                .locals
+                .get(layer.saturating_add(1))
+                .map_or(0, Vec::len),
+        );
+        let table = problem.transitions.get(layer);
+        let found = table.map_or((0, 0), |t| (t.len(), t.first().map_or(0, Vec::len)));
+        let ok = table
+            .is_some_and(|t| t.len() == expected.0 && t.iter().all(|row| row.len() == expected.1));
+        if !ok {
+            return Err(PathError::TransitionShape {
+                layer,
+                expected,
+                found,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Weighs every local axis set, rejecting the first non-finite cost.
+fn score_locals(problem: &LayeredProblem<'_>) -> Result<LocalCosts, PathError> {
+    problem
+        .locals
+        .iter()
+        .enumerate()
+        .map(|(layer, states)| {
+            states
+                .iter()
+                .enumerate()
+                .map(|(ordinal, axes)| {
+                    let state = StateId { layer, ordinal };
+                    let scored = Scored::new(state, axes.clone(), problem.policy, None);
+                    let aggregate = scored.aggregate();
+                    if aggregate.is_finite() {
+                        Ok(Cost { scored, aggregate })
+                    } else {
+                        Err(PathError::NonFiniteLocal {
+                            state,
+                            cost: aggregate,
+                        })
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Weighs every transition axis set, rejecting the first non-finite cost.
+fn score_transitions(problem: &LayeredProblem<'_>) -> Result<TransitionCosts, PathError> {
+    problem
+        .transitions
+        .iter()
+        .enumerate()
+        .map(|(layer, table)| {
+            table
+                .iter()
+                .enumerate()
+                .map(|(from, row)| {
+                    row.iter()
+                        .enumerate()
+                        .map(|(to, axes)| {
+                            let edge = EdgeId {
+                                from: StateId {
+                                    layer,
+                                    ordinal: from,
+                                },
+                                to: StateId {
+                                    layer: layer.saturating_add(1),
+                                    ordinal: to,
+                                },
+                            };
+                            let scored = Scored::new(edge, axes.clone(), problem.policy, None);
+                            let aggregate = scored.aggregate();
+                            if aggregate.is_finite() {
+                                Ok(Cost { scored, aggregate })
+                            } else {
+                                Err(PathError::NonFiniteTransition {
+                                    edge,
+                                    cost: aggregate,
+                                })
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The backward DP: `suffix[i][s] = local(i,s) + min_t(trans(i,s,t) + suffix[i+1][t])`,
+/// with the last layer's suffix being its local cost alone.
+fn suffix_costs(local: &LocalCostSlice, transition: &TransitionCostSlice) -> Vec<Vec<f64>> {
+    let layers = local.len();
+    let mut back: Vec<Vec<f64>> = Vec::with_capacity(layers);
+    let mut next: Vec<f64> = local
+        .last()
+        .map(|states| states.iter().map(|c| c.aggregate).collect())
+        .unwrap_or_default();
+    back.push(next.clone());
+
+    for layer in (0..layers.saturating_sub(1)).rev() {
+        let states = local.get(layer).map_or(&[][..], Vec::as_slice);
+        let table = transition.get(layer);
+        let current: Vec<f64> = states
+            .iter()
+            .enumerate()
+            .map(|(from, cost)| {
+                let best = table
+                    .and_then(|t| t.get(from))
+                    .map_or(f64::INFINITY, |row| {
+                        row.iter()
+                            .zip(next.iter())
+                            .map(|(edge, &completion)| edge.aggregate + completion)
+                            .fold(f64::INFINITY, f64::min)
+                    });
+                cost.aggregate + best
+            })
+            .collect();
+        next.clone_from(&current);
+        back.push(current);
+    }
+    back.reverse();
+    back
+}
+
+/// The forward walk over the optimum, lowest ordinal first among exact ties.
+fn walk_lexicographic(transition: &TransitionCostSlice, suffix: &[Vec<f64>]) -> Vec<usize> {
+    let mut chosen: Vec<usize> = Vec::with_capacity(suffix.len());
+    let Some(first) = suffix.first() else {
+        return chosen;
+    };
+    chosen.push(argmin_first(first));
+
+    for layer in 0..suffix.len().saturating_sub(1) {
+        let from = chosen.last().copied().unwrap_or(0);
+        let completions = suffix
+            .get(layer.saturating_add(1))
+            .map_or(&[][..], Vec::as_slice);
+        let combined: Vec<f64> =
+            transition
+                .get(layer)
+                .and_then(|t| t.get(from))
+                .map_or_else(Vec::new, |row| {
+                    row.iter()
+                        .zip(completions.iter())
+                        .map(|(edge, &completion)| edge.aggregate + completion)
+                        .collect()
+                });
+        chosen.push(argmin_first(&combined));
+    }
+    chosen
+}
+
+/// The index of the smallest value; the **first** wins an exact tie, which is
+/// what makes the path lexicographically smallest.
+fn argmin_first(values: &[f64]) -> usize {
+    let mut best_index = 0;
+    let mut best_value = f64::INFINITY;
+    for (index, &value) in values.iter().enumerate() {
+        if value < best_value {
+            best_value = value;
+            best_index = index;
+        }
+    }
+    best_index
 }
 
 #[cfg(test)]
@@ -151,11 +397,12 @@ pub fn solve(problem: &LayeredProblem) -> Result<PathSolution, PathError> {
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
 )]
 mod tests {
     use super::{solve, EdgeId, LayeredProblem, PathError, StateId};
-    use crate::scoring::{Axes, Axis, WeightPolicy};
+    use crate::scoring::{Axes, Axis, Scored, WeightPolicy};
 
     /// The test policy: one local axis and one transition axis, each weighted
     /// `1.0`, so an axis value *is* its cost and the arithmetic stays readable.
@@ -272,10 +519,11 @@ mod tests {
 
     #[test]
     fn equal_totals_select_the_lexicographically_lowest_path() {
-        // Two paths cost exactly 2.0: [0,1] and [1,0]. Lexicographic order picks
-        // [0,1] — the earliest layer decides.
+        // Exactly two paths cost 2.0 — [0,1] = 0+2+0 and [1,0] = 1+0+1 — while
+        // [0,0] and [1,1] cost 10. Lexicographic order picks [0,1]: the earliest
+        // layer decides.
         let locals = locals_of(&[&[0.0, 1.0], &[1.0, 0.0]]);
-        let transitions = transitions_of(&[&[&[9.0, 1.0], &[1.0, 9.0]]]);
+        let transitions = transitions_of(&[&[&[9.0, 2.0], &[0.0, 9.0]]]);
         let p = policy();
         let solution = solve(&LayeredProblem {
             locals: &locals,
@@ -404,19 +652,12 @@ mod tests {
             policy: &p,
         })
         .expect("solves");
-        let summed: f64 = solution.steps.iter().map(Scored_aggregate).sum::<f64>()
-            + solution.edges.iter().map(Scored_aggregate).sum::<f64>();
+        let summed: f64 = solution.steps.iter().map(Scored::aggregate).sum::<f64>()
+            + solution.edges.iter().map(Scored::aggregate).sum::<f64>();
         assert!(
             (summed - solution.total_cost).abs() < 1e-12,
             "the trace explains the whole total",
         );
-    }
-
-    /// Sums a `Scored`'s rationale — a free function so the two map calls above
-    /// stay readable.
-    #[allow(non_snake_case)]
-    fn Scored_aggregate<T>(s: &crate::scoring::Scored<T>) -> f64 {
-        s.aggregate()
     }
 
     #[test]
@@ -454,17 +695,66 @@ mod tests {
             .map(|l| l.iter().map(|a| a.get("local").unwrap()).collect())
             .collect();
         let p = policy();
-        let _ = solve(&LayeredProblem {
-            locals: &locals,
-            transitions: &transitions,
-            policy: &p,
-        })
-        .expect("solves");
+        drop(
+            solve(&LayeredProblem {
+                locals: &locals,
+                transitions: &transitions,
+                policy: &p,
+            })
+            .expect("solves"),
+        );
         let after: Vec<Vec<f64>> = locals
             .iter()
             .map(|l| l.iter().map(|a| a.get("local").unwrap()).collect())
             .collect();
         assert_eq!(before, after, "the engine borrows; it never mutates");
+    }
+
+    /// The oracle: enumerate every path, keep the minimal `(cost, path)` with
+    /// lexicographic tie-breaking. Three nested loops beat a new dependency.
+    fn brute_force(
+        shape: &[usize],
+        local_values: &[Vec<f64>],
+        trans_values: &[Vec<Vec<f64>>],
+    ) -> (f64, Vec<usize>) {
+        let layers = shape.len();
+        let mut best: Option<(f64, Vec<usize>)> = None;
+        let mut path = vec![0_usize; layers];
+        loop {
+            let mut total = 0.0;
+            for (i, &s) in path.iter().enumerate() {
+                total += local_values[i][s];
+                if i > 0 {
+                    total += trans_values[i - 1][path[i - 1]][s];
+                }
+            }
+            let better = match &best {
+                None => true,
+                Some((bc, bp)) => {
+                    total < *bc - 1e-12
+                        || ((total - *bc).abs() <= 1e-12 && path.as_slice() < bp.as_slice())
+                }
+            };
+            if better {
+                best = Some((total, path.clone()));
+            }
+            // Odometer over the shape; `done` when the most significant digit wraps.
+            let mut i = layers;
+            let mut done = true;
+            while i > 0 {
+                i -= 1;
+                path[i] += 1;
+                if path[i] < shape[i] {
+                    done = false;
+                    break;
+                }
+                path[i] = 0;
+            }
+            if done {
+                break;
+            }
+        }
+        best.expect("at least one path")
     }
 
     #[test]
@@ -509,51 +799,7 @@ mod tests {
                 })
                 .expect("solves");
 
-                // Brute force: enumerate every path, keep (cost, path) minimal
-                // with lexicographic tie-breaking — three nested loops, no crate.
-                let mut best: Option<(f64, Vec<usize>)> = None;
-                let mut path = vec![0_usize; layers];
-                loop {
-                    let mut total = 0.0;
-                    for (i, &s) in path.iter().enumerate() {
-                        total += local_values[i][s];
-                        if i > 0 {
-                            total += trans_values[i - 1][path[i - 1]][s];
-                        }
-                    }
-                    let better = match &best {
-                        None => true,
-                        Some((bc, bp)) => {
-                            total < *bc - 1e-12
-                                || ((total - *bc).abs() <= 1e-12 && path.as_slice() < bp.as_slice())
-                        }
-                    };
-                    if better {
-                        best = Some((total, path.clone()));
-                    }
-                    // Odometer over the shape.
-                    let mut i = layers;
-                    loop {
-                        if i == 0 {
-                            break;
-                        }
-                        i -= 1;
-                        path[i] += 1;
-                        if path[i] < shape[i] {
-                            break;
-                        }
-                        path[i] = 0;
-                        if i == 0 {
-                            // wrapped fully
-                            i = usize::MAX;
-                            break;
-                        }
-                    }
-                    if i == usize::MAX {
-                        break;
-                    }
-                }
-                let (want_cost, want_path) = best.expect("at least one path");
+                let (want_cost, want_path) = brute_force(&shape, &local_values, &trans_values);
                 assert_eq!(
                     got.ordinals(),
                     want_path,
