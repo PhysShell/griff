@@ -764,11 +764,7 @@ fn chain_summary_block(ui: &mut egui::Ui, summary: &GlobalChainSummary) {
     ui.monospace(format!(
         "Delta:         {:+.3}  ({} under {} v{})",
         summary.delta,
-        if summary.delta < 0.0 {
-            "lower"
-        } else {
-            "higher"
-        },
+        delta_relation(summary.delta),
         summary.policy_id,
         summary.policy_version,
     ));
@@ -784,6 +780,17 @@ fn chain_summary_block(ui: &mut egui::Ui, summary: &GlobalChainSummary) {
             ui.monospace(format!("   ┆ {}", boundary_line(boundary)))
                 .on_hover_text(rationale_hover(&boundary.rationale));
         }
+    }
+}
+
+/// How the chain's total compares to the intact winner's, in one word.
+///
+/// Stub: still calls an equal cost "higher".
+fn delta_relation(delta: f64) -> &'static str {
+    if delta < 0.0 {
+        "lower"
+    } else {
+        "higher"
     }
 }
 
@@ -2452,16 +2459,18 @@ impl CockpitApp {
             ));
             return;
         }
-        // Read from the run's own record — the same source a replayed history
-        // entry reads, so a chain's explanation does not depend on which panel
-        // happens to be open, or on the run still being the active one.
-        if let Some(summary) = self
-            .history
-            .chain_of(active.context.run)
-            .and_then(global_chain_summary)
-        {
+        if let Some(summary) = self.displayed_chain_summary() {
             chain_summary_block(ui, &summary);
         }
+    }
+
+    /// The explanation of the chain that is **sounding**, if one is.
+    ///
+    /// Stub: still reads the active run.
+    fn displayed_chain_summary(&self) -> Option<GlobalChainSummary> {
+        self.history
+            .chain_of(self.gen_panel.active.as_ref()?.context.run)
+            .and_then(global_chain_summary)
     }
 
     fn generate_candidates(&self, ui: &mut egui::Ui, acts: &mut GenerateActions) {
@@ -4720,13 +4729,141 @@ mod tests {
         );
     }
 
-    /// The summary the panel would paint for `run`, from the same source it
-    /// reads — the run's own record, not the active panel.
-    fn visible_summary(app: &CockpitApp, run: GenerationRunId) -> GlobalChainSummary {
+    /// The summary of `run`'s chain — for building expectations, never for
+    /// asking the panel what it shows.
+    fn summary_of(app: &CockpitApp, run: GenerationRunId) -> GlobalChainSummary {
         app.history
             .chain_of(run)
             .and_then(global_chain_summary)
             .expect("the run planned a chain, so it has an explanation")
+    }
+
+    #[test]
+    fn history_replay_shows_the_replayed_chains_explanation() {
+        // The panel must explain what is *sounding*. Replaying chain A while
+        // run B is active and reading B's record would put A's music beside B's
+        // supplier map — every number true, and the pairing a lie.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 11;
+        app.do_generate();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.show_global_chain();
+        let chain_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let summary_a = summary_of(&app, run_a);
+
+        app.gen_panel.seed = 22;
+        app.do_generate();
+        let run_b = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let summary_b = summary_of(&app, run_b);
+        assert_ne!(
+            summary_a, summary_b,
+            "the fixture needs two runs that chain differently — pick other seeds",
+        );
+
+        app.select_history(chain_a);
+        let shown = app
+            .displayed_chain_summary()
+            .expect("the sounding chain has an explanation");
+        assert_eq!(shown, summary_a, "the replayed chain's own explanation");
+        assert_ne!(shown, summary_b, "not the active run's");
+    }
+
+    #[test]
+    fn a_replayed_chain_explains_itself_even_when_the_active_run_refused() {
+        // The sharper case: the active run has no chain at all. Reading the
+        // active run would find a refusal and show nothing, so the chain that
+        // is actually playing would go unexplained.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 11;
+        app.do_generate();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.show_global_chain();
+        let chain_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let summary_a = summary_of(&app, run_a);
+
+        // Run B: generated, but staged as a run whose chain was refused.
+        app.gen_panel.seed = 22;
+        app.do_generate();
+        let run_b = app.history.begin_run();
+        {
+            let active = app.gen_panel.active.as_mut().expect("a run");
+            active.context.run = run_b;
+            active.chain = GlobalChainOutcome::Refused(ChainError::EmptySet);
+        }
+        app.history.record_chain(
+            run_b,
+            ChainOutcomeRecord::Refused {
+                error: ChainError::EmptySet,
+            },
+        );
+
+        app.select_history(chain_a);
+        assert_eq!(
+            app.displayed_chain_summary(),
+            Some(summary_a),
+            "the playing chain explains itself, whatever the active run came to",
+        );
+    }
+
+    #[test]
+    fn the_live_chain_is_explained_by_the_active_run() {
+        // The other side of the rule: nothing replayed, so the active run's
+        // chain is the one on show.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        assert_eq!(app.displayed_chain_summary(), Some(summary_of(&app, run)));
+        app.show_global_chain();
+        assert_eq!(
+            app.displayed_chain_summary(),
+            Some(summary_of(&app, run)),
+            "auditioning the live chain does not change whose explanation it is",
+        );
+    }
+
+    #[test]
+    fn replaying_a_candidate_still_explains_the_active_runs_chain() {
+        // A replayed *candidate* is not a chain, so it says nothing about which
+        // chain to explain: the active run's stands.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let candidate = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::Generate)
+            .expect("recorded")
+            .id;
+        app.select_history(candidate);
+        assert_eq!(app.displayed_chain_summary(), Some(summary_of(&app, run)));
+    }
+
+    #[test]
+    fn an_equal_cost_delta_is_not_called_higher() {
+        // The chain costing exactly what the intact winner costs is neither
+        // lower nor higher, and a panel that says "higher" in confident
+        // monospace is wrong in the one place it is trying hardest to be
+        // trusted.
+        assert_eq!(delta_relation(0.0), "equal");
+        assert_eq!(delta_relation(-0.9), "lower");
+        assert_eq!(delta_relation(0.9), "higher");
     }
 
     #[test]
@@ -4738,7 +4875,7 @@ mod tests {
         app.gen_panel.variants = 2;
         app.do_generate();
         let run = app.gen_panel.active.as_ref().expect("a run").context.run;
-        let summary = visible_summary(&app, run);
+        let summary = summary_of(&app, run);
 
         let GlobalChainOutcome::Planned(chain) =
             &app.gen_panel.active.as_ref().expect("a run").chain
@@ -4780,7 +4917,7 @@ mod tests {
             .find(|e| e.source == CandidateSource::GlobalChain)
             .expect("recorded")
             .id;
-        let before = visible_summary(&app, run_a);
+        let before = summary_of(&app, run_a);
 
         app.gen_panel.seed = 22;
         app.do_generate(); // run A's ActiveGenerateRun is gone
@@ -4788,7 +4925,7 @@ mod tests {
 
         let entry_run = app.history.get(chain_a).expect("entry").run;
         assert_eq!(entry_run, run_a, "the entry knows which run made it");
-        let after = visible_summary(&app, entry_run);
+        let after = summary_of(&app, entry_run);
         assert_eq!(
             after.total_cost.to_bits(),
             before.total_cost.to_bits(),
@@ -4807,11 +4944,11 @@ mod tests {
         app.gen_panel.variants = 2;
         app.do_generate();
         let run = app.gen_panel.active.as_ref().expect("a run").context.run;
-        let before = visible_summary(&app, run);
+        let before = summary_of(&app, run);
         app.gen_panel.seed = 4_242;
         app.gen_panel.bars = 2;
         app.gen_panel.variants = 5;
-        let after = visible_summary(&app, run);
+        let after = summary_of(&app, run);
         assert_eq!(
             after, before,
             "the explanation belongs to the run, not the panel"
