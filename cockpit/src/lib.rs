@@ -43,6 +43,7 @@ use griff_ui_core::history::{
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
+use griff_core::candidate_chain::ChainError;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
 use griff_ui_core::generate::{generate_run, GeneratedRun, GlobalChainOutcome};
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
@@ -666,6 +667,19 @@ fn remap_loop_range(
     let lo = *bar_lines.get(a)?;
     let hi = *bar_lines.get(b.saturating_add(1).min(last))?;
     (lo < hi && hi <= tick_end).then_some((lo, hi))
+}
+
+/// Why the S7 global chain could not be planned, in a sentence — built here, in
+/// the UI layer, from the core's typed error, exactly as [`provenance_summary`]
+/// is built from typed provenance.
+///
+/// `format!("{err:?}")` is a Rust value printed at a person: it names variants
+/// and braces, and explains nothing. A refusal is usually about the *set* rather
+/// than about anything the user did, so it has to say which candidate and which
+/// fact, in words.
+fn chain_refusal_summary(_error: ChainError) -> String {
+    // Stub: the laws come first.
+    String::new()
 }
 
 /// A one-line human description of a candidate's typed provenance — built here,
@@ -2940,6 +2954,8 @@ mod tests {
     )]
 
     use super::*;
+    use griff_core::candidate_chain::{MasterBarField, TrackField, TransitionFactError};
+    use griff_core::layered_path::PathError;
     use std::collections::HashSet;
     use std::{env, fs};
 
@@ -3672,6 +3688,176 @@ mod tests {
         assert_eq!(app.gen_panel.selected, Some(1), "and back again — a toggle");
     }
 
+    /// A generated run whose chain was refused. Generation succeeded — the
+    /// candidates are all there and all playable; only the chaining of them
+    /// did not happen.
+    fn app_with_refused_chain() -> (CockpitApp, ChainError) {
+        let refusal = ChainError::CrossBarMaterial {
+            candidate: 2,
+            bar: 1,
+        };
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.gen_panel.active.as_mut().expect("a run").chain = GlobalChainOutcome::Refused(refusal);
+        (app, refusal)
+    }
+
+    #[test]
+    fn a_refused_chain_leaves_the_intact_audition_available() {
+        // The S6 winner is not downstream of the chain. A set that cannot be
+        // chained is still a set of candidates someone wants to hear.
+        let (mut app, _) = app_with_refused_chain();
+        assert!(
+            !app.gen_panel
+                .active
+                .as_ref()
+                .expect("a run")
+                .set
+                .rows
+                .is_empty(),
+            "generate succeeded — the refusal is about chaining what it made",
+        );
+        app.show_candidate(0);
+        assert_eq!(app.gen_panel.selected, Some(0), "the intact winner shows");
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "and is the audition",
+        );
+        assert!(
+            !app.player.is_silent(),
+            "and it plays: the S6 path is untouched by the chain's absence",
+        );
+    }
+
+    #[test]
+    fn a_refused_chain_is_never_auditioned_as_an_empty_chain() {
+        // Neither a silent score, nor the intact winner wearing the chain's
+        // name. Asking for a chain that does not exist gets nothing at all.
+        let (mut app, _) = app_with_refused_chain();
+        app.show_candidate(0);
+        let before = app.history.entries().len();
+        app.show_global_chain();
+        assert_eq!(
+            app.history.entries().len(),
+            before,
+            "nothing was recorded — there was no result to record",
+        );
+        assert!(
+            !app.history
+                .entries()
+                .iter()
+                .any(|e| e.source == CandidateSource::GlobalChain),
+            "and no entry claims to be a chain",
+        );
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "the intact winner is still what is playing",
+        );
+    }
+
+    #[test]
+    fn a_refused_chain_keeps_its_typed_error_on_the_run() {
+        // Kept typed, on the run that produced it — not flattened to a string
+        // at the moment of failure, and not recomputed later by asking the
+        // planner to try again.
+        let (app, refusal) = app_with_refused_chain();
+        let GlobalChainOutcome::Refused(error) =
+            &app.gen_panel.active.as_ref().expect("a run").chain
+        else {
+            panic!("staged as refused");
+        };
+        assert_eq!(*error, refusal, "the exact typed error the core returned");
+    }
+
+    #[test]
+    fn a_refusal_explains_itself_without_a_debug_dump() {
+        // A structured sentence built from the typed value — the same rule
+        // provenance_summary follows. `{err:?}` is a Rust value printed at a
+        // human: it names private-looking variants and braces, and it is not an
+        // explanation of anything.
+        let summary = chain_refusal_summary(ChainError::CrossBarMaterial {
+            candidate: 2,
+            bar: 1,
+        });
+        assert!(
+            !summary.contains('{') && !summary.contains("CrossBarMaterial"),
+            "not a debug dump: {summary}",
+        );
+        assert!(
+            summary.contains("candidate 2") && summary.contains("bar 1"),
+            "but it still names the offending fact: {summary}",
+        );
+        assert!(
+            summary.to_lowercase().contains("bar line"),
+            "in words that say what went wrong: {summary}",
+        );
+    }
+
+    #[test]
+    fn every_refusal_reason_has_a_sentence() {
+        // No reason may fall through to a debug dump. If the core gains an
+        // error, this fails until someone says what it means.
+        let reasons = [
+            ChainError::EmptySet,
+            ChainError::NoBars,
+            ChainError::BarCountMismatch {
+                candidate: 1,
+                expected: 4,
+                found: 3,
+            },
+            ChainError::PpqMismatch {
+                candidate: 1,
+                expected: 960,
+                found: 480,
+            },
+            ChainError::MasterBarMismatch {
+                candidate: 1,
+                bar: 2,
+                field: MasterBarField::Tempo,
+            },
+            ChainError::TrackCountMismatch {
+                candidate: 1,
+                expected: 1,
+                found: 2,
+            },
+            ChainError::TrackMetadataMismatch {
+                candidate: 1,
+                track: 0,
+                field: TrackField::Tuning,
+            },
+            ChainError::SourceMetaMismatch { candidate: 1 },
+            ChainError::LossReportMismatch { candidate: 1 },
+            ChainError::CrossBarMaterial {
+                candidate: 1,
+                bar: 0,
+            },
+            ChainError::EmptyEventGroup { candidate: 1 },
+            ChainError::MaterialOutsideTimeline {
+                candidate: 1,
+                tick: 99,
+            },
+            ChainError::MissingMaterial {
+                candidate: 1,
+                track: 0,
+                voice: 0,
+                bar: 3,
+            },
+            ChainError::BoundaryFact(TransitionFactError::MissingToBar { bar: 9, bars: 4 }),
+            ChainError::Path(PathError::NoLayers),
+        ];
+        for reason in reasons {
+            let summary = chain_refusal_summary(reason);
+            assert!(
+                !summary.is_empty() && !summary.contains('{'),
+                "{reason:?} has no sentence: {summary}",
+            );
+        }
+    }
+
+    #[test]
     #[test]
     fn the_generate_run_captures_its_global_chain_once() {
         // Both audition variants come from one run: the intact winner is row 0

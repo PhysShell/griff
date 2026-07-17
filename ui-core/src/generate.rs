@@ -326,6 +326,53 @@ mod tests {
 
     // ── Global Chain Audition: one run, two results ──────────────────────────
 
+    /// A real ranked set with candidate 1 made chain-incompatible: its tick
+    /// resolution no longer matches candidate 0's, so the set has no one
+    /// timeline to assemble onto. Generation itself is untouched and the
+    /// candidates are all still perfectly playable — which is the point. A
+    /// refusal is about *chaining* the set, never about the set being bad.
+    fn incompatible_set() -> RankedSet {
+        let mut set = ranked_candidates(&source(), None, &ask(), None).expect("seeds");
+        assert_eq!(
+            set.ranked[0].value.score.ticks_per_quarter, PPQN,
+            "the fixture poisons candidate 1 away from candidate 0's resolution",
+        );
+        set.ranked[1].value.score.ticks_per_quarter = PPQN * 2;
+        set
+    }
+
+    #[test]
+    fn a_refused_chain_is_an_outcome_of_the_run_not_a_failure_of_it() {
+        // The planner's error must never become the run's error. Generation
+        // succeeded; it is the chaining of what it produced that did not, and
+        // those are different facts about different things.
+        let outcome = plan_global_chain(&incompatible_set());
+        let GlobalChainOutcome::Refused(error) = outcome else {
+            panic!("a set with two tick resolutions cannot be chained: {outcome:?}");
+        };
+        assert_eq!(
+            error,
+            ChainError::PpqMismatch {
+                candidate: 1,
+                expected: PPQN,
+                found: PPQN * 2,
+            },
+            "the refusal keeps the core's typed error, naming the offender",
+        );
+    }
+
+    #[test]
+    fn a_refusal_cannot_be_mistaken_for_an_empty_chain() {
+        // `Refused` carries no score, no steps and no total — there is nothing
+        // to accidentally render as "a chain with zero bars", and nothing for a
+        // caller to read a 0.0 cost out of.
+        let outcome = plan_global_chain(&incompatible_set());
+        assert!(
+            matches!(outcome, GlobalChainOutcome::Refused(_)),
+            "no plan is representable here",
+        );
+    }
+
     #[test]
     fn one_generate_run_yields_both_the_intact_winner_and_the_global_chain() {
         // The whole premise of the comparison: both sides come from the same
