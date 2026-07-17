@@ -1432,6 +1432,10 @@ impl CockpitApp {
         );
         self.history.select(id);
         self.remember_shown(AuditionCandidate::GlobalChain);
+        // No row is the audition now. The table's highlight is a claim about
+        // what is sounding, and the chain is bars from several candidates —
+        // leaving a row marked would name one supplier as the whole result.
+        self.gen_panel.selected = None;
         self.show_score(score, title);
     }
 
@@ -1695,6 +1699,11 @@ impl CockpitApp {
         }
         if let Some(i) = acts.show {
             self.show_candidate(i);
+        }
+        if acts.show_intact {
+            // The S6 winner is ranked candidate 0, always — the candidate the
+            // chain's baseline cost is the cost of.
+            self.show_candidate(0);
         }
         if acts.show_chain {
             self.show_global_chain();
@@ -2037,16 +2046,25 @@ impl CockpitApp {
     /// whole candidate S6 ranked first, the other is a part built from bars of
     /// several. The intact winner stays the default; the chain is an explicit
     /// second thing to ask for.
-    fn generate_audition_variants(&self, ui: &mut egui::Ui, show_chain: &mut bool) {
+    fn generate_audition_variants(&self, ui: &mut egui::Ui, acts: &mut GenerateActions) {
         let Some(active) = self.gen_panel.active.as_ref() else {
             return;
         };
         ui.separator();
         ui.horizontal(|ui| {
             ui.monospace("audition");
-            let intact = matches!(self.current, Some(AuditionCandidate::Generate(_)));
-            ui.selectable_label(intact, "S6 Intact")
-                .on_hover_text("the whole candidate S6 ranked first");
+            // Ranked candidate 0 specifically — the candidate `baseline_cost`
+            // measures. Browsing another row is the table's job, not this
+            // chip's, and highlighting it for any Generate row would say the
+            // baseline is measuring whatever is playing.
+            let intact = self.current == Some(AuditionCandidate::Generate(0));
+            if ui
+                .selectable_label(intact, "S6 Intact")
+                .on_hover_text("the whole candidate S6 ranked first")
+                .clicked()
+            {
+                acts.show_intact = true;
+            }
             match &active.chain {
                 GlobalChainOutcome::Planned(chain) => {
                     let showing = self.current == Some(AuditionCandidate::GlobalChain);
@@ -2059,7 +2077,7 @@ impl CockpitApp {
                         ))
                         .clicked()
                     {
-                        *show_chain = true;
+                        acts.show_chain = true;
                     }
                 }
                 GlobalChainOutcome::Refused(error) => {
@@ -2107,7 +2125,7 @@ impl CockpitApp {
                 format!(" · {} records skipped", set.summary.skipped.len())
             },
         ));
-        self.generate_audition_variants(ui, &mut acts.show_chain);
+        self.generate_audition_variants(ui, acts);
         ui.separator();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
