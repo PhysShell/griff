@@ -484,8 +484,10 @@ fn tag_wire(tag: SwancoreTag) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SwangSourceOrigin {
     /// The declared path was read from disk (native).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only native resolves a path
     ResolvedPath(String),
     /// The displayed score seeded the run (the browser's defined semantics).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // only wasm seeds this way
     DisplayedScore,
 }
 
@@ -493,7 +495,10 @@ impl SwangSourceOrigin {
     /// The path provenance should record: the resolved path, or `None` when the
     /// displayed score seeded the run (which a UI renders as "displayed score").
     fn provenance_path(&self) -> Option<String> {
-        unimplemented!("SwangSourceOrigin::provenance_path")
+        match self {
+            Self::ResolvedPath(path) => Some(path.clone()),
+            Self::DisplayedScore => None,
+        }
     }
 }
 
@@ -1616,8 +1621,8 @@ impl CockpitApp {
         let Some(compiled) = self.swang.compile() else {
             return; // `compile` filled the span diagnostics and cleared the run
         };
-        let source = match self.resolve_swang_source(&compiled) {
-            Ok(score) => score,
+        let (source, origin) = match self.resolve_swang_source(&compiled) {
+            Ok(resolved) => resolved,
             Err(err) => {
                 self.swang.invalidate_run();
                 self.swang.diagnostics.clear();
@@ -1636,7 +1641,9 @@ impl CockpitApp {
             self.swang_ctx = Some(SwangRunContext {
                 run: self.history.begin_run(),
                 program: self.swang.text.clone(),
-                source_path: Some(compiled.source_path().to_owned()),
+                // What the frontend ACTUALLY resolved — a path on native, the
+                // displayed score (and so no path) in the browser.
+                source_path: origin.provenance_path(),
             });
             self.swang_show(i);
         }
@@ -1652,22 +1659,33 @@ impl CockpitApp {
         clippy::unused_self,
         reason = "mirrors the wasm signature, which reads self.score"
     )]
-    fn resolve_swang_source(&self, compiled: &eval::CompiledProgram) -> Result<Score, String> {
+    fn resolve_swang_source(
+        &self,
+        compiled: &eval::CompiledProgram,
+    ) -> Result<(Score, SwangSourceOrigin), String> {
         use std::fs;
 
         let path = compiled.source_path();
         let bytes = fs::read(path).map_err(|e| format!("cannot read source \"{path}\": {e}"))?;
-        import_score_auto(&bytes).map_err(|e| format!("cannot import \"{path}\": {e}"))
+        let score =
+            import_score_auto(&bytes).map_err(|e| format!("cannot import \"{path}\": {e}"))?;
+        // The path really was read — provenance may name it.
+        Ok((score, SwangSourceOrigin::ResolvedPath(path.to_owned())))
     }
 
     /// The web target has no filesystem: the displayed score seeds the run by
     /// defined frontend semantics (the declared `source` path is not read in
-    /// the browser this slice).
+    /// the browser this slice) — so the origin is the displayed score, and
+    /// provenance must not claim the declared path.
     #[cfg(target_arch = "wasm32")]
-    fn resolve_swang_source(&self, _compiled: &eval::CompiledProgram) -> Result<Score, String> {
-        self.score
-            .clone()
-            .ok_or_else(|| "load a score first — browser Swang uses the displayed file".to_owned())
+    fn resolve_swang_source(
+        &self,
+        _compiled: &eval::CompiledProgram,
+    ) -> Result<(Score, SwangSourceOrigin), String> {
+        let score = self.score.clone().ok_or_else(|| {
+            "load a score first — browser Swang uses the displayed file".to_owned()
+        })?;
+        Ok((score, SwangSourceOrigin::DisplayedScore))
     }
 
     /// Paints Swang candidate `i` into the roll.
