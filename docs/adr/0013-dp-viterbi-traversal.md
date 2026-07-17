@@ -1,7 +1,8 @@
 # ADR 0013: DP/Viterbi traversal over the phrase hypergraph
 
 Date: 2026-05-31
-Status: Proposed
+Status: Accepted (2026-07-17) — Slices A and B shipped; see "What shipped" below.
+Supersedes nothing; Slice C (deterministic k-best) remains future work.
 
 ## Context
 
@@ -80,3 +81,51 @@ weighted random walk as the default. Beam search is retained only as an
   `EnergyState`; neither exists yet, so S7 cannot ship until they do.
 - Accepted: S13 v0 ships before DP and therefore cannot assemble coherent
   multi-bar parts on its own — that capability arrives with S7.
+
+## What shipped (2026-07-17)
+
+Slices A and B, against the first *real* client rather than a speculative
+framework. The 2026-05-31 decision above stands; this records what exists.
+
+**Slice A — `core/src/layered_path.rs`.** A domain-free layered-DAG engine:
+ordered layers of caller-supplied [`Axes`], a versioned `WeightPolicy`, and
+`solve()` returning one selected state per layer with its full ADR-0017
+`Scored` envelope. It knows nothing of notes, bars, strategies, S6, S8, or S9.
+
+- Recurrence: `suffix[n-1][s] = local(n-1,s)`;
+  `suffix[i][s] = local(i,s) + min_t( trans(i,s,t) + suffix[i+1][t] )`.
+  A backward pass fills `suffix`; a forward pass walks it. Complexity
+  `O(Σᵢ |L[i-1]| × |L[i]|)` — exact DP, no beam, no RNG, no seed.
+- **Tie-breaking:** exact ties resolve to the **lexicographically smallest
+  vector of state ordinals**. Deciding front-to-back over the optimal set is
+  what delivers that without storing prefixes, so the complexity claim holds.
+  No epsilon "approximately equal" rule; no hash-map iteration order.
+- Non-finite costs (`NaN`, `±∞`) are rejected **before** the walk, naming the
+  exact state or edge, so the comparisons run on a genuine total order.
+- The state carried is deliberately *smaller* than §1 of this ADR imagined:
+  fretboard position, last technique, and `EnergyState` are **not** in it.
+  They remain unbuilt, and the ADR's own §"Consequences" note that DP could
+  not ship until they existed is hereby narrowed: DP ships for a client that
+  does not need them. Slice D may widen the state when a client earns it.
+
+**Slice B — `core/src/candidate_chain.rs`.** The first client: recombining an
+existing `RankedSet` across bars. Layer `b` holds bar `b` of every ranked
+candidate; a path picks one candidate per output bar. Nothing is regenerated,
+reranked, or re-seeded.
+
+- **Cost function `candidate_chain` v1** — an untuned, documented baseline, and
+  a much smaller thing than the §2 sketch (`harmonic_fit + rhythm_complement +
+  style_fit + playability + phrase_continuity − mud − repetition − fret_jump`).
+  Only what is measurable today from canonical events ships:
+  `candidate_quality` (1.0, value `1 − s6_aggregate`), `boundary_jump_semitones`
+  (0.05/semitone, unwrapped), `silent_boundary` (0.25), `rhythm_repeat` (0.40).
+  Harmonic fit, style fit, playability and fret travel are **absent**, not
+  present as zeroes — an unmeasured term is a lie with a weight attached.
+- §4 holds: the weights are data (`WeightPolicy`), so S9 can tune them without
+  touching traversal. S7 consumes; S9 does not exist here.
+- Cross-bar material is **rejected**, not clipped: `slice::extract_bars` cuts
+  atoms by onset without shortening durations and clamps technique spans, so it
+  offers no lossless concatenation contract for a note ringing past its bar.
+- Baseline: ranked candidate 0, kept intact, weighed under the *same* policy.
+  On the synthetic non-greedy fixture the intact winner costs 3.3 and the
+  planned chain 2.4.

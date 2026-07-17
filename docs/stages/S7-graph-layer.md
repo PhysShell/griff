@@ -1,6 +1,7 @@
 # S7: Graph layer (late)
 
-Status: in progress — first slice (chunk similarity edge) landed (2026-06-10);
+Status: in progress — chunk similarity edge (2026-06-10), then Slices A and B
+landed (2026-07-17: the layered-path engine and the multi-bar candidate chain);
 the full graph stays deliberately late
 Depends on: S6 acceptance
 ADRs: ADR-0013 (DP/Viterbi traversal), ADR-0018 (rich note model: fretboard +
@@ -64,22 +65,66 @@ connected / possible); DP/Viterbi is the *route* (which sequence is best).
 
 ## Planned slices
 
-### Slice A — concrete layered-path contract
+### Slice A — concrete layered-path contract — **landed 2026-07-17**
 
-Extract the smallest reusable path contract from a real multi-bar client, not
-from a speculative universal framework. A layer exposes feasible states; the
-client supplies local and transition costs plus explanations; the engine returns
-the deterministic best path.
+`core/src/layered_path.rs`. A domain-free layered DAG: the caller hands ordered
+layers of `Axes` (local per state, transition per adjacent pair) plus a
+versioned `WeightPolicy`; `solve()` returns one state per layer, each with its
+ADR-0017 `Scored` envelope, the selected edges, the derived total, and policy
+provenance. It knows nothing of notes, bars, strategies, S6, S8, or S9 — the
+chain below is a client, not a special case.
 
-The first preferred client is a multi-bar `GenerationCandidate` chain. The
-already-accepted register track is **not** reopened merely to manufacture a
-first generic client.
+- Recurrence `suffix[i][s] = local(i,s) + min_t( trans(i,s,t) + suffix[i+1][t] )`,
+  backward pass then forward walk, `O(Σᵢ |L[i-1]| × |L[i]|)`. Exact DP; no beam,
+  no RNG, no seed.
+- **Tie-break:** the lexicographically smallest vector of state ordinals, decided
+  front-to-back. All-equal costs therefore select ordinal `0` everywhere.
+- `NaN`/`±∞` are rejected before the walk, naming the state or edge, so the
+  comparisons run on a total order. Empty problems and mismatched transition
+  tables return typed errors.
+- Verified against a brute-force oracle over every tiny problem shape (1–4
+  layers × 1–3 states), on both total and exact path.
 
-### Slice B — multi-bar global candidate chain
+The already-accepted register track was **not** reopened to manufacture a
+client.
 
-For each bar/phrase layer, enumerate candidate states and optimise the whole
-sequence using continuity, rhythm, register, technique, playability, style, and
-available harmonic costs. Compare against S6's locally ranked output.
+### Slice B — multi-bar global candidate chain — **landed 2026-07-17**
+
+`core/src/candidate_chain.rs`. `plan_candidate_chain(&RankedSet)`: layer `b`
+holds bar `b` of every ranked candidate, so the DP picks one candidate per
+output bar and optimises the whole sequence. Nothing is regenerated, reranked,
+or re-seeded; each bar is a snapshot of a score already in the set, and each
+candidate's six S6 axes, rationale, and rerank provenance travel into the result
+untouched.
+
+- **Cost model `candidate_chain` v1** (untuned, documented baseline):
+  `candidate_quality` 1.0 (value `1 − s6_aggregate`, monotonic in S6's verdict),
+  `boundary_jump_semitones` 0.05 per unwrapped semitone, `silent_boundary` 0.25,
+  `rhythm_repeat` 0.40 (signature of real `(onset, duration)` pairs, pitch-free).
+- **Silent-bar semantics:** when a bar edge has no sounding pitch the jump is
+  unmeasurable, so `boundary_jump_semitones` is **absent** and `silent_boundary`
+  carries the fact. An unavailable measurement is never a zero pretending to be
+  perfect continuity. Two silent bars share the explicit empty rhythm signature.
+- **Compatibility:** the set is refused — never truncated — on the first
+  offending fact: empty set, no bars, differing bar count, PPQ, bar grid (tick
+  range/meter/tempo), or track-voice shape. The master timeline is the one every
+  candidate already agrees on, never borrowed from a layer winner.
+- **Cross-bar material is rejected, not clipped.** `slice::extract_bars` filters
+  atoms by onset without shortening durations and clamps technique spans, so it
+  is not a lossless concatenation contract. A note ringing past its bar, a span
+  straddling a bar line, or a group whose atoms span bars is refused.
+- **Assembly** copies the selected bars' event groups verbatim onto the shared
+  timeline — no rebasing, no re-quantising, and no MIDI round-trip.
+- **Baseline:** ranked candidate 0, intact, under the *same* policy. On the
+  synthetic non-greedy fixture (candidate 0 is locally cheapest everywhere but
+  its bar 1 dives to pitch 50 and must climb 34 semitones back) the intact
+  winner costs **3.3**, the planned chain **2.4** via `[0, 1, 0]`. A real
+  fixed-seed `ranked_candidates` pass plans deterministically with complete
+  explanations. No corpus-level musical superiority is claimed from one fixture.
+
+Deliberately **not** in these slices: k-best, harmonic fit, style fit,
+playability, fret travel, `EnergyState`, corpus transition statistics,
+persistent nodes, and complement hyperedges.
 
 ### Slice C — deterministic k-best alternatives
 
