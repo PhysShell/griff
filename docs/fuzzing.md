@@ -205,6 +205,43 @@ priority onto canonical stages:
 - **Status:** **fixed at S8** — `signal_cadence` binary-searches the ascending
   master bars (`O(log bars)`), so the detector is `O(bars · log bars)`.
 
+### F-006 — silent VLQ delta truncation on export *(fixed at S8)*
+
+- **Where:** `core/src/midi.rs` — `abs_to_delta` converted an unchecked `u32`
+  event gap with `u28::from_int_lossy`. An SMF delta is a 4-byte
+  variable-length quantity, capped at `0x0FFF_FFFF`; `from_int_lossy` wraps
+  anything larger mod 2^28 and reports no error. Every export — meta track and
+  note track — went through that one helper.
+- **Effect:** **silent corruption reported as success**, the one outcome the
+  gate's typed-error-xor-success contract forbids. The finding's meta track
+  jumps from tick 1,920 to a 5/64 time-signature change at 268,536,960; the
+  gap of 268,535,040 wrapped to 99,584, placing the change at 101,504 —
+  ~268 million ticks early. Re-import then derives ~1,791,473 bars from the
+  resulting 150-tick bar and rejects the file with `TooManyBars`, so griff's
+  own importer refused griff's own export.
+- **The condition is a gap, not a position:** a score may legally run past
+  `0x0FFF_FFFF` provided every individual delta stays representable. Sparse
+  meta tracks are the exposed case, since time-signature, tempo and
+  end-of-track events can sit hundreds of millions of ticks apart.
+- **Reproducer / regression seed:**
+  `fuzz/corpus/midi_roundtrip/roundtrip_delta_exceeds_vlq.mid` (274 bytes, the
+  gate's own artifact, unminimized). Characterization tests:
+  `regression_f006_export_refuses_unrepresentable_delta` and
+  `export_never_returns_bytes_its_own_importer_rejects` in `core/src/midi.rs`,
+  both sharing the corpus file via `include_bytes!` so seed and contract cannot
+  drift.
+- **Found by:** the `midi_roundtrip` gate on PR #129 (run 29572853555), whose
+  diff touches no `core/` file. Replaying the artifact reproduced identically
+  on `main`'s tip (`2612bd8`), so the defect was live on `main` and merely
+  discovered by that PR. The gate had been green for the 11 preceding runs:
+  libFuzzer mutated a committed seed and found this inside its 60-second
+  budget. Committing the seed converts that dice roll into a deterministic
+  check.
+- **Status:** **fixed at S8** — `abs_to_delta` returns `Result` and refuses an
+  unrepresentable gap with `MidiError::DeltaExceedsVlq { previous_tick,
+  absolute_tick, delta }`. Not `TooManyBars`: that is an importer resource
+  bound, this is an exporter representation failure.
+
 ### F-003 — guitarpro unvalidated direction index *(open, quarantined)*
 
 - **Where:** `guitarpro 0.4.2`, `model/legacy/headers/io.rs:114`:
