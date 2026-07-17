@@ -37,8 +37,8 @@ use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
 use griff_ui_core::history::{
-    CandidateSource, ChainSupplier, CorpusContribution, GenerationRunId, GeneratorProvenance,
-    HistoryId, Provenance, SessionHistory, Verdict,
+    CandidateSource, ChainOutcomeRecord, ChainSupplier, CorpusContribution, GenerationRunId,
+    GeneratorProvenance, HistoryId, Provenance, SessionHistory, Verdict,
 };
 use griff_ui_core::playback::{Player, TempoMap};
 
@@ -1613,6 +1613,21 @@ impl CockpitApp {
         let text = serde_json::to_string_pretty(&provenance).map_err(|err| err.to_string())?;
         fs::write(&json, text).map_err(|e| format!("cannot write {}: {e}", json.display()))?;
         Ok(mid.display().to_string())
+    }
+
+    /// Exports the global chain recorded as history entry `id` to `.mid`, plus
+    /// a provenance sidecar; returns the written `.mid` path.
+    ///
+    /// Exports the **snapshot**, through the one canonical `Score` → MIDI path.
+    /// The planner is not consulted: what was auditioned is what is written,
+    /// however far the panel has moved on since.
+    ///
+    /// # Errors
+    /// When the entry is missing, is not a chain, or the write fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_chain_keep(&self, _id: HistoryId) -> Result<String, String> {
+        // Stub: the laws come first.
+        Err("not implemented".to_owned())
     }
 
     /// Hands the last kept `.mid` to the OS default handler — the cheap way to
@@ -4322,6 +4337,302 @@ mod tests {
             Some(AuditionCandidate::History(chain_entry)),
             "and it is what is playing",
         );
+    }
+
+    #[test]
+    fn a_runs_chain_outcome_is_recorded_against_the_run() {
+        // Not against a candidate: a refusal has no score, and an entry needs
+        // one. The run id is the link that survives the panel.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let Some(ChainOutcomeRecord::Planned {
+            total_cost,
+            baseline_cost,
+            suppliers,
+            policy_id,
+            ..
+        }) = app.history.chain_of(run)
+        else {
+            panic!(
+                "the demo run planned a chain: {:?}",
+                app.history.chain_of(run)
+            );
+        };
+        assert_eq!(*policy_id, "candidate_chain");
+        assert_eq!(
+            suppliers.len(),
+            app.gen_panel.bars,
+            "one supplier per output bar",
+        );
+        let GlobalChainOutcome::Planned(chain) =
+            &app.gen_panel.active.as_ref().expect("a run").chain
+        else {
+            panic!("planned");
+        };
+        assert_eq!(
+            total_cost.to_bits(),
+            chain.plan.total_cost.to_bits(),
+            "the recorded costs are the captured ones, bit for bit",
+        );
+        assert_eq!(baseline_cost.to_bits(), chain.baseline_cost.to_bits());
+    }
+
+    #[test]
+    fn a_refused_runs_outcome_survives_a_later_generate() {
+        // The whole reason the record is run-level. ActiveGenerateRun is
+        // replaced by the next Generate; the reason run A had no chain must not
+        // go with it.
+        let (mut app, refusal) = app_with_refused_chain();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.history
+            .record_chain(run_a, ChainOutcomeRecord::Refused { error: refusal });
+
+        app.gen_panel.seed = 24_601;
+        app.do_generate(); // run B replaces the active run entirely
+        let run_b = app.gen_panel.active.as_ref().expect("a run").context.run;
+        assert_ne!(run_a, run_b, "a new run");
+
+        assert_eq!(
+            app.history.chain_of(run_a),
+            Some(&ChainOutcomeRecord::Refused { error: refusal }),
+            "run A's refusal is still the typed error it always was",
+        );
+        assert!(
+            matches!(
+                app.history.chain_of(run_b),
+                Some(&ChainOutcomeRecord::Planned { .. })
+            ),
+            "and run B recorded its own outcome",
+        );
+        assert!(
+            !app.history
+                .entries()
+                .iter()
+                .any(|e| e.run == run_a && e.source == CandidateSource::GlobalChain),
+            "run A never got a chain entry — a refusal has no score to hang one on",
+        );
+        let intact_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.run == run_a)
+            .expect("run A's intact winner is still in history");
+        assert!(
+            !intact_a.score.master_bars.is_empty(),
+            "and its music is untouched by run B",
+        );
+    }
+
+    // ── export writes the snapshot, never a re-plan ──────────────────────────
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_exports_the_captured_assembled_score() {
+        use griff_core::midi::export_score;
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-chain-export-test");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was recorded")
+            .id;
+
+        let path = app.write_chain_keep(id).expect("the chain exports");
+        let written = fs::read(&path).expect("the file is there");
+        let expected =
+            export_score(&app.history.get(id).expect("entry").score).expect("the snapshot exports");
+        assert_eq!(
+            written, expected,
+            "the bytes are the captured assembled score's, through the one canonical path",
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn exporting_an_old_chain_after_a_new_generate_writes_the_old_music() {
+        // The immutability law. The UI moves on — a new run, new knobs, a
+        // different candidate — and the old export is still the old music,
+        // because it was never a recipe to re-derive, only a snapshot.
+        use griff_core::midi::export_score;
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-chain-export-old");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let old = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let old_bytes = export_score(&app.history.get(old).expect("entry").score).expect("exports");
+
+        app.gen_panel.seed = 8_675_309;
+        app.gen_panel.bars = 3;
+        app.do_generate();
+        app.show_candidate(1);
+
+        let path = app
+            .write_chain_keep(old)
+            .expect("the old chain still exports");
+        let written = fs::read(&path).expect("the file is there");
+        assert_eq!(
+            written, old_bytes,
+            "the old entry exports the music it was recorded with",
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn exporting_the_chain_does_not_replan_it() {
+        // The poisoned snapshot again, this time through the export path.
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-chain-export-noreplan");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let poison = 4321.0_f64;
+        {
+            let run = app.gen_panel.active.as_mut().expect("a run");
+            let GlobalChainOutcome::Planned(chain) = &mut run.chain else {
+                panic!("planned");
+            };
+            chain.plan.total_cost = poison;
+        }
+        let path = app.write_chain_keep(id).expect("exports");
+        let GlobalChainOutcome::Planned(chain) =
+            &app.gen_panel.active.as_ref().expect("a run").chain
+        else {
+            panic!("planned");
+        };
+        assert_eq!(
+            chain.plan.total_cost.to_bits(),
+            poison.to_bits(),
+            "export read the snapshot; it did not ask the planner to try again",
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_chain_sidecar_names_its_suppliers_and_both_costs() {
+        // A sidecar that cannot say which candidate played which bar does not
+        // reproduce the export; it just sits beside it looking official.
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-chain-sidecar");
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let path = app.write_chain_keep(id).expect("exports");
+        let json = fs::read_to_string(path.replace(".mid", ".json")).expect("a sidecar");
+        assert!(json.contains("\"suppliers\""), "the bar map: {json}");
+        assert!(json.contains("\"total_cost\""), "the chain's cost: {json}");
+        assert!(
+            json.contains("\"baseline_cost\""),
+            "and what it is compared against: {json}",
+        );
+        assert!(
+            json.contains("\"policy_id\": \"candidate_chain\""),
+            "under the policy that measured them: {json}",
+        );
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.replace(".mid", ".json"));
+    }
+
+    // ── history replay does not leave a live row claiming to sound ───────────
+
+    #[test]
+    fn replaying_a_chain_from_history_clears_the_live_candidate_selection() {
+        // The review's finding: the same defect through the side door. A row of
+        // run B's live table stays highlighted while run A's chain snapshot
+        // sounds, so the panel points at music that is not playing.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let chain = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+
+        app.gen_panel.seed = 1_234;
+        app.do_generate(); // run B — the table now marks row 0
+        assert_eq!(app.gen_panel.selected, Some(0), "run B marked its winner");
+
+        app.select_history(chain); // run A's chain sounds
+        assert_eq!(
+            app.gen_panel.selected, None,
+            "no live row is the active source while a snapshot plays",
+        );
+        assert_eq!(app.current, Some(AuditionCandidate::History(chain)));
+    }
+
+    #[test]
+    fn replaying_any_history_entry_clears_the_live_candidate_selection() {
+        // The general rule, not just the chain case: a live table selection is
+        // a claim about the active source, and a replayed snapshot is not it.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let first = app.history.entries().first().expect("recorded").id;
+        app.show_candidate(1);
+        assert_eq!(app.gen_panel.selected, Some(1));
+        app.select_history(first);
+        assert_eq!(
+            app.gen_panel.selected, None,
+            "the row stops claiming to be what is sounding",
+        );
+    }
+
+    #[test]
+    fn switching_variants_while_paused_mid_note_silences_the_held_notes() {
+        // The gap the review spotted in the matrix: seek() silences
+        // unconditionally, so a paused mid-note switch cannot leave a note
+        // hanging — but nothing said so.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.vp.playing = true;
+        app.advance_audio(0.4);
+        app.vp.playing = false; // paused, mid-note
+        assert!(
+            app.player.active_count() > 0,
+            "the fixture is paused with notes held",
+        );
+        app.show_global_chain();
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "the held notes are released by the switch, not left ringing",
+        );
+        assert!(!app.vp.playing, "and it is still paused");
     }
 
     #[test]

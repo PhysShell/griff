@@ -10,6 +10,7 @@
 //! **typed** value, never a pre-baked UI string — a renderer builds its own
 //! description from it.
 
+use griff_core::candidate_chain::ChainError;
 use griff_core::score::Score;
 
 use crate::generate::SetSummary;
@@ -316,12 +317,51 @@ pub struct HistoryEntry {
 pub struct SessionHistory {
     /// Entries in creation order.
     entries: Vec<HistoryEntry>,
+    /// What each run's global chain came to, in run order.
+    chains: Vec<(GenerationRunId, ChainOutcomeRecord)>,
     /// The next id to hand out — monotonic, never reused.
     next_id: u64,
     /// The next generation-run id to hand out — monotonic, never reused.
     next_run_id: u64,
     /// The currently selected entry, if any (a view pointer, not identity).
     selected: Option<HistoryId>,
+}
+
+/// What one Generate run's S7 global chain came to.
+///
+/// Recorded against the **run**, not against a candidate, because a refusal has
+/// no score — and an entry needs one. Inventing a `GlobalChain` entry holding
+/// the intact winner's score, so that the error had somewhere to live, would be
+/// the exact lie this milestone exists to avoid: a result that does not exist,
+/// wearing the music of one that does.
+///
+/// The run id is the link. A candidate entry from the same run answers "was
+/// there a chain for this?" by asking here, and the answer outlives the panel
+/// state that produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChainOutcomeRecord {
+    /// The run's chain was planned, and this is what it cost.
+    Planned {
+        /// The chain policy the costs were weighed under.
+        policy_id: &'static str,
+        /// That policy's version.
+        policy_version: u32,
+        /// Ranked candidate 0 kept intact, under the same policy.
+        baseline_cost: f64,
+        /// The planned chain's total.
+        total_cost: f64,
+        /// Which candidate supplied each output bar.
+        suppliers: Vec<ChainSupplier>,
+    },
+    /// The run's set could not be chained, and this is the core's own reason.
+    ///
+    /// Kept typed. A sentence for a human is a projection built at render time
+    /// ([`crate::generate::GlobalChainOutcome`] carries the same value); storing
+    /// the sentence instead would throw away the fact and keep the paraphrase.
+    Refused {
+        /// The typed error the core returned.
+        error: ChainError,
+    },
 }
 
 impl SessionHistory {
@@ -384,6 +424,26 @@ impl SessionHistory {
         });
         self.next_id = self.next_id.saturating_add(1);
         id
+    }
+
+    /// Records what `run`'s global chain came to.
+    ///
+    /// Append-only like everything else here: the first record for a run stands,
+    /// and a second call is ignored rather than allowed to rewrite history. A
+    /// run's chain outcome is decided once, when its set is produced.
+    pub fn record_chain(&mut self, run: GenerationRunId, outcome: ChainOutcomeRecord) {
+        if !self.chains.iter().any(|(id, _)| *id == run) {
+            self.chains.push((run, outcome));
+        }
+    }
+
+    /// What `run`'s global chain came to, if the run recorded one.
+    #[must_use]
+    pub fn chain_of(&self, run: GenerationRunId) -> Option<&ChainOutcomeRecord> {
+        self.chains
+            .iter()
+            .find(|(id, _)| *id == run)
+            .map(|(_, outcome)| outcome)
     }
 
     /// The entries, in creation order.
