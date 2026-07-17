@@ -45,8 +45,12 @@ use griff_ui_core::playback::{Player, TempoMap};
 use audio::Synth;
 use griff_core::candidate_chain::{ChainError, MasterBarField, TrackField, TransitionFactError};
 use griff_core::layered_path::PathError;
+use griff_core::scoring::RationaleEntry;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
-use griff_ui_core::generate::{generate_run, GeneratedRun, GlobalChainOutcome, PlannedGlobalChain};
+use griff_ui_core::generate::{
+    generate_run, global_chain_summary, ChainBarView, ChainBoundaryView, GeneratedRun,
+    GlobalChainOutcome, GlobalChainSummary, PlannedGlobalChain,
+};
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
 use griff_ui_core::theme::{cell_style, Rgb, Theme};
 use griff_ui_core::viewport::CurationDecision;
@@ -746,6 +750,100 @@ struct KeptSupplier<'a> {
     variant_seed: u64,
 }
 
+/// Paints a planned chain's costs, supplier map, and the core's own rationales.
+///
+/// Every number here was measured by the core and carried through
+/// [`global_chain_summary`]. This function's whole job is layout: it does not
+/// weigh, sum, or compare anything.
+fn chain_summary_block(ui: &mut egui::Ui, summary: &GlobalChainSummary) {
+    ui.monospace(format!("Baseline cost: {:.3}", summary.baseline_cost));
+    ui.monospace(format!("Chain cost:    {:.3}", summary.total_cost));
+    // Signed arithmetic, named for what it is. "improvement" would be a verdict
+    // the policy did not deliver: `candidate_chain` v1 prefers a lower total,
+    // and preferring is not the same as sounding better.
+    ui.monospace(format!(
+        "Delta:         {:+.3}  ({} under {} v{})",
+        summary.delta,
+        if summary.delta < 0.0 {
+            "lower"
+        } else {
+            "higher"
+        },
+        summary.policy_id,
+        summary.policy_version,
+    ));
+    ui.separator();
+
+    for (i, bar) in summary.bars.iter().enumerate() {
+        ui.monospace(format!(
+            "Bar {}  candidate {} · rank {} · {} · seed {:016x}",
+            bar.bar_number, bar.candidate, bar.rank, bar.strategy, bar.variant_seed,
+        ))
+        .on_hover_text(bar_hover(bar));
+        if let Some(boundary) = summary.boundaries.get(i) {
+            ui.monospace(format!("   ┆ {}", boundary_line(boundary)))
+                .on_hover_text(rationale_hover(&boundary.rationale));
+        }
+    }
+}
+
+/// A bar's local explanation, as hover text.
+fn bar_hover(bar: &ChainBarView) -> String {
+    // `candidate_quality` is only there if the policy charged it; absent stays
+    // absent here too rather than becoming a printed zero.
+    let quality = bar.candidate_quality.map_or_else(String::new, |quality| {
+        format!("candidate_quality {quality:.3}\n")
+    });
+    let axes = bar
+        .s6_axes
+        .iter()
+        .map(|(label, value)| format!("  {label} {value:.3}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "chain local {:.3}\nS6 aggregate {:.3}\n{quality}{}\n\nS6 axes:\n{axes}",
+        bar.local_aggregate,
+        bar.s6_aggregate,
+        rationale_hover(&bar.local_rationale),
+    )
+}
+
+/// A boundary's facts, in one line.
+///
+/// An unmeasured jump says so. It is not rendered as `0`, which would read as
+/// the smoothest possible join rather than as an unanswered question.
+fn boundary_line(boundary: &ChainBoundaryView) -> String {
+    let jump = boundary.jump_semitones.map_or_else(
+        || "jump not measured".to_owned(),
+        |semitones| format!("jump {semitones:.0} st"),
+    );
+    let silent = if boundary.silent_boundary {
+        " · silent boundary"
+    } else {
+        ""
+    };
+    let repeat = if boundary.rhythm_repeat {
+        " · rhythm repeat"
+    } else {
+        ""
+    };
+    format!("{jump}{silent}{repeat} · cost {:.3}", boundary.aggregate)
+}
+
+/// The core's weighted rationale, as hover text.
+fn rationale_hover(rationale: &[RationaleEntry]) -> String {
+    rationale
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {:.3} × {:.2} = {:.3}",
+                e.axis, e.value, e.weight, e.contribution
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A planned chain's typed provenance, from the run that captured it.
 ///
 /// One construction shared by both paths that can record the chain — the
@@ -785,7 +883,10 @@ fn chain_outcome_record(chain: &GlobalChainOutcome) -> ChainOutcomeRecord {
             policy_version: chain.plan.provenance.policy_version,
             baseline_cost: chain.baseline_cost,
             total_cost: chain.plan.total_cost,
-            suppliers: chain_suppliers(chain),
+            // The core's trace, so an old chain can still explain itself once
+            // the run that made it has been replaced.
+            steps: chain.plan.steps.clone(),
+            transitions: chain.plan.transitions.clone(),
         },
         GlobalChainOutcome::Refused(error) => ChainOutcomeRecord::Refused { error: *error },
     }
@@ -2349,6 +2450,17 @@ impl CockpitApp {
                 "no global chain: {}",
                 chain_refusal_summary(*error)
             ));
+            return;
+        }
+        // Read from the run's own record — the same source a replayed history
+        // entry reads, so a chain's explanation does not depend on which panel
+        // happens to be open, or on the run still being the active one.
+        if let Some(summary) = self
+            .history
+            .chain_of(active.context.run)
+            .and_then(global_chain_summary)
+        {
+            chain_summary_block(ui, &summary);
         }
     }
 
@@ -4608,6 +4720,117 @@ mod tests {
         );
     }
 
+    /// The summary the panel would paint for `run`, from the same source it
+    /// reads — the run's own record, not the active panel.
+    fn visible_summary(app: &CockpitApp, run: GenerationRunId) -> GlobalChainSummary {
+        app.history
+            .chain_of(run)
+            .and_then(global_chain_summary)
+            .expect("the run planned a chain, so it has an explanation")
+    }
+
+    #[test]
+    fn the_visible_explanation_comes_from_the_runs_record() {
+        // Not from ActiveGenerateRun. The panel and a replayed history entry
+        // must give the same answer about the same chain, and only one of them
+        // has a live run to ask.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let summary = visible_summary(&app, run);
+
+        let GlobalChainOutcome::Planned(chain) =
+            &app.gen_panel.active.as_ref().expect("a run").chain
+        else {
+            panic!("planned");
+        };
+        assert_eq!(
+            summary.total_cost.to_bits(),
+            chain.plan.total_cost.to_bits(),
+            "the same number the capture holds, bit for bit",
+        );
+        assert_eq!(
+            summary.baseline_cost.to_bits(),
+            chain.baseline_cost.to_bits(),
+        );
+        assert_eq!(summary.bars.len(), app.gen_panel.bars, "one row per bar");
+        assert_eq!(
+            summary.boundaries.len(),
+            app.gen_panel.bars.saturating_sub(1),
+            "one row per bar line",
+        );
+    }
+
+    #[test]
+    fn an_old_chain_still_explains_itself_after_a_later_generate() {
+        // The reason the trace lives on the run record. Replaying an old chain
+        // must show that chain's own explanation, and by then its
+        // ActiveGenerateRun is gone.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.seed = 11;
+        app.do_generate();
+        let run_a = app.gen_panel.active.as_ref().expect("a run").context.run;
+        app.show_global_chain();
+        let chain_a = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("recorded")
+            .id;
+        let before = visible_summary(&app, run_a);
+
+        app.gen_panel.seed = 22;
+        app.do_generate(); // run A's ActiveGenerateRun is gone
+        app.select_history(chain_a);
+
+        let entry_run = app.history.get(chain_a).expect("entry").run;
+        assert_eq!(entry_run, run_a, "the entry knows which run made it");
+        let after = visible_summary(&app, entry_run);
+        assert_eq!(
+            after.total_cost.to_bits(),
+            before.total_cost.to_bits(),
+            "the old chain's explanation is the old chain's",
+        );
+        assert_eq!(
+            after.bars.iter().map(|b| b.candidate).collect::<Vec<_>>(),
+            before.bars.iter().map(|b| b.candidate).collect::<Vec<_>>(),
+            "including its supplier map",
+        );
+    }
+
+    #[test]
+    fn moving_the_knobs_does_not_move_the_visible_explanation() {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let before = visible_summary(&app, run);
+        app.gen_panel.seed = 4_242;
+        app.gen_panel.bars = 2;
+        app.gen_panel.variants = 5;
+        let after = visible_summary(&app, run);
+        assert_eq!(
+            after, before,
+            "the explanation belongs to the run, not the panel"
+        );
+    }
+
+    #[test]
+    fn a_refused_run_has_no_explanation_block_to_show() {
+        let (app, _) = app_with_refused_chain();
+        let run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        assert!(
+            app.history
+                .chain_of(run)
+                .and_then(global_chain_summary)
+                .is_none(),
+            "nothing to explain, so nothing is drawn — not an empty block",
+        );
+    }
+
     #[test]
     fn a_runs_chain_outcome_is_recorded_against_the_run() {
         // Not against a candidate: a refusal has no score, and an entry needs
@@ -4619,7 +4842,7 @@ mod tests {
         let Some(ChainOutcomeRecord::Planned {
             total_cost,
             baseline_cost,
-            suppliers,
+            steps,
             policy_id,
             ..
         }) = app.history.chain_of(run)
@@ -4630,11 +4853,7 @@ mod tests {
             );
         };
         assert_eq!(*policy_id, "candidate_chain");
-        assert_eq!(
-            suppliers.len(),
-            app.gen_panel.bars,
-            "one supplier per output bar",
-        );
+        assert_eq!(steps.len(), app.gen_panel.bars, "one step per output bar");
         let GlobalChainOutcome::Planned(chain) =
             &app.gen_panel.active.as_ref().expect("a run").chain
         else {
@@ -4661,9 +4880,14 @@ mod tests {
         let run_b = app.gen_panel.active.as_ref().expect("a run").context.run;
         assert_ne!(run_a, run_b, "a new run");
 
+        let Some(ChainOutcomeRecord::Refused { error }) = app.history.chain_of(run_a) else {
+            panic!(
+                "run A's chain is still refused: {:?}",
+                app.history.chain_of(run_a)
+            );
+        };
         assert_eq!(
-            app.history.chain_of(run_a),
-            Some(&ChainOutcomeRecord::Refused { error: refusal }),
+            *error, refusal,
             "run A's refusal is still the typed error it always was",
         );
         assert!(

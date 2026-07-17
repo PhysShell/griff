@@ -323,9 +323,62 @@ pub struct ChainBoundaryView {
 /// `None` for a refusal: there is no plan to explain, and an empty summary would
 /// be a chain of zero bars costing nothing.
 #[must_use]
-pub fn global_chain_summary(_outcome: &ChainOutcomeRecord) -> Option<GlobalChainSummary> {
-    // Stub: the laws come first.
-    None
+pub fn global_chain_summary(outcome: &ChainOutcomeRecord) -> Option<GlobalChainSummary> {
+    let ChainOutcomeRecord::Planned {
+        policy_id,
+        policy_version,
+        baseline_cost,
+        total_cost,
+        steps,
+        transitions,
+    } = outcome
+    else {
+        return None;
+    };
+    Some(GlobalChainSummary {
+        policy_id,
+        policy_version: *policy_version,
+        baseline_cost: *baseline_cost,
+        total_cost: *total_cost,
+        delta: total_cost - baseline_cost,
+        bars: steps.iter().map(bar_view).collect(),
+        boundaries: transitions.iter().map(boundary_view).collect(),
+    })
+}
+
+/// One chain step, arranged for display.
+fn bar_view(step: &ChainStep) -> ChainBarView {
+    ChainBarView {
+        bar_number: step.state.bar.saturating_add(1),
+        candidate: step.state.candidate,
+        rank: step.state.rank,
+        strategy: format!("{:?}", step.state.strategy),
+        variant_seed: step.state.variant_seed.0,
+        local_aggregate: step.local.aggregate(),
+        candidate_quality: step.local.axes.get(AXIS_CANDIDATE_QUALITY),
+        s6_aggregate: step.s6.aggregate,
+        local_rationale: step.local.rationale.entries().to_vec(),
+        s6_axes: step.s6.axes.iter().map(|a| (a.label, a.value)).collect(),
+    }
+}
+
+/// One chain transition, arranged for display.
+fn boundary_view(transition: &ChainTransition) -> ChainBoundaryView {
+    let axes = &transition.cost.axes;
+    ChainBoundaryView {
+        from_bar_number: transition.from.bar.saturating_add(1),
+        to_bar_number: transition.to.bar.saturating_add(1),
+        from_candidate: transition.from.candidate,
+        to_candidate: transition.to.candidate,
+        // Absent stays absent. `get` returning None is the core saying it could
+        // not measure this, and `unwrap_or(0.0)` here would quietly turn that
+        // into the best possible boundary.
+        jump_semitones: axes.get(AXIS_BOUNDARY_JUMP),
+        silent_boundary: axes.get(AXIS_SILENT_BOUNDARY).is_some_and(|v| v > 0.5),
+        rhythm_repeat: axes.get(AXIS_RHYTHM_REPEAT).is_some_and(|v| v > 0.5),
+        aggregate: transition.cost.aggregate(),
+        rationale: transition.cost.rationale.entries().to_vec(),
+    }
 }
 
 /// Notes across a score's first track.
@@ -661,8 +714,7 @@ mod tests {
         // `0.0` would say "no distance at all" — the best possible boundary —
         // which is the opposite of not knowing.
         let mut set = non_greedy_set();
-        let silent = bars_of(&[60, 70, 84]);
-        let mut quiet = silent.clone();
+        let mut quiet = bars_of(&[60, 70, 84]);
         quiet.tracks[0].voices[0].event_groups.remove(1); // bar 1 falls silent
         set.ranked = vec![
             chain_candidate(&[60, 50, 84], 0.9, 1),
