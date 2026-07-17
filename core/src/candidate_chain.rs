@@ -113,6 +113,17 @@ pub enum ChainError {
         /// The offending candidate's ordinal.
         candidate: usize,
     },
+    /// A candidate's loss report differs from the first candidate's.
+    ///
+    /// The report says what an import already lost — an undecodable track name,
+    /// unsupported timing. In v1 every candidate descends from one import, so
+    /// they must agree; if they ever do not, merging them would invent a
+    /// combined history no candidate has, and picking one would silently drop
+    /// the other's. Both are worse than refusing.
+    LossReportMismatch {
+        /// The offending candidate's ordinal.
+        candidate: usize,
+    },
     /// A candidate carries material that does not fit inside the bar its event
     /// group belongs to — a note sounding past the bar's end, an atom in another
     /// bar than its group's, or a technique span outside the group's bar.
@@ -1010,8 +1021,8 @@ mod tests {
     use crate::layered_path::{PathError, StateId};
     use crate::rerank::SetCandidate;
     use crate::score::{
-        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar,
-        RepeatMarker, Score, SourceMeta, TechniqueSpan, Track, Voice,
+        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
+        MasterBar, RepeatMarker, Score, SourceMeta, TechniqueSpan, Track, Voice,
     };
     use crate::scoring::{Axes, Axis, Scored, WeightPolicy};
     use crate::slice::TickRange;
@@ -1350,6 +1361,86 @@ mod tests {
                 track: 0,
                 field: TrackField::VoiceId,
             },
+        );
+    }
+
+    #[test]
+    fn a_differing_loss_report_is_rejected() {
+        // Nothing in the cost model or the musical content reads the report, so
+        // an unvalidated difference is resolved silently in candidate 0's
+        // favour — one candidate's import history quietly becomes everyone's.
+        assert_eq!(
+            rejected_for(|s| s.loss.add(ImportWarning::SmpteTimingUnsupported)),
+            ChainError::LossReportMismatch { candidate: 1 },
+        );
+    }
+
+    #[test]
+    fn an_identical_loss_report_is_carried_into_the_assembled_score() {
+        // Every candidate descends from one import, so they carry one report,
+        // and the assembled score is that same import's music: dropping the
+        // report would claim a clean conversion that never happened.
+        let mut set = non_greedy_set();
+        for scored in &mut set.ranked {
+            scored
+                .value
+                .score
+                .loss
+                .add(ImportWarning::TrackNameInvalidUtf8 { track_index: 0 });
+            scored
+                .value
+                .score
+                .loss
+                .add(ImportWarning::Other("truncated bend".to_owned()));
+        }
+        let planned = plan_candidate_chain(&set).expect("plannable");
+        assert_eq!(
+            planned.score.loss.warnings,
+            vec![
+                ImportWarning::TrackNameInvalidUtf8 { track_index: 0 },
+                ImportWarning::Other("truncated bend".to_owned()),
+            ],
+            "the report survives assembly, in order",
+        );
+    }
+
+    #[test]
+    fn a_clean_set_assembles_a_clean_report() {
+        // The other direction: carrying the report must not invent losses.
+        let planned = plan_candidate_chain(&non_greedy_set()).expect("plannable");
+        assert!(
+            planned.score.loss.is_clean(),
+            "nothing was lost, and nothing is claimed to have been",
+        );
+    }
+
+    #[test]
+    fn the_selected_bars_do_not_change_the_loss_provenance() {
+        // Loss is a fact about the import, not about which bar won a layer.
+        // The chain borrows bar 1 from candidate 1 here; the report is the same
+        // report either way.
+        let mut set = non_greedy_set();
+        for scored in &mut set.ranked {
+            scored
+                .value
+                .score
+                .loss
+                .add(ImportWarning::SmpteTimingUnsupported);
+        }
+        let planned = plan_candidate_chain(&set).expect("plannable");
+        assert_eq!(
+            planned
+                .steps
+                .iter()
+                .map(|s| s.state.candidate)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0],
+            "the fixture really does borrow a bar",
+        );
+        assert_eq!(
+            planned.score.loss.warnings,
+            vec![ImportWarning::SmpteTimingUnsupported],
+            "one import, one history, whichever bars were selected",
         );
     }
 
