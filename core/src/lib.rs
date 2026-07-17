@@ -5,6 +5,7 @@
 //! the rest of the codebase works exclusively with these structured types.
 
 pub mod boundary;
+pub mod candidate_chain;
 pub mod classify;
 pub mod closure;
 pub mod complement;
