@@ -77,6 +77,17 @@ pub enum PathError {
         /// The empty layer's index.
         layer: usize,
     },
+    /// The number of transition tables is not `layers - 1`.
+    ///
+    /// A count mismatch is its own fact, not the shape of an imaginary layer:
+    /// an extra table joins nothing, and a one-layer problem has nowhere to
+    /// put one.
+    TransitionCount {
+        /// The count the layers require: `layers - 1`.
+        expected: usize,
+        /// The count the caller supplied.
+        found: usize,
+    },
     /// The transition table's shape does not match the layers it joins.
     TransitionShape {
         /// The layer the transition table leaves from.
@@ -619,6 +630,98 @@ mod tests {
             }
             other => panic!("expected NonFiniteTransition, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn one_layer_with_a_transition_table_is_rejected() {
+        // A single layer has nowhere to put a transition: the table joins nothing.
+        let locals = locals_of(&[&[1.0]]);
+        let transitions = transitions_of(&[&[&[0.0]]]);
+        let p = policy();
+        assert_eq!(
+            solve(&LayeredProblem {
+                locals: &locals,
+                transitions: &transitions,
+                policy: &p,
+            })
+            .unwrap_err(),
+            PathError::TransitionCount {
+                expected: 0,
+                found: 1,
+            },
+        );
+    }
+
+    #[test]
+    fn an_extra_transition_table_is_rejected() {
+        let locals = locals_of(&[&[1.0], &[1.0]]);
+        let transitions = transitions_of(&[&[&[0.0]], &[&[0.0]]]); // 2 tables, 1 needed
+        let p = policy();
+        assert_eq!(
+            solve(&LayeredProblem {
+                locals: &locals,
+                transitions: &transitions,
+                policy: &p,
+            })
+            .unwrap_err(),
+            PathError::TransitionCount {
+                expected: 1,
+                found: 2,
+            },
+        );
+    }
+
+    #[test]
+    fn a_missing_transition_table_is_rejected() {
+        let locals = locals_of(&[&[1.0], &[1.0]]);
+        let transitions: Vec<Vec<Vec<Axes>>> = Vec::new();
+        let p = policy();
+        assert_eq!(
+            solve(&LayeredProblem {
+                locals: &locals,
+                transitions: &transitions,
+                policy: &p,
+            })
+            .unwrap_err(),
+            PathError::TransitionCount {
+                expected: 1,
+                found: 0,
+            },
+        );
+    }
+
+    #[test]
+    fn the_exact_transition_count_is_accepted() {
+        let locals = locals_of(&[&[1.0], &[1.0], &[1.0]]);
+        let transitions = transitions_of(&[&[&[0.0]], &[&[0.0]]]);
+        let p = policy();
+        assert!(solve(&LayeredProblem {
+            locals: &locals,
+            transitions: &transitions,
+            policy: &p,
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn an_extra_table_holding_nan_reports_the_count_not_the_nan() {
+        // The count is checked before any fact is scored, so an unreachable
+        // table's NaN never gets the chance to masquerade as the real problem.
+        let locals = locals_of(&[&[1.0]]);
+        let transitions = transitions_of(&[&[&[f64::NAN]]]);
+        let p = policy();
+        assert_eq!(
+            solve(&LayeredProblem {
+                locals: &locals,
+                transitions: &transitions,
+                policy: &p,
+            })
+            .unwrap_err(),
+            PathError::TransitionCount {
+                expected: 0,
+                found: 1,
+            },
+        );
     }
 
     #[test]
