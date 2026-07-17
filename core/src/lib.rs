@@ -5,6 +5,7 @@
 //! the rest of the codebase works exclusively with these structured types.
 
 pub mod boundary;
+pub mod candidate_chain;
 pub mod classify;
 pub mod closure;
 pub mod complement;
@@ -20,6 +21,7 @@ pub mod gesture;
 pub mod gp;
 pub mod harmony;
 pub mod import;
+pub mod layered_path;
 pub mod midi;
 pub mod novelty;
 pub mod pitch;

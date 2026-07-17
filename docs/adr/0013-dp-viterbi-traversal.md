@@ -1,7 +1,13 @@
 # ADR 0013: DP/Viterbi traversal over the phrase hypergraph
 
 Date: 2026-05-31
-Status: Proposed
+Status: Accepted (2026-07-17) — **amended by
+[ADR-0030](0030-reduced-state-layered-dp-clients.md)**
+
+The decision below is the 2026-05-31 record and is left as it was written,
+including the parts ADR-0030 revises: §1's state, the "cannot ship until"
+consequence, and the claim that exact DP is exponential in the state size. Read
+ADR-0030 for what is true now and for why each of those changed.
 
 ## Context
 

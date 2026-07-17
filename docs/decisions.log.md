@@ -1768,3 +1768,57 @@ Architectural decisions go to [`adr/`](adr/) instead.
   attached-but-empty corpus reads honestly as "seed only" instead of "corpus".
   Accepting a session-local monotonic run id, not a content-addressed
   fingerprint (the repo has no accepted content-addressing scheme yet).
+
+- 2026-07-17 — In the context of S7 Slices A and B (the layered-path contract
+  and its first client), facing ADR-0013's own note that DP "cannot ship until"
+  a fretboard model and `EnergyState` exist, we decided to **ship the engine
+  against a client that needs neither** — multi-bar recombination of an existing
+  `RankedSet` — rather than wait for the full hypergraph or manufacture a
+  generic framework. The engine (`core/src/layered_path.rs`) stays domain-free:
+  layers of `Axes`, a versioned `WeightPolicy`, exact DP in
+  `O(Σ |L[i-1]| × |L[i]|)`, ties broken by the lexicographically smallest vector
+  of state ordinals decided front-to-back (which needs no stored prefixes), and
+  non-finite costs rejected before the walk so the comparisons run on a total
+  order. We reused `scoring::Scored` rather than extract a new weighted-axes
+  seam: its docs already sanction signed cost axes, so **no S6 refactor was
+  required** and no second implementation of `value × weight` exists.
+  The `candidate_chain` v1 cost model ships only what canonical events can
+  measure today — candidate quality (monotonic in the S6 aggregate), an
+  unwrapped boundary jump in semitones, an explicit silent-boundary fact, and a
+  rhythm repeat over real `(onset, duration)` signatures. Harmonic fit, style
+  fit, playability and fret travel are **absent rather than zero**: an
+  unmeasured term with a weight attached is a lie that scores. A silent boundary
+  omits the jump axis instead of reporting perfect continuity. Cross-bar
+  material is **refused, not clipped**, because `slice::extract_bars` cuts by
+  onset and clamps spans and therefore offers no lossless concatenation
+  contract; assembly copies groups verbatim onto the timeline every candidate
+  already agreed on, with no MIDI round-trip. The baseline is stated as ranked
+  candidate 0 kept intact and weighed under the very same policy — one metric on
+  both sides. Accepting: the weights are an untuned baseline, not corpus
+  calibration and not S9 learning; and one synthetic fixture (3.3 → 2.4) plus one
+  real fixed-seed pass is evidence of the mechanism, not of corpus-level musical
+  superiority. ADR-0013 moves to Accepted for Slices A/B; Slice C (deterministic
+  k-best) and Slice D (specialised clients) remain future work.
+  **Amended the same day, from review:** four contracts were stated more
+  narrowly than the code needed and are now decided explicitly. (1) Rejecting
+  non-finite *inputs* is not enough — finite costs can sum to `±∞`, so every
+  accumulation is checked as it forms; an optimum compared over `∞ == ∞` is not
+  an optimum. (2) The boundary pitch is the last note still **sounding**, chosen
+  by note end rather than by onset, because a note held across the line is what
+  the ear carries over it. (3) An invalid bar index is **not** silence: a
+  missing address is a caller error and a quiet bar is a musical observation, at
+  the boundary facts and at assembly alike. (4) Compatibility is validated
+  against everything **assembly copies** from ranked candidate 0 — the whole
+  master bar, the whole track skeleton, the source format — not against the
+  three fields the cost model happens to read; the unread fields are precisely
+  the ones that would go missing without a sound changing. The unit of both
+  rejection and lifting is the **event group**. Two further contracts followed
+  in a later round: one normative association for every path cost (float
+  addition is not associative, so "the same cost function" is not the same
+  metric until the order of the additions is fixed), and the intact baseline
+  evaluated *through* the solver rather than by a second summation of its own —
+  the two disagreed by an ULP on the very fixture the slice's evidence rests on.
+  This entry stays what it is, an implementation record; the decisions it
+  reports — reduced per-client state, the corrected complexity story, and the
+  contracts above — are recorded as [`adr/0030`](adr/0030-reduced-state-layered-dp-clients.md),
+  which amends ADR-0013 rather than editing it.
