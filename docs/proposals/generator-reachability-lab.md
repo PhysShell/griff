@@ -124,8 +124,8 @@ pub struct TargetMeasurementPolicy {
 
 ```rust
 struct RawDiagnostics {
-    onset_mae_ticks: f64,
-    pitch_mae_semitones: f64,
+    onset_mae_ticks: Option<f64>,      // None when no paired events —
+    pitch_mae_semitones: Option<f64>,  // never NaN, never a fake zero
     unpaired_target_events: u32,
     unpaired_candidate_events: u32,
 }
@@ -179,11 +179,16 @@ struct ConfigurationSummary {
     mean_axes: Axes,
     median_axes: Axes,
     p90_axes: Axes,
-    best_axes: Axes,
+    per_axis_max: Axes,   // marginal maxima — may correspond to no single trial
     exact_hit_rate: f64,
     unique_candidate_rate: f64,
 }
 ```
+
+  `per_axis_max` is a marginal summary: each axis's maximum over the
+  configuration's trials, which need not be realised by any one candidate.
+  Referencing actual best candidates (e.g. `family_best_trial_ids` under a
+  named `WeightPolicy`) is a Phase 0 design detail.
 
 - **Reporting language.** "No exact match found within N trials" — never
   "unreachable". An unreachability claim requires full enumeration of a
@@ -279,9 +284,11 @@ structure metrics apply to short fragments without semantic distortion.
 Family projections are `WeightPolicy` instances over the **bounded ranking
 axes only** — never over raw diagnostics — and start **uniform**, per the
 house convention (`generation_rerank` v1 is uniform; non-uniform weights need
-evidence, not taste). Uniform weighting is sound here precisely because every
-input axis is `[0, 1]` and direction-aligned. A family score is a view; the
-stored measurements remain the truth.
+evidence, not taste). Uniform weighting is a well-defined neutral baseline
+here — every input axis is `[0, 1]` and direction-aligned — which makes it
+mathematically coherent, not a claim that the axes are independent or equally
+salient to the ear. A family score is a view; the stored measurements remain
+the truth.
 
 Pareto handling: no hypervolume. Deliverables are the top result per family,
 a small epsilon-Pareto set over the families, the count of non-dominated
@@ -398,8 +405,10 @@ stages). Raw seed is provenance, not an ordinal feature. Nothing in Phases
    `displacement_profile_similarity`.
 6. The census counts unique canonical fingerprints, not files.
 7. A trials-to-uniques curve is produced per strategy and overall.
-8. A synthetic reachable target (produced by a known configuration) is
-   recovered exactly when its configuration lies in the sampled space.
+8. A synthetic reachable target produced by a known trial is recovered
+   exactly when its exact producing trial — configuration *and* seed — lies
+   in the sampled trials. (Configuration alone guarantees nothing: the same
+   configuration under a different seed is a different candidate.)
 9. Holdout excludes target material by source identity before rhythm
    templates and novelty references are compiled; the channel-specific
    representation checks (rhythm-grid, interval + normalized-IOI) run as
