@@ -187,8 +187,9 @@ pub fn solve(problem: &LayeredProblem<'_>) -> Result<PathSolution, PathError> {
     let transition = score_transitions(problem)?;
 
     // Backward pass: `suffix[i][s]` is the cheapest completion from state `s`
-    // of layer `i` to the end, its own local cost included.
-    let suffix = suffix_costs(&local, &transition);
+    // of layer `i` to the end, its own local cost included. Fallible: finite
+    // costs can still accumulate past f64's range.
+    let suffix = suffix_costs(&local, &transition)?;
 
     // Forward pass: walk the optimum, taking the lowest ordinal among exact
     // ties at every layer. Deciding front-to-back is what makes the winner the
@@ -214,8 +215,9 @@ pub fn solve(problem: &LayeredProblem<'_>) -> Result<PathSolution, PathError> {
         .collect();
 
     // Derived from the retained rationale — the trace is the truth (ADR-0017 §2).
-    let total_cost = steps.iter().map(Scored::aggregate).sum::<f64>()
-        + edges.iter().map(Scored::aggregate).sum::<f64>();
+    // Summed in path order and checked at every step: a finite `suffix` does not
+    // make this sum finite, because it adds the same terms in a different order.
+    let total_cost = trace_total(&steps, &edges)?;
 
     Ok(PathSolution {
         steps,
@@ -227,6 +229,35 @@ pub fn solve(problem: &LayeredProblem<'_>) -> Result<PathSolution, PathError> {
             seed: None,
         },
     })
+}
+
+/// Sums the selected trace in path order, checking every addition.
+///
+/// The engine derives its total from the retained rationale rather than from
+/// `suffix[0]`, and a different summation order can overflow where `suffix`
+/// did not — so this is checked in its own right, and the first state whose
+/// addition goes non-finite is named.
+fn trace_total(steps: &[Scored<StateId>], edges: &[Scored<EdgeId>]) -> Result<f64, PathError> {
+    let mut total = 0.0_f64;
+    for (index, step) in steps.iter().enumerate() {
+        total += step.aggregate();
+        if !total.is_finite() {
+            return Err(PathError::NonFiniteAccumulation {
+                state: step.value,
+                cost: total,
+            });
+        }
+        if let Some(edge) = edges.get(index) {
+            total += edge.aggregate();
+            if !total.is_finite() {
+                return Err(PathError::NonFiniteAccumulation {
+                    state: edge.value.to,
+                    cost: total,
+                });
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// A scored cost with its aggregate kept beside it, so the DP inner loops read
@@ -346,7 +377,10 @@ fn score_transitions(problem: &LayeredProblem<'_>) -> Result<TransitionCosts, Pa
 
 /// The backward DP: `suffix[i][s] = local(i,s) + min_t(trans(i,s,t) + suffix[i+1][t])`,
 /// with the last layer's suffix being its local cost alone.
-fn suffix_costs(local: &LocalCostSlice, transition: &TransitionCostSlice) -> Vec<Vec<f64>> {
+fn suffix_costs(
+    local: &LocalCostSlice,
+    transition: &TransitionCostSlice,
+) -> Result<Vec<Vec<f64>>, PathError> {
     let layers = local.len();
     let mut back: Vec<Vec<f64>> = Vec::with_capacity(layers);
     let mut next: Vec<f64> = local
@@ -358,26 +392,38 @@ fn suffix_costs(local: &LocalCostSlice, transition: &TransitionCostSlice) -> Vec
     for layer in (0..layers.saturating_sub(1)).rev() {
         let states = local.get(layer).map_or(&[][..], Vec::as_slice);
         let table = transition.get(layer);
-        let current: Vec<f64> = states
-            .iter()
-            .enumerate()
-            .map(|(from, cost)| {
-                let best = table
-                    .and_then(|t| t.get(from))
-                    .map_or(f64::INFINITY, |row| {
-                        row.iter()
-                            .zip(next.iter())
-                            .map(|(edge, &completion)| edge.aggregate + completion)
-                            .fold(f64::INFINITY, f64::min)
-                    });
-                cost.aggregate + best
-            })
-            .collect();
+        let mut current: Vec<f64> = Vec::with_capacity(states.len());
+        for (from, cost) in states.iter().enumerate() {
+            let state = StateId {
+                layer,
+                ordinal: from,
+            };
+            // Every `edge + completion` is checked: two finite costs can still
+            // sum to ±∞, and an unchecked ∞ would make distinct alternatives
+            // compare equal and hand the tie-break a wrong winner.
+            let mut best = f64::INFINITY;
+            if let Some(row) = table.and_then(|t| t.get(from)) {
+                for (edge, &completion) in row.iter().zip(next.iter()) {
+                    let reach = edge.aggregate + completion;
+                    if !reach.is_finite() {
+                        return Err(PathError::NonFiniteAccumulation { state, cost: reach });
+                    }
+                    if reach < best {
+                        best = reach;
+                    }
+                }
+            }
+            let total = cost.aggregate + best;
+            if !total.is_finite() {
+                return Err(PathError::NonFiniteAccumulation { state, cost: total });
+            }
+            current.push(total);
+        }
         next.clone_from(&current);
         back.push(current);
     }
     back.reverse();
-    back
+    Ok(back)
 }
 
 /// The forward walk over the optimum, lowest ordinal first among exact ties.
