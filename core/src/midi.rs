@@ -932,6 +932,62 @@ mod tests {
         );
     }
 
+    /// The `midi_roundtrip` finding, verbatim (274 bytes). Shared with the
+    /// fuzz corpus so the seed and this contract cannot drift apart.
+    const F006_DELTA_EXCEEDS_VLQ: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fuzz/corpus/midi_roundtrip/roundtrip_delta_exceeds_vlq.mid"
+    ));
+
+    /// F-006 (`docs/fuzzing.md`): the `midi_roundtrip` gate found a file whose
+    /// exported bytes griff's *own* importer rejects — export claimed success
+    /// and produced corruption.
+    ///
+    /// An SMF delta is a 4-byte variable-length quantity, so it cannot exceed
+    /// `0x0FFF_FFFF`. `abs_to_delta` converted an unchecked `u32` gap with
+    /// `u28::from_int_lossy`, which silently wraps mod 2^28: this file's
+    /// 268,536,960-tick gap to its 5/64 time-signature change became 101,504
+    /// (`268_536_960 - 2^28`), landing the change ~268 million ticks early. On
+    /// re-import a 150-tick bar then governs the timeline, implying ~1,791,473
+    /// bars — over `MAX_MASTER_BARS`, hence `TooManyBars`.
+    ///
+    /// The defect is about the *gap between two consecutive emitted events*,
+    /// not absolute timeline position: a score may legally run past
+    /// `0x0FFF_FFFF` as long as every individual delta stays representable.
+    /// Sparse meta tracks are the exposed case — time-signature, tempo and
+    /// end-of-track events can sit hundreds of millions of ticks apart.
+    ///
+    /// The contract: a delta no VLQ can represent is a typed refusal. Refusing
+    /// returns no bytes at all, which is what "no corrupt bytes" means here.
+    #[test]
+    fn regression_f006_export_refuses_unrepresentable_delta() {
+        let score = import_score(F006_DELTA_EXCEEDS_VLQ).expect("the finding must import");
+        let result = export_score(&score);
+        assert!(
+            result.is_err(),
+            "export must refuse a delta no VLQ can represent, not truncate it; \
+             got {:?} (byte count on success)",
+            result.map(|b| b.len()),
+        );
+    }
+
+    /// The oracle the `midi_roundtrip` gate enforces, pinned as a unit test:
+    /// export may refuse, but it must never hand back bytes its own importer
+    /// rejects. F-006 broke exactly this.
+    #[test]
+    fn export_never_returns_bytes_its_own_importer_rejects() {
+        let score = import_score(F006_DELTA_EXCEEDS_VLQ).expect("the finding must import");
+        if let Ok(bytes) = export_score(&score) {
+            let reimported = import_score(&bytes);
+            assert!(
+                reimported.is_ok(),
+                "export returned {} bytes that re-import rejects: {:?}",
+                bytes.len(),
+                reimported.err(),
+            );
+        }
+    }
+
     #[test]
     fn bar_ticks_degenerate_returns_typed_error() {
         let sig = TimeSignature {
