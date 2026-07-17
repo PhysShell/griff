@@ -1799,3 +1799,21 @@ Architectural decisions go to [`adr/`](adr/) instead.
   real fixed-seed pass is evidence of the mechanism, not of corpus-level musical
   superiority. ADR-0013 moves to Accepted for Slices A/B; Slice C (deterministic
   k-best) and Slice D (specialised clients) remain future work.
+  **Amended the same day, from review:** four contracts were stated more
+  narrowly than the code needed and are now decided explicitly. (1) Rejecting
+  non-finite *inputs* is not enough — finite costs can sum to `±∞`, so every
+  accumulation is checked as it forms; an optimum compared over `∞ == ∞` is not
+  an optimum. (2) The boundary pitch is the last note still **sounding**, chosen
+  by note end rather than by onset, because a note held across the line is what
+  the ear carries over it. (3) An invalid bar index is **not** silence: a
+  missing address is a caller error and a quiet bar is a musical observation, at
+  the boundary facts and at assembly alike. (4) Compatibility is validated
+  against everything **assembly copies** from ranked candidate 0 — the whole
+  master bar, the whole track skeleton, the source format — not against the
+  three fields the cost model happens to read; the unread fields are precisely
+  the ones that would go missing without a sound changing. The unit of both
+  rejection and lifting is the **event group**. Also corrected: ADR-0013's
+  consequence that "exact DP is exponential in the state size" — over an
+  enumerated layered graph the recurrence is polynomial, and what explodes is
+  the number of states worth enumerating, so beam search remains the fallback
+  because the map grows, not because exact DP degrades.
