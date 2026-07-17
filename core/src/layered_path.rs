@@ -20,6 +20,13 @@
 //! same [`Axes`], [`WeightPolicy`], and [`Scored`] envelope every other score
 //! in `griff` wears. The total is *derived* from the retained per-axis
 //! rationale, never the only thing kept (the anti-scalar rule, ADR-0017 §2).
+//!
+//! Determinism also has an arithmetic half. Float addition is not associative,
+//! so a path's cost is not well defined until the *order of the additions* is:
+//! [`PATH_COST_ASSOCIATION`] fixes it, and the DP, the walk, the reported
+//! total, and every client baseline fold under that one grouping. This is why
+//! clients evaluate their baselines *through* [`solve`] rather than adding the
+//! same terms up themselves.
 
 use crate::scoring::{Axes, Provenance, Scored, WeightPolicy};
 
@@ -125,6 +132,24 @@ pub enum PathError {
     },
 }
 
+/// The one association every path cost in this engine is folded under.
+///
+/// Float addition is not associative: `(a + b) + c` and `a + (b + c)` are
+/// different functions, and on costs of very different magnitudes they select
+/// different winners and report different totals. One of them therefore has to
+/// be normative, and everything — the DP, the lexicographic walk, the reported
+/// [`PathSolution::total_cost`], and any client's baseline — has to use that
+/// one. A number folded a second way describes a path this engine did not
+/// choose for a reason it did not have.
+///
+/// The recurrence's own grouping is normative, right-associated from the end:
+///
+/// ```text
+/// cost(last)  = local(last)
+/// cost(i)     = local(i) + ( edge(i) + cost(i+1) )
+/// ```
+pub const PATH_COST_ASSOCIATION: &str = "local + (edge + suffix), folded from the last layer back";
+
 /// The deterministic best path: one state per layer, with its explanation.
 ///
 /// `total_cost` is derived from the retained rationales — the trace is the
@@ -137,7 +162,10 @@ pub struct PathSolution {
     /// The selected edge between each adjacent pair, in layer order. Length is
     /// `steps.len() - 1`.
     pub edges: Vec<Scored<EdgeId>>,
-    /// `Σ selected local costs + Σ selected transition costs`.
+    /// The path's cost under the **canonical association** — see
+    /// [`PATH_COST_ASSOCIATION`]. Not merely the sum of the trace: float
+    /// addition is not associative, so *how* the trace is folded is part of what
+    /// the number means, and this is folded exactly as the search folded it.
     pub total_cost: f64,
     /// The policy the costs were weighed under (no seed: selection uses none).
     pub provenance: Provenance,
@@ -231,33 +259,53 @@ pub fn solve(problem: &LayeredProblem<'_>) -> Result<PathSolution, PathError> {
     })
 }
 
-/// Sums the selected trace in path order, checking every addition.
+/// Folds the selected trace in **the recurrence's association**, checking every
+/// addition.
 ///
 /// The engine derives its total from the retained rationale rather than from
-/// `suffix[0]`, and a different summation order can overflow where `suffix`
-/// did not — so this is checked in its own right, and the first state whose
-/// addition goes non-finite is named.
+/// `suffix[0]` (ADR-0017 §2: the trace is the truth), so this fold must be the
+/// same arithmetic the search ran on — float addition is not associative, and a
+/// total grouped differently from the selection is a number for a path the
+/// engine did not choose. It therefore walks **from the end**, mirroring
+/// [`suffix_costs`] exactly:
+///
+/// ```text
+/// total = local(last)
+/// total = local(i) + (edge(i) + total)   for each preceding layer, in reverse
+/// ```
+///
+/// Every step is checked in its own right: `suffix` being finite does not make
+/// this finite, since the two are re-derived rather than shared. The first
+/// state whose addition goes non-finite is named.
+// `total = x + total` is NOT `total += x`: the accumulator has to stay on the
+// right, or the fold silently becomes the left-associated one this function
+// exists to stop being.
+#[allow(clippy::assign_op_pattern)]
 fn trace_total(steps: &[Scored<StateId>], edges: &[Scored<EdgeId>]) -> Result<f64, PathError> {
-    let mut total = 0.0_f64;
-    for (index, step) in steps.iter().enumerate() {
-        total += step.aggregate();
-        if !total.is_finite() {
-            return Err(PathError::NonFiniteAccumulation {
-                state: step.value,
-                cost: total,
-            });
-        }
-        if let Some(edge) = edges.get(index) {
-            total += edge.aggregate();
-            if !total.is_finite() {
-                return Err(PathError::NonFiniteAccumulation {
-                    state: edge.value.to,
-                    cost: total,
-                });
-            }
-        }
+    let mut back = steps.iter().rev();
+    let Some(last) = back.next() else {
+        return Ok(0.0);
+    };
+    let mut total = last.aggregate();
+    check_accumulation(total, last.value)?;
+    // `steps` has one more entry than `edges`, so reversing both pairs step `i`
+    // with the edge leaving it.
+    for (step, edge) in back.zip(edges.iter().rev()) {
+        total = edge.aggregate() + total;
+        check_accumulation(total, edge.value.to)?;
+        total = step.aggregate() + total;
+        check_accumulation(total, step.value)?;
     }
     Ok(total)
+}
+
+/// Rejects a non-finite accumulation, naming the state it happened at.
+const fn check_accumulation(total: f64, state: StateId) -> Result<(), PathError> {
+    if total.is_finite() {
+        Ok(())
+    } else {
+        Err(PathError::NonFiniteAccumulation { state, cost: total })
+    }
 }
 
 /// A scored cost with its aggregate kept beside it, so the DP inner loops read
@@ -469,13 +517,19 @@ fn argmin_first(values: &[f64]) -> usize {
 }
 
 #[cfg(test)]
+// `float_cmp` and `assign_op_pattern` are opted out of deliberately here: the
+// association laws below are about exact identity and about which side of the
+// `+` the accumulator sits on. Both lints would ask for the very code the laws
+// forbid.
 #[allow(
     clippy::missing_assert_message,
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
     clippy::indexing_slicing,
-    clippy::arithmetic_side_effects
+    clippy::arithmetic_side_effects,
+    clippy::float_cmp,
+    clippy::assign_op_pattern
 )]
 mod tests {
     use super::{solve, EdgeId, LayeredProblem, PathError, PathSolution, StateId};
@@ -1041,7 +1095,7 @@ mod tests {
         let b = solve(&problem).expect("solves");
         assert_eq!(a.ordinals(), b.ordinals());
         assert!((a.total_cost - b.total_cost).abs() < 1e-12);
-        let trace = |s: &super::PathSolution| -> Vec<(f64, f64)> {
+        let trace = |s: &PathSolution| -> Vec<(f64, f64)> {
             s.steps
                 .iter()
                 .flat_map(|x| x.rationale.entries().iter().map(|e| (e.value, e.weight)))
