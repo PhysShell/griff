@@ -4916,6 +4916,263 @@ mod tests {
         assert_eq!(app.displayed_chain_summary(), Some(summary_of(&app, run)));
     }
 
+    /// Prints the chain evidence the report quotes: both costs, the delta, the
+    /// supplier map, and every boundary's facts with the core's own rationale.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn print_chain_evidence(summary: &GlobalChainSummary) {
+        println!("S7 global chain available: yes");
+        println!("policy: {} v{}", summary.policy_id, summary.policy_version);
+        println!("baseline cost: {:.6}", summary.baseline_cost);
+        println!("chain cost:    {:.6}", summary.total_cost);
+        println!(
+            "delta:         {:+.6} ({})",
+            summary.delta,
+            delta_relation(summary.delta),
+        );
+        println!("supplier map:");
+        for bar in &summary.bars {
+            println!(
+                "  bar {} <- candidate {} (rank {}) · {} · seed {:016x} · local {:.4} · s6 {:.4}",
+                bar.bar_number,
+                bar.candidate,
+                bar.rank,
+                bar.strategy,
+                bar.variant_seed,
+                bar.local_aggregate,
+                bar.s6_aggregate,
+            );
+        }
+        println!("transitions:");
+        for b in &summary.boundaries {
+            println!(
+                "  bar {} -> bar {} · cand {} -> {} · {} · silent {} · repeat {} · cost {:.4}",
+                b.from_bar_number,
+                b.to_bar_number,
+                b.from_candidate,
+                b.to_candidate,
+                b.jump_semitones.map_or_else(
+                    || "jump not measured".to_owned(),
+                    |j| format!("jump {j} st")
+                ),
+                b.silent_boundary,
+                b.rhythm_repeat,
+                b.aggregate,
+            );
+            println!(
+                "    rationale: {}",
+                rationale_hover(&b.rationale).replace('\n', " | ")
+            );
+        }
+    }
+
+    /// The acceptance scenario's transport leg: play the intact winner, switch
+    /// to the chain mid-note, seek, loop, and A/B inside the loop.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn acceptance_transport(app: &mut CockpitApp) {
+        app.vp.playing = true;
+        app.advance_audio(0.5);
+        let sounding = app.player.active_count();
+        app.show_global_chain();
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "no notes leak across the switch"
+        );
+        println!("A/B playback: pass (S6 held {sounding} notes; 0 leaked into S7)");
+
+        let bars = app.view.bar_lines.clone();
+        app.vp.play_tick = bars[1] + 17;
+        let seeked = app.vp.play_tick;
+        app.loop_range = Some((bars[1], bars[2]));
+        app.ab_swap();
+        assert_eq!(app.vp.play_tick, seeked, "the seek survives the switch");
+        assert_eq!(
+            app.loop_range,
+            Some((bars[1], bars[2])),
+            "and so does the loop",
+        );
+        assert_eq!(app.current, Some(AuditionCandidate::Generate(0)));
+        println!("seek/loop: pass (A/B inside a loop keeps both)");
+        println!("All Notes Off on switch: pass");
+
+        // Paused, mid-note.
+        app.vp.playing = true;
+        app.advance_audio(0.4);
+        app.vp.playing = false;
+        app.show_global_chain();
+        assert_eq!(
+            app.player.active_count(),
+            0,
+            "paused switch releases held notes"
+        );
+        println!("paused switch: pass");
+    }
+
+    /// The milestone's acceptance scenario, end to end, on one real fixed-seed
+    /// Generate — not the synthetic non-greedy fixture.
+    ///
+    /// Every law in this file checks one fact in isolation. This walks the
+    /// vertical a person actually walks: generate, see both variants, read the
+    /// supplier map, play one, switch mid-playback, seek, loop, A/B inside the
+    /// loop, export, replay from history, move the knobs, and confirm the old
+    /// result did not move. It prints its evidence so the numbers in the report
+    /// are reproducible rather than asserted.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_global_chain_audition_scenario_on_a_real_generate_run() {
+        let mut app = demo_app();
+        app.out_dir = env::temp_dir().join("griff-acceptance");
+        app.gen_panel.seed = 2026;
+        app.gen_panel.bars = 4;
+        app.gen_panel.variants = 2;
+        app.gen_panel.gesture = false;
+
+        // 1-2. Generate.
+        app.do_generate();
+
+        let active = app.gen_panel.active.as_ref().expect("a run");
+        println!("\n== Global Chain Audition — fixed-seed acceptance run ==");
+        println!(
+            "source: demo.mid · seed {} · bars {} · variants/strategy {} · gesture off",
+            active.context.seed, active.context.bars, active.context.variants_per_strategy,
+        );
+        println!(
+            "corpus contribution: templates {} · references {} · gesture {}",
+            active.context.corpus.templates,
+            active.context.corpus.references,
+            active.context.corpus.gesture,
+        );
+        println!("candidates ranked: {}", active.set.rows.len());
+
+        // 3. S6 intact is the default.
+        assert_eq!(
+            app.current,
+            Some(AuditionCandidate::Generate(0)),
+            "S6 intact is what Generate shows",
+        );
+        println!("S6 intact available: yes (rank 1, the default)");
+
+        // 4-6. The chain, its costs, its supplier map.
+        let evidence = app.chain_panel_evidence();
+        assert_eq!(evidence.active_refusal, None);
+        let summary = evidence.displayed_summary.expect("this run plans a chain");
+        print_chain_evidence(&summary);
+        assert_eq!(summary.bars.len(), 4, "one supplier per asked bar");
+        assert_eq!(summary.boundaries.len(), 3, "one per bar line");
+
+        // 7-12. Play, switch mid-playback, seek, loop, A/B inside the loop.
+        acceptance_transport(&mut app);
+
+        // 13-16. Export, keep, replay, and confirm the old result did not move.
+        acceptance_export_and_history(&mut app, &summary);
+
+        // 17. Typed refusal keeps S6 available. A different run, by necessity:
+        // a real run's candidates all descend from one generator and agree, so
+        // nothing the panel can ask for refuses.
+        acceptance_refusal();
+        println!("== end ==\n");
+    }
+
+    /// The acceptance scenario's export and history leg.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn acceptance_export_and_history(app: &mut CockpitApp, summary: &GlobalChainSummary) {
+        use griff_core::midi::export_score;
+
+        let chain_id = app
+            .history
+            .entries()
+            .iter()
+            .find(|e| e.source == CandidateSource::GlobalChain)
+            .expect("the chain was auditioned")
+            .id;
+        let path = app.write_chain_keep(chain_id).expect("the chain exports");
+        let written = fs::read(&path).expect("the file is there");
+        let expected = export_score(&app.history.get(chain_id).expect("entry").score)
+            .expect("the snapshot exports");
+        assert_eq!(written, expected, "the bytes are the captured snapshot's");
+        let sidecar: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
+                .expect("json");
+        println!(
+            "MIDI export: pass ({} bytes, {} bars)",
+            written.len(),
+            sidecar["bars"],
+        );
+        println!(
+            "sidecar complete: origin {} · run {} · seed {} · variants {} · policy {} v{}",
+            sidecar["origin"],
+            sidecar["run"],
+            sidecar["seed"],
+            sidecar["variants_per_strategy"],
+            sidecar["policy_id"],
+            sidecar["policy_version"],
+        );
+
+        // Keep without audition side effects.
+        app.show_candidate(0);
+        let before = (app.current, app.ab_other, app.gen_panel.selected);
+        app.keep_chain();
+        assert_eq!(
+            (app.current, app.ab_other, app.gen_panel.selected),
+            before,
+            "keeping does not change what is playing",
+        );
+        println!("keep without audition side effects: pass");
+
+        // 14-16. Replay from history, move the knobs, confirm nothing moved.
+        app.gen_panel.seed = 4096;
+        app.do_generate();
+        app.select_history(chain_id);
+        assert_eq!(app.gen_panel.selected, None, "no live row claims to sound");
+        let replayed = app
+            .displayed_chain_summary()
+            .expect("the replayed chain explains itself");
+        assert_eq!(
+            &replayed, summary,
+            "the old chain's own explanation, unmoved"
+        );
+        let again = app.write_chain_keep(chain_id).expect("still exports");
+        assert_eq!(
+            fs::read(&again).expect("read"),
+            expected,
+            "and still exports the old music",
+        );
+        println!("history replay: pass");
+        println!("old history explanation after new run: pass");
+        println!("history snapshot immutability: pass");
+
+        drop(fs::remove_file(&path));
+        drop(fs::remove_file(path.replace(".mid", ".json")));
+        drop(fs::remove_file(&again));
+        drop(fs::remove_file(again.replace(".mid", ".json")));
+    }
+
+    /// The acceptance scenario's refusal leg.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn acceptance_refusal() {
+        let (mut refused, reason) = app_with_refused_chain();
+        assert_eq!(
+            refused.chain_panel_evidence().active_refusal,
+            Some(reason),
+            "the refusal is reported",
+        );
+        refused.show_global_chain();
+        assert!(
+            !refused
+                .history
+                .entries()
+                .iter()
+                .any(|e| e.source == CandidateSource::GlobalChain),
+            "and no empty chain is invented",
+        );
+        assert_eq!(refused.current, Some(AuditionCandidate::Generate(0)));
+        assert!(!refused.player.is_silent(), "S6 still plays");
+        println!(
+            "typed refusal keeps S6 available: pass ({})",
+            chain_refusal_summary(reason),
+        );
+    }
+
     #[test]
     fn an_active_refusal_does_not_hide_a_replayed_chain_explanation() {
         // Both facts are true at once: run B has no chain, and chain A is
