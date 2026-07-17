@@ -1,6 +1,6 @@
 # S8: Standalone preview app
 
-Status: in progress — interactive `ratatui` piano-roll landed (slices 1–2)
+Status: in progress — interactive `ratatui` piano-roll landed (slices 1–3)
 Depends on: S6
 ADRs: —
 
