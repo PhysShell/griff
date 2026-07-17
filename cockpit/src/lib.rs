@@ -785,12 +785,19 @@ fn chain_summary_block(ui: &mut egui::Ui, summary: &GlobalChainSummary) {
 
 /// How the chain's total compares to the intact winner's, in one word.
 ///
-/// Stub: still calls an equal cost "higher".
+/// Three outcomes, not two: costing exactly the same is neither lower nor
+/// higher. The fourth arm is for a comparison that cannot be made at all —
+/// the engine rejects non-finite costs, so it should be unreachable, and
+/// "equal" is not what to say if it ever is.
 fn delta_relation(delta: f64) -> &'static str {
     if delta < 0.0 {
         "lower"
-    } else {
+    } else if delta > 0.0 {
         "higher"
+    } else if delta == 0.0 {
+        "equal"
+    } else {
+        "not comparable"
     }
 }
 
@@ -2466,11 +2473,32 @@ impl CockpitApp {
 
     /// The explanation of the chain that is **sounding**, if one is.
     ///
-    /// Stub: still reads the active run.
+    /// The one function the renderer and its laws share. Nothing else may reach
+    /// for `active.context.run` to explain a chain: the run that is open and the
+    /// chain that is playing are different questions, and answering the second
+    /// with the first pairs one chain's music with another's supplier map.
     fn displayed_chain_summary(&self) -> Option<GlobalChainSummary> {
         self.history
-            .chain_of(self.gen_panel.active.as_ref()?.context.run)
+            .chain_of(self.sounding_chain_run()?)
             .and_then(global_chain_summary)
+    }
+
+    /// Which run's chain the panel is explaining: the one being heard.
+    ///
+    /// A replayed chain snapshot answers for itself — it may be from a run whose
+    /// panel state is long gone, which is exactly when getting this wrong is
+    /// least visible. A replayed *candidate* is not a chain and says nothing
+    /// about which chain to explain, so the active run's stands.
+    fn sounding_chain_run(&self) -> Option<GenerationRunId> {
+        let replayed = match self.current {
+            Some(AuditionCandidate::History(id)) => self
+                .history
+                .get(id)
+                .filter(|entry| entry.source == CandidateSource::GlobalChain)
+                .map(|entry| entry.run),
+            _ => None,
+        };
+        replayed.or_else(|| self.gen_panel.active.as_ref().map(|a| a.context.run))
     }
 
     fn generate_candidates(&self, ui: &mut egui::Ui, acts: &mut GenerateActions) {
