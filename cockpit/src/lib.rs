@@ -43,8 +43,9 @@ use griff_ui_core::history::{
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
+use griff_core::candidate_chain::ChainError;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
-use griff_ui_core::generate::generate_set;
+use griff_ui_core::generate::{generate_set, GlobalChainOutcome};
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
 use griff_ui_core::theme::{cell_style, Rgb, Theme};
 use griff_ui_core::viewport::CurationDecision;
@@ -1165,6 +1166,8 @@ impl CockpitApp {
         });
         match outcome {
             Ok(set) => {
+                // Stub: the chain is not planned yet — the laws come first.
+                let chain = GlobalChainOutcome::Refused(ChainError::EmptySet);
                 self.reset_audition(); // a new candidate set starts fresh (no stale A/B)
                                        // Capture the run's request/input identity NOW, from the state
                                        // that produced the set — the source seed, the ask, and the
@@ -1187,7 +1190,11 @@ impl CockpitApp {
                 };
                 let n = set.rows.len();
                 let tones = set.summary.scale_tones;
-                self.gen_panel.active = Some(ActiveGenerateRun { context, set });
+                self.gen_panel.active = Some(ActiveGenerateRun {
+                    context,
+                    set,
+                    chain,
+                });
                 self.gen_panel.status = Some(format!(
                     "{n} candidates ranked · {tones}-tone scale · seed {}",
                     ask.seed
@@ -1200,6 +1207,15 @@ impl CockpitApp {
                 self.gen_panel.status = Some(format!("generate failed: {err}"));
             }
         }
+    }
+
+    /// Paints the run's assembled S7 global chain into the roll, recording it in
+    /// history as its own audition result.
+    ///
+    /// The chain is a *snapshot*: this reads the one planned when the set was
+    /// produced and never plans anything.
+    fn show_global_chain(&mut self) {
+        // Stub: the laws come first.
     }
 
     /// Paints candidate `i` of the current set into the roll, recording it in
@@ -3575,6 +3591,101 @@ mod tests {
         );
         app.ab_swap();
         assert_eq!(app.gen_panel.selected, Some(1), "and back again — a toggle");
+    }
+
+    #[test]
+    fn the_generate_run_captures_its_global_chain_once() {
+        // Both audition variants come from one run: the intact winner is row 0
+        // of the captured set, the chain is planned from the same RankedSet at
+        // capture time. Nothing later has a RankedSet to re-plan from.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let run = app.gen_panel.active.as_ref().expect("a run was captured");
+        let GlobalChainOutcome::Planned(chain) = &run.chain else {
+            panic!("the demo set is chain-compatible: {:?}", run.chain);
+        };
+        assert_eq!(
+            chain.plan.steps.len(),
+            app.gen_panel.bars,
+            "one selected bar per asked bar, captured with the run",
+        );
+        assert!(
+            !run.set.rows.is_empty(),
+            "and the intact winner's set is captured beside it",
+        );
+    }
+
+    #[test]
+    fn auditioning_playback_and_history_never_replan_the_chain() {
+        // The proof is a poisoned snapshot: if anything downstream re-plans,
+        // the planted value is overwritten by a real one. A chain that is
+        // recomputed on demand is a chain that can disagree with the set it
+        // claims to be made of.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        let poison = 1234.5_f64;
+        {
+            let run = app.gen_panel.active.as_mut().expect("a run");
+            let GlobalChainOutcome::Planned(chain) = &mut run.chain else {
+                panic!("chain-compatible");
+            };
+            chain.plan.total_cost = poison;
+        }
+
+        app.show_global_chain(); // audition the chain
+        app.show_candidate(0); // back to the intact winner
+        app.ab_swap(); // and A/B between them
+        app.advance_audio(0.25); // play a little
+        app.stop_playback();
+        let id = app.history.entries().first().expect("recorded").id;
+        app.select_history(id); // replay a history snapshot
+        app.gen_panel.seed = 999; // and change the live knobs
+        app.gen_panel.bars = 3;
+
+        let run = app.gen_panel.active.as_ref().expect("still the same run");
+        let GlobalChainOutcome::Planned(chain) = &run.chain else {
+            panic!("chain-compatible");
+        };
+        assert_eq!(
+            chain.plan.total_cost.to_bits(),
+            poison.to_bits(),
+            "the captured chain is the one planted at capture — nothing re-planned it",
+        );
+    }
+
+    #[test]
+    fn a_new_generate_run_replaces_the_chain_without_mutating_the_old_history() {
+        // A new run is a new run: new id, newly planned chain. The entries the
+        // old run recorded keep their own snapshots.
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.do_generate();
+        app.show_global_chain();
+        let first_run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        let first_entries: Vec<(HistoryId, usize)> = app
+            .history
+            .entries()
+            .iter()
+            .map(|e| (e.id, e.score.master_bars.len()))
+            .collect();
+        assert!(!first_entries.is_empty(), "the first run recorded entries");
+
+        app.gen_panel.seed = 4242;
+        app.do_generate();
+        let second_run = app.gen_panel.active.as_ref().expect("a run").context.run;
+        assert_ne!(first_run, second_run, "a new Generate is a new run");
+
+        for (id, bars) in first_entries {
+            let entry = app.history.get(id).expect("the old entry survives");
+            assert_eq!(
+                entry.score.master_bars.len(),
+                bars,
+                "an old snapshot is not touched by a later run",
+            );
+            assert_eq!(entry.run, first_run, "and still belongs to its own run");
+        }
     }
 
     #[test]
