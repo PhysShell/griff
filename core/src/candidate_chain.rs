@@ -13,11 +13,13 @@
 //! of a score already in the set, and every candidate's original S6 axes,
 //! rationale, and rerank provenance travel into the result unchanged.
 
+use core::cmp::Reverse;
+
 use crate::generate::{GenerationSeed, GenerationStrategy};
 use crate::layered_path::PathError;
 use crate::rerank::SetCandidate;
-use crate::score::Score;
-use crate::scoring::{Axes, Provenance, Rationale, Scored, WeightPolicy};
+use crate::score::{AtomEvent, Score};
+use crate::scoring::{Axes, Axis, Provenance, Rationale, Scored, WeightPolicy};
 
 /// One state of the chain: bar `bar` as supplied by ranked candidate
 /// `candidate`.
@@ -156,7 +158,85 @@ pub const AXIS_RHYTHM_REPEAT: &str = "rhythm_repeat";
 ///   in a row" ADR-0013 complains about.
 #[must_use]
 pub fn chain_weights_v1() -> WeightPolicy {
-    unimplemented!("candidate_chain::chain_weights_v1")
+    WeightPolicy::new(
+        "candidate_chain",
+        1,
+        vec![
+            (AXIS_CANDIDATE_QUALITY, 1.0),
+            (AXIS_BOUNDARY_JUMP, 0.05),
+            (AXIS_SILENT_BOUNDARY, 0.25),
+            (AXIS_RHYTHM_REPEAT, 0.40),
+        ],
+    )
+}
+
+/// One sounding note of a bar, measured relative to that bar's start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BarNote {
+    /// Ticks from the bar's start.
+    offset: u32,
+    /// The note's real duration in ticks.
+    duration: u32,
+    /// The MIDI pitch.
+    pitch: u8,
+}
+
+/// The sounding notes of `bar` in `score`, ascending by onset then pitch.
+///
+/// Rests are not sounding pitches and take no part.
+fn bar_notes(score: &Score, bar: usize) -> Vec<BarNote> {
+    let Some(range) = score.master_bars.get(bar).map(|b| b.tick_range) else {
+        return Vec::new();
+    };
+    let mut notes: Vec<BarNote> = score
+        .tracks
+        .iter()
+        .flat_map(|t| t.voices.iter())
+        .flat_map(|v| v.event_groups.iter())
+        .flat_map(|g| g.atoms.iter())
+        .filter_map(|atom| match atom {
+            AtomEvent::Note(n) => Some(n),
+            AtomEvent::Rest(_) => None,
+        })
+        .filter(|n| n.absolute_start.0 >= range.start.0 && n.absolute_start.0 < range.end.0)
+        .map(|n| BarNote {
+            offset: n.absolute_start.0.saturating_sub(range.start.0),
+            duration: n.duration.0,
+            pitch: n.pitch.0,
+        })
+        .collect();
+    notes.sort_unstable_by_key(|n| (n.offset, n.pitch));
+    notes
+}
+
+/// The bar's rhythm signature: its `(offset, duration)` pairs, ascending.
+///
+/// Built from **real onsets and durations**, never an equal-step placeholder,
+/// and deliberately pitch-free — two bars with the same rhythm and different
+/// notes are still a rhythmic repeat. A silent bar's signature is the explicit
+/// empty vector, so two silences compare equal rather than being a gap.
+fn rhythm_signature(notes: &[BarNote]) -> Vec<(u32, u32)> {
+    let mut signature: Vec<(u32, u32)> = notes.iter().map(|n| (n.offset, n.duration)).collect();
+    signature.sort_unstable();
+    signature
+}
+
+/// The bar's last sounding pitch: the latest onset, and among a chord sharing
+/// that onset, the highest pitch (the melodic top). `None` for a silent bar.
+fn last_pitch(notes: &[BarNote]) -> Option<u8> {
+    notes
+        .iter()
+        .max_by_key(|n| (n.offset, n.pitch))
+        .map(|n| n.pitch)
+}
+
+/// The bar's first sounding pitch: the earliest onset, and among a chord sharing
+/// it, the highest pitch. `None` for a silent bar.
+fn first_pitch(notes: &[BarNote]) -> Option<u8> {
+    notes
+        .iter()
+        .min_by_key(|n| (n.offset, Reverse(n.pitch)))
+        .map(|n| n.pitch)
 }
 
 /// The local cost facts for a candidate whose S6 rerank aggregate is `s6`.
@@ -166,8 +246,10 @@ pub fn chain_weights_v1() -> WeightPolicy {
 /// and never replaced by the candidate's ordinal.
 #[must_use]
 pub fn local_facts(s6: f64) -> Axes {
-    let _ = s6;
-    unimplemented!("candidate_chain::local_facts")
+    Axes::new(vec![Axis {
+        label: AXIS_CANDIDATE_QUALITY,
+        value: 1.0 - s6,
+    }])
 }
 
 /// The transition cost facts across the line between `from_bar` of `from` and
@@ -179,8 +261,38 @@ pub fn local_facts(s6: f64) -> Axes {
 /// measurement is never a zero pretending to be perfect continuity.
 #[must_use]
 pub fn transition_facts(from: &Score, from_bar: usize, to: &Score, to_bar: usize) -> Axes {
-    let _ = (from, from_bar, to, to_bar);
-    unimplemented!("candidate_chain::transition_facts")
+    let left = bar_notes(from, from_bar);
+    let right = bar_notes(to, to_bar);
+    let mut axes = Vec::with_capacity(3);
+    if let (Some(a), Some(b)) = (last_pitch(&left), first_pitch(&right)) {
+        // Semitones, unwrapped: a 14-semitone leap stays a 14-semitone leap.
+        let jump = f64::from(i16::from(a).saturating_sub(i16::from(b))).abs();
+        axes.push(Axis {
+            label: AXIS_BOUNDARY_JUMP,
+            value: jump,
+        });
+        axes.push(Axis {
+            label: AXIS_SILENT_BOUNDARY,
+            value: 0.0,
+        });
+    } else {
+        // Unmeasurable: the jump axis is ABSENT rather than a zero that would
+        // read as perfect continuity. The silent fact is charged instead.
+        axes.push(Axis {
+            label: AXIS_SILENT_BOUNDARY,
+            value: 1.0,
+        });
+    }
+    let repeat = if rhythm_signature(&left) == rhythm_signature(&right) {
+        1.0
+    } else {
+        0.0
+    };
+    axes.push(Axis {
+        label: AXIS_RHYTHM_REPEAT,
+        value: repeat,
+    });
+    Axes::new(axes)
 }
 
 /// The layers of a chain problem: `layers[b][c]` is bar `b` of candidate `c`.
