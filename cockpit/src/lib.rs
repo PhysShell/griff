@@ -37,15 +37,14 @@ use griff_core::import::import_score_auto;
 use griff_core::score::Score;
 use griff_swang::eval;
 use griff_ui_core::history::{
-    CandidateSource, CorpusContribution, GenerationRunId, GeneratorProvenance, HistoryId,
-    Provenance, SessionHistory, Verdict,
+    CandidateSource, ChainSupplier, CorpusContribution, GenerationRunId, GeneratorProvenance,
+    HistoryId, Provenance, SessionHistory, Verdict,
 };
 use griff_ui_core::playback::{Player, TempoMap};
 
 use audio::Synth;
-use griff_core::candidate_chain::ChainError;
 use griff_ui_core::curation::{decide_record, rename_record, set_tags, tag_palette};
-use griff_ui_core::generate::{generate_set, GlobalChainOutcome};
+use griff_ui_core::generate::{generate_run, GeneratedRun, GlobalChainOutcome};
 use griff_ui_core::scene::{resolve, GridSize, SceneCell, GUTTER};
 use griff_ui_core::theme::{cell_style, Rgb, Theme};
 use griff_ui_core::viewport::CurationDecision;
@@ -521,6 +520,9 @@ struct SwangRunContext {
 enum AuditionCandidate {
     /// Index into the Generate panel's set.
     Generate(usize),
+    /// The active Generate run's assembled S7 global chain. Carries no index: a
+    /// run has exactly one chain, planned when the set was produced.
+    GlobalChain,
     /// Index into the Swang panel's set.
     Swang(usize),
     /// A recorded candidate replayed from the session history, by its stable id
@@ -528,6 +530,13 @@ enum AuditionCandidate {
     /// an earlier generation whose panel set is long gone.
     History(HistoryId),
 }
+
+/// The history dedupe key for a run's global chain.
+///
+/// A run has exactly one chain, so a constant is the honest key: re-auditioning
+/// it must land on the same entry rather than pile up duplicates, and the run id
+/// beside it already distinguishes one run's chain from another's.
+const CHAIN_CANDIDATE_ID: &str = "global-chain";
 
 /// The egui cockpit application: a `Scene` renderer over the shared core.
 #[derive(Debug)]
@@ -688,6 +697,28 @@ fn provenance_summary(p: &Provenance) -> String {
                 "generate · {strategy} · #{rank} · source {src} · seed {seed} · {bars} bars · {contribution}"
             )
         }
+        GeneratorProvenance::GlobalChain {
+            source,
+            seed,
+            bars,
+            baseline_cost,
+            total_cost,
+            suppliers,
+            ..
+        } => {
+            // The suppliers, not a rank: a chain has no rank of its own, and the
+            // bar map is the one fact that says what it actually is.
+            let map = suppliers
+                .iter()
+                .map(|s| s.candidate.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "global chain · bars [{map}] · {total_cost:.3} vs intact {baseline_cost:.3} · \
+                 source {} · seed {seed} · {bars} bars",
+                source.as_deref().unwrap_or("displayed score"),
+            )
+        }
         GeneratorProvenance::Swang {
             source_path,
             rank,
@@ -741,6 +772,7 @@ fn history_row(
         ui.monospace(marker);
         let source = match row.source {
             CandidateSource::Generate => "gen",
+            CandidateSource::GlobalChain => "chain",
             CandidateSource::Swang => "swang",
         };
         ui.monospace(format!("#{:<3} [{source:>5}]", row.sequence));
@@ -1161,13 +1193,14 @@ impl CockpitApp {
     /// order — rank 1 is the candidate the CLI would have written.
     fn do_generate(&mut self) {
         let ask = self.gen_panel.ask();
+        // One pass: the ranked set and the chain planned from it, together. The
+        // `RankedSet` lives and dies inside `generate_run`, so what comes back
+        // is already a pair of snapshots.
         let outcome = self.generation_source().and_then(|score| {
-            generate_set(&score, self.material.as_ref(), &ask).map_err(|err| format!("{err:?}"))
+            generate_run(&score, self.material.as_ref(), &ask).map_err(|err| format!("{err:?}"))
         });
         match outcome {
-            Ok(set) => {
-                // Stub: the chain is not planned yet — the laws come first.
-                let chain = GlobalChainOutcome::Refused(ChainError::EmptySet);
+            Ok(GeneratedRun { set, chain }) => {
                 self.reset_audition(); // a new candidate set starts fresh (no stale A/B)
                                        // Capture the run's request/input identity NOW, from the state
                                        // that produced the set — the source seed, the ask, and the
@@ -1212,10 +1245,55 @@ impl CockpitApp {
     /// Paints the run's assembled S7 global chain into the roll, recording it in
     /// history as its own audition result.
     ///
-    /// The chain is a *snapshot*: this reads the one planned when the set was
-    /// produced and never plans anything.
+    /// The chain is a **snapshot**: this reads the one planned when the set was
+    /// produced and plans nothing. A refused chain shows nothing rather than
+    /// substituting the intact winner — the S6 result is a different result, and
+    /// handing it over under the chain's name would be the one lie this whole
+    /// comparison exists to avoid.
     fn show_global_chain(&mut self) {
-        // Stub: the laws come first.
+        let Some(active) = self.gen_panel.active.as_ref() else {
+            return;
+        };
+        let GlobalChainOutcome::Planned(chain) = &active.chain else {
+            return;
+        };
+        let ctx = &active.context;
+        let score = chain.plan.score.clone();
+        let title = format!("S7 global chain · {:.3}", chain.plan.total_cost);
+        let generator = GeneratorProvenance::GlobalChain {
+            source: ctx.source.clone(),
+            corpus: ctx.corpus,
+            seed: ctx.seed,
+            bars: ctx.bars,
+            variants_per_strategy: ctx.variants_per_strategy,
+            policy_id: chain.plan.provenance.policy_id,
+            policy_version: chain.plan.provenance.policy_version,
+            baseline_cost: chain.baseline_cost,
+            total_cost: chain.plan.total_cost,
+            suppliers: chain
+                .plan
+                .steps
+                .iter()
+                .map(|step| ChainSupplier {
+                    bar: step.state.bar,
+                    candidate: step.state.candidate,
+                    rank: step.state.rank,
+                    strategy: format!("{:?}", step.state.strategy),
+                    variant_seed: step.state.variant_seed.0,
+                })
+                .collect(),
+        };
+        let run = ctx.run;
+        let id = self.history.record(
+            run,
+            CHAIN_CANDIDATE_ID.to_owned(),
+            title.clone(),
+            score.clone(),
+            generator,
+        );
+        self.history.select(id);
+        self.remember_shown(AuditionCandidate::GlobalChain);
+        self.show_score(score, title);
     }
 
     /// Paints candidate `i` of the current set into the roll, recording it in
@@ -1268,6 +1346,7 @@ impl CockpitApp {
     fn ab_swap(&mut self) {
         match self.ab_other {
             Some(AuditionCandidate::Generate(i)) => self.show_candidate(i),
+            Some(AuditionCandidate::GlobalChain) => self.show_global_chain(),
             Some(AuditionCandidate::Swang(i)) => self.swang_show(i),
             Some(AuditionCandidate::History(id)) => self.select_history(id),
             None => {}
@@ -3762,7 +3841,7 @@ mod tests {
                 assert_eq!(*seed, 7, "the ask seed is captured honestly");
                 assert_eq!(*bars, app.gen_panel.bars);
             }
-            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+            other => panic!("a Generate candidate is not {other:?}"),
         }
     }
 
@@ -3783,7 +3862,7 @@ mod tests {
                 assert_eq!(corpus.references, 0);
                 assert!(!corpus.gesture);
             }
-            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+            other => panic!("a Generate candidate is not {other:?}"),
         }
         assert!(
             provenance_summary(&entry.provenance).contains("seed only"),
@@ -3818,7 +3897,7 @@ mod tests {
                 *variants_per_strategy,
                 corpus.is_seed_only(),
             ),
-            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+            other => panic!("a Generate candidate is not {other:?}"),
         }
     }
 
@@ -4170,7 +4249,7 @@ mod tests {
                     "the captured origin survives an edit",
                 );
             }
-            GeneratorProvenance::Generate { .. } => panic!("expected a Swang candidate"),
+            other => panic!("expected a Swang candidate, got {other:?}"),
         }
     }
 
@@ -4201,7 +4280,7 @@ mod tests {
                     "the program is the run's evaluated text"
                 );
             }
-            GeneratorProvenance::Generate { .. } => panic!("expected a Swang candidate"),
+            other => panic!("expected a Swang candidate, got {other:?}"),
         }
     }
 
@@ -4228,7 +4307,7 @@ mod tests {
             GeneratorProvenance::Swang { program, .. } => {
                 assert!(!program.is_empty(), "the program text is captured");
             }
-            GeneratorProvenance::Generate { .. } => panic!("a Swang candidate is not Generate"),
+            other => panic!("a Swang candidate is not {other:?}"),
         }
     }
 

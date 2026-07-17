@@ -50,6 +50,8 @@ pub enum CandidateSource {
     Generate,
     /// A Swang program's evaluated set.
     Swang,
+    /// The S7 global chain assembled from a Generate run's ranked set.
+    GlobalChain,
 }
 
 /// The generator-specific origin of a candidate — only the fields the pipeline
@@ -83,6 +85,36 @@ pub enum GeneratorProvenance {
         /// Its weighted aggregate over the rerank axes.
         aggregate: f64,
     },
+    /// The S7 global chain assembled from a Generate run's ranked set.
+    ///
+    /// Deliberately not a `Generate` with odd fields: a chain has no single
+    /// strategy, variant seed, rank or rerank aggregate — it is made of bars
+    /// from several candidates, each with their own. Its result fields are the
+    /// two costs the comparison turns on and the per-bar suppliers. The ask
+    /// fields are the run's, because the chain came from the same run.
+    GlobalChain {
+        /// The seed the pass was given (a tab name, or the displayed score).
+        source: Option<String>,
+        /// What the corpus **actually** contributed to the run.
+        corpus: CorpusContribution,
+        /// The deterministic ask seed.
+        seed: u64,
+        /// Bars generated.
+        bars: usize,
+        /// Seed variants per strategy.
+        variants_per_strategy: usize,
+        /// The chain policy the costs were weighed under.
+        policy_id: &'static str,
+        /// That policy's version.
+        policy_version: u32,
+        /// Ranked candidate 0 kept intact, under the same policy — what the
+        /// chain is compared against.
+        baseline_cost: f64,
+        /// The planned chain's total under that policy.
+        total_cost: f64,
+        /// Which candidate supplied each output bar.
+        suppliers: Vec<ChainSupplier>,
+    },
     /// A Swang candidate: the program that made it and its rerank result.
     Swang {
         /// The exact program text that produced the set.
@@ -98,6 +130,26 @@ pub enum GeneratorProvenance {
         /// Its weighted aggregate over the rerank axes.
         aggregate: f64,
     },
+}
+
+/// Which candidate supplied one bar of an assembled global chain.
+///
+/// The candidate's *own* identity, carried from the chain step: its ordinal in
+/// the run's ranked set, the rank it held there, and the strategy and derived
+/// variant seed it was generated under. Not the chain's — the chain has none of
+/// those, which is the whole point of the map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainSupplier {
+    /// The output bar this candidate filled.
+    pub bar: usize,
+    /// The supplying candidate's ordinal in the ranked set (`0` is rank 1).
+    pub candidate: usize,
+    /// That candidate's own 1-based rank.
+    pub rank: usize,
+    /// That candidate's strategy.
+    pub strategy: String,
+    /// That candidate's derived variant seed — its reproduction key.
+    pub variant_seed: u64,
 }
 
 /// What a corpus **actually** contributed to a generation — not merely whether
@@ -144,9 +196,13 @@ impl CorpusContribution {
 /// sidecar, a diff tool) can tell the shape apart from other records.
 pub const PROVENANCE_SCHEMA: &str = "griff.candidate-provenance";
 
-/// The current [`Provenance`] shape version. v2 adds the generation-run
-/// identity and distinguishes it from the history sequence.
-pub const PROVENANCE_VERSION: u32 = 2;
+/// The current [`Provenance`] shape version.
+///
+/// v2 added the generation-run identity and distinguished it from the history
+/// sequence. v3 adds the [`GeneratorProvenance::GlobalChain`] origin, whose
+/// result is two costs and a per-bar supplier map rather than one candidate's
+/// rank and aggregate.
+pub const PROVENANCE_VERSION: u32 = 3;
 
 /// A candidate's typed, backend-neutral origin — enough to answer where it came
 /// from, what made it, and under what request, without a word of UI in it.
@@ -200,6 +256,7 @@ impl Provenance {
         match self.generator {
             GeneratorProvenance::Generate { .. } => CandidateSource::Generate,
             GeneratorProvenance::Swang { .. } => CandidateSource::Swang,
+            GeneratorProvenance::GlobalChain { .. } => CandidateSource::GlobalChain,
         }
     }
 }
@@ -495,7 +552,7 @@ mod tests {
         let g = Provenance::new(GenerationRunId(0), 0, "x".to_owned(), generate_gen());
         match g.generator {
             GeneratorProvenance::Generate { seed, .. } => assert_eq!(seed, 42),
-            GeneratorProvenance::Swang { .. } => panic!("a Generate candidate is not Swang"),
+            other => panic!("a Generate candidate is not {other:?}"),
         }
         let s = Provenance::new(GenerationRunId(0), 0, "x".to_owned(), swang_gen());
         match s.generator {
@@ -507,7 +564,7 @@ mod tests {
                 assert!(program.contains("swang"));
                 assert_eq!(source_path.as_deref(), Some("riff.mid"));
             }
-            GeneratorProvenance::Generate { .. } => panic!("a Swang candidate is not Generate"),
+            other => panic!("a Swang candidate is not {other:?}"),
         }
     }
 
