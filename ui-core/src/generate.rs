@@ -10,7 +10,9 @@
 //! Pure and wasm-safe: the caller hands in an already-imported source score and
 //! already-parsed corpus material, and owns its own I/O.
 
-use griff_core::candidate_chain::{ChainError, PlannedCandidateChain};
+use griff_core::candidate_chain::{
+    intact_s6_cost, plan_candidate_chain, ChainError, PlannedCandidateChain,
+};
 use griff_core::generation_input::{
     ranked_candidates, CorpusMaterial, GenerationAsk, GenerationInputError, RankedSet,
 };
@@ -209,9 +211,21 @@ pub fn generate_run(
 }
 
 /// Plans the global chain and its baseline from one ranked set.
-fn plan_global_chain(_set: &RankedSet) -> GlobalChainOutcome {
-    // Stub: the laws come first.
-    GlobalChainOutcome::Refused(ChainError::EmptySet)
+///
+/// Both sides of the comparison are measured here, from this one set, under the
+/// one policy the core owns. They refuse together — each validates the set's
+/// chain-compatibility — so a refusal is reported once, typed, rather than as a
+/// half-available comparison.
+fn plan_global_chain(set: &RankedSet) -> GlobalChainOutcome {
+    match (plan_candidate_chain(set), intact_s6_cost(set)) {
+        (Ok(plan), Ok(baseline_cost)) => {
+            GlobalChainOutcome::Planned(Box::new(PlannedGlobalChain {
+                plan,
+                baseline_cost,
+            }))
+        }
+        (Err(error), _) | (Ok(_), Err(error)) => GlobalChainOutcome::Refused(error),
+    }
 }
 
 /// Notes across a score's first track.
@@ -247,7 +261,8 @@ mod tests {
     #![allow(
         clippy::arithmetic_side_effects,
         clippy::expect_used,
-        clippy::indexing_slicing
+        clippy::indexing_slicing,
+        clippy::panic
     )]
 
     use super::*;
@@ -370,7 +385,7 @@ mod tests {
         // Not recomputed here, and not a different metric: the number the core
         // returns for ranked candidate 0 kept whole, under the chain policy.
         let set = ranked_candidates(&source(), None, &ask(), None).expect("seeds");
-        let expected = griff_core::candidate_chain::intact_s6_cost(&set).expect("compatible");
+        let expected = intact_s6_cost(&set).expect("compatible");
         let run = generate_run(&source(), None, &ask()).expect("seeds");
         let GlobalChainOutcome::Planned(chain) = &run.chain else {
             panic!("chain-compatible fixture");
