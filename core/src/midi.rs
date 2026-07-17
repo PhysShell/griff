@@ -71,6 +71,31 @@ pub enum MidiError {
     #[error("the event span implies over {MAX_MASTER_BARS} bars; the file is degenerate")]
     TooManyBars,
 
+    /// An event gap too large for an SMF delta (F-006).
+    ///
+    /// Deltas are 4-byte variable-length quantities, so they cannot exceed
+    /// `0x0FFF_FFFF`. This is a property of the *gap between two
+    /// consecutive emitted events*, not of absolute position: a score may run
+    /// far past that tick as long as every individual delta stays
+    /// representable. Sparse meta tracks are the exposed case — time
+    /// signature, tempo and end-of-track events can sit hundreds of millions
+    /// of ticks apart.
+    ///
+    /// Refused rather than truncated: wrapping the value mod 2^28 silently
+    /// moves the event, which corrupts the file while claiming success.
+    #[error(
+        "the gap from tick {previous_tick} to {absolute_tick} is {delta} ticks; \
+         an SMF delta cannot exceed {MAX_VLQ_DELTA}"
+    )]
+    DeltaExceedsVlq {
+        /// Absolute tick of the previous emitted event.
+        previous_tick: u32,
+        /// Absolute tick of the event that cannot be reached.
+        absolute_tick: u32,
+        /// The unrepresentable gap between them.
+        delta: u32,
+    },
+
     /// Writing MIDI bytes failed.
     #[error("MIDI write error: {0}")]
     Write(Box<io::Error>),
@@ -281,17 +306,35 @@ fn bar_ticks(sig: TimeSignature, ppqn: Ppqn) -> Result<u32, MidiError> {
 
 // ── export ────────────────────────────────────────────────────────────────────
 
-fn abs_to_delta(sorted: Vec<(u32, TrackEventKind<'static>)>) -> Vec<TrackEvent<'static>> {
+/// Largest gap an SMF delta can carry: a variable-length quantity is at most
+/// four 7-bit groups (F-006).
+const MAX_VLQ_DELTA: u32 = 0x0FFF_FFFF;
+
+/// Converts absolute ticks to SMF deltas, refusing any gap a variable-length
+/// quantity cannot represent.
+///
+/// `u28::from_int_lossy` would wrap such a gap mod 2^28 and hand back bytes
+/// that place the event elsewhere — corruption reported as success (F-006).
+fn abs_to_delta(
+    sorted: Vec<(u32, TrackEventKind<'static>)>,
+) -> Result<Vec<TrackEvent<'static>>, MidiError> {
     let mut prev: u32 = 0;
     sorted
         .into_iter()
         .map(|(abs, kind)| {
             let delta = abs.saturating_sub(prev);
+            if delta > MAX_VLQ_DELTA {
+                return Err(MidiError::DeltaExceedsVlq {
+                    previous_tick: prev,
+                    absolute_tick: abs,
+                    delta,
+                });
+            }
             prev = abs;
-            TrackEvent {
+            Ok(TrackEvent {
                 delta: u28::from_int_lossy(delta),
                 kind,
-            }
+            })
         })
         .collect()
 }
@@ -689,11 +732,10 @@ fn build_score_meta_track(
     }
 
     abs_events.sort_unstable_by_key(|&(tick, _)| tick);
-    Ok(abs_to_delta(abs_events))
+    abs_to_delta(abs_events)
 }
 
 /// Builds a note track for one [`ScoreTrack`], using only the first [`Voice`].
-#[allow(clippy::unnecessary_wraps)]
 fn build_score_note_track(track: &ScoreTrack) -> Result<Vec<TrackEvent<'static>>, MidiError> {
     let channel = u4::new(track.channel.min(15));
     let mut abs_events: Vec<(u32, TrackEventKind<'static>)> = Vec::new();
@@ -740,7 +782,7 @@ fn build_score_note_track(track: &ScoreTrack) -> Result<Vec<TrackEvent<'static>>
     let end_tick = abs_events.iter().map(|&(t, _)| t).max().unwrap_or(0);
     abs_events.push((end_tick, TrackEventKind::Meta(MetaMessage::EndOfTrack)));
     abs_events.sort_unstable_by_key(|&(tick, _)| tick);
-    Ok(abs_to_delta(abs_events))
+    abs_to_delta(abs_events)
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -944,10 +986,12 @@ mod tests {
     /// and produced corruption.
     ///
     /// An SMF delta is a 4-byte variable-length quantity, so it cannot exceed
-    /// `0x0FFF_FFFF`. `abs_to_delta` converted an unchecked `u32` gap with
-    /// `u28::from_int_lossy`, which silently wraps mod 2^28: this file's
-    /// 268,536,960-tick gap to its 5/64 time-signature change became 101,504
-    /// (`268_536_960 - 2^28`), landing the change ~268 million ticks early. On
+    /// [`MAX_VLQ_DELTA`]. `abs_to_delta` converted an unchecked `u32` gap with
+    /// `u28::from_int_lossy`, which silently wraps mod 2^28. This file's meta
+    /// track jumps from tick 1,920 to its 5/64 time-signature change at
+    /// 268,536,960 — a gap of 268,535,040, which wrapped to
+    /// `268_535_040 - 2^28` = 99,584 and placed the change at
+    /// `1_920 + 99_584` = 101,504, roughly 268 million ticks early. On
     /// re-import a 150-tick bar then governs the timeline, implying ~1,791,473
     /// bars — over `MAX_MASTER_BARS`, hence `TooManyBars`.
     ///
@@ -964,7 +1008,14 @@ mod tests {
         let score = import_score(F006_DELTA_EXCEEDS_VLQ).expect("the finding must import");
         let result = export_score(&score);
         assert!(
-            result.is_err(),
+            matches!(
+                result,
+                Err(MidiError::DeltaExceedsVlq {
+                    previous_tick: 1_920,
+                    absolute_tick: 268_536_960,
+                    delta: 268_535_040,
+                })
+            ),
             "export must refuse a delta no VLQ can represent, not truncate it; \
              got {:?} (byte count on success)",
             result.map(|b| b.len()),
