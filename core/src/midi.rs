@@ -71,6 +71,31 @@ pub enum MidiError {
     #[error("the event span implies over {MAX_MASTER_BARS} bars; the file is degenerate")]
     TooManyBars,
 
+    /// An event gap too large for an SMF delta (F-006).
+    ///
+    /// Deltas are 4-byte variable-length quantities, so they cannot exceed
+    /// `0x0FFF_FFFF`. This is a property of the *gap between two
+    /// consecutive emitted events*, not of absolute position: a score may run
+    /// far past that tick as long as every individual delta stays
+    /// representable. Sparse meta tracks are the exposed case — time
+    /// signature, tempo and end-of-track events can sit hundreds of millions
+    /// of ticks apart.
+    ///
+    /// Refused rather than truncated: wrapping the value mod 2^28 silently
+    /// moves the event, which corrupts the file while claiming success.
+    #[error(
+        "the gap from tick {previous_tick} to {absolute_tick} is {delta} ticks; \
+         an SMF delta cannot exceed {MAX_VLQ_DELTA}"
+    )]
+    DeltaExceedsVlq {
+        /// Absolute tick of the previous emitted event.
+        previous_tick: u32,
+        /// Absolute tick of the event that cannot be reached.
+        absolute_tick: u32,
+        /// The unrepresentable gap between them.
+        delta: u32,
+    },
+
     /// Writing MIDI bytes failed.
     #[error("MIDI write error: {0}")]
     Write(Box<io::Error>),
@@ -281,17 +306,35 @@ fn bar_ticks(sig: TimeSignature, ppqn: Ppqn) -> Result<u32, MidiError> {
 
 // ── export ────────────────────────────────────────────────────────────────────
 
-fn abs_to_delta(sorted: Vec<(u32, TrackEventKind<'static>)>) -> Vec<TrackEvent<'static>> {
+/// Largest gap an SMF delta can carry: a variable-length quantity is at most
+/// four 7-bit groups (F-006).
+const MAX_VLQ_DELTA: u32 = 0x0FFF_FFFF;
+
+/// Converts absolute ticks to SMF deltas, refusing any gap a variable-length
+/// quantity cannot represent.
+///
+/// `u28::from_int_lossy` would wrap such a gap mod 2^28 and hand back bytes
+/// that place the event elsewhere — corruption reported as success (F-006).
+fn abs_to_delta(
+    sorted: Vec<(u32, TrackEventKind<'static>)>,
+) -> Result<Vec<TrackEvent<'static>>, MidiError> {
     let mut prev: u32 = 0;
     sorted
         .into_iter()
         .map(|(abs, kind)| {
             let delta = abs.saturating_sub(prev);
+            if delta > MAX_VLQ_DELTA {
+                return Err(MidiError::DeltaExceedsVlq {
+                    previous_tick: prev,
+                    absolute_tick: abs,
+                    delta,
+                });
+            }
             prev = abs;
-            TrackEvent {
+            Ok(TrackEvent {
                 delta: u28::from_int_lossy(delta),
                 kind,
-            }
+            })
         })
         .collect()
 }
@@ -689,11 +732,10 @@ fn build_score_meta_track(
     }
 
     abs_events.sort_unstable_by_key(|&(tick, _)| tick);
-    Ok(abs_to_delta(abs_events))
+    abs_to_delta(abs_events)
 }
 
 /// Builds a note track for one [`ScoreTrack`], using only the first [`Voice`].
-#[allow(clippy::unnecessary_wraps)]
 fn build_score_note_track(track: &ScoreTrack) -> Result<Vec<TrackEvent<'static>>, MidiError> {
     let channel = u4::new(track.channel.min(15));
     let mut abs_events: Vec<(u32, TrackEventKind<'static>)> = Vec::new();
@@ -740,7 +782,7 @@ fn build_score_note_track(track: &ScoreTrack) -> Result<Vec<TrackEvent<'static>>
     let end_tick = abs_events.iter().map(|&(t, _)| t).max().unwrap_or(0);
     abs_events.push((end_tick, TrackEventKind::Meta(MetaMessage::EndOfTrack)));
     abs_events.sort_unstable_by_key(|&(tick, _)| tick);
-    Ok(abs_to_delta(abs_events))
+    abs_to_delta(abs_events)
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -760,6 +802,7 @@ mod tests {
         slice::TickRange,
     };
     use midly::{Format, MetaMessage, Smf, TrackEventKind};
+    use std::{fs, path::Path};
 
     /// Bytes of the `tempo_change` fixture (two-tempo file from the S0 corpus).
     const TEMPO_CHANGE_MID: &[u8] = include_bytes!(concat!(
@@ -930,6 +973,104 @@ mod tests {
             matches!(result, Err(MidiError::TooManyBars)),
             "F-004 input must return TooManyBars, got {result:?}",
         );
+    }
+
+    /// The `midi_roundtrip` finding, verbatim (274 bytes).
+    ///
+    /// Embedded from this package's own `tests/fixtures/`, not from the
+    /// sibling `fuzz/` corpus: `fuzz/` is deliberately outside the workspace
+    /// (ADR-0010) and so is absent from packaged `griff-core` source, where a
+    /// `../fuzz/...` path would fail to compile. The fuzz corpus keeps its own
+    /// copy — `f006_fixture_matches_the_fuzz_corpus_seed` pins the two
+    /// byte-identical wherever both exist.
+    const F006_DELTA_EXCEEDS_VLQ: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/roundtrip_delta_exceeds_vlq.mid"
+    ));
+
+    /// The packaged fixture and the fuzz corpus seed are the same finding and
+    /// must not drift.
+    ///
+    /// Two copies is the price of `fuzz/` living outside the workspace: the
+    /// unit test needs a package-local file, the gate needs a corpus entry.
+    /// This test removes the risk that price buys — it compares them wherever
+    /// the sibling corpus exists, which is every context where drift is
+    /// possible. In packaged source there is nothing to compare and it
+    /// returns; the regression test above still runs against the embedded
+    /// copy.
+    #[test]
+    fn f006_fixture_matches_the_fuzz_corpus_seed() {
+        let seed = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fuzz/corpus/midi_roundtrip/roundtrip_delta_exceeds_vlq.mid");
+        if !seed.exists() {
+            return; // packaged source: no sibling fuzz crate to compare against
+        }
+        let corpus = fs::read(&seed).expect("the sibling fuzz seed must be readable");
+        assert_eq!(
+            corpus,
+            F006_DELTA_EXCEEDS_VLQ,
+            "the packaged fixture and the fuzz corpus seed have drifted apart; \
+             they are the same {}-byte finding and must stay byte-identical",
+            F006_DELTA_EXCEEDS_VLQ.len(),
+        );
+    }
+
+    /// F-006 (`docs/fuzzing.md`): the `midi_roundtrip` gate found a file whose
+    /// exported bytes griff's *own* importer rejects — export claimed success
+    /// and produced corruption.
+    ///
+    /// An SMF delta is a 4-byte variable-length quantity, so it cannot exceed
+    /// [`MAX_VLQ_DELTA`]. `abs_to_delta` converted an unchecked `u32` gap with
+    /// `u28::from_int_lossy`, which silently wraps mod 2^28. This file's meta
+    /// track jumps from tick 1,920 to its 5/64 time-signature change at
+    /// 268,536,960 — a gap of 268,535,040, which wrapped to
+    /// `268_535_040 - 2^28` = 99,584 and placed the change at
+    /// `1_920 + 99_584` = 101,504, roughly 268 million ticks early. On
+    /// re-import a 150-tick bar then governs the timeline, implying ~1,791,473
+    /// bars — over `MAX_MASTER_BARS`, hence `TooManyBars`.
+    ///
+    /// The defect is about the *gap between two consecutive emitted events*,
+    /// not absolute timeline position: a score may legally run past
+    /// `0x0FFF_FFFF` as long as every individual delta stays representable.
+    /// Sparse meta tracks are the exposed case — time-signature, tempo and
+    /// end-of-track events can sit hundreds of millions of ticks apart.
+    ///
+    /// The contract: a delta no VLQ can represent is a typed refusal. Refusing
+    /// returns no bytes at all, which is what "no corrupt bytes" means here.
+    #[test]
+    fn regression_f006_export_refuses_unrepresentable_delta() {
+        let score = import_score(F006_DELTA_EXCEEDS_VLQ).expect("the finding must import");
+        let result = export_score(&score);
+        assert!(
+            matches!(
+                result,
+                Err(MidiError::DeltaExceedsVlq {
+                    previous_tick: 1_920,
+                    absolute_tick: 268_536_960,
+                    delta: 268_535_040,
+                })
+            ),
+            "export must refuse a delta no VLQ can represent, not truncate it; \
+             got {:?} (byte count on success)",
+            result.map(|b| b.len()),
+        );
+    }
+
+    /// The oracle the `midi_roundtrip` gate enforces, pinned as a unit test:
+    /// export may refuse, but it must never hand back bytes its own importer
+    /// rejects. F-006 broke exactly this.
+    #[test]
+    fn export_never_returns_bytes_its_own_importer_rejects() {
+        let score = import_score(F006_DELTA_EXCEEDS_VLQ).expect("the finding must import");
+        if let Ok(bytes) = export_score(&score) {
+            let reimported = import_score(&bytes);
+            assert!(
+                reimported.is_ok(),
+                "export returned {} bytes that re-import rejects: {:?}",
+                bytes.len(),
+                reimported.err(),
+            );
+        }
     }
 
     #[test]
