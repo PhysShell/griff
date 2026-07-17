@@ -992,6 +992,7 @@ mod tests {
         RuleGenerationRequest,
     };
     use crate::generation_input::{ranked_candidates, GenerationAsk, RankedSet};
+    use crate::layered_path::{PathError, StateId};
     use crate::rerank::SetCandidate;
     use crate::score::{
         AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar,
@@ -2051,6 +2052,87 @@ mod tests {
         assert!(
             planned.total_cost < baseline,
             "the global path is strictly cheaper under the same policy",
+        );
+    }
+
+    // ── the baseline is an evaluation by the same engine ─────────────────────
+
+    #[test]
+    fn a_finite_baseline_keeps_the_total_it_always_had() {
+        // Two bars of one candidate: locals 2 x (1 - 0.9) = 0.2, a 2-semitone
+        // step at 0.05 = 0.1, an identical rhythm either side at 0.40. Routing
+        // the baseline through the solver must not move this number.
+        let set = ranked_set(vec![candidate(
+            score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]),
+            0.9,
+            1,
+        )]);
+        let baseline = intact_s6_cost(&set).expect("baseline");
+        assert!((baseline - 0.7).abs() < 1e-9, "baseline was {baseline}");
+    }
+
+    #[test]
+    fn a_non_finite_baseline_local_is_a_typed_path_error() {
+        // An infinite S6 aggregate makes `1 - s6` infinite. The planned chain
+        // has always named this; the baseline used to sum it into an f64 and
+        // hand back Ok(-inf) — a "cost" that compares less than every real one,
+        // so the S6 winner would look unbeatable.
+        let set = ranked_set(vec![candidate(
+            score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]),
+            f64::INFINITY,
+            1,
+        )]);
+        assert_eq!(
+            intact_s6_cost(&set).unwrap_err(),
+            ChainError::Path(PathError::NonFiniteLocal {
+                state: StateId {
+                    layer: 0,
+                    ordinal: 0,
+                },
+                cost: f64::NEG_INFINITY,
+            }),
+        );
+    }
+
+    #[test]
+    fn an_overflowing_baseline_accumulation_is_a_typed_path_error() {
+        // Every local is finite (1e308), their sum is not. The baseline's own
+        // arithmetic checked nothing and returned Ok(inf).
+        let set = ranked_set(vec![candidate(
+            score_of(&[&[(0, 480, 60)], &[(0, 480, 62)]]),
+            -1e308,
+            1,
+        )]);
+        assert_eq!(
+            intact_s6_cost(&set).unwrap_err(),
+            ChainError::Path(PathError::NonFiniteAccumulation {
+                state: StateId {
+                    layer: 0,
+                    ordinal: 0,
+                },
+                cost: f64::INFINITY,
+            }),
+        );
+    }
+
+    #[test]
+    fn the_baseline_is_the_planned_chain_of_the_candidate_0_set() {
+        // The comparison's whole meaning is that both sides are one metric. The
+        // baseline is a one-state-per-layer path, so it must be *that path's*
+        // cost as this engine computes it — bit for bit, not merely close.
+        //
+        // With one candidate every local is the same number, so no fixture can
+        // make the two associations disagree on a value here; this law is
+        // structural on purpose, and the two typed-error laws above are what
+        // prove the baseline really goes through the solver.
+        let set = non_greedy_set();
+        let alone = ranked_set(vec![set.ranked[0].clone()]);
+        let baseline = intact_s6_cost(&set).expect("baseline");
+        let planned = plan_candidate_chain(&alone).expect("plans");
+        assert_eq!(
+            baseline.to_bits(),
+            planned.total_cost.to_bits(),
+            "the baseline is the intact candidate's path cost, folded once",
         );
     }
 
