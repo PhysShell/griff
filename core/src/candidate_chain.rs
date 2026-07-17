@@ -16,7 +16,8 @@
 use core::cmp::Reverse;
 
 use crate::generate::{GenerationSeed, GenerationStrategy};
-use crate::layered_path::PathError;
+use crate::generation_input::RankedSet;
+use crate::layered_path::{self, EdgeId, PathError};
 use crate::rerank::SetCandidate;
 use crate::score::{AtomEvent, Score};
 use crate::scoring::{Axes, Axis, Provenance, Rationale, Scored, WeightPolicy};
@@ -295,6 +296,88 @@ pub fn transition_facts(from: &Score, from_bar: usize, to: &Score, to_bar: usize
     Axes::new(axes)
 }
 
+/// One selected bar of the planned chain, with everything needed to say where
+/// it came from and why it was chosen.
+#[derive(Debug, Clone)]
+pub struct ChainStep {
+    /// Which output bar, from which candidate, with that candidate's own
+    /// generation identity (strategy, variant seed, original rank).
+    pub state: ChainState,
+    /// The chain-policy local cost: its facts, rationale, and provenance.
+    pub local: Scored<layered_path::StateId>,
+    /// The supplying candidate's untouched S6 rerank score.
+    pub s6: S6Quality,
+}
+
+/// One selected bar line of the planned chain, with its full explanation.
+#[derive(Debug, Clone)]
+pub struct ChainTransition {
+    /// The step this transition leaves.
+    pub from: ChainState,
+    /// The step this transition enters.
+    pub to: ChainState,
+    /// The chain-policy transition cost: its facts, rationale, and provenance.
+    pub cost: Scored<EdgeId>,
+}
+
+/// A planned multi-bar chain: the assembled score and the whole trace behind it.
+#[derive(Debug, Clone)]
+pub struct PlannedCandidateChain {
+    /// The assembled score — the selected bars over the shared master timeline.
+    pub score: Score,
+    /// The selected bar of every layer, in bar order.
+    pub steps: Vec<ChainStep>,
+    /// The selected bar line between each adjacent pair, in bar order.
+    pub transitions: Vec<ChainTransition>,
+    /// `Σ local + Σ transition`, derived from the retained rationales.
+    pub total_cost: f64,
+    /// The chain policy the costs were weighed under.
+    pub provenance: Provenance,
+}
+
+/// Plans the best multi-bar chain over `set` under the `candidate_chain` v1
+/// policy.
+///
+/// Nothing is regenerated, reranked, or re-seeded: every bar is a snapshot of a
+/// score already in the set, and the ranked set is only read.
+///
+/// # Errors
+/// [`ChainError`] when the set is not chain-compatible, or the layered engine
+/// rejects the problem.
+pub fn plan_candidate_chain(set: &RankedSet) -> Result<PlannedCandidateChain, ChainError> {
+    plan_ranked_with(&set.ranked, &chain_weights_v1())
+}
+
+/// Plans a chain over `ranked` under an explicit policy — the seam the v1
+/// entry point and the tests share.
+fn plan_ranked_with(
+    ranked: &[Scored<SetCandidate>],
+    policy: &WeightPolicy,
+) -> Result<PlannedCandidateChain, ChainError> {
+    let _ = (ranked, policy);
+    unimplemented!("candidate_chain::plan_ranked_with")
+}
+
+/// The S6 baseline cost: ranked candidate 0 kept **intact** as one multi-bar
+/// score, weighed under the very same `candidate_chain` v1 policy.
+///
+/// This is what the planned chain must beat — the same metric on both sides.
+///
+/// # Errors
+/// [`ChainError`] when the set is not chain-compatible.
+pub fn intact_s6_cost(set: &RankedSet) -> Result<f64, ChainError> {
+    intact_cost_with(&set.ranked, &chain_weights_v1())
+}
+
+/// The intact-candidate-0 cost under an explicit policy.
+fn intact_cost_with(
+    ranked: &[Scored<SetCandidate>],
+    policy: &WeightPolicy,
+) -> Result<f64, ChainError> {
+    let _ = (ranked, policy);
+    unimplemented!("candidate_chain::intact_cost_with")
+}
+
 /// The layers of a chain problem: `layers[b][c]` is bar `b` of candidate `c`.
 ///
 /// # Errors
@@ -434,14 +517,19 @@ fn bar_of(score: &Score, tick: u32) -> Option<usize> {
 )]
 mod tests {
     use super::{
-        chain_layers, chain_weights_v1, local_facts, transition_facts, ChainError,
-        AXIS_BOUNDARY_JUMP, AXIS_CANDIDATE_QUALITY, AXIS_RHYTHM_REPEAT, AXIS_SILENT_BOUNDARY,
+        chain_layers, chain_weights_v1, intact_s6_cost, local_facts, plan_candidate_chain,
+        plan_ranked_with, transition_facts, ChainError, AXIS_BOUNDARY_JUMP, AXIS_CANDIDATE_QUALITY,
+        AXIS_RHYTHM_REPEAT, AXIS_SILENT_BOUNDARY,
     };
     use crate::event::{
         NoteMarks, Pitch, SpanTechnique, TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning,
         Velocity,
     };
-    use crate::generate::{GenerationSeed, GenerationStrategy};
+    use crate::generate::{
+        GenerationConstraints, GenerationSeed, GenerationStrategy, PitchMaterial,
+        RuleGenerationRequest,
+    };
+    use crate::generation_input::{ranked_candidates, GenerationAsk, RankedSet};
     use crate::rerank::SetCandidate;
     use crate::score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
@@ -812,5 +900,319 @@ mod tests {
             "two silences are a rhythmic repeat — an explicit signature, not a gap",
         );
         assert!((facts.get(AXIS_SILENT_BOUNDARY).unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    // ── planning, assembly, and the S6 baseline ──────────────────────────────
+
+    /// Wraps ranked candidates into a `RankedSet` with a minimal base request.
+    fn ranked_set(ranked: Vec<Scored<SetCandidate>>) -> RankedSet {
+        RankedSet {
+            ranked,
+            base: RuleGenerationRequest {
+                seed: GenerationSeed(1),
+                pitch_material: PitchMaterial {
+                    root: Pitch(60),
+                    intervals: vec![0, 2, 4, 5, 7, 9, 11],
+                },
+                constraints: GenerationConstraints {
+                    bar_count: 3,
+                    time_signature: TimeSignature::new(4, 4).unwrap(),
+                    tempo: Tempo::new(120.0).unwrap(),
+                    ticks_per_quarter: Ticks(u32::from(PPQ)),
+                    pitch_lo: Pitch(40),
+                    pitch_hi: Pitch(90),
+                },
+                source_rhythms: Vec::new(),
+                explicit_rhythms: None,
+                strategy: GenerationStrategy::ShuffleMotifs,
+            },
+            source_rhythms: Vec::new(),
+            rhythm_explicit: false,
+            gesture: None,
+            policy: s6_policy(),
+        }
+    }
+
+    /// The non-greedy fixture.
+    ///
+    /// Every bar of every candidate is one note at offset 0 lasting 480 ticks,
+    /// so the rhythm signature is identical everywhere and the repeat term is a
+    /// constant that cannot sway the choice. Pitch alone decides:
+    ///
+    /// ```text
+    ///            bar0   bar1   bar2    S6 aggregate → local cost
+    ///   cand 0    60     50     84       0.9 → 0.1
+    ///   cand 1    60     70     84       0.8 → 0.2
+    ///   cand 2    60     50     84       0.7 → 0.3
+    /// ```
+    ///
+    /// Candidate 0 is locally cheapest at every layer, so a greedy pass takes
+    /// it throughout — but its bar 1 dives to 50 and must then climb 34
+    /// semitones back to 84. Candidate 1's bar 1 costs 0.1 more locally and
+    /// sits at 70, on the way, for a far cheaper climb. Only downstream
+    /// transition cost reveals this, which is exactly what DP sees and greedy
+    /// does not.
+    fn non_greedy_set() -> RankedSet {
+        ranked_set(vec![
+            candidate(
+                score_of(&[&[(0, 480, 60)], &[(0, 480, 50)], &[(0, 480, 84)]]),
+                0.9,
+                1,
+            ),
+            candidate(
+                score_of(&[&[(0, 480, 60)], &[(0, 480, 70)], &[(0, 480, 84)]]),
+                0.8,
+                2,
+            ),
+            candidate(
+                score_of(&[&[(0, 480, 60)], &[(0, 480, 50)], &[(0, 480, 84)]]),
+                0.7,
+                3,
+            ),
+        ])
+    }
+
+    #[test]
+    fn the_planned_chain_beats_the_intact_s6_winner_on_the_non_greedy_fixture() {
+        let set = non_greedy_set();
+        let planned = plan_candidate_chain(&set).expect("plans");
+        let baseline = intact_s6_cost(&set).expect("baseline");
+
+        assert_eq!(
+            planned
+                .steps
+                .iter()
+                .map(|s| s.state.candidate)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0],
+            "DP leaves the locally-best candidate at bar 1 for the cheaper climb",
+        );
+        // Intact:  locals 0.3 + jumps 0.05*(10 + 34) = 2.2 + repeats 0.8 = 3.3
+        // Planned: locals 0.4 + jumps 0.05*(10 + 14) = 1.2 + repeats 0.8 = 2.4
+        assert!((baseline - 3.3).abs() < 1e-9, "baseline was {baseline}");
+        assert!(
+            (planned.total_cost - 2.4).abs() < 1e-9,
+            "planned was {}",
+            planned.total_cost,
+        );
+        assert!(
+            planned.total_cost < baseline,
+            "the global path is strictly cheaper under the same policy",
+        );
+    }
+
+    #[test]
+    fn the_locally_best_state_at_a_layer_is_not_the_one_dp_takes() {
+        // The non-greedy property, stated directly: candidate 0 has the lowest
+        // local cost at bar 1, yet the optimum does not take it there.
+        let set = non_greedy_set();
+        let bar1_locals: Vec<f64> = set
+            .ranked
+            .iter()
+            .map(|c| {
+                local_facts(c.aggregate())
+                    .get(AXIS_CANDIDATE_QUALITY)
+                    .unwrap()
+            })
+            .collect();
+        let cheapest_local = bar1_locals
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i)
+            .unwrap();
+        assert_eq!(cheapest_local, 0, "candidate 0 is the locally best state");
+        let planned = plan_candidate_chain(&set).expect("plans");
+        assert_ne!(
+            planned.steps[1].state.candidate, cheapest_local,
+            "DP rejects the locally best state because of downstream cost",
+        );
+    }
+
+    #[test]
+    fn zero_transition_weights_reproduce_the_intact_s6_winner() {
+        let set = non_greedy_set();
+        let only_local =
+            WeightPolicy::new("chain_local_only", 1, vec![(AXIS_CANDIDATE_QUALITY, 1.0)]);
+        let planned = plan_ranked_with(&set.ranked, &only_local).expect("plans");
+        assert_eq!(
+            planned
+                .steps
+                .iter()
+                .map(|s| s.state.candidate)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 0],
+            "with no transition terms the chain is S6's winner, intact",
+        );
+    }
+
+    #[test]
+    fn each_step_keeps_its_candidates_identity_and_s6_score() {
+        let set = non_greedy_set();
+        let planned = plan_candidate_chain(&set).expect("plans");
+        let step = &planned.steps[1];
+        assert_eq!(step.state.bar, 1);
+        assert_eq!(step.state.candidate, 1);
+        assert_eq!(step.state.rank, 2, "the original 1-based rank");
+        assert_eq!(step.state.variant_seed, GenerationSeed(2));
+        assert!(
+            (step.s6.aggregate - 0.8).abs() < 1e-12,
+            "the untouched S6 aggregate travels with the step",
+        );
+        assert_eq!(step.s6.provenance.policy_id, "test_rerank");
+        assert!(
+            !step.s6.rationale.entries().is_empty(),
+            "S6's rationale is kept"
+        );
+    }
+
+    #[test]
+    fn the_contributions_sum_to_the_reported_total() {
+        let planned = plan_candidate_chain(&non_greedy_set()).expect("plans");
+        let summed: f64 = planned
+            .steps
+            .iter()
+            .map(|s| s.local.aggregate())
+            .sum::<f64>()
+            + planned
+                .transitions
+                .iter()
+                .map(|t| t.cost.aggregate())
+                .sum::<f64>();
+        assert!((summed - planned.total_cost).abs() < 1e-12);
+    }
+
+    #[test]
+    fn planning_never_reorders_or_changes_the_ranked_set() {
+        let set = non_greedy_set();
+        let before: Vec<(u64, usize)> = set
+            .ranked
+            .iter()
+            .map(|c| (c.value.seed.0, c.value.score.master_bars.len()))
+            .collect();
+        drop(plan_candidate_chain(&set).expect("plans"));
+        let after: Vec<(u64, usize)> = set
+            .ranked
+            .iter()
+            .map(|c| (c.value.seed.0, c.value.score.master_bars.len()))
+            .collect();
+        assert_eq!(before, after, "the set is read, never rewritten");
+    }
+
+    #[test]
+    fn the_output_keeps_the_bar_count_duration_and_master_timeline() {
+        let set = non_greedy_set();
+        let planned = plan_candidate_chain(&set).expect("plans");
+        let reference = &set.ranked[0].value.score;
+        assert_eq!(
+            planned.score.master_bars.len(),
+            3,
+            "the requested bar count"
+        );
+        assert_eq!(planned.score.ticks_per_quarter, PPQ);
+        assert_eq!(
+            planned
+                .score
+                .master_bars
+                .iter()
+                .map(|b| b.tick_range)
+                .collect::<Vec<_>>(),
+            reference
+                .master_bars
+                .iter()
+                .map(|b| b.tick_range)
+                .collect::<Vec<_>>(),
+            "the master timeline is the one every candidate already agreed on",
+        );
+        for bar in &planned.score.master_bars {
+            assert!(
+                (bar.tempo.0 - 120.0).abs() < 1e-12,
+                "tempo is the timeline's"
+            );
+            assert_eq!(bar.time_signature, TimeSignature::new(4, 4).unwrap());
+        }
+    }
+
+    #[test]
+    fn every_selected_bar_is_an_exact_snapshot_of_its_source_candidate() {
+        let set = non_greedy_set();
+        let planned = plan_candidate_chain(&set).expect("plans");
+        // The planned path is [0, 1, 0] → pitches 60, 70, 84 with no note lost.
+        let notes: Vec<(u32, u32, u8)> = planned
+            .score
+            .tracks
+            .iter()
+            .flat_map(|t| t.voices.iter())
+            .flat_map(|v| v.event_groups.iter())
+            .flat_map(|g| g.atoms.iter())
+            .filter_map(|a| match a {
+                AtomEvent::Note(n) => Some((n.absolute_start.0, n.duration.0, n.pitch.0)),
+                AtomEvent::Rest(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![(0, 480, 60), (BAR, 480, 70), (2 * BAR, 480, 84)],
+            "onsets, durations and pitches survive assembly exactly",
+        );
+    }
+
+    #[test]
+    fn a_real_ranked_candidates_fixture_plans_deterministically() {
+        // A real fixed-seed S6 pass, not a hand-built set.
+        let source = score_of(&[
+            &[
+                (0, 480, 60),
+                (960, 480, 62),
+                (1920, 480, 64),
+                (2880, 480, 65),
+            ],
+            &[
+                (0, 480, 67),
+                (960, 480, 65),
+                (1920, 480, 64),
+                (2880, 480, 62),
+            ],
+        ]);
+        let ask = GenerationAsk {
+            seed: 42,
+            bars: 4,
+            variants_per_strategy: 2,
+            gesture: false,
+        };
+        let set = ranked_candidates(&source, None, &ask, None).expect("the pass runs");
+        let a = plan_candidate_chain(&set).expect("plans");
+        let b = plan_candidate_chain(&set).expect("plans again");
+
+        assert_eq!(a.score.master_bars.len(), 4, "the requested bars");
+        assert_eq!(
+            a.steps
+                .iter()
+                .map(|s| s.state.candidate)
+                .collect::<Vec<_>>(),
+            b.steps
+                .iter()
+                .map(|s| s.state.candidate)
+                .collect::<Vec<_>>(),
+            "the same input plans the same path, every time",
+        );
+        assert!((a.total_cost - b.total_cost).abs() < 1e-12);
+        assert_eq!(a.steps.len(), 4, "one step per bar");
+        assert_eq!(a.transitions.len(), 3, "one transition per bar line");
+        for step in &a.steps {
+            assert!(
+                !step.local.rationale.entries().is_empty(),
+                "local explained"
+            );
+            assert!(!step.s6.rationale.entries().is_empty(), "S6 kept");
+        }
+        for t in &a.transitions {
+            assert!(
+                !t.cost.rationale.entries().is_empty(),
+                "transition explained"
+            );
+        }
+        assert_eq!(a.provenance.policy_id, "candidate_chain");
+        assert_eq!(a.provenance.policy_version, 1);
     }
 }
