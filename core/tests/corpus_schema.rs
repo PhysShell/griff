@@ -100,7 +100,7 @@ fn minimal_chunk() -> ChunkMeta {
 #[test]
 fn schema_version_is_8() {
     assert_eq!(
-        SCHEMA_VERSION, 8,
+        SCHEMA_VERSION, 9,
         "the persisted near-duplicate link bumps the corpus schema"
     );
 }

@@ -42,6 +42,12 @@ use crate::structure::{ComplexityProfile, StructureMetrics};
 ///   key) keep loading and re-serialize losslessly. It records which earlier
 ///   split phrase a later one repeats — a curation signal previously surfaced
 ///   only in the UI/CLI and dropped on download.
+/// - v9 — exact source track + integrity hash: [`SourceRef`] gains optional
+///   `track_index` and `sha256` under the same pattern. Bulk multi-track ingest
+///   needs the exact track (a second-guitar chunk must not reload as the first)
+///   and a content hash (a filename is not an identity). Pre-v9 records lack
+///   both and keep the legacy first-note-bearing, unverified behavior; the keys
+///   are skipped when unset, so older files round-trip byte-identically.
 ///
 /// Tag taxonomy is intentionally *not* versioned here: [`SwancoreTag`] grows
 /// additively (e.g. `let_ring`, #75) and `SCHEMA_VERSION` tracks structural
@@ -49,7 +55,7 @@ use crate::structure::{ComplexityProfile, StructureMetrics};
 /// not the tag set — a new tag only breaks readers that hard-reject unknown
 /// variants, a curation-tooling concern, not a corpus-structure one
 /// (decisions 2026-06-19).
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
 
@@ -81,6 +87,22 @@ pub struct SourceRef {
     pub format: SourceFormat,
     /// Inclusive `[first_bar, last_bar]` range within the source (0-indexed).
     pub bar_range: Option<(u32, u32)>,
+    /// Which source track this chunk was cut from (schema v9). Absent in pre-v9
+    /// records, where the loader falls back to the first note-bearing track —
+    /// safe for single-track `griff split`, but a multi-track bulk ingest must
+    /// name the exact track so a second-guitar chunk is never reloaded as the
+    /// first. When present, the loader uses exactly this track and fails rather
+    /// than substitute another. The key is skipped when unset, so pre-v9 files
+    /// round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_index: Option<u32>,
+    /// SHA-256 of the source file's bytes (schema v9), lowercase hex. Pins the
+    /// material: `filename` is a human name, not an identity, so the loader
+    /// verifies this before trusting a same-named file. Absent in pre-v9
+    /// records (unverified, as before); skipped when unset for byte-identical
+    /// round-trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 // ── swancore tag taxonomy ─────────────────────────────────────────────────────
