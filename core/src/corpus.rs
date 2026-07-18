@@ -126,7 +126,7 @@ pub struct SourceRef {
 ///
 /// The taxonomy covers style, harmony, technique, rhythm, and structure.
 /// A chunk typically carries 2–6 tags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwancoreTag {
     // ── style ──────────────────────────────────────────────────────────────
