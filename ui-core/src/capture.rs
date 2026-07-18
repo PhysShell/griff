@@ -86,6 +86,7 @@ fn source_format(score: &Score) -> SourceFormat {
         Some("GP4") => SourceFormat::Gp4,
         Some("GP5") => SourceFormat::Gp5,
         Some("GP6") => SourceFormat::Gpx,
+        Some("GP7") => SourceFormat::Gp,
         _ => SourceFormat::Midi,
     }
 }
@@ -269,8 +270,9 @@ mod tests {
     fn gp7_format_tag_maps_to_the_gp_source_format() {
         // A `.gp` score captured through the cockpit must record its format as
         // GP7, not fall back to MIDI — parity with the CLI's `source_format`.
+        use griff_core::score::SourceMeta;
         let mut score = two_phrases();
-        score.source_meta = Some(griff_core::score::SourceMeta {
+        score.source_meta = Some(SourceMeta {
             format: Some("GP7".to_owned()),
         });
         assert_eq!(source_format(&score), SourceFormat::Gp);
