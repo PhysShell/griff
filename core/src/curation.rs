@@ -32,7 +32,11 @@ pub struct CurationCluster {
 
 /// A malformed `duplicate` link. Surfaced, never silently collapsed into a
 /// singleton — a broken link is a provenance defect, not a lone phrase.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Ord` is derived so a caller can sort diagnostics into a stable, input-order-
+/// independent list; the order (by variant, then chunk/field) has no meaning
+/// beyond determinism.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ClusterDiagnostic {
     /// A chunk carries a `duplicate` link but its id has no parseable `_p<N>`
     /// phrase suffix, so the link cannot be resolved.
@@ -120,50 +124,8 @@ pub fn build_clusters(chunks: &[ChunkMeta]) -> (Vec<CurationCluster>, Vec<Cluste
         parent.insert(id, Some(target));
     }
 
-    // Resolve each chunk to its root, detecting a cycle or a chain into an
-    // excluded chunk. The "earlier only" rule already forbids cycles, so this
-    // is a defensive net rather than an expected path.
-    let mut root_of: HashMap<String, String> = HashMap::new();
-    for c in chunks {
-        let start = c.id.0.clone();
-        if bad.contains(&start) || root_of.contains_key(&start) {
-            continue;
-        }
-        let mut path: Vec<String> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut cur = start;
-        let root = loop {
-            if !seen.insert(cur.clone()) {
-                for node in &path {
-                    diagnostics.push(ClusterDiagnostic::Cycle {
-                        chunk: ChunkId(node.clone()),
-                    });
-                }
-                break None;
-            }
-            match parent.get(&cur) {
-                Some(None) => break Some(cur.clone()),
-                Some(Some(next)) => {
-                    path.push(cur.clone());
-                    cur = next.clone();
-                }
-                None => break None,
-            }
-        };
-        match root {
-            Some(root_id) => {
-                for node in path {
-                    root_of.insert(node, root_id.clone());
-                }
-                root_of.insert(root_id.clone(), root_id);
-            }
-            None => {
-                for node in path {
-                    bad.insert(node);
-                }
-            }
-        }
-    }
+    let (root_of, cycle_diagnostics) = resolve_roots(&parent, &mut bad);
+    diagnostics.extend(cycle_diagnostics);
 
     let mut members: HashMap<String, Vec<String>> = HashMap::new();
     for c in chunks {
@@ -195,7 +157,66 @@ pub fn build_clusters(chunks: &[ChunkMeta]) -> (Vec<CurationCluster>, Vec<Cluste
         })
         .collect();
     clusters.sort_by(|a, b| a.key.0.cmp(&b.key.0));
+    // Diagnostics are sorted too — determinism cannot stop at the clusters and
+    // leave the error list in iteration order.
+    diagnostics.sort();
     (clusters, diagnostics)
+}
+
+/// Walks each linked chunk in `parent` to its root, reporting a `Cycle`
+/// diagnostic (and marking the members `bad`) if a chain loops. Structural
+/// validation already forbids cycles through the public builder — the
+/// `duplicate.of < own` rule makes the phrase index strictly decrease along
+/// every edge — so this is a defensive net, reachable only by a hand-built
+/// malformed parent map. Output is independent of `parent`'s iteration order.
+fn resolve_roots(
+    parent: &HashMap<String, Option<String>>,
+    bad: &mut HashSet<String>,
+) -> (HashMap<String, String>, Vec<ClusterDiagnostic>) {
+    let mut root_of: HashMap<String, String> = HashMap::new();
+    let mut cycles: Vec<ClusterDiagnostic> = Vec::new();
+    let mut starts: Vec<&String> = parent.keys().collect();
+    starts.sort();
+    for start in starts {
+        if bad.contains(start) || root_of.contains_key(start) {
+            continue;
+        }
+        let mut path: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut cur = start.clone();
+        let root = loop {
+            if !seen.insert(cur.clone()) {
+                for node in &path {
+                    cycles.push(ClusterDiagnostic::Cycle {
+                        chunk: ChunkId(node.clone()),
+                    });
+                }
+                break None;
+            }
+            match parent.get(&cur) {
+                Some(None) => break Some(cur.clone()),
+                Some(Some(next)) => {
+                    path.push(cur.clone());
+                    cur = next.clone();
+                }
+                None => break None,
+            }
+        };
+        match root {
+            Some(root_id) => {
+                for node in path {
+                    root_of.insert(node, root_id.clone());
+                }
+                root_of.insert(root_id.clone(), root_id);
+            }
+            None => {
+                for node in path {
+                    bad.insert(node);
+                }
+            }
+        }
+    }
+    (root_of, cycles)
 }
 
 /// Splits a phrase-chunk id into `(run_prefix, phrase_index)` at its trailing
@@ -212,9 +233,10 @@ fn split_phrase(id: &str) -> Option<(&str, usize)> {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{build_clusters, split_phrase, ClusterDiagnostic};
+    use super::{build_clusters, resolve_roots, split_phrase, ClusterDiagnostic};
     use crate::corpus::{ChunkId, ChunkMeta, EnsembleRef, SourceFormat, SourceRef};
     use crate::novelty::PhraseDuplicate;
+    use std::collections::{HashMap, HashSet};
 
     fn chunk(id: &str, group: &str, part: u32, dup: Option<usize>) -> ChunkMeta {
         ChunkMeta {
@@ -365,6 +387,40 @@ mod tests {
         );
         // And the defects are genuinely there (not an empty-vs-empty tie).
         assert_eq!(build_clusters(&broken).1.len(), 3);
+    }
+
+    #[test]
+    fn resolve_roots_reports_an_exact_cycle_from_a_malformed_parent_map() {
+        // The public builder cannot produce a cycle (the earlier-only rule makes
+        // the phrase index strictly decrease), so the defensive net is tested at
+        // its own seam with a hand-built loop p0 -> p1 -> p2 -> p0.
+        let parent: HashMap<String, Option<String>> = [
+            ("p0".to_owned(), Some("p1".to_owned())),
+            ("p1".to_owned(), Some("p2".to_owned())),
+            ("p2".to_owned(), Some("p0".to_owned())),
+        ]
+        .into_iter()
+        .collect();
+        let mut bad = HashSet::new();
+        let (root_of, diags) = resolve_roots(&parent, &mut bad);
+
+        assert!(root_of.is_empty(), "no chunk in a cycle gets a root");
+        assert!(
+            diags
+                .iter()
+                .all(|d| matches!(d, ClusterDiagnostic::Cycle { .. })),
+            "only Cycle diagnostics: {diags:?}"
+        );
+        let mut cycled: Vec<&str> = diags
+            .iter()
+            .filter_map(|d| match d {
+                ClusterDiagnostic::Cycle { chunk } => Some(chunk.0.as_str()),
+                _ => None,
+            })
+            .collect();
+        cycled.sort_unstable();
+        cycled.dedup();
+        assert_eq!(cycled, ["p0", "p1", "p2"], "every cycle member is reported");
     }
 
     #[test]

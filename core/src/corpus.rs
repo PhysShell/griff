@@ -60,7 +60,7 @@ pub const SCHEMA_VERSION: u32 = 9;
 // ── identifiers ───────────────────────────────────────────────────────────────
 
 /// Unique, stable identifier for a corpus chunk (e.g. `"dgd_001"`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ChunkId(pub String);
 
 /// Lowercase-hex SHA-256 of a source file's bytes — the content identity a
