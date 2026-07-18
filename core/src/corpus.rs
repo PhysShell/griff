@@ -68,6 +68,8 @@ pub enum SourceFormat {
     Gp4,
     Gp5,
     Gpx,
+    /// Guitar Pro 7/8 (`.gp`).
+    Gp,
 }
 
 /// A reference to the source file from which a chunk was extracted.

@@ -863,10 +863,29 @@ mod tests {
     fn detect_version_unknown() {
         assert_eq!(detect_gp_version(b"garbage"), None);
         assert_eq!(detect_gp_version(b""), None);
-        assert_eq!(detect_gp_version(b"PK\x03\x04"), None); // ZIP / GP7
+    }
+
+    #[test]
+    fn detect_version_gp7() {
+        // GP7/8 `.gp` is a ZIP: local-file-header magic `PK\x03\x04`.
+        assert_eq!(detect_gp_version(b"PK\x03\x04rest of a zip"), Some(7));
     }
 
     // ── import_gp_score errors ────────────────────────────────────────────────
+
+    #[test]
+    fn import_gp7_dispatches_to_the_reader() {
+        // A ZIP magic that is not a valid `.gp` archive must reach `read_gp`
+        // and fail *there* — a typed parse error, not `UnsupportedFormat`. This
+        // is what proves the GP7 branch is wired without a real (copyrighted)
+        // `.gp` fixture, which the corpus policy forbids committing.
+        let mut data = b"PK\x03\x04".to_vec();
+        data.extend_from_slice(&[0u8; 64]);
+        assert!(matches!(
+            import_gp_score(&data),
+            Err(GpImportError::Parse(_))
+        ));
+    }
 
     #[test]
     fn import_gp_score_garbage_returns_unsupported() {

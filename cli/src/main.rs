@@ -1972,11 +1972,8 @@ mod tests {
         assert_eq!(source_format(&score_tagged(Some("GP4"))), SourceFormat::Gp4);
         assert_eq!(source_format(&score_tagged(Some("GP5"))), SourceFormat::Gp5);
         assert_eq!(source_format(&score_tagged(Some("GP6"))), SourceFormat::Gpx);
-        // An unrecognised tag (e.g. GP7) and an absent tag both fall back to MIDI.
-        assert_eq!(
-            source_format(&score_tagged(Some("GP7"))),
-            SourceFormat::Midi
-        );
+        assert_eq!(source_format(&score_tagged(Some("GP7"))), SourceFormat::Gp);
+        // An absent or unrecognised tag falls back to MIDI.
         assert_eq!(source_format(&score_tagged(None)), SourceFormat::Midi);
     }
 
