@@ -97,13 +97,13 @@ fn minimal_chunk() -> ChunkMeta {
     }
 }
 
-// ── schema v8: near-duplicate link (#76) ──────────────────────────────────────
+// ── schema v9: exact source track + integrity hash ───────────────────────────
 
 #[test]
-fn schema_version_is_8() {
+fn schema_version_is_9() {
     assert_eq!(
         SCHEMA_VERSION, 9,
-        "the persisted near-duplicate link bumps the corpus schema"
+        "SourceRef.track_index + sha256 bump the corpus schema to v9"
     );
 }
 
