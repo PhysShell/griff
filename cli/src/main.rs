@@ -1435,7 +1435,9 @@ fn assemble_ingest_group(
     selected: &[usize],
     group_id: &str,
     base_title: &str,
+    sha256: &str,
 ) -> Result<(Vec<ChunkMeta>, EnsembleGroup), CliError> {
+    let _ = sha256; // GREEN records it on each chunk's SourceRef
     let mut records: Vec<ChunkMeta> = Vec::new();
     let mut members: Vec<ChunkId> = Vec::new();
     for (part, &track) in selected.iter().enumerate() {
@@ -1515,6 +1517,16 @@ fn unique_group_id(base: &str, used: &mut HashSet<String>) -> String {
     }
 }
 
+/// Lowercase-hex SHA-256 of a source file's bytes — the content identity a
+/// filename cannot provide.
+fn source_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// A filesystem-safe, stable id from a source stem: lowercase, runs of
 /// non-alphanumerics collapsed to one `_`, edges trimmed.
 fn slugify(stem: &str) -> String {
@@ -1584,7 +1596,9 @@ fn cmd_ingest(dir: &Path, output: Option<&Path>, with_bass: bool) -> Result<(), 
         }
 
         let group_id = unique_group_id(&slugify(stem), &mut used_ids);
-        let (records, group) = assemble_ingest_group(path, &score, &selected, &group_id, stem)?;
+        let sha256 = source_sha256(&bytes);
+        let (records, group) =
+            assemble_ingest_group(path, &score, &selected, &group_id, stem, &sha256)?;
         if records.is_empty() {
             skipped.push((name, "no phrase survived splitting".to_owned()));
             continue;
@@ -2741,6 +2755,7 @@ mod tests {
             &[0, 1],
             "some_band_song",
             "Some Band - Song",
+            "abc123def",
         )
         .expect("assemble succeeds");
 
@@ -2766,6 +2781,16 @@ mod tests {
             assert_eq!(rights.rights_status, RightsStatus::CopyrightedComposition);
             assert_eq!(rights.acquisition, Acquisition::CommunityTabSite);
             assert!(!rights.redistributable);
+            // The exact source track and content hash travel on every chunk, so
+            // it reloads the right part from the right file (schema v9).
+            assert_eq!(
+                chunk.source.track_index,
+                Some(link.part_index),
+                "part {} was cut from source track {}",
+                link.part_index,
+                link.part_index
+            );
+            assert_eq!(chunk.source.sha256.as_deref(), Some("abc123def"));
         }
 
         let part0 = chunks
