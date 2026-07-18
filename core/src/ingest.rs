@@ -280,6 +280,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_bassoon_is_not_matched_as_a_bass() {
+        // "bassoon" contains "bass" as a substring but is a different word; the
+        // name must not force it to Bass. With a guitar tuning it reads Guitar.
+        assert_eq!(
+            classify_track_role(&track(Some("Bassoon"), 0, &STANDARD_6)),
+            TrackRole::Guitar
+        );
+    }
+
+    #[test]
+    fn a_bass_drum_is_percussion_not_bass() {
+        // "Bass Drum" is a drum; the drum token must win over the bass token.
+        assert_eq!(
+            classify_track_role(&track(Some("Bass Drum"), 0, &STANDARD_6)),
+            TrackRole::Other
+        );
+    }
+
     // ── select_ingest_tracks ──────────────────────────────────────────────────
 
     fn two_guitars_bass_and_drums() -> Score {
