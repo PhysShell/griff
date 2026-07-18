@@ -21,6 +21,7 @@ pub mod gesture;
 pub mod gp;
 pub mod harmony;
 pub mod import;
+pub mod ingest;
 pub mod layered_path;
 pub mod midi;
 pub mod novelty;
