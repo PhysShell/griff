@@ -1,6 +1,11 @@
 # S8: Standalone preview app
 
-Status: in progress — interactive `ratatui` piano-roll landed (slices 1–3)
+Status: in progress — landed: the interactive `ratatui` piano-roll
+(slices 1–3), the egui cockpit surface (ADR-0027), Generate with
+candidate provenance and session history, the accepted Slice 2 playback
+stack, Swang Playground Slice 3 (favorite / reject / history / provenance,
+PR #126), and Global Chain Audition (PR #129).
+Remaining: tracked in the progress notes and checklist below
 Depends on: S6
 ADRs: —
 

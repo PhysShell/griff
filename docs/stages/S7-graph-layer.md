@@ -1,8 +1,8 @@
 # S7: Graph layer (late)
 
-Status: in progress — chunk similarity edge (2026-06-10), then Slices A and B
-landed (2026-07-17: the layered-path engine and the multi-bar candidate chain);
-the full graph stays deliberately late
+Status: in progress — landed: chunk similarity edge (2026-06-10), Slices A/B
+(2026-07-17: the layered-path engine and the multi-bar candidate chain).
+Remaining: Slice C and the corpus-scale full graph (deliberately late)
 Depends on: S6 acceptance
 ADRs: ADR-0013 (DP/Viterbi traversal) as amended by ADR-0030 (reduced-state
 layered DP clients), ADR-0018 (rich note model: fretboard + multi-technique with
