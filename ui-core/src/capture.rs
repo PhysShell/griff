@@ -266,6 +266,17 @@ mod tests {
     }
 
     #[test]
+    fn gp7_format_tag_maps_to_the_gp_source_format() {
+        // A `.gp` score captured through the cockpit must record its format as
+        // GP7, not fall back to MIDI — parity with the CLI's `source_format`.
+        let mut score = two_phrases();
+        score.source_meta = Some(griff_core::score::SourceMeta {
+            format: Some("GP7".to_owned()),
+        });
+        assert_eq!(source_format(&score), SourceFormat::Gp);
+    }
+
+    #[test]
     fn build_chunk_assembles_a_serializable_schema_chunk() {
         let score = two_phrases();
         let input = CaptureInputs {
