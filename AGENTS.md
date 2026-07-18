@@ -44,7 +44,10 @@ history see
 
 ## Routing
 
-- A roadmap stage? → `docs/stages/SN-*.md` (canonical S0…S16)
+- A roadmap stage? → `docs/stages/SN-*.md` (canonical S0…S16). Roadmap state
+  must be derived from the complete stage header together with its Progress,
+  Remaining-work, and checklist sections. A single matching `Status:` line is
+  not an accepted source of stage state.
 - Using the preview TUI (keys, inspector, curation)? →
   [`docs/preview-guide.md`](docs/preview-guide.md)
 - A fuzzing question? → [`docs/fuzzing.md`](docs/fuzzing.md) (policy) /

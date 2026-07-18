@@ -1,6 +1,11 @@
 # S8: Standalone preview app
 
-Status: in progress — interactive `ratatui` piano-roll landed (slices 1–3)
+Status: in progress — landed: the interactive `ratatui` piano-roll
+(slices 1–3), the egui cockpit surface (ADR-0027), Generate with
+candidate provenance and session history, the accepted Slice 2 playback
+stack, Swang Playground Slice 3 (favorite / reject / history / provenance,
+PR #126), and Global Chain Audition (PR #129).
+Remaining: tracked in the progress notes and checklist below
 Depends on: S6
 ADRs: —
 
@@ -55,14 +60,19 @@ front-ends and audio build on them:
       `ratatui` redraw; follow-cursor autoscroll is implemented for playback.)
 - [x] `eframe`/`egui` native window — the canonical desktop target (piano-roll
       canvas, pan/zoom), reusing the same `PianoRollView` (the cockpit, ADR-0027).
-- [ ] MIDI playback via `midir`, with a playhead overlay. Until then the cockpit
-      **does not synthesise audio**: the Generate panel's `open` hands a kept
-      `.mid` to whatever the OS has registered for it (a notation editor, a DAW).
-      The playhead is visual only.
-- [ ] **Griff textual playground** — editable request/constraint text with live
-      parse diagnostics and immediate candidate refresh. Future S15 harmonic
-      fixture scripts may be edited here, but typed core structures remain the
-      source of truth.
+- [~] **In-cockpit playback** — the accepted **Swang Playground Slice 2
+      transport** (2026-07-16) auditions candidates inside the cockpit
+      (`show_score → focus_on_track`; All-Notes-Off, loop remap, tempo, and
+      playhead inherited), and Global Chain Audition reuses that stack
+      unchanged. Remaining: optional `midir` system-MIDI-out routing (DAW /
+      hardware synth); the Generate panel's `open` still hands a kept `.mid`
+      to whatever the OS has registered for it.
+- [~] **Textual playground** — landed as the **Swang Playground**, Slices 1–3
+      (program editing, the Slice 2 transport, Slice 3 favorite / reject /
+      history / provenance — PR #126). Remaining: editable generation
+      request/constraint text with live parse diagnostics beyond Swang
+      programs. Future S15 harmonic fixture scripts may be edited here, but
+      typed core structures remain the source of truth.
 - [~] **Candidate/provenance inspector** — **generation slice landed 2026-07-13**:
       the cockpit's **Generate panel** (`g`) asks for a candidate set over the
       loaded corpus (seed tab, seed, bars, variants/strategy, gesture) and browses
@@ -121,8 +131,8 @@ front-ends and audio build on them:
         delta says "lower under `candidate_chain` v1", which is a fact about the
         policy), k-best or Slice C, weight tuning or sliders, S9 learning, S15
         harmony, and S17 rendering.
-- [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16** (PR
-      pending review): favorite/reject controls (mutually exclusive) and a
+- [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16 and merged
+      as PR #126**: favorite/reject controls (mutually exclusive) and a
       session **history** of every auditioned candidate with typed provenance,
       in `griff_ui_core::history` (append-only `SessionHistory`, stable
       `HistoryId`, `Verdict` toggle, generator-split `Provenance`); the cockpit
