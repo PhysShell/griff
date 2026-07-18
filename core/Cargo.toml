@@ -15,6 +15,7 @@ midly      = { workspace = true }
 thiserror  = { workspace = true }
 guitarpro  = { version = "0.4", default-features = false, optional = true }
 serde      = { workspace = true }
+sha2       = "0.10"
 
 [features]
 default = ["gp"]

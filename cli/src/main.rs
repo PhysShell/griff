@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fmt, fs,
     io::{self, Error as IoError, Write as IoWrite},
     ops::Range,
@@ -16,13 +17,14 @@ use griff_core::{
     classify::{self, BarClass},
     complement,
     corpus::{
-        Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef,
-        PairRelation, QualityFlag, ReviewerDecision, RightsInfo, RightsStatus, SourceFormat,
-        SourceRef, StyleCohort, SwancoreTag, SCHEMA_VERSION,
+        source_sha256, Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest,
+        EnsembleGroup, EnsembleRef, PairRelation, QualityFlag, ReviewerDecision, RightsInfo,
+        RightsStatus, SourceFormat, SourceRef, StyleCohort, SwancoreTag, SCHEMA_VERSION,
     },
     event::{NoteMarks, NotePosition, TechniqueSource, Ticks},
     generate, gesture, harmony,
     import::{self, ImportError},
+    ingest,
     midi::{self, MidiError},
     novelty, rerank,
     score::{AtomEvent, Score, Track, Voice},
@@ -222,6 +224,23 @@ enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Bulk-ingest a directory of MIDI / Guitar Pro files into corpus chunks:
+    /// each file's guitar (and optional bass) tracks are phrase-split, linked
+    /// as one per-file ensemble group, and stamped with community-tab rights.
+    /// Chunks are uncurated candidates — tags and reviewer are filled later.
+    Ingest {
+        /// Directory of source tab files to ingest.
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
+        /// Output directory for the chunk / group records (default: `corpus`).
+        #[arg(short, long, value_name = "OUT")]
+        output: Option<PathBuf>,
+        /// Also ingest bass tracks (kept as separate parts, never mixed with
+        /// guitar).
+        #[arg(long)]
+        with_bass: bool,
+    },
+
     /// Build a corpus manifest from a directory of curated `*.chunk.json` /
     /// `*.group.json` records and print a coverage summary (count toward the
     /// S7 ~100-phrase gate, cohort mix, rights, and review status).
@@ -349,6 +368,11 @@ fn run() -> Result<(), CliError> {
             ensemble,
         } => cmd_curate(&path, output.as_deref(), ensemble),
         Command::Split { path, output } => cmd_split(&path, output.as_deref()),
+        Command::Ingest {
+            dir,
+            output,
+            with_bass,
+        } => cmd_ingest(&dir, output.as_deref(), with_bass),
         Command::Manifest { dir, output } => cmd_manifest(&dir, output.as_deref()),
         Command::Swang { command } => match command {
             SwangCommand::Check { input } => cmd_swang_check(&input),
@@ -1298,6 +1322,20 @@ fn phrase_chunks(
         .ok_or_else(|| {
             CliError::Split("split needs a track with notes in its primary voice".to_owned())
         })?;
+    phrase_chunks_for_track(path, score, inputs, track, None)
+}
+
+/// Phrase-splits a specific `track` (rather than the first note-bearing one),
+/// optionally linking every chunk to `ensemble`. `griff split` picks the track
+/// automatically; `griff ingest` drives this per selected guitar so both parts
+/// of one tab become chunks under a shared group.
+fn phrase_chunks_for_track(
+    path: &Path,
+    score: &Score,
+    inputs: &CurateInputs,
+    track: usize,
+    ensemble: Option<EnsembleRef>,
+) -> Result<Vec<PhraseChunk>, CliError> {
     let cuts: Vec<u32> = detect_boundaries(score, track)
         .iter()
         .map(|b| b.start_tick)
@@ -1311,7 +1349,15 @@ fn phrase_chunks(
         return Err(CliError::Split("score has no bars to split".to_owned()));
     }
 
-    Ok(chunks_for_segments(path, score, inputs, track, &segments))
+    let mut chunks = chunks_for_segments(path, score, inputs, track, &segments);
+    // Link every phrase to its ensemble group after the split — `ChunkMeta`
+    // owns the field, so no split-path signature has to carry it.
+    if let Some(link) = ensemble {
+        for chunk in &mut chunks {
+            chunk.meta.ensemble = Some(link.clone());
+        }
+    }
+    Ok(chunks)
 }
 
 /// Builds one [`PhraseChunk`] per segment in which `track` sounds, renumbered
@@ -1375,6 +1421,316 @@ fn chunks_for_segments(
             PhraseChunk { meta, duplicate }
         })
         .collect()
+}
+
+/// Assembles one source file into corpus records for bulk ingest: every
+/// selected track is phrase-split, each phrase chunk is linked to a per-file
+/// ensemble group (schema v4) so a reader can tell which chunks came from one
+/// tab, and all carry the default community-tab rights. Returns the phrase
+/// chunks and the group; the caller writes them. Relations stay empty here —
+/// this slice records provenance, not measured inter-part dependencies.
+#[allow(clippy::too_many_arguments)] // the ingest assembly seam: source, target ids, and the content hash
+fn assemble_ingest_group(
+    path: &Path,
+    score: &Score,
+    selected: &[usize],
+    group_id: &str,
+    base_title: &str,
+    sha256: &str,
+) -> Result<(Vec<ChunkMeta>, EnsembleGroup), CliError> {
+    let mut records: Vec<ChunkMeta> = Vec::new();
+    let mut members: Vec<ChunkId> = Vec::new();
+    let mut part: u32 = 0;
+    for &track in selected {
+        let role = score
+            .tracks
+            .get(track)
+            .map_or(ingest::TrackRole::Guitar, ingest::classify_track_role);
+        let inputs = default_ingest_inputs(score, track, group_id, base_title, part, role);
+        let link = EnsembleRef {
+            group_id: group_id.to_owned(),
+            part_index: part,
+        };
+        let chunks = phrase_chunks_for_track(path, score, &inputs, track, Some(link))?;
+        if chunks.is_empty() {
+            // A selected track that survives no phrase keeps its part index
+            // free, so indices stay contiguous and the group never names a part
+            // with no members.
+            continue;
+        }
+        let track_index = u32::try_from(track).ok();
+        for mut chunk in chunks {
+            // The exact source track and content hash (schema v9) so a chunk
+            // reloads the right part from the right bytes, never the first
+            // note-bearing track.
+            chunk.meta.source.track_index = track_index;
+            chunk.meta.source.sha256 = Some(sha256.to_owned());
+            members.push(chunk.meta.id.clone());
+            records.push(chunk.meta);
+        }
+        part = part.saturating_add(1);
+    }
+    Ok((
+        records,
+        EnsembleGroup {
+            id: group_id.to_owned(),
+            members,
+            relations: Vec::new(),
+        },
+    ))
+}
+
+/// The non-interactive curation inputs for a bulk-ingested guitar part: a
+/// part-qualified id, the real tuning label, and the default rights for a
+/// scraped community tab (copyrighted composition, not redistributable). Tags
+/// and reviewer are left empty for the cockpit curation pass.
+#[allow(clippy::too_many_arguments)] // the non-interactive curation defaults for one ingested part
+fn default_ingest_inputs(
+    score: &Score,
+    track: usize,
+    group_id: &str,
+    base_title: &str,
+    part: u32,
+    role: ingest::TrackRole,
+) -> CurateInputs {
+    let tuning = score.tracks.get(track).map_or_else(
+        || "standard_e".to_owned(),
+        |t| ingest::tuning_label(&t.tuning),
+    );
+    let quality_flags = if score.loss.is_clean() {
+        vec![QualityFlag::Clean]
+    } else {
+        vec![QualityFlag::Lossy]
+    };
+    // A bass part is never labelled a guitar (it is admitted only under
+    // --with-bass and kept separate).
+    let (id_tag, label) = match role {
+        ingest::TrackRole::Bass => ('b', "bass"),
+        ingest::TrackRole::Guitar | ingest::TrackRole::Other => ('g', "guitar"),
+    };
+    CurateInputs {
+        id: format!("{group_id}_{id_tag}{part}"),
+        title: format!("{base_title} ({label} {part})"),
+        tuning,
+        style_cohort: StyleCohort::Core,
+        tags: Vec::new(),
+        quality_flags,
+        reviewer: None,
+        rights: RightsInfo {
+            rights_status: RightsStatus::CopyrightedComposition,
+            acquisition: Acquisition::CommunityTabSite,
+            redistributable: false,
+            notes: String::new(),
+        },
+    }
+}
+
+/// A group id unique within one ingest run: `base`, or `base_2`, `base_3`, …
+/// when `base` (or a lower suffix) is already taken. Two source files that
+/// slugify to the same stem — the same song as `.gp5` and `.gpx`, or two
+/// versions — must not overwrite each other's chunk records. Records the
+/// chosen id in `used`.
+fn unique_group_id(base: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(base.to_owned()) {
+        return base.to_owned();
+    }
+    let mut n = 2_usize;
+    loop {
+        let candidate = format!("{base}_{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n = n.saturating_add(1);
+    }
+}
+
+/// What to do when placing a source file beside its chunks in the corpus.
+#[derive(Debug, PartialEq, Eq)]
+enum SourceCopy {
+    /// No file at the destination — write it.
+    Write,
+    /// A byte-identical file is already there — reuse it, no rewrite.
+    Reuse,
+    /// A *different* file already claims that name — a typed collision, never
+    /// an overwrite. Human filenames are not identities.
+    Collision,
+}
+
+/// Decides the copy action from the destination's hash (None when absent) and
+/// the source's hash. Pure, so the policy is tested without touching disk.
+fn source_copy_decision(existing_sha: Option<&str>, new_sha: &str) -> SourceCopy {
+    match existing_sha {
+        None => SourceCopy::Write,
+        Some(sha) if sha == new_sha => SourceCopy::Reuse,
+        Some(_) => SourceCopy::Collision,
+    }
+}
+
+/// Places a source file beside its chunks under the collision policy: writes it
+/// when absent, reuses a byte-identical one, and refuses (no overwrite) when a
+/// different file already claims the name. The loader reads the source from the
+/// corpus dir, so a chunk without its source there is unusable.
+fn place_source(
+    out: &Path,
+    filename: &str,
+    bytes: &[u8],
+    sha256: &str,
+) -> Result<SourceCopy, CliError> {
+    let dest = out.join(filename);
+    let existing_sha = fs::read(&dest)
+        .ok()
+        .map(|existing| source_sha256(&existing));
+    let action = source_copy_decision(existing_sha.as_deref(), sha256);
+    if action == SourceCopy::Write {
+        fs::write(&dest, bytes)?;
+    }
+    Ok(action)
+}
+
+/// A filesystem-safe, stable id from a source stem: lowercase, runs of
+/// non-alphanumerics collapsed to one `_`, edges trimmed.
+fn slugify(stem: &str) -> String {
+    let mut slug = String::new();
+    let mut gap = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if gap && !slug.is_empty() {
+                slug.push('_');
+            }
+            slug.push(ch.to_ascii_lowercase());
+            gap = false;
+        } else {
+            gap = true;
+        }
+    }
+    // A stem with no ASCII alphanumerics ("曲", "---") must still get a stable,
+    // nonempty id; `unique_group_id` then disambiguates repeats.
+    if slug.is_empty() {
+        "untitled".to_owned()
+    } else {
+        slug
+    }
+}
+
+/// Bulk-ingests every tab file in `dir` into corpus chunk + group records,
+/// then builds the manifest and prints a skip report.
+#[allow(clippy::too_many_lines)] // one bulk I/O orchestration: walk, import, select, assemble, place, report
+fn cmd_ingest(dir: &Path, output: Option<&Path>, with_bass: bool) -> Result<(), CliError> {
+    let out = output.map_or_else(|| PathBuf::from("corpus"), Path::to_path_buf);
+    fs::create_dir_all(&out)?;
+
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file())
+        .collect();
+    entries.sort();
+
+    let mut ingested = 0_usize;
+    let mut chunk_total = 0_usize;
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    // Seed the used ids from any group already in the corpus, so re-ingesting
+    // into an existing directory never reuses — and overwrites — a group id.
+    let mut used_ids: HashSet<String> = HashSet::new();
+    if let Ok(existing) = fs::read_dir(&out) {
+        for entry in existing.flatten() {
+            if let Some(stem) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.strip_suffix(".group.json"))
+            {
+                used_ids.insert(stem.to_owned());
+            }
+        }
+    }
+
+    for path in &entries {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_owned();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("untitled");
+
+        let bytes = match fs::read(path) {
+            Ok(b) => b,
+            Err(err) => {
+                skipped.push((name, format!("read error: {err}")));
+                continue;
+            }
+        };
+        let score = match import::import_score_auto(&bytes) {
+            Ok(score) => score,
+            Err(err) => {
+                skipped.push((name, format!("import error: {err}")));
+                continue;
+            }
+        };
+
+        let selected = ingest::select_ingest_tracks(&score, with_bass);
+        if selected.is_empty() {
+            skipped.push((name, "no guitar or bass track".to_owned()));
+            continue;
+        }
+
+        let group_id = unique_group_id(&slugify(stem), &mut used_ids);
+        let sha256 = source_sha256(&bytes);
+        let (records, group) =
+            match assemble_ingest_group(path, &score, &selected, &group_id, stem, &sha256) {
+                Ok(pair) => pair,
+                Err(err) => {
+                    skipped.push((name, format!("assembly error: {err}")));
+                    continue;
+                }
+            };
+        if records.is_empty() {
+            skipped.push((name, "no phrase survived splitting".to_owned()));
+            continue;
+        }
+
+        // Place the source beside its chunks — the loader reads it from here.
+        // A name that collides with a *different* source skips this file rather
+        // than overwrite or mislink.
+        match place_source(&out, &name, &bytes, &sha256) {
+            Ok(SourceCopy::Collision) => {
+                skipped.push((
+                    name,
+                    "source filename collides with a different file".to_owned(),
+                ));
+                continue;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                skipped.push((name, format!("source copy error: {err}")));
+                continue;
+            }
+        }
+
+        for meta in &records {
+            let json = serde_json::to_string_pretty(meta).map_err(CliError::Json)?;
+            write_output(&out.join(format!("{}.chunk.json", meta.id.0)), &json)?;
+            chunk_total = chunk_total.saturating_add(1);
+        }
+        let group_json = serde_json::to_string_pretty(&group).map_err(CliError::Json)?;
+        write_output(&out.join(format!("{group_id}.group.json")), &group_json)?;
+        ingested = ingested.saturating_add(1);
+    }
+
+    println!(
+        "ingested {ingested} file(s) into {chunk_total} phrase chunk(s) -> {}",
+        out.display()
+    );
+    if !skipped.is_empty() {
+        println!("skipped {} file(s):", skipped.len());
+        for (file, reason) in &skipped {
+            println!("  {file}: {reason}");
+        }
+    }
+
+    // Refresh the manifest over the whole corpus directory.
+    cmd_manifest(&out, None)
 }
 
 /// Splits `score` into phrase chunks and writes each to `<stem>.p<N>.chunk.json`.
@@ -1526,6 +1882,8 @@ fn build_chunk_meta(
             filename,
             format: source_format(score),
             bar_range: None,
+            track_index: None,
+            sha256: None,
         },
         tempo_bpm,
         ticks_per_quarter: score.ticks_per_quarter,
@@ -2427,6 +2785,195 @@ mod tests {
         let relations = measure_group_relations(&score, &[0, 1]).expect("both parts measurable");
         assert_eq!(relations.len(), 1);
         assert_eq!(relations[0].parts, (0, 1));
+    }
+
+    #[test]
+    fn colliding_stems_get_distinct_group_ids() {
+        use super::unique_group_id;
+        use std::collections::HashSet;
+        let mut used = HashSet::new();
+        // Two source files with the same stem (e.g. `Shark Dad.gp5` and
+        // `Shark Dad.gpx`) must not overwrite each other's chunks.
+        assert_eq!(unique_group_id("shark_dad", &mut used), "shark_dad");
+        assert_eq!(unique_group_id("shark_dad", &mut used), "shark_dad_2");
+        assert_eq!(unique_group_id("shark_dad", &mut used), "shark_dad_3");
+        assert_eq!(unique_group_id("other", &mut used), "other");
+    }
+
+    #[test]
+    fn slugify_makes_a_stable_id_from_a_messy_stem() {
+        use super::slugify;
+        assert_eq!(
+            slugify("Dance Gavin Dance - Care (ver 2 by X)"),
+            "dance_gavin_dance_care_ver_2_by_x"
+        );
+        assert_eq!(slugify("A Lot Like Birds"), "a_lot_like_birds");
+        assert_eq!(slugify("--edge--"), "edge");
+    }
+
+    #[test]
+    fn slugify_falls_back_when_a_stem_has_no_ascii_alphanumerics() {
+        use super::slugify;
+        // Non-ASCII or punctuation-only stems must still get a stable, nonempty
+        // id, or the chunk file names would begin with `_g`.
+        assert_eq!(slugify("曲"), "untitled");
+        assert_eq!(slugify("---"), "untitled");
+        assert_eq!(slugify(""), "untitled");
+    }
+
+    #[test]
+    fn source_copy_decision_reuses_a_match_and_refuses_a_conflict() {
+        use super::{source_copy_decision, SourceCopy};
+        assert_eq!(source_copy_decision(None, "aa"), SourceCopy::Write);
+        assert_eq!(source_copy_decision(Some("aa"), "aa"), SourceCopy::Reuse);
+        assert_eq!(
+            source_copy_decision(Some("bb"), "aa"),
+            SourceCopy::Collision
+        );
+    }
+
+    #[test]
+    fn a_selected_track_with_no_surviving_phrase_frees_its_part_index() {
+        use super::assemble_ingest_group;
+        use std::path::Path;
+
+        // Track 0's single note is a trivial phrase (dropped); track 1 is real.
+        let empty_gtr = Track {
+            name: Some("Guitar 1".to_owned()),
+            channel: 0,
+            voices: vec![voice_of(0, vec![note(0, 480, 60)])],
+            tuning: Tuning::standard_e(),
+        };
+        let real_gtr = Track {
+            name: Some("Guitar 2".to_owned()),
+            channel: 0,
+            voices: vec![voice_of(
+                0,
+                vec![
+                    note(0, 480, 50),
+                    note(1920, 480, 53),
+                    note(3840, 480, 50),
+                    note(5760, 480, 55),
+                ],
+            )],
+            tuning: Tuning::standard_e(),
+        };
+        let score = bars_score(4, vec![empty_gtr, real_gtr]);
+
+        let (chunks, group) =
+            assemble_ingest_group(Path::new("x.gp"), &score, &[0, 1], "x", "X", "hash")
+                .expect("assemble succeeds");
+
+        assert!(!chunks.is_empty(), "track 1 still yields phrases");
+        for chunk in &chunks {
+            let link = chunk.ensemble.as_ref().expect("group link");
+            assert_eq!(link.part_index, 0, "the empty track 0 freed part 0, no gap");
+            assert_eq!(
+                chunk.source.track_index,
+                Some(1),
+                "cut from source track 1, not the ordinal"
+            );
+        }
+        assert_eq!(group.members.len(), chunks.len());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one end-to-end assertion of the assembled record
+    fn ingest_assembles_phrase_chunks_linked_as_one_group() {
+        use super::assemble_ingest_group;
+        use griff_core::corpus::{Acquisition, RightsStatus};
+        use std::path::Path;
+
+        let gtr1 = Track {
+            name: Some("Guitar 1".to_owned()),
+            channel: 0,
+            voices: vec![voice_of(
+                0,
+                vec![
+                    note(0, 480, 52),
+                    note(1920, 480, 55),
+                    note(3840, 480, 52),
+                    note(5760, 480, 57),
+                ],
+            )],
+            tuning: Tuning::standard_e(),
+        };
+        let drop_d = Tuning::new(
+            [64_u8, 59, 55, 50, 45, 38]
+                .iter()
+                .map(|&m| Pitch::new(m).expect("valid pitch"))
+                .collect(),
+        );
+        let gtr2 = Track {
+            name: Some("Guitar 2".to_owned()),
+            channel: 0,
+            voices: vec![voice_of(
+                0,
+                vec![
+                    note(0, 480, 50),
+                    note(1920, 480, 53),
+                    note(3840, 480, 50),
+                    note(5760, 480, 55),
+                ],
+            )],
+            tuning: drop_d,
+        };
+        let score = bars_score(4, vec![gtr1, gtr2]);
+
+        let (chunks, group) = assemble_ingest_group(
+            Path::new("Some Band - Song.gp"),
+            &score,
+            &[0, 1],
+            "some_band_song",
+            "Some Band - Song",
+            "abc123def",
+        )
+        .expect("assemble succeeds");
+
+        assert!(
+            chunks.len() >= 2,
+            "each of the two guitars yields at least one phrase chunk"
+        );
+        assert_eq!(group.id, "some_band_song");
+        assert_eq!(group.members.len(), chunks.len());
+        assert!(
+            group.relations.is_empty(),
+            "a provenance group records no measured relations in this slice"
+        );
+
+        for chunk in &chunks {
+            let link = chunk
+                .ensemble
+                .as_ref()
+                .expect("each chunk links to the group");
+            assert_eq!(link.group_id, "some_band_song");
+            assert!(link.part_index == 0 || link.part_index == 1);
+            let rights = chunk.rights.as_ref().expect("each chunk carries rights");
+            assert_eq!(rights.rights_status, RightsStatus::CopyrightedComposition);
+            assert_eq!(rights.acquisition, Acquisition::CommunityTabSite);
+            assert!(!rights.redistributable);
+            // The exact source track and content hash travel on every chunk, so
+            // it reloads the right part from the right file (schema v9).
+            assert_eq!(
+                chunk.source.track_index,
+                Some(link.part_index),
+                "part {} was cut from source track {}",
+                link.part_index,
+                link.part_index
+            );
+            assert_eq!(chunk.source.sha256.as_deref(), Some("abc123def"));
+        }
+
+        let part0 = chunks
+            .iter()
+            .find(|c| c.ensemble.as_ref().is_some_and(|e| e.part_index == 0))
+            .expect("a part-0 chunk");
+        let part1 = chunks
+            .iter()
+            .find(|c| c.ensemble.as_ref().is_some_and(|e| e.part_index == 1))
+            .expect("a part-1 chunk");
+        assert_eq!(part0.tuning, "standard_e");
+        assert_eq!(part1.tuning, "drop_d");
     }
 
     #[test]

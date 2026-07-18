@@ -227,6 +227,8 @@ pub fn build_chunk(
             filename,
             format: source_format(score),
             bar_range: None,
+            track_index: None,
+            sha256: None,
         },
         tempo_bpm,
         ticks_per_quarter: score.ticks_per_quarter,

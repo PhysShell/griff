@@ -146,7 +146,7 @@ test('Manifest folds the OPFS corpus into a CorpusManifest', async () => {
   ]);
   assert.equal(manifestDownload.suggestedFilename(), 'manifest.json');
   const manifest = JSON.parse(await readFile(await manifestDownload.path(), 'utf8'));
-  assert.equal(manifest.schema_version, 8, 'a schema-v8 manifest');
+  assert.equal(manifest.schema_version, 9, 'a schema-v9 manifest');
   assert.ok(
     manifest.chunks.some((c) => c.id === 'multi_track'),
     'the captured chunk is folded into the manifest',

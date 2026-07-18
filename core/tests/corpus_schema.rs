@@ -69,6 +69,8 @@ fn minimal_chunk() -> ChunkMeta {
             filename: "test.mid".to_owned(),
             format: SourceFormat::Midi,
             bar_range: Some((0, 4)),
+            track_index: None,
+            sha256: None,
         },
         tempo_bpm: 140.0,
         ticks_per_quarter: 960,
@@ -95,13 +97,13 @@ fn minimal_chunk() -> ChunkMeta {
     }
 }
 
-// ── schema v8: near-duplicate link (#76) ──────────────────────────────────────
+// ── schema v9: exact source track + integrity hash ───────────────────────────
 
 #[test]
-fn schema_version_is_8() {
+fn schema_version_is_9() {
     assert_eq!(
-        SCHEMA_VERSION, 8,
-        "the persisted near-duplicate link bumps the corpus schema"
+        SCHEMA_VERSION, 9,
+        "SourceRef.track_index + sha256 bump the corpus schema to v9"
     );
 }
 
@@ -810,6 +812,8 @@ proptest! {
                 filename,
                 format: fmt,
                 bar_range: None,
+                track_index: None,
+                sha256: None,
             },
             tempo_bpm: f64::from(tempo_bpm_int),
             ticks_per_quarter: tpq,

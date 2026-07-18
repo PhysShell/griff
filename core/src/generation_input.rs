@@ -101,10 +101,24 @@ pub fn prepare_chunk(meta: ChunkMeta, source: &Score) -> Option<LoadedChunk> {
         }
         None => source.clone(),
     };
-    let track = sliced
-        .tracks
-        .iter()
-        .position(|t| primary_voice_note_count(t) > 0)?;
+    let track = match meta.source.track_index {
+        // The record names its exact source track (schema v9): use that track
+        // and only that. A silent or out-of-range named track is a load failure,
+        // never a fall back to another part — substituting one guitar for
+        // another is a quiet wrong-part corruption, the worst kind of success.
+        Some(index) => {
+            let index = usize::try_from(index).ok()?;
+            if primary_voice_note_count(sliced.tracks.get(index)?) == 0 {
+                return None;
+            }
+            index
+        }
+        // Legacy record (pre-v9): the first note-bearing track, as before.
+        None => sliced
+            .tracks
+            .iter()
+            .position(|t| primary_voice_note_count(t) > 0)?,
+    };
     Some(LoadedChunk {
         meta,
         sliced,
@@ -477,5 +491,155 @@ fn median(mut values: Vec<f64>) -> f64 {
         let hi = values.get(mid).copied().unwrap_or(0.0);
         let lo = values.get(mid.saturating_sub(1)).copied().unwrap_or(0.0);
         f64::midpoint(lo, hi)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use super::prepare_chunk;
+    use crate::corpus::{ChunkId, ChunkMeta, SourceFormat, SourceRef};
+    use crate::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use crate::score::{
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, Track, Voice,
+    };
+    use crate::slice::TickRange;
+
+    fn note(start: u32, pitch: u8) -> AtomEvent {
+        AtomEvent::Note(AtomNote {
+            absolute_start: Ticks(start),
+            duration: Ticks(480),
+            pitch: Pitch::new(pitch).expect("valid pitch"),
+            velocity: Velocity::new(90).expect("valid velocity"),
+            marks: NoteMarks::empty(),
+            position: None,
+        })
+    }
+
+    fn track_with(notes: &[(u32, u8)]) -> Track {
+        Track {
+            name: None,
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: notes
+                    .iter()
+                    .map(|&(start, pitch)| EventGroup {
+                        kind: EventGroupKind::Single,
+                        atoms: vec![note(start, pitch)],
+                        technique_spans: Vec::new(),
+                    })
+                    .collect(),
+            }],
+            tuning: Tuning::standard_e(),
+        }
+    }
+
+    /// Two 4/4 bars over two tracks: `t0` ("guitar A"), `t1` ("guitar B").
+    fn two_track_source(t0: &[(u32, u8)], t1: &[(u32, u8)]) -> Score {
+        let master_bars = (0..2usize)
+            .map(|i| {
+                let start = u32::try_from(i).expect("small").saturating_mul(1920);
+                MasterBar {
+                    index: i,
+                    tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
+                        .expect("ordered"),
+                    time_signature: TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    },
+                    tempo: Tempo::new(120.0).expect("120 BPM"),
+                    repeat: RepeatMarker::default(),
+                }
+            })
+            .collect();
+        Score {
+            ticks_per_quarter: 480,
+            master_bars,
+            tracks: vec![track_with(t0), track_with(t1)],
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    fn meta(track_index: Option<u32>) -> ChunkMeta {
+        ChunkMeta {
+            id: ChunkId("t".to_owned()),
+            title: String::new(),
+            source: SourceRef {
+                filename: "s.gp".to_owned(),
+                format: SourceFormat::Gp,
+                bar_range: Some((0, 1)),
+                track_index,
+                sha256: None,
+            },
+            tempo_bpm: 120.0,
+            ticks_per_quarter: 480,
+            time_signature: (4, 4),
+            tuning: "standard_e".to_owned(),
+            tags: Vec::new(),
+            boundaries: Vec::new(),
+            techniques: Vec::new(),
+            quality_flags: Vec::new(),
+            reviewer: None,
+            structure: None,
+            gesture: None,
+            complexity: None,
+            duplicate: None,
+            style_cohort: None,
+            ensemble: None,
+            rights: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn track_pitches(score: &Score, track: usize) -> Vec<u8> {
+        score
+            .tracks
+            .get(track)
+            .into_iter()
+            .flat_map(|t| &t.voices)
+            .flat_map(|v| &v.event_groups)
+            .flat_map(|g| &g.atoms)
+            .filter_map(|a| match a {
+                AtomEvent::Note(n) => Some(n.pitch.0),
+                AtomEvent::Rest(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_track_index_selects_exactly_that_track_not_the_first() {
+        // Both guitars sound in bars 0-1; a chunk cut from track 1 must reload
+        // track 1's notes, never track 0's (the P1 corruption).
+        let source = two_track_source(&[(0, 60), (1920, 62)], &[(0, 72), (1920, 74)]);
+        let loaded = prepare_chunk(meta(Some(1)), &source).expect("loads");
+        assert_eq!(loaded.track, 1, "the named track is used, not the first");
+        let pitches = track_pitches(&loaded.sliced, loaded.track);
+        assert!(pitches.contains(&72), "guitar B's material is loaded");
+        assert!(!pitches.contains(&60), "guitar A must not leak in");
+    }
+
+    #[test]
+    fn a_record_without_a_track_index_keeps_legacy_first_note_bearing() {
+        let source = two_track_source(&[(0, 60), (1920, 62)], &[(0, 72), (1920, 74)]);
+        let loaded = prepare_chunk(meta(None), &source).expect("loads");
+        assert_eq!(loaded.track, 0, "legacy fallback: first note-bearing track");
+    }
+
+    #[test]
+    fn a_named_track_silent_in_the_slice_fails_rather_than_substitute() {
+        // Track 1 is silent; a Some(1) record must NOT fall back to track 0.
+        let source = two_track_source(&[(0, 60), (1920, 62)], &[]);
+        assert!(prepare_chunk(meta(Some(1)), &source).is_none());
+    }
+
+    #[test]
+    fn an_out_of_range_track_index_fails_rather_than_substitute() {
+        let source = two_track_source(&[(0, 60)], &[(0, 72)]);
+        assert!(prepare_chunk(meta(Some(9)), &source).is_none());
     }
 }
