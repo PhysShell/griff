@@ -13,6 +13,19 @@
 //! byte-for-byte intact and removes the temp; the temp never becomes the
 //! canonical store by any path but a completed rename.
 //!
+//! Durability scope, stated precisely:
+//! - the temp's *contents* are `fsync`ed before it is published;
+//! - the replace itself is atomic on a filesystem that supports it;
+//! - on **Unix** the parent directory entry is then `fsync`ed too, so the rename
+//!   survives power loss;
+//! - on **Windows** this `std`-only adapter does **not** `fsync` the directory
+//!   handle (`std` exposes no way to), so the post-power-loss guarantee is not
+//!   identical to Unix.
+//!
+//! A directory-`fsync` failure *after* a successful rename is a post-commit
+//! durability warning ([`CurationFsError::PostCommitDurability`]), not a
+//! rollback: the new bytes are already the store.
+//!
 //! Single-writer: one process owns a given store path at a time (the curation
 //! cockpit flow is serial). The temp sibling has a fixed name for that reason.
 //!
@@ -93,9 +106,14 @@ pub fn load_store(path: &Path) -> Result<StoreOnDisk, CurationFsError> {
 /// Atomically and durably writes `store` to `path`, replacing any existing one.
 ///
 /// # Errors
-/// [`CurationFsError::Encode`] if the store violates a domain rule (nothing is
-/// written); [`CurationFsError::Io`] if any filesystem step fails (the previous
-/// store is left intact and the temp is removed).
+/// - [`CurationFsError::Encode`] if the store violates a domain rule — nothing
+///   is written.
+/// - [`CurationFsError::Io`] for a *pre-commit* failure (staging or the replace
+///   itself) — the previous store is left byte-for-byte intact and the temp is
+///   removed.
+/// - [`CurationFsError::PostCommitDurability`] if the replace succeeded but the
+///   parent-directory `fsync` did not — the new bytes are already the store;
+///   only their directory-entry durability is unconfirmed.
 pub fn write_store(path: &Path, store: &CurationStoreV1) -> Result<(), CurationFsError> {
     // Encoding validates the store; an invalid one is refused before any bytes
     // are produced, so a write never begins with garbage.
@@ -116,20 +134,38 @@ fn atomic_write(path: &Path, bytes: &[u8], fail: FailPoint) -> Result<(), Curati
     }
     if fail == FailPoint::BeforeReplace {
         fs::remove_file(&tmp).ok();
-        return Err(injected("before"));
+        return Err(CurationFsError::Io(io::Error::other(
+            "injected curation-store failure before replace",
+        )));
     }
-    if fail == FailPoint::DuringReplace {
-        fs::remove_file(&tmp).ok();
-        return Err(injected("during"));
-    }
-    // The atomic publish: rename the fully-synced temp over the canonical path.
-    // Both POSIX and Windows (MoveFileExW) replace an existing file atomically.
-    if let Err(e) = fs::rename(&tmp, path) {
+    // Pre-commit: the atomic publish. A replace failure — injected or a real OS
+    // error — leaves the previous store intact, so we drop the temp and report a
+    // plain Io.
+    if let Err(e) = replace_file(&tmp, path, fail) {
         fs::remove_file(&tmp).ok();
         return Err(e.into());
     }
-    // The rename is durable only once the directory entry is flushed.
-    sync_parent_dir(path)
+    // Post-commit: the new bytes ARE the store now. A directory-sync failure is a
+    // durability warning, not a rollback — a second file transaction cannot undo
+    // the first — so it is reported as its own typed error, never a pre-commit Io.
+    let durability = if fail == FailPoint::AfterReplace {
+        Err(io::Error::other(
+            "injected curation-store durability failure after replace",
+        ))
+    } else {
+        sync_parent_dir(path)
+    };
+    durability.map_err(|source| CurationFsError::PostCommitDurability { source })
+}
+
+/// The atomic publish step, isolated so a test can drive its error branch the
+/// same way a real OS replace failure would. Both POSIX and Windows
+/// (`MoveFileExW`) replace an existing destination atomically.
+fn replace_file(temp: &Path, canonical: &Path, fail: FailPoint) -> io::Result<()> {
+    if fail == FailPoint::DuringReplace {
+        return Err(io::Error::other("injected curation-store replace failure"));
+    }
+    fs::rename(temp, canonical)
 }
 
 /// The fixed sibling temp path a write stages into before the rename.
@@ -142,12 +178,14 @@ fn temp_sibling(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// The directory to fsync for `path`.
-#[allow(dead_code)]
+/// The directory to fsync for `path`, treating an empty parent — a bare relative
+/// filename like `curation.json`, whose `Path::parent` is `""` — as the current
+/// directory `.`, so a relative store path still fsyncs a real directory.
+#[cfg_attr(not(unix), allow(dead_code))] // only the unix sync path calls this
 fn parent_for_sync(path: &Path) -> &Path {
-    // STUB (red): a bare filename's parent is the empty path, which is not a
-    // directory that can be opened — the fix maps it to ".".
-    path.parent().unwrap_or_else(|| Path::new("."))
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 /// Writes `bytes` to `tmp` and flushes them all the way to the device.
@@ -160,28 +198,18 @@ fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<(), CurationFsError> {
 }
 
 /// `fsync`s the parent directory so the rename itself is durable — on platforms
-/// that let a directory be opened as a file (POSIX). A no-op elsewhere.
+/// that let a directory be opened as a file (POSIX).
 #[cfg(unix)]
-fn sync_parent_dir(path: &Path) -> Result<(), CurationFsError> {
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        File::open(dir)?.sync_all()?;
-    }
-    Ok(())
+fn sync_parent_dir(path: &Path) -> io::Result<()> {
+    File::open(parent_for_sync(path))?.sync_all()
 }
 
 /// Windows/other: `std` cannot `fsync` a directory handle, and the rename is the
 /// durability barrier the platform itself provides. Intentionally a no-op.
 #[cfg(not(unix))]
 #[allow(clippy::unnecessary_wraps)] // signature parity with the unix variant
-const fn sync_parent_dir(_path: &Path) -> Result<(), CurationFsError> {
+const fn sync_parent_dir(_path: &Path) -> io::Result<()> {
     Ok(())
-}
-
-/// A helper to make an injected failure a typed I/O error.
-fn injected(stage: &str) -> CurationFsError {
-    CurationFsError::Io(io::Error::other(format!(
-        "injected curation-store failure {stage} replace"
-    )))
 }
 
 #[cfg(test)]
