@@ -1496,6 +1496,25 @@ fn default_ingest_inputs(
     }
 }
 
+/// A group id unique within one ingest run: `base`, or `base_2`, `base_3`, …
+/// when `base` (or a lower suffix) is already taken. Two source files that
+/// slugify to the same stem — the same song as `.gp5` and `.gpx`, or two
+/// versions — must not overwrite each other's chunk records. Records the
+/// chosen id in `used`.
+fn unique_group_id(base: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(base.to_owned()) {
+        return base.to_owned();
+    }
+    let mut n = 2_usize;
+    loop {
+        let candidate = format!("{base}_{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n = n.saturating_add(1);
+    }
+}
+
 /// A filesystem-safe, stable id from a source stem: lowercase, runs of
 /// non-alphanumerics collapsed to one `_`, edges trimmed.
 fn slugify(stem: &str) -> String {
@@ -1530,6 +1549,7 @@ fn cmd_ingest(dir: &Path, output: Option<&Path>, with_bass: bool) -> Result<(), 
     let mut ingested = 0_usize;
     let mut chunk_total = 0_usize;
     let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut used_ids: HashSet<String> = HashSet::new();
 
     for path in &entries {
         let name = path
@@ -1563,7 +1583,7 @@ fn cmd_ingest(dir: &Path, output: Option<&Path>, with_bass: bool) -> Result<(), 
             continue;
         }
 
-        let group_id = slugify(stem);
+        let group_id = unique_group_id(&slugify(stem), &mut used_ids);
         let (records, group) = assemble_ingest_group(path, &score, &selected, &group_id, stem)?;
         if records.is_empty() {
             skipped.push((name, "no phrase survived splitting".to_owned()));
@@ -2652,7 +2672,8 @@ mod tests {
     #[test]
     fn colliding_stems_get_distinct_group_ids() {
         use super::unique_group_id;
-        let mut used = std::collections::HashSet::new();
+        use std::collections::HashSet;
+        let mut used = HashSet::new();
         // Two source files with the same stem (e.g. `Shark Dad.gp5` and
         // `Shark Dad.gpx`) must not overwrite each other's chunks.
         assert_eq!(unique_group_id("shark_dad", &mut used), "shark_dad");
