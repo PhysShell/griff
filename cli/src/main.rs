@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fmt, fs,
     io::{self, Error as IoError, Write as IoWrite},
     ops::Range,
@@ -2646,6 +2647,18 @@ mod tests {
         let relations = measure_group_relations(&score, &[0, 1]).expect("both parts measurable");
         assert_eq!(relations.len(), 1);
         assert_eq!(relations[0].parts, (0, 1));
+    }
+
+    #[test]
+    fn colliding_stems_get_distinct_group_ids() {
+        use super::unique_group_id;
+        let mut used = std::collections::HashSet::new();
+        // Two source files with the same stem (e.g. `Shark Dad.gp5` and
+        // `Shark Dad.gpx`) must not overwrite each other's chunks.
+        assert_eq!(unique_group_id("shark_dad", &mut used), "shark_dad");
+        assert_eq!(unique_group_id("shark_dad", &mut used), "shark_dad_2");
+        assert_eq!(unique_group_id("shark_dad", &mut used), "shark_dad_3");
+        assert_eq!(unique_group_id("other", &mut used), "other");
     }
 
     #[test]
