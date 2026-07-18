@@ -1873,7 +1873,7 @@ Architectural decisions go to [`adr/`](adr/) instead.
   contract's scope, we decided to **re-partition Phase 4 in the stage
   document only** — a docs-only planning clarification: ADR-0029's status
   and decision are unchanged, frozen Phases 0–3 are untouched, and no
-  implementation scope opens. The clarifications now normative in
+  implementation scope opens. The planning clarifications now recorded in
   [`stages/S16-swang-language-and-verified-lifting.md`](stages/S16-swang-language-and-verified-lifting.md):
   (1) **exact scalars precede canonical text** — `Tempo(f64)` becomes an
   exact GCD-normalized rational BPM (`from_bpm_integer` /

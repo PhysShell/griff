@@ -487,7 +487,7 @@ Required laws:
 ```text
 parse(format(score)) ~= score        (ExactSemantic equality, 4-pre B)
 format(parse(text)) == canonical_text
-format(parse(canonical_text)) == canonical_text    (byte-identical)
+fmt(fmt(text)) == fmt(text)          (byte-identical idempotence)
 ```
 
 Acceptance:
