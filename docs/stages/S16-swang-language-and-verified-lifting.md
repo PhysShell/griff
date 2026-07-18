@@ -421,6 +421,62 @@ Acceptance — Phase 3 adds **no musical semantics** (the seven laws of spec
 
 ### Phase 4 — exact canonical score text and patches
 
+Phase 4 is delivered as an ordered sequence — two preparatory phases and
+four sub-phases — because its measured complexity sits in the semantics
+(what counts as the same music, and how a change is addressed stably),
+not in the parser: exact scalar types precede the canonical text; exact
+and normalized equality are two contracts, not one; patches are
+separated from dump/verify by the stable-identity problem; MIDI gets its
+own, deliberately weaker projection contract. Planning range, not a
+commitment: 8–12 PRs for 4-pre + 4A (the exact score contract alone),
+13–18 PRs for the full 4-pre A/B + 4A–4D set.
+
+#### Phase 4-pre A — exact scalar semantics
+
+The canonical model currently carries two `f64` fields — `Tempo` and
+`TechniqueEvidence.confidence` — which keep the score tree at
+`PartialEq` and conflict with the no-floats determinism posture ADR-0029
+already requires of Swang semantics. Before any canonical text:
+
+- `TechniqueEvidence.confidence: f64` becomes a domain
+  `ConfidenceBps(u16)` in `0..=10_000`; `Explicit` = `10_000`, the
+  current MIDI-inferred baseline = `5_000`;
+- `Tempo(f64)` becomes an exact rational BPM, always GCD-normalized;
+- its only constructors are `from_bpm_integer` and
+  `from_micros_per_quarter` (plus, if needed, an exact decimal parser at
+  the text boundary); `Tempo::new(f64)` is removed, not retained as a
+  compatibility escape hatch;
+- the Guitar Pro adapter passes the source integer BPM through directly;
+  the MIDI adapter preserves the source microseconds-per-quarter
+  exactly;
+- export separates `to_micros_per_quarter_exact` from
+  `to_micros_per_quarter_nearest`; an inexact MIDI representation raises
+  a typed approximation loss, never a silent rounding;
+- characterization tests land first, then the migration; production
+  musical behavior does not change.
+
+#### Phase 4-pre B — semantic equality contracts
+
+Two independent comparison contracts, not one stretched type:
+
+- `ExactSemanticDiff` over the full canonical `Score`;
+- `NormalizedMusicalDiff` — an explicitly lossy, versioned development
+  of the ADR-0020 `NormalizedScore` projection.
+
+ExactSemantic preserves at minimum: PPQN; master bars with their ranges,
+meter, exact tempo, and repeats; tracks with channel, tuning, and names;
+voices; rests; every `EventGroupKind`; atom onset, duration, pitch, and
+velocity; note marks; technique-span ranges and evidence; fretboard
+positions and evidence; source metadata and loss facts where they are in
+the declared scope.
+
+Every `EventGroupKind` is exact semantics. Collapses such as
+"simultaneous `Single` groups ≈ one `Chord`" are admissible only inside
+a named, versioned normalization policy of `NormalizedMusicalDiff`. A
+typed diff must state the semantic path and the kind of divergence.
+
+#### Phase 4A — exact canonical score text
+
 ```text
 griff swang dump input.gp5 > input.swg
 griff swang verify input.swg --against input.gp5
@@ -429,18 +485,84 @@ griff swang verify input.swg --against input.gp5
 Required laws:
 
 ```text
-parse(format(score)) ~= score        (semantic canonical-model equality)
+parse(format(score)) ~= score        (ExactSemantic equality, 4-pre B)
 format(parse(text)) == canonical_text
+format(parse(canonical_text)) == canonical_text    (byte-identical)
 ```
 
 Acceptance:
 
 - every canonical event/group/track/master-bar fact in scope is
   representable; GP/MIDI adapter losses remain visible;
-- `exact` / `replace` / `overlay` / `delete` patches address events by
-  stable identity, not by fragile positional index alone;
-- alphaTab issue #1484's expressibility list is covered by negative tests;
-- property/fuzz coverage over parser, formatter, and patch boundaries.
+- the exact text mirrors the model — `absolute_start` plus `duration`;
+  the writer never synthesizes ties, and a note crossing a barline is
+  one note whose duration crosses the barline; ties may arrive later
+  only as authoring sugar lowering to a single canonical note;
+- alphaTab issue #1484's expressibility list is covered by negative
+  tests;
+- property/fuzz coverage over parser and formatter boundaries.
+
+#### Phase 4B — corpus acceptance harness
+
+A full-corpus report over the ingest chunks, with every chunk classified
+into exactly one of:
+
+```text
+exact
+normalized
+known import loss
+unsupported
+failed
+```
+
+Requirements:
+
+- deterministic output with a stable report hash;
+- counts and per-category deltas against an accepted baseline;
+- a breakdown by feature / loss type, so "bend spans fail on three
+  files" and "voices fail on half the corpus" are different facts;
+- a re-run on unchanged code reproduces the identical report.
+
+`corpus.zip` is tracked in this repository, so a hosted-CI run is
+technically possible; the gate split is motivated by run cost and signal
+quality, not by corpus availability:
+
+- blocking CI: synthetic exhaustive fixtures, golden score fixtures,
+  property/fuzz tests;
+- full-corpus acceptance: a separate job (nightly or manual), promotable
+  to blocking only after its runtime and stability are measured.
+
+Open action (tracked here; changed nowhere by this docs revision):
+verify the rights/redistribution status of `corpus.zip`, which is
+already present in Git history. This revision neither moves it nor
+widens its distribution.
+
+#### Phase 4C — stable selectors and exact patches
+
+Moved out of 4A: the patch language — `exact` / `replace` / `overlay` /
+`delete` — together with its stable selector contract and its
+stale/missing/ambiguous target behavior. Rules:
+
+- a positional index is not sufficient identity;
+- an ambiguous selector is always a typed failure — no first-match
+  fallback;
+- no persistent IDs are promised in `griff-core`; composite
+  anchors/selectors come first, with real ambiguity measurements over
+  the corpus, and the persistent-ID decision is taken separately on
+  Phase 4C evidence.
+
+#### Phase 4D — MIDI playback projection
+
+A separate, deliberately weaker contract:
+
+```text
+Score -> MIDI -> Score        (playback-equivalent, not exact-semantic)
+```
+
+Compared: sounding pitches, onsets, durations, transport, and bends as
+far as the export carries them. Declared losses: string/fret, grouping,
+evidence, richer technique semantics, and provenance. MIDI does not
+participate in the Phase 4A semantic round-trip gate.
 
 ### Phase 5 — structural recognizers
 
