@@ -101,10 +101,24 @@ pub fn prepare_chunk(meta: ChunkMeta, source: &Score) -> Option<LoadedChunk> {
         }
         None => source.clone(),
     };
-    let track = sliced
-        .tracks
-        .iter()
-        .position(|t| primary_voice_note_count(t) > 0)?;
+    let track = match meta.source.track_index {
+        // The record names its exact source track (schema v9): use that track
+        // and only that. A silent or out-of-range named track is a load failure,
+        // never a fall back to another part — substituting one guitar for
+        // another is a quiet wrong-part corruption, the worst kind of success.
+        Some(index) => {
+            let index = usize::try_from(index).ok()?;
+            if primary_voice_note_count(sliced.tracks.get(index)?) == 0 {
+                return None;
+            }
+            index
+        }
+        // Legacy record (pre-v9): the first note-bearing track, as before.
+        None => sliced
+            .tracks
+            .iter()
+            .position(|t| primary_voice_note_count(t) > 0)?,
+    };
     Some(LoadedChunk {
         meta,
         sliced,

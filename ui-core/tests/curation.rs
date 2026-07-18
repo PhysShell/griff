@@ -27,6 +27,8 @@ fn record() -> ChunkMeta {
             filename: "cur.mid".to_owned(),
             format: SourceFormat::Midi,
             bar_range: Some((0, 4)),
+            track_index: None,
+            sha256: None,
         },
         tempo_bpm: 140.0,
         ticks_per_quarter: 960,

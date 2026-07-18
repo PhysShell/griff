@@ -195,6 +195,8 @@ mod tests {
                 filename: "x.mid".to_owned(),
                 format: SourceFormat::Midi,
                 bar_range: None,
+                track_index: None,
+                sha256: None,
             },
             tempo_bpm: 120.0,
             ticks_per_quarter: 480,
