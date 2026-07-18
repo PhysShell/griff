@@ -95,20 +95,25 @@ pub struct CurationStoreV1 {
 /// The *same* checks guard both directions: [`decode_store`] runs them on bytes
 /// it reads, [`encode_store`] runs them before it writes — so invalid state can
 /// never be persisted and then only discovered on the next load.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreValidationError {
     /// The `version` field is not one this module understands.
+    #[error("unsupported store version {found}; this build reads {CURATION_STORE_VERSION}")]
     UnsupportedVersion { found: u32 },
     /// The envelope's `corpus_fingerprint` is empty.
+    #[error("the envelope corpus_fingerprint is empty")]
     EmptyCorpusFingerprint,
     /// Two events share an id.
+    #[error("two events share the id {}", .id.0)]
     DuplicateEventId { id: CurationEventId },
     /// A required opaque field was empty.
+    #[error("event {} has an empty {field}", .event.0)]
     EmptyField {
         field: &'static str,
         event: CurationEventId,
     },
     /// `occurred_at` is not a canonical UTC timestamp.
+    #[error("event {} has a non-canonical timestamp {value:?}", .event.0)]
     InvalidTimestamp {
         event: CurationEventId,
         value: String,
@@ -116,22 +121,26 @@ pub enum StoreValidationError {
 }
 
 /// Why a store's bytes could not be decoded into a valid store.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreDecodeError {
     /// The bytes are not valid store JSON. Never treated as an empty store.
+    #[error("store bytes are not valid JSON: {0}")]
     MalformedStore(String),
     /// The bytes parse but the store violates a domain rule.
-    Invalid(StoreValidationError),
+    #[error(transparent)]
+    Invalid(#[from] StoreValidationError),
 }
 
 /// Why a store could not be encoded to bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreEncodeError {
     /// The store violates a domain rule; refused before any bytes are produced,
     /// so a write can never persist invalid state — or a truncated/empty file.
-    Invalid(StoreValidationError),
+    #[error(transparent)]
+    Invalid(#[from] StoreValidationError),
     /// Serialization itself failed. Unreachable for these plain types, but never
     /// swallowed into empty bytes: an empty file reads as "no decisions".
+    #[error("store serialization failed: {0}")]
     Serialize(String),
 }
 
