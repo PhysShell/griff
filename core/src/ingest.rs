@@ -1,5 +1,5 @@
-//! Ingest-time interpretation of an imported [`Score`](crate::score::Score),
-//! for building the corpus from bulk Guitar Pro / MIDI sources.
+//! Ingest-time interpretation of an imported [`Score`], for building the
+//! corpus from bulk Guitar Pro / MIDI sources.
 //!
 //! The first concern is **track role**: a multitrack tab mixes guitars, bass,
 //! drums and vocals, but only some parts belong in a riff corpus. This module
@@ -112,14 +112,49 @@ pub fn select_ingest_tracks(score: &Score, include_bass: bool) -> Vec<usize> {
 
 /// A stable, human-readable label for a tuning, for `ChunkMeta.tuning`.
 ///
-/// Common tunings resolve to their conventional snake_case name
+/// Common tunings resolve to their conventional `snake_case` name
 /// (`standard_e`, `drop_d`, …); anything else falls back to a deterministic
 /// low-to-high spelling of its open strings (`b1_e2_a2_d3_g3_b3_e4`), so an
 /// unusual tuning is still recorded exactly and never lost. The named set is
 /// deliberately small and meant to grow as the corpus turns up more.
 #[must_use]
-pub fn tuning_label(_tuning: &Tuning) -> String {
-    String::new()
+pub fn tuning_label(tuning: &Tuning) -> String {
+    // Open strings as griff stores them: string 1 (highest) first.
+    let high_to_low: Vec<u8> = tuning.open_strings().iter().map(|p| p.0).collect();
+    match high_to_low.as_slice() {
+        [64, 59, 55, 50, 45, 40] => return "standard_e".to_owned(),
+        [64, 59, 55, 50, 45, 38] => return "drop_d".to_owned(),
+        [64, 59, 55, 50, 45, 40, 35] => return "standard_b_7".to_owned(),
+        [43, 38, 33, 28] => return "bass_standard".to_owned(),
+        _ => {}
+    }
+    high_to_low
+        .iter()
+        .rev()
+        .map(|&midi| note_name(midi))
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+/// A MIDI pitch as a `snake_case` note name with octave, e.g. `e2`, `ds4`
+/// (D#4). Octave numbering follows scientific pitch (MIDI 60 = `c4`).
+fn note_name(midi: u8) -> String {
+    let name = match midi % 12 {
+        0 => "c",
+        1 => "cs",
+        2 => "d",
+        3 => "ds",
+        4 => "e",
+        5 => "f",
+        6 => "fs",
+        7 => "g",
+        8 => "gs",
+        9 => "a",
+        10 => "as",
+        _ => "b",
+    };
+    let octave = i16::from(midi / 12).saturating_sub(1);
+    format!("{name}{octave}")
 }
 
 #[cfg(test)]
