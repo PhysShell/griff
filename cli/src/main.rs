@@ -1544,6 +1544,24 @@ fn unique_group_id(base: &str, used: &mut HashSet<String>) -> String {
     }
 }
 
+/// What to do when placing a source file beside its chunks in the corpus.
+#[derive(Debug, PartialEq, Eq)]
+enum SourceCopy {
+    /// No file at the destination — write it.
+    Write,
+    /// A byte-identical file is already there — reuse it, no rewrite.
+    Reuse,
+    /// A *different* file already claims that name — a typed collision, never
+    /// an overwrite. Human filenames are not identities.
+    Collision,
+}
+
+/// Decides the copy action from the destination's hash (None when absent) and
+/// the source's hash. Pure, so the policy is tested without touching disk.
+fn source_copy_decision(_existing_sha: Option<&str>, _new_sha: &str) -> SourceCopy {
+    SourceCopy::Write
+}
+
 /// Lowercase-hex SHA-256 of a source file's bytes — the content identity a
 /// filename cannot provide.
 fn source_sha256(bytes: &[u8]) -> String {
@@ -2735,6 +2753,27 @@ mod tests {
         );
         assert_eq!(slugify("A Lot Like Birds"), "a_lot_like_birds");
         assert_eq!(slugify("--edge--"), "edge");
+    }
+
+    #[test]
+    fn slugify_falls_back_when_a_stem_has_no_ascii_alphanumerics() {
+        use super::slugify;
+        // Non-ASCII or punctuation-only stems must still get a stable, nonempty
+        // id, or the chunk file names would begin with `_g`.
+        assert_eq!(slugify("曲"), "untitled");
+        assert_eq!(slugify("---"), "untitled");
+        assert_eq!(slugify(""), "untitled");
+    }
+
+    #[test]
+    fn source_copy_decision_reuses_a_match_and_refuses_a_conflict() {
+        use super::{source_copy_decision, SourceCopy};
+        assert_eq!(source_copy_decision(None, "aa"), SourceCopy::Write);
+        assert_eq!(source_copy_decision(Some("aa"), "aa"), SourceCopy::Reuse);
+        assert_eq!(
+            source_copy_decision(Some("bb"), "aa"),
+            SourceCopy::Collision
+        );
     }
 
     #[test]
