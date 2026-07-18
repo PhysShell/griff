@@ -88,13 +88,17 @@ pub struct CurationStoreV1 {
     pub events: Vec<CurationEvent>,
 }
 
-/// Why a store's bytes could not be decoded into a valid store.
+/// A store that parses (or is about to be written) but breaks the domain rules.
+///
+/// The *same* checks guard both directions: [`decode_store`] runs them on bytes
+/// it reads, [`encode_store`] runs them before it writes — so invalid state can
+/// never be persisted and then only discovered on the next load.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StoreDecodeError {
-    /// The bytes are not valid store JSON. Never treated as an empty store.
-    MalformedStore(String),
+pub enum StoreValidationError {
     /// The `version` field is not one this module understands.
     UnsupportedVersion { found: u32 },
+    /// The envelope's `corpus_fingerprint` is empty.
+    EmptyCorpusFingerprint,
     /// Two events share an id.
     DuplicateEventId { id: CurationEventId },
     /// A required opaque field was empty.
@@ -102,11 +106,31 @@ pub enum StoreDecodeError {
         field: &'static str,
         event: CurationEventId,
     },
-    /// `occurred_at` is not a valid ISO-8601 UTC timestamp.
+    /// `occurred_at` is not a canonical UTC timestamp.
     InvalidTimestamp {
         event: CurationEventId,
         value: String,
     },
+}
+
+/// Why a store's bytes could not be decoded into a valid store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreDecodeError {
+    /// The bytes are not valid store JSON. Never treated as an empty store.
+    MalformedStore(String),
+    /// The bytes parse but the store violates a domain rule.
+    Invalid(StoreValidationError),
+}
+
+/// Why a store could not be encoded to bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreEncodeError {
+    /// The store violates a domain rule; refused before any bytes are produced,
+    /// so a write can never persist invalid state — or a truncated/empty file.
+    Invalid(StoreValidationError),
+    /// Serialization itself failed. Unreachable for these plain types, but never
+    /// swallowed into empty bytes: an empty file reads as "no decisions".
+    Serialize(String),
 }
 
 /// Why a fingerprint could not be computed.
@@ -208,15 +232,17 @@ pub fn corpus_fingerprint(
 
 // ── encode / decode ─────────────────────────────────────────────────────────
 
-/// Serializes a store into its one canonical byte form (events and tags
-/// canonicalized first), so the same logical store always encodes identically.
-#[must_use]
-pub fn encode_store(store: &CurationStoreV1) -> Vec<u8> {
+/// Serializes a store into its one canonical byte form.
+///
+/// The store is canonicalized (events and tags) and then validated with exactly
+/// the same rules [`decode_store`] applies, so a caller can never write bytes
+/// that would fail to load. Nothing is ever swallowed into empty output.
+#[allow(clippy::missing_errors_doc)]
+pub fn encode_store(store: &CurationStoreV1) -> Result<Vec<u8>, StoreEncodeError> {
     let mut canonical = store.clone();
     canonicalize(&mut canonical);
-    // Our types are plain structs/enums of strings, numbers, and vecs, so
-    // serialization is infallible; the default is unreachable.
-    serde_json::to_vec(&canonical).unwrap_or_default()
+    // TODO(green): validate before serializing.
+    Ok(serde_json::to_vec(&canonical).unwrap_or_default())
 }
 
 /// Decodes and validates store bytes, canonicalizing the result. A malformed
@@ -231,16 +257,34 @@ pub fn decode_store(bytes: &[u8]) -> Result<CurationStoreV1, StoreDecodeError> {
     let probe: VersionProbe = serde_json::from_slice(bytes)
         .map_err(|e| StoreDecodeError::MalformedStore(e.to_string()))?;
     if probe.version != CURATION_STORE_VERSION {
-        return Err(StoreDecodeError::UnsupportedVersion {
-            found: probe.version,
-        });
+        return Err(StoreDecodeError::Invalid(
+            StoreValidationError::UnsupportedVersion {
+                found: probe.version,
+            },
+        ));
     }
     let mut store: CurationStoreV1 = serde_json::from_slice(bytes)
         .map_err(|e| StoreDecodeError::MalformedStore(e.to_string()))?;
+    validate_store(&store).map_err(StoreDecodeError::Invalid)?;
+    canonicalize(&mut store);
+    Ok(store)
+}
 
+/// The domain rules a store must satisfy, independent of direction: a known
+/// version, a non-empty envelope fingerprint, and, per event, non-empty opaque
+/// fields, a canonical timestamp, and a unique id.
+fn validate_store(store: &CurationStoreV1) -> Result<(), StoreValidationError> {
+    if store.version != CURATION_STORE_VERSION {
+        return Err(StoreValidationError::UnsupportedVersion {
+            found: store.version,
+        });
+    }
+    if store.corpus_fingerprint.0.is_empty() {
+        return Err(StoreValidationError::EmptyCorpusFingerprint);
+    }
     let mut seen: HashSet<&CurationEventId> = HashSet::new();
     for event in &store.events {
-        let empty = |field: &'static str| StoreDecodeError::EmptyField {
+        let empty = |field: &'static str| StoreValidationError::EmptyField {
             field,
             event: event.event_id.clone(),
         };
@@ -260,19 +304,18 @@ pub fn decode_store(bytes: &[u8]) -> Result<CurationStoreV1, StoreDecodeError> {
             return Err(empty("reviewer"));
         }
         if !valid_timestamp(&event.occurred_at) {
-            return Err(StoreDecodeError::InvalidTimestamp {
+            return Err(StoreValidationError::InvalidTimestamp {
                 event: event.event_id.clone(),
                 value: event.occurred_at.clone(),
             });
         }
         if !seen.insert(&event.event_id) {
-            return Err(StoreDecodeError::DuplicateEventId {
+            return Err(StoreValidationError::DuplicateEventId {
                 id: event.event_id.clone(),
             });
         }
     }
-    canonicalize(&mut store);
-    Ok(store)
+    Ok(())
 }
 
 /// Canonical form: each event's tags sorted and deduped, events ordered by
@@ -398,7 +441,7 @@ mod tests {
         chunk_fingerprint, corpus_fingerprint, decode_store, encode_store, project, reconcile,
         ChunkFingerprint, CorpusFingerprint, CurationContext, CurationEvent, CurationEventId,
         CurationStoreV1, FingerprintError, OrphanReason, ReviewerId, StoreDecodeError,
-        CURATION_STORE_VERSION,
+        StoreEncodeError, StoreValidationError, CURATION_STORE_VERSION,
     };
     use crate::corpus::{
         ChunkId, ChunkMeta, ReviewerDecision, SourceFormat, SourceRef, SwancoreTag,
@@ -471,10 +514,16 @@ mod tests {
         }
     }
 
+    /// Serialize a store WITHOUT the domain validation `encode_store` enforces,
+    /// so a decode test can feed bytes an honest writer would have refused.
+    fn raw(store: &CurationStoreV1) -> Vec<u8> {
+        serde_json::to_vec(store).expect("serializes")
+    }
+
     #[test]
     fn v1_encode_decode_round_trips() {
         let s = store(vec![event("e1", "c1", "2026-07-18T10:00:00Z", "fp1")]);
-        let decoded = decode_store(&encode_store(&s)).expect("round trip");
+        let decoded = decode_store(&encode_store(&s).expect("encodes")).expect("round trip");
         assert_eq!(decoded, s);
     }
 
@@ -486,7 +535,10 @@ mod tests {
         ]);
         let mut b = a.clone();
         b.events.reverse();
-        assert_eq!(encode_store(&a), encode_store(&b));
+        assert_eq!(
+            encode_store(&a).expect("encodes"),
+            encode_store(&b).expect("encodes")
+        );
     }
 
     #[test]
@@ -494,7 +546,9 @@ mod tests {
         let bytes = br#"{"version":2,"corpus_fingerprint":"c","events":[]}"#;
         assert!(matches!(
             decode_store(bytes),
-            Err(StoreDecodeError::UnsupportedVersion { found: 2 })
+            Err(StoreDecodeError::Invalid(
+                StoreValidationError::UnsupportedVersion { found: 2 }
+            ))
         ));
     }
 
@@ -506,37 +560,95 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicate_event_id_is_rejected() {
+    fn decode_refuses_a_duplicate_event_id() {
         let s = store(vec![
             event("dup", "c1", "2026-07-18T10:00:00Z", "fp1"),
             event("dup", "c2", "2026-07-18T11:00:00Z", "fp2"),
         ]);
         assert!(matches!(
-            decode_store(&encode_store(&s)),
-            Err(StoreDecodeError::DuplicateEventId { .. })
+            decode_store(&raw(&s)),
+            Err(StoreDecodeError::Invalid(
+                StoreValidationError::DuplicateEventId { .. }
+            ))
         ));
     }
 
     #[test]
-    fn an_empty_opaque_id_is_rejected() {
+    fn decode_refuses_an_empty_opaque_id() {
         let s = store(vec![event("", "c1", "2026-07-18T10:00:00Z", "fp1")]);
         assert!(matches!(
-            decode_store(&encode_store(&s)),
-            Err(StoreDecodeError::EmptyField { .. })
+            decode_store(&raw(&s)),
+            Err(StoreDecodeError::Invalid(
+                StoreValidationError::EmptyField { .. }
+            ))
         ));
     }
 
     #[test]
-    fn an_invalid_timestamp_is_rejected() {
-        let s = store(vec![event("e1", "c1", "yesterday", "fp1")]);
+    fn decode_refuses_an_empty_envelope_corpus_fingerprint() {
+        let mut s = store(vec![event("e1", "c1", "2026-07-18T10:00:00Z", "fp1")]);
+        s.corpus_fingerprint = CorpusFingerprint(String::new());
         assert!(matches!(
-            decode_store(&encode_store(&s)),
-            Err(StoreDecodeError::InvalidTimestamp { .. })
+            decode_store(&raw(&s)),
+            Err(StoreDecodeError::Invalid(
+                StoreValidationError::EmptyCorpusFingerprint
+            ))
         ));
+    }
+
+    #[test]
+    fn encode_refuses_to_write_an_invalid_store() {
+        // Every domain rule blocks a write, so a bad store never lands on disk
+        // to be discovered only after a restart.
+        let dup = store(vec![
+            event("d", "c1", "2026-07-18T10:00:00Z", "fp1"),
+            event("d", "c2", "2026-07-18T11:00:00Z", "fp2"),
+        ]);
+        assert!(matches!(
+            encode_store(&dup),
+            Err(StoreEncodeError::Invalid(
+                StoreValidationError::DuplicateEventId { .. }
+            ))
+        ));
+
+        let empty_id = store(vec![event("", "c1", "2026-07-18T10:00:00Z", "fp1")]);
+        assert!(matches!(
+            encode_store(&empty_id),
+            Err(StoreEncodeError::Invalid(
+                StoreValidationError::EmptyField { .. }
+            ))
+        ));
+
+        let bad_time = store(vec![event("e1", "c1", "yesterday", "fp1")]);
+        assert!(matches!(
+            encode_store(&bad_time),
+            Err(StoreEncodeError::Invalid(
+                StoreValidationError::InvalidTimestamp { .. }
+            ))
+        ));
+
+        let mut bad_version = store(vec![event("e1", "c1", "2026-07-18T10:00:00Z", "fp1")]);
+        bad_version.version = 2;
+        assert!(matches!(
+            encode_store(&bad_version),
+            Err(StoreEncodeError::Invalid(
+                StoreValidationError::UnsupportedVersion { found: 2 }
+            ))
+        ));
+    }
+
+    #[test]
+    fn a_refused_encode_never_yields_bytes() {
+        // The failure mode we must not have: a serialize error swallowed into an
+        // empty file that then reads back as "no decisions were ever made".
+        let bad = store(vec![event("e1", "c1", "yesterday", "fp1")]);
+        assert!(encode_store(&bad).is_err(), "no bytes for an invalid store");
     }
 
     #[test]
     fn an_unpinned_chunk_gets_a_typed_refusal() {
+        // sha256, track_index, AND bar_range are all required for a durable
+        // identity — a partial pin is no identity at all.
         assert!(matches!(
             chunk_fingerprint(&meta("c1", None, Some(0), Some((0, 3)))),
             Err(FingerprintError::UnpinnedChunk { .. })
@@ -545,6 +657,13 @@ mod tests {
             chunk_fingerprint(&meta("c1", Some("h"), None, Some((0, 3)))),
             Err(FingerprintError::UnpinnedChunk { .. })
         ));
+        assert!(
+            matches!(
+                chunk_fingerprint(&meta("c1", Some("h"), Some(0), None)),
+                Err(FingerprintError::UnpinnedChunk { .. })
+            ),
+            "a chunk with no bar_range is unpinned, not a whole-track identity"
+        );
     }
 
     #[test]
@@ -672,7 +791,8 @@ mod tests {
             SwancoreTag::Bend,
             SwancoreTag::Slide, // duplicate
         ];
-        let decoded = decode_store(&encode_store(&store(vec![e]))).expect("decodes");
+        let decoded =
+            decode_store(&encode_store(&store(vec![e])).expect("encodes")).expect("decodes");
         // Canonical order is the tag enum's declaration order (Slide precedes
         // Bend), not alphabetical — deterministic is what matters, and the
         // duplicate is gone.
@@ -690,8 +810,88 @@ mod tests {
             event("e1", "c1", "2026-07-18T10:00:00Z", "fp1"),
         ]);
         s.events[0].tags = vec![SwancoreTag::Slide, SwancoreTag::Bend];
-        let once = encode_store(&decode_store(&encode_store(&s)).unwrap());
-        let twice = encode_store(&decode_store(&once).unwrap());
+        let once = encode_store(&decode_store(&encode_store(&s).unwrap()).unwrap()).unwrap();
+        let twice = encode_store(&decode_store(&once).unwrap()).unwrap();
         assert_eq!(once, twice, "decode->encode is idempotent bytes");
+    }
+
+    #[test]
+    fn a_fractional_second_timestamp_is_rejected() {
+        // Variable-width fractional seconds break lexicographic==chronological
+        // ordering, so the canonical form is second precision only.
+        for at in [
+            "2026-07-18T10:00:00.500Z",
+            "2026-07-18T10:00:00.1Z",
+            "2026-07-18T10:00:00.100Z",
+        ] {
+            let s = store(vec![event("e1", "c1", at, "fp1")]);
+            assert!(
+                matches!(
+                    encode_store(&s),
+                    Err(StoreEncodeError::Invalid(
+                        StoreValidationError::InvalidTimestamp { .. }
+                    ))
+                ),
+                "fractional seconds rejected: {at}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_timestamp_field_is_rejected() {
+        for at in [
+            "2026-99-18T10:00:00Z", // month
+            "2026-07-88T10:00:00Z", // day
+            "2026-07-18T77:00:00Z", // hour
+            "2026-07-18T10:66:00Z", // minute
+            "2026-07-18T10:00:99Z", // second
+            "2026-99-88T77:66:55Z", // all at once
+        ] {
+            let s = store(vec![event("e1", "c1", at, "fp1")]);
+            assert!(
+                matches!(
+                    encode_store(&s),
+                    Err(StoreEncodeError::Invalid(
+                        StoreValidationError::InvalidTimestamp { .. }
+                    ))
+                ),
+                "out-of-range field rejected: {at}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_impossible_calendar_day_is_rejected_but_a_leap_day_is_kept() {
+        for bad in ["2026-02-30T00:00:00Z", "2025-02-29T00:00:00Z"] {
+            let s = store(vec![event("e1", "c1", bad, "fp1")]);
+            assert!(
+                matches!(
+                    encode_store(&s),
+                    Err(StoreEncodeError::Invalid(
+                        StoreValidationError::InvalidTimestamp { .. }
+                    ))
+                ),
+                "impossible civil day rejected: {bad}"
+            );
+        }
+        // A real leap day survives.
+        let leap = store(vec![event("e1", "c1", "2024-02-29T00:00:00Z", "fp1")]);
+        assert!(encode_store(&leap).is_ok(), "2024-02-29 is a real date");
+    }
+
+    #[test]
+    fn projection_picks_the_chronologically_latest_event() {
+        // The two timestamps sort the same way lexically and chronologically
+        // only because the canonical form is fixed-width; this pins that the
+        // later wall-clock decision is the projected one.
+        let mut early = event("e_late_id", "c1", "2026-07-18T09:59:59Z", "fp1");
+        early.decision = ReviewerDecision::Rejected;
+        let late = event("e_early_id", "c1", "2026-07-18T10:00:00Z", "fp1");
+        let projected = project(&[late, early]);
+        assert_eq!(
+            projected.by_chunk[&ChunkId("c1".to_owned())].decision,
+            ReviewerDecision::Accepted,
+            "the later second wins regardless of event_id ordering"
+        );
     }
 }
