@@ -1429,6 +1429,7 @@ fn chunks_for_segments(
 /// tab, and all carry the default community-tab rights. Returns the phrase
 /// chunks and the group; the caller writes them. Relations stay empty here —
 /// this slice records provenance, not measured inter-part dependencies.
+#[allow(clippy::too_many_arguments)] // the ingest assembly seam: source, target ids, and the content hash
 fn assemble_ingest_group(
     path: &Path,
     score: &Score,
@@ -1437,19 +1438,37 @@ fn assemble_ingest_group(
     base_title: &str,
     sha256: &str,
 ) -> Result<(Vec<ChunkMeta>, EnsembleGroup), CliError> {
-    let _ = sha256; // GREEN records it on each chunk's SourceRef
     let mut records: Vec<ChunkMeta> = Vec::new();
     let mut members: Vec<ChunkId> = Vec::new();
-    for (part, &track) in selected.iter().enumerate() {
-        let inputs = default_ingest_inputs(score, track, group_id, base_title, part);
+    let mut part: u32 = 0;
+    for &track in selected {
+        let role = score
+            .tracks
+            .get(track)
+            .map_or(ingest::TrackRole::Guitar, ingest::classify_track_role);
+        let inputs = default_ingest_inputs(score, track, group_id, base_title, part, role);
         let link = EnsembleRef {
             group_id: group_id.to_owned(),
-            part_index: u32::try_from(part).unwrap_or(0),
+            part_index: part,
         };
-        for chunk in phrase_chunks_for_track(path, score, &inputs, track, Some(link))? {
+        let chunks = phrase_chunks_for_track(path, score, &inputs, track, Some(link))?;
+        if chunks.is_empty() {
+            // A selected track that survives no phrase keeps its part index
+            // free, so indices stay contiguous and the group never names a part
+            // with no members.
+            continue;
+        }
+        let track_index = u32::try_from(track).ok();
+        for mut chunk in chunks {
+            // The exact source track and content hash (schema v9) so a chunk
+            // reloads the right part from the right bytes, never the first
+            // note-bearing track.
+            chunk.meta.source.track_index = track_index;
+            chunk.meta.source.sha256 = Some(sha256.to_owned());
             members.push(chunk.meta.id.clone());
             records.push(chunk.meta);
         }
+        part = part.saturating_add(1);
     }
     Ok((
         records,
@@ -1465,12 +1484,14 @@ fn assemble_ingest_group(
 /// part-qualified id, the real tuning label, and the default rights for a
 /// scraped community tab (copyrighted composition, not redistributable). Tags
 /// and reviewer are left empty for the cockpit curation pass.
+#[allow(clippy::too_many_arguments)] // the non-interactive curation defaults for one ingested part
 fn default_ingest_inputs(
     score: &Score,
     track: usize,
     group_id: &str,
     base_title: &str,
-    part: usize,
+    part: u32,
+    role: ingest::TrackRole,
 ) -> CurateInputs {
     let tuning = score.tracks.get(track).map_or_else(
         || "standard_e".to_owned(),
@@ -1481,9 +1502,15 @@ fn default_ingest_inputs(
     } else {
         vec![QualityFlag::Lossy]
     };
+    // A bass part is never labelled a guitar (it is admitted only under
+    // --with-bass and kept separate).
+    let (id_tag, label) = match role {
+        ingest::TrackRole::Bass => ('b', "bass"),
+        ingest::TrackRole::Guitar | ingest::TrackRole::Other => ('g', "guitar"),
+    };
     CurateInputs {
-        id: format!("{group_id}_g{part}"),
-        title: format!("{base_title} (guitar {part})"),
+        id: format!("{group_id}_{id_tag}{part}"),
+        title: format!("{base_title} ({label} {part})"),
         tuning,
         style_cohort: StyleCohort::Core,
         tags: Vec::new(),
@@ -1521,10 +1548,13 @@ fn unique_group_id(base: &str, used: &mut HashSet<String>) -> String {
 /// filename cannot provide.
 fn source_sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
     Sha256::digest(bytes)
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+        .fold(String::new(), |mut acc, byte| {
+            write!(acc, "{byte:02x}").ok();
+            acc
+        })
 }
 
 /// A filesystem-safe, stable id from a source stem: lowercase, runs of
@@ -2708,6 +2738,52 @@ mod tests {
     }
 
     #[test]
+    fn a_selected_track_with_no_surviving_phrase_frees_its_part_index() {
+        use super::assemble_ingest_group;
+        use std::path::Path;
+
+        // Track 0's single note is a trivial phrase (dropped); track 1 is real.
+        let empty_gtr = Track {
+            name: Some("Guitar 1".to_owned()),
+            channel: 0,
+            voices: vec![voice_of(0, vec![note(0, 480, 60)])],
+            tuning: Tuning::standard_e(),
+        };
+        let real_gtr = Track {
+            name: Some("Guitar 2".to_owned()),
+            channel: 0,
+            voices: vec![voice_of(
+                0,
+                vec![
+                    note(0, 480, 50),
+                    note(1920, 480, 53),
+                    note(3840, 480, 50),
+                    note(5760, 480, 55),
+                ],
+            )],
+            tuning: Tuning::standard_e(),
+        };
+        let score = bars_score(4, vec![empty_gtr, real_gtr]);
+
+        let (chunks, group) =
+            assemble_ingest_group(Path::new("x.gp"), &score, &[0, 1], "x", "X", "hash")
+                .expect("assemble succeeds");
+
+        assert!(!chunks.is_empty(), "track 1 still yields phrases");
+        for chunk in &chunks {
+            let link = chunk.ensemble.as_ref().expect("group link");
+            assert_eq!(link.part_index, 0, "the empty track 0 freed part 0, no gap");
+            assert_eq!(
+                chunk.source.track_index,
+                Some(1),
+                "cut from source track 1, not the ordinal"
+            );
+        }
+        assert_eq!(group.members.len(), chunks.len());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one end-to-end assertion of the assembled record
     fn ingest_assembles_phrase_chunks_linked_as_one_group() {
         use super::assemble_ingest_group;
         use griff_core::corpus::{Acquisition, RightsStatus};
