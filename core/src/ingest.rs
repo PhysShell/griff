@@ -8,6 +8,7 @@
 //! guitars (both of them, for the two-guitar writing this corpus is full of),
 //! optionally the bass, and skip the rest.
 
+use crate::event::Tuning;
 use crate::score::{Score, Track};
 
 /// The instrumental role of a track, as far as ingest can tell.
@@ -109,9 +110,21 @@ pub fn select_ingest_tracks(score: &Score, include_bass: bool) -> Vec<usize> {
         .collect()
 }
 
+/// A stable, human-readable label for a tuning, for `ChunkMeta.tuning`.
+///
+/// Common tunings resolve to their conventional snake_case name
+/// (`standard_e`, `drop_d`, …); anything else falls back to a deterministic
+/// low-to-high spelling of its open strings (`b1_e2_a2_d3_g3_b3_e4`), so an
+/// unusual tuning is still recorded exactly and never lost. The named set is
+/// deliberately small and meant to grow as the corpus turns up more.
+#[must_use]
+pub fn tuning_label(_tuning: &Tuning) -> String {
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{classify_track_role, select_ingest_tracks, TrackRole};
+    use super::{classify_track_role, select_ingest_tracks, tuning_label, TrackRole};
     use crate::event::{Pitch, Tuning};
     use crate::score::{LossReport, Score, Track};
 
@@ -270,5 +283,50 @@ mod tests {
     fn a_single_guitar_is_selected() {
         let score = score_of(vec![track(None, 0, &STANDARD_6)]);
         assert_eq!(select_ingest_tracks(&score, false), vec![0]);
+    }
+
+    // ── tuning_label ──────────────────────────────────────────────────────────
+
+    fn tuning_of(strings: &[u8]) -> Tuning {
+        Tuning::new(strings.iter().map(|&m| Pitch(m)).collect())
+    }
+
+    #[test]
+    fn names_standard_e() {
+        assert_eq!(tuning_label(&tuning_of(&STANDARD_6)), "standard_e");
+    }
+
+    #[test]
+    fn names_drop_d() {
+        // High-to-low: E4 B3 G3 D3 A2 D2 — the low E dropped to D.
+        assert_eq!(
+            tuning_label(&tuning_of(&[64, 59, 55, 50, 45, 38])),
+            "drop_d"
+        );
+    }
+
+    #[test]
+    fn names_seven_string_standard_b() {
+        assert_eq!(tuning_label(&tuning_of(&STANDARD_7)), "standard_b_7");
+    }
+
+    #[test]
+    fn names_four_string_bass_standard() {
+        assert_eq!(tuning_label(&tuning_of(&BASS_4)), "bass_standard");
+    }
+
+    #[test]
+    fn an_unknown_tuning_spells_its_open_strings_low_to_high() {
+        // Drop C, high-to-low: D4 A3 F3 C3 G2 C2 -> spelled low to high.
+        assert_eq!(
+            tuning_label(&tuning_of(&[62, 57, 53, 48, 43, 36])),
+            "c2_g2_c3_f3_a3_d4"
+        );
+    }
+
+    #[test]
+    fn a_sharp_pitch_class_spells_with_an_s() {
+        // A single D#2 open string (contrived) exercises the sharp spelling.
+        assert_eq!(tuning_label(&tuning_of(&[39, 39])), "ds2_ds2");
     }
 }
