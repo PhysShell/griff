@@ -119,18 +119,20 @@ pub fn select_ingest_tracks(score: &Score, include_bass: bool) -> Vec<usize> {
 /// deliberately small and meant to grow as the corpus turns up more.
 #[must_use]
 pub fn tuning_label(tuning: &Tuning) -> String {
-    // Open strings as griff stores them: string 1 (highest) first.
-    let high_to_low: Vec<u8> = tuning.open_strings().iter().map(|p| p.0).collect();
-    match high_to_low.as_slice() {
-        [64, 59, 55, 50, 45, 40] => return "standard_e".to_owned(),
-        [64, 59, 55, 50, 45, 38] => return "drop_d".to_owned(),
-        [64, 59, 55, 50, 45, 40, 35] => return "standard_b_7".to_owned(),
-        [43, 38, 33, 28] => return "bass_standard".to_owned(),
+    // Canonicalise low-to-high so the label ignores the source's string order
+    // (Guitar Pro stores it both ways). Named tunings are keyed by that
+    // ascending pitch set; the spelling reads low string to high.
+    let mut low_to_high: Vec<u8> = tuning.open_strings().iter().map(|p| p.0).collect();
+    low_to_high.sort_unstable();
+    match low_to_high.as_slice() {
+        [40, 45, 50, 55, 59, 64] => return "standard_e".to_owned(),
+        [38, 45, 50, 55, 59, 64] => return "drop_d".to_owned(),
+        [35, 40, 45, 50, 55, 59, 64] => return "standard_b_7".to_owned(),
+        [28, 33, 38, 43] => return "bass_standard".to_owned(),
         _ => {}
     }
-    high_to_low
+    low_to_high
         .iter()
-        .rev()
         .map(|&midi| note_name(midi))
         .collect::<Vec<_>>()
         .join("_")
