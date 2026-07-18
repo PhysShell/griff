@@ -10,6 +10,7 @@ pub mod classify;
 pub mod closure;
 pub mod complement;
 pub mod corpus;
+pub mod curation;
 pub mod dump;
 pub mod event;
 pub mod feature;
