@@ -89,13 +89,24 @@ pub fn classify_track_role(track: &Track) -> TrackRole {
     }
 }
 
-/// The indices of the tracks a bulk ingest should take from `score`: every
-/// guitar, and the bass parts too when `include_bass` is set. Order is
+/// The indices of the tracks a bulk ingest should take from `score`.
+///
+/// Every guitar, and the bass parts too when `include_bass` is set. Order is
 /// preserved. Empty when the file has no part worth ingesting — the caller
 /// treats that as a skip, not an error.
 #[must_use]
-pub fn select_ingest_tracks(_score: &Score, _include_bass: bool) -> Vec<usize> {
-    Vec::new()
+pub fn select_ingest_tracks(score: &Score, include_bass: bool) -> Vec<usize> {
+    score
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, track)| match classify_track_role(track) {
+            TrackRole::Guitar => true,
+            TrackRole::Bass => include_bass,
+            TrackRole::Other => false,
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 
 #[cfg(test)]
