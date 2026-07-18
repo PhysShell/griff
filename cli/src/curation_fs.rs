@@ -39,6 +39,16 @@ pub enum CurationFsError {
     /// The store to write could not be encoded (it violates a domain rule).
     #[error("curation store cannot be encoded: {0}")]
     Encode(#[from] StoreEncodeError),
+    /// The new bytes are already published at the canonical path, but the
+    /// directory entry's durability could not be confirmed (the post-rename
+    /// parent-directory `fsync` failed). Distinct from a pre-commit
+    /// [`CurationFsError::Io`]: there is no old store to fall back to, and no
+    /// rollback — the write happened.
+    #[error("curation store published but directory durability is unconfirmed: {source}")]
+    PostCommitDurability {
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// The outcome of loading.
@@ -60,6 +70,9 @@ enum FailPoint {
     None,
     BeforeReplace,
     DuringReplace,
+    /// The parent-directory sync *after* a successful rename — the new bytes are
+    /// already published; only their directory-entry durability is unconfirmed.
+    AfterReplace,
 }
 
 /// Loads the store at `path`.
@@ -129,6 +142,14 @@ fn temp_sibling(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// The directory to fsync for `path`.
+#[allow(dead_code)]
+fn parent_for_sync(path: &Path) -> &Path {
+    // STUB (red): a bare filename's parent is the empty path, which is not a
+    // directory that can be opened — the fix maps it to ".".
+    path.parent().unwrap_or_else(|| Path::new("."))
+}
+
 /// Writes `bytes` to `tmp` and flushes them all the way to the device.
 fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<(), CurationFsError> {
     let mut file = File::create(tmp)?;
@@ -173,8 +194,8 @@ mod tests {
     )]
 
     use super::{
-        atomic_write, load_store, temp_sibling, write_store, CurationFsError, FailPoint,
-        StoreOnDisk,
+        atomic_write, load_store, parent_for_sync, temp_sibling, write_store, CurationFsError,
+        FailPoint, StoreOnDisk,
     };
     use griff_core::corpus::{ChunkId, ReviewerDecision};
     use griff_core::curation_store::{
@@ -328,6 +349,52 @@ mod tests {
             "decode->encode reproduces the on-disk bytes"
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_failure_after_replace_is_a_post_commit_durability_error() {
+        // The rename already succeeded — the NEW bytes ARE the store — and only
+        // the directory fsync failed. That must be a distinct post-commit error,
+        // never a pre-commit Io that would falsely promise the old store survived.
+        let dir = scratch("after");
+        let path = dir.join("curation.json");
+        write_store(&path, &sample("old")).expect("seed old store");
+        let new_bytes = encode_store(&sample("new")).expect("encode new");
+
+        let result = atomic_write(&path, &new_bytes, FailPoint::AfterReplace);
+
+        assert!(
+            matches!(result, Err(CurationFsError::PostCommitDurability { .. })),
+            "a post-rename durability failure is its own typed error"
+        );
+        assert!(
+            !matches!(result, Err(CurationFsError::Io(_))),
+            "it is distinguishable from a pre-commit Io"
+        );
+        assert_eq!(
+            fs::read(&path).expect("reread"),
+            new_bytes,
+            "the new bytes are already published"
+        );
+        assert!(
+            !temp_sibling(&path).exists(),
+            "temp is gone (it was renamed)"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_parent_to_sync_treats_a_bare_filename_as_the_current_dir() {
+        // A relative store path must still fsync a real directory on Unix.
+        assert_eq!(parent_for_sync(Path::new("curation.json")), Path::new("."));
+        assert_eq!(
+            parent_for_sync(Path::new("dir/curation.json")),
+            Path::new("dir")
+        );
+        assert_eq!(
+            parent_for_sync(Path::new("/dir/curation.json")),
+            Path::new("/dir")
+        );
     }
 
     #[cfg(unix)]
