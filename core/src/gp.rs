@@ -10,11 +10,12 @@
 //! | GP4    | `.gp4`    | stable (read-only) |
 //! | GP5    | `.gp5`    | stable (read-only) |
 //! | GP6    | `.gpx`    | read-only (BCFZ/BCFS + GPIF/XML) |
-//! | GP7/8  | `.gp`     | not yet supported |
+//! | GP7/8  | `.gp`     | read-only (ZIP + GPIF/XML) |
 //!
 //! GP3/4/5 are parsed from their binary format.  GP6 (`.gpx`) is supported
-//! via the BCFZ/BCFS container path in the `guitarpro` crate.  GP7+ (`.gp`,
-//! ZIP-based) is out of scope for S3.
+//! via the BCFZ/BCFS container path in the `guitarpro` crate.  GP7/8 (`.gp`,
+//! a plain ZIP of `Content/score.gpif`) decode to the same GPIF and run the
+//! same conversion.
 //!
 //! Every import produces a [`LossReport`] carried on [`Score`].  Tied notes
 //! continue the preceding note on their string (extending its duration);
@@ -131,9 +132,9 @@ pub enum GpImportError {
 
 /// Imports a Guitar Pro file from raw bytes into the canonical [`Score`] model.
 ///
-/// Supports GP3 (`.gp3`), GP4 (`.gp4`), GP5 (`.gp5`), and GP6 (`.gpx`).
-/// Returns [`GpImportError::UnsupportedFormat`] for unrecognised byte
-/// sequences (including GP7+).
+/// Supports GP3 (`.gp3`), GP4 (`.gp4`), GP5 (`.gp5`), GP6 (`.gpx`), and
+/// GP7/8 (`.gp`). Returns [`GpImportError::UnsupportedFormat`] for
+/// unrecognised byte sequences.
 ///
 /// Conversion losses are carried on the returned [`Score`] as a [`LossReport`].
 pub fn import_gp_score(data: &[u8]) -> Result<Score, GpImportError> {
@@ -143,6 +144,11 @@ pub fn import_gp_score(data: &[u8]) -> Result<Score, GpImportError> {
         Some(4) => song.read_gp4(data)?,
         Some(5) => song.read_gp5(data)?,
         Some(6) => song.read_gpx(data)?,
+        // GP7/8 decode to the same GPIF the GP6 path uses; `read_gp` unzips
+        // `Content/score.gpif` and runs the shared conversion. The Song's
+        // version.number.0 becomes 7, so `gp_song_to_score` tags "GP7" and
+        // takes the same `>= 6` behaviour (zero-indexed strings, raw repeats).
+        Some(7) => song.read_gp(data)?,
         _ => return Err(GpImportError::UnsupportedFormat),
     }
     Ok(gp_song_to_score(&song))
@@ -178,6 +184,10 @@ fn detect_gp_version(data: &[u8]) -> Option<u8> {
     // GP6: BCFZ (compressed) or BCFS (uncompressed) container magic.
     if data.starts_with(b"BCFZ") || data.starts_with(b"BCFS") {
         return Some(6);
+    }
+    // GP7/8: a plain ZIP (`Content/score.gpif` inside) — local-file-header magic.
+    if data.starts_with(b"PK\x03\x04") {
+        return Some(7);
     }
     None
 }
@@ -863,10 +873,29 @@ mod tests {
     fn detect_version_unknown() {
         assert_eq!(detect_gp_version(b"garbage"), None);
         assert_eq!(detect_gp_version(b""), None);
-        assert_eq!(detect_gp_version(b"PK\x03\x04"), None); // ZIP / GP7
+    }
+
+    #[test]
+    fn detect_version_gp7() {
+        // GP7/8 `.gp` is a ZIP: local-file-header magic `PK\x03\x04`.
+        assert_eq!(detect_gp_version(b"PK\x03\x04rest of a zip"), Some(7));
     }
 
     // ── import_gp_score errors ────────────────────────────────────────────────
+
+    #[test]
+    fn import_gp7_dispatches_to_the_reader() {
+        // A ZIP magic that is not a valid `.gp` archive must reach `read_gp`
+        // and fail *there* — a typed parse error, not `UnsupportedFormat`. This
+        // is what proves the GP7 branch is wired without a real (copyrighted)
+        // `.gp` fixture, which the corpus policy forbids committing.
+        let mut data = b"PK\x03\x04".to_vec();
+        data.extend_from_slice(&[0u8; 64]);
+        assert!(matches!(
+            import_gp_score(&data),
+            Err(GpImportError::Parse(_))
+        ));
+    }
 
     #[test]
     fn import_gp_score_garbage_returns_unsupported() {
