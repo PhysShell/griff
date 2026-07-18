@@ -63,6 +63,21 @@ pub const SCHEMA_VERSION: u32 = 9;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChunkId(pub String);
 
+/// Lowercase-hex SHA-256 of a source file's bytes — the content identity a
+/// filename cannot provide (schema v9 [`SourceRef::sha256`]). Shared by the
+/// ingest that records it and the loader that verifies it.
+#[must_use]
+pub fn source_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::new(), |mut acc, byte| {
+            write!(acc, "{byte:02x}").ok();
+            acc
+        })
+}
+
 // ── source provenance ─────────────────────────────────────────────────────────
 
 /// The import format a chunk was sourced from.

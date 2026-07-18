@@ -17,9 +17,9 @@ use griff_core::{
     classify::{self, BarClass},
     complement,
     corpus::{
-        Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef,
-        PairRelation, QualityFlag, ReviewerDecision, RightsInfo, RightsStatus, SourceFormat,
-        SourceRef, StyleCohort, SwancoreTag, SCHEMA_VERSION,
+        source_sha256, Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest,
+        EnsembleGroup, EnsembleRef, PairRelation, QualityFlag, ReviewerDecision, RightsInfo,
+        RightsStatus, SourceFormat, SourceRef, StyleCohort, SwancoreTag, SCHEMA_VERSION,
     },
     event::{NoteMarks, NotePosition, TechniqueSource, Ticks},
     generate, gesture, harmony,
@@ -1558,21 +1558,33 @@ enum SourceCopy {
 
 /// Decides the copy action from the destination's hash (None when absent) and
 /// the source's hash. Pure, so the policy is tested without touching disk.
-fn source_copy_decision(_existing_sha: Option<&str>, _new_sha: &str) -> SourceCopy {
-    SourceCopy::Write
+fn source_copy_decision(existing_sha: Option<&str>, new_sha: &str) -> SourceCopy {
+    match existing_sha {
+        None => SourceCopy::Write,
+        Some(sha) if sha == new_sha => SourceCopy::Reuse,
+        Some(_) => SourceCopy::Collision,
+    }
 }
 
-/// Lowercase-hex SHA-256 of a source file's bytes — the content identity a
-/// filename cannot provide.
-fn source_sha256(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    use std::fmt::Write as _;
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::new(), |mut acc, byte| {
-            write!(acc, "{byte:02x}").ok();
-            acc
-        })
+/// Places a source file beside its chunks under the collision policy: writes it
+/// when absent, reuses a byte-identical one, and refuses (no overwrite) when a
+/// different file already claims the name. The loader reads the source from the
+/// corpus dir, so a chunk without its source there is unusable.
+fn place_source(
+    out: &Path,
+    filename: &str,
+    bytes: &[u8],
+    sha256: &str,
+) -> Result<SourceCopy, CliError> {
+    let dest = out.join(filename);
+    let existing_sha = fs::read(&dest)
+        .ok()
+        .map(|existing| source_sha256(&existing));
+    let action = source_copy_decision(existing_sha.as_deref(), sha256);
+    if action == SourceCopy::Write {
+        fs::write(&dest, bytes)?;
+    }
+    Ok(action)
 }
 
 /// A filesystem-safe, stable id from a source stem: lowercase, runs of
@@ -1591,11 +1603,18 @@ fn slugify(stem: &str) -> String {
             gap = true;
         }
     }
-    slug
+    // A stem with no ASCII alphanumerics ("曲", "---") must still get a stable,
+    // nonempty id; `unique_group_id` then disambiguates repeats.
+    if slug.is_empty() {
+        "untitled".to_owned()
+    } else {
+        slug
+    }
 }
 
 /// Bulk-ingests every tab file in `dir` into corpus chunk + group records,
 /// then builds the manifest and prints a skip report.
+#[allow(clippy::too_many_lines)] // one bulk I/O orchestration: walk, import, select, assemble, place, report
 fn cmd_ingest(dir: &Path, output: Option<&Path>, with_bass: bool) -> Result<(), CliError> {
     let out = output.map_or_else(|| PathBuf::from("corpus"), Path::to_path_buf);
     fs::create_dir_all(&out)?;
@@ -1609,7 +1628,20 @@ fn cmd_ingest(dir: &Path, output: Option<&Path>, with_bass: bool) -> Result<(), 
     let mut ingested = 0_usize;
     let mut chunk_total = 0_usize;
     let mut skipped: Vec<(String, String)> = Vec::new();
+    // Seed the used ids from any group already in the corpus, so re-ingesting
+    // into an existing directory never reuses — and overwrites — a group id.
     let mut used_ids: HashSet<String> = HashSet::new();
+    if let Ok(existing) = fs::read_dir(&out) {
+        for entry in existing.flatten() {
+            if let Some(stem) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.strip_suffix(".group.json"))
+            {
+                used_ids.insert(stem.to_owned());
+            }
+        }
+    }
 
     for path in &entries {
         let name = path
@@ -1646,10 +1678,34 @@ fn cmd_ingest(dir: &Path, output: Option<&Path>, with_bass: bool) -> Result<(), 
         let group_id = unique_group_id(&slugify(stem), &mut used_ids);
         let sha256 = source_sha256(&bytes);
         let (records, group) =
-            assemble_ingest_group(path, &score, &selected, &group_id, stem, &sha256)?;
+            match assemble_ingest_group(path, &score, &selected, &group_id, stem, &sha256) {
+                Ok(pair) => pair,
+                Err(err) => {
+                    skipped.push((name, format!("assembly error: {err}")));
+                    continue;
+                }
+            };
         if records.is_empty() {
             skipped.push((name, "no phrase survived splitting".to_owned()));
             continue;
+        }
+
+        // Place the source beside its chunks — the loader reads it from here.
+        // A name that collides with a *different* source skips this file rather
+        // than overwrite or mislink.
+        match place_source(&out, &name, &bytes, &sha256) {
+            Ok(SourceCopy::Collision) => {
+                skipped.push((
+                    name,
+                    "source filename collides with a different file".to_owned(),
+                ));
+                continue;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                skipped.push((name, format!("source copy error: {err}")));
+                continue;
+            }
         }
 
         for meta in &records {

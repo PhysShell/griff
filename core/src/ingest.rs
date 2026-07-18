@@ -55,9 +55,19 @@ pub fn classify_track_role(track: &Track) -> TrackRole {
                 .split(|c: char| !c.is_ascii_alphanumeric())
                 .any(|token| token == word)
         };
-        if ["drum", "drums", "perc", "percussion", "vocal", "vocals", "voice", "vox", "sing"]
-            .iter()
-            .any(|w| has(w))
+        if [
+            "drum",
+            "drums",
+            "perc",
+            "percussion",
+            "vocal",
+            "vocals",
+            "voice",
+            "vox",
+            "sing",
+        ]
+        .iter()
+        .any(|w| has(w))
         {
             return TrackRole::Other;
         }

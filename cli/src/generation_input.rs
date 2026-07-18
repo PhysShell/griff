@@ -13,7 +13,7 @@
 use std::fs;
 use std::path::Path;
 
-use griff_core::corpus::ChunkMeta;
+use griff_core::corpus::{source_sha256, ChunkMeta};
 use griff_core::generation_input::{corpus_material, prepare_chunk, LoadedChunk};
 use griff_core::import;
 
@@ -61,7 +61,15 @@ pub fn load_corpus_material(dir: &Path) -> Result<CorpusMaterial, GenerationInpu
 fn load_chunk(dir: &Path, record_name: &str) -> Option<LoadedChunk> {
     let meta: ChunkMeta =
         serde_json::from_str(&fs::read_to_string(dir.join(record_name)).ok()?).ok()?;
-    let source =
-        import::import_score_auto(&fs::read(dir.join(&meta.source.filename)).ok()?).ok()?;
+    let bytes = fs::read(dir.join(&meta.source.filename)).ok()?;
+    // A filename is not an identity: when the record pins the source's hash
+    // (schema v9), a same-named but different file must not silently supply the
+    // notes. A mismatch is a load failure, reported like a missing source.
+    if let Some(expected) = &meta.source.sha256 {
+        if &source_sha256(&bytes) != expected {
+            return None;
+        }
+    }
+    let source = import::import_score_auto(&bytes).ok()?;
     prepare_chunk(meta, &source)
 }
