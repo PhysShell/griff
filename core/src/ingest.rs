@@ -47,19 +47,24 @@ const BASS_LOW_STRING_CEILING: u8 = 28;
 #[must_use]
 pub fn classify_track_role(track: &Track) -> TrackRole {
     if let Some(name) = track.name.as_deref() {
-        let name = name.to_lowercase();
-        if name.contains("bass") {
-            return TrackRole::Bass;
-        }
-        if name.contains("drum")
-            || name.contains("perc")
-            || name.contains("vocal")
-            || name.contains("voice")
-            || name.contains("sing")
+        // Match whole words, not substrings, so "bassoon" is not a bass; and
+        // test the non-fretted roles first, so "Bass Drum" is a drum.
+        let lower = name.to_lowercase();
+        let has = |word: &str| {
+            lower
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|token| token == word)
+        };
+        if ["drum", "drums", "perc", "percussion", "vocal", "vocals", "voice", "vox", "sing"]
+            .iter()
+            .any(|w| has(w))
         {
             return TrackRole::Other;
         }
-        if name.contains("guitar") || name.contains("gtr") {
+        if has("bass") {
+            return TrackRole::Bass;
+        }
+        if has("guitar") || has("guitars") || has("gtr") {
             return TrackRole::Guitar;
         }
     }
