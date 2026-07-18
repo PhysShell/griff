@@ -131,8 +131,8 @@ front-ends and audio build on them:
         delta says "lower under `candidate_chain` v1", which is a fact about the
         policy), k-best or Slice C, weight tuning or sliders, S9 learning, S15
         harmony, and S17 rendering.
-- [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16** (PR
-      pending review): favorite/reject controls (mutually exclusive) and a
+- [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16 and merged
+      as PR #126**: favorite/reject controls (mutually exclusive) and a
       session **history** of every auditioned candidate with typed provenance,
       in `griff_ui_core::history` (append-only `SessionHistory`, stable
       `HistoryId`, `Verdict` toggle, generator-split `Provenance`); the cockpit
