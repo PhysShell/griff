@@ -8,7 +8,7 @@
 //! guitars (both of them, for the two-guitar writing this corpus is full of),
 //! optionally the bass, and skip the rest.
 
-use crate::score::Track;
+use crate::score::{Score, Track};
 
 /// The instrumental role of a track, as far as ingest can tell.
 ///
@@ -89,11 +89,20 @@ pub fn classify_track_role(track: &Track) -> TrackRole {
     }
 }
 
+/// The indices of the tracks a bulk ingest should take from `score`: every
+/// guitar, and the bass parts too when `include_bass` is set. Order is
+/// preserved. Empty when the file has no part worth ingesting — the caller
+/// treats that as a skip, not an error.
+#[must_use]
+pub fn select_ingest_tracks(_score: &Score, _include_bass: bool) -> Vec<usize> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{classify_track_role, TrackRole};
+    use super::{classify_track_role, select_ingest_tracks, TrackRole};
     use crate::event::{Pitch, Tuning};
-    use crate::score::Track;
+    use crate::score::{LossReport, Score, Track};
 
     fn track(name: Option<&str>, channel: u8, strings: &[u8]) -> Track {
         Track {
@@ -101,6 +110,16 @@ mod tests {
             channel,
             voices: Vec::new(),
             tuning: Tuning::new(strings.iter().map(|&m| Pitch(m)).collect()),
+        }
+    }
+
+    fn score_of(tracks: Vec<Track>) -> Score {
+        Score {
+            ticks_per_quarter: 480,
+            master_bars: Vec::new(),
+            tracks,
+            source_meta: None,
+            loss: LossReport::new(),
         }
     }
 
@@ -198,5 +217,47 @@ mod tests {
             classify_track_role(&track(None, 9, &STANDARD_6)),
             TrackRole::Other
         );
+    }
+
+    // ── select_ingest_tracks ──────────────────────────────────────────────────
+
+    fn two_guitars_bass_and_drums() -> Score {
+        score_of(vec![
+            track(Some("Guitar 1"), 0, &STANDARD_6),
+            track(Some("Guitar 2"), 0, &STANDARD_7),
+            track(Some("Bass"), 0, &BASS_4),
+            track(Some("Drums"), 9, &[0, 0, 0, 0, 0, 0]),
+        ])
+    }
+
+    #[test]
+    fn selects_both_guitars_and_skips_bass_and_drums_by_default() {
+        assert_eq!(
+            select_ingest_tracks(&two_guitars_bass_and_drums(), false),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn includes_bass_when_asked_still_skipping_drums() {
+        assert_eq!(
+            select_ingest_tracks(&two_guitars_bass_and_drums(), true),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_fretted_part_selects_nothing() {
+        let score = score_of(vec![
+            track(Some("Drums"), 9, &[0, 0, 0, 0, 0, 0]),
+            track(Some("Lead Vocals"), 0, &[0, 0, 0, 0, 0, 0]),
+        ]);
+        assert!(select_ingest_tracks(&score, true).is_empty());
+    }
+
+    #[test]
+    fn a_single_guitar_is_selected() {
+        let score = score_of(vec![track(None, 0, &STANDARD_6)]);
+        assert_eq!(select_ingest_tracks(&score, false), vec![0]);
     }
 }
