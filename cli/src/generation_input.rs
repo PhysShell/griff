@@ -78,20 +78,31 @@ fn load_chunk(
     cache: &mut HashMap<String, Score>,
     import: &mut impl FnMut(&[u8]) -> Option<Score>,
 ) -> Option<LoadedChunk> {
-    let _ = cache;
     let meta: ChunkMeta =
         serde_json::from_str(&fs::read_to_string(dir.join(record_name)).ok()?).ok()?;
-    let bytes = fs::read(dir.join(&meta.source.filename)).ok()?;
-    // A filename is not an identity: when the record pins the source's hash
-    // (schema v9), a same-named but different file must not silently supply the
-    // notes. A mismatch is a load failure, reported like a missing source.
-    if let Some(expected) = &meta.source.sha256 {
-        if &source_sha256(&bytes) != expected {
-            return None;
+    // Key the parsed source by its content hash (v9) — falling back to the
+    // filename for pre-v9 records — so every chunk of one tab reuses a single
+    // parse. Determinism is unchanged: `prepare_chunk` slices an immutable
+    // `&Score`, so a shared parse yields exactly the per-chunk-parse result.
+    let key = meta
+        .source
+        .sha256
+        .clone()
+        .unwrap_or_else(|| meta.source.filename.clone());
+    if !cache.contains_key(&key) {
+        let bytes = fs::read(dir.join(&meta.source.filename)).ok()?;
+        // A filename is not an identity: when the record pins the source's hash
+        // (schema v9), a same-named but different file must not silently supply
+        // the notes. A mismatch is a load failure — and a cache miss, so the
+        // check runs for every distinct expected hash, never bypassed by reuse.
+        if let Some(expected) = &meta.source.sha256 {
+            if &source_sha256(&bytes) != expected {
+                return None;
+            }
         }
+        cache.insert(key.clone(), import(&bytes)?);
     }
-    let source = import(&bytes)?;
-    prepare_chunk(meta, &source)
+    prepare_chunk(meta, cache.get(&key)?)
 }
 
 #[cfg(test)]
