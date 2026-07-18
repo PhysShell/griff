@@ -23,6 +23,7 @@ use griff_core::{
     event::{NoteMarks, NotePosition, TechniqueSource, Ticks},
     generate, gesture, harmony,
     import::{self, ImportError},
+    ingest,
     midi::{self, MidiError},
     novelty, rerank,
     score::{AtomEvent, Score, Track, Voice},
@@ -222,6 +223,23 @@ enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Bulk-ingest a directory of MIDI / Guitar Pro files into corpus chunks:
+    /// each file's guitar (and optional bass) tracks are phrase-split, linked
+    /// as one per-file ensemble group, and stamped with community-tab rights.
+    /// Chunks are uncurated candidates — tags and reviewer are filled later.
+    Ingest {
+        /// Directory of source tab files to ingest.
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
+        /// Output directory for the chunk / group records (default: `corpus`).
+        #[arg(short, long, value_name = "OUT")]
+        output: Option<PathBuf>,
+        /// Also ingest bass tracks (kept as separate parts, never mixed with
+        /// guitar).
+        #[arg(long)]
+        with_bass: bool,
+    },
+
     /// Build a corpus manifest from a directory of curated `*.chunk.json` /
     /// `*.group.json` records and print a coverage summary (count toward the
     /// S7 ~100-phrase gate, cohort mix, rights, and review status).
@@ -349,6 +367,11 @@ fn run() -> Result<(), CliError> {
             ensemble,
         } => cmd_curate(&path, output.as_deref(), ensemble),
         Command::Split { path, output } => cmd_split(&path, output.as_deref()),
+        Command::Ingest {
+            dir,
+            output,
+            with_bass,
+        } => cmd_ingest(&dir, output.as_deref(), with_bass),
         Command::Manifest { dir, output } => cmd_manifest(&dir, output.as_deref()),
         Command::Swang { command } => match command {
             SwangCommand::Check { input } => cmd_swang_check(&input),
@@ -1298,6 +1321,20 @@ fn phrase_chunks(
         .ok_or_else(|| {
             CliError::Split("split needs a track with notes in its primary voice".to_owned())
         })?;
+    phrase_chunks_for_track(path, score, inputs, track, None)
+}
+
+/// Phrase-splits a specific `track` (rather than the first note-bearing one),
+/// optionally linking every chunk to `ensemble`. `griff split` picks the track
+/// automatically; `griff ingest` drives this per selected guitar so both parts
+/// of one tab become chunks under a shared group.
+fn phrase_chunks_for_track(
+    path: &Path,
+    score: &Score,
+    inputs: &CurateInputs,
+    track: usize,
+    ensemble: Option<EnsembleRef>,
+) -> Result<Vec<PhraseChunk>, CliError> {
     let cuts: Vec<u32> = detect_boundaries(score, track)
         .iter()
         .map(|b| b.start_tick)
@@ -1311,7 +1348,15 @@ fn phrase_chunks(
         return Err(CliError::Split("score has no bars to split".to_owned()));
     }
 
-    Ok(chunks_for_segments(path, score, inputs, track, &segments))
+    let mut chunks = chunks_for_segments(path, score, inputs, track, &segments);
+    // Link every phrase to its ensemble group after the split — `ChunkMeta`
+    // owns the field, so no split-path signature has to carry it.
+    if let Some(link) = ensemble {
+        for chunk in &mut chunks {
+            chunk.meta.ensemble = Some(link.clone());
+        }
+    }
+    Ok(chunks)
 }
 
 /// Builds one [`PhraseChunk`] per segment in which `track` sounds, renumbered
@@ -1384,20 +1429,169 @@ fn chunks_for_segments(
 /// chunks and the group; the caller writes them. Relations stay empty here —
 /// this slice records provenance, not measured inter-part dependencies.
 fn assemble_ingest_group(
-    _path: &Path,
-    _score: &Score,
-    _selected: &[usize],
+    path: &Path,
+    score: &Score,
+    selected: &[usize],
     group_id: &str,
-    _base_title: &str,
+    base_title: &str,
 ) -> Result<(Vec<ChunkMeta>, EnsembleGroup), CliError> {
+    let mut records: Vec<ChunkMeta> = Vec::new();
+    let mut members: Vec<ChunkId> = Vec::new();
+    for (part, &track) in selected.iter().enumerate() {
+        let inputs = default_ingest_inputs(score, track, group_id, base_title, part);
+        let link = EnsembleRef {
+            group_id: group_id.to_owned(),
+            part_index: u32::try_from(part).unwrap_or(0),
+        };
+        for chunk in phrase_chunks_for_track(path, score, &inputs, track, Some(link))? {
+            members.push(chunk.meta.id.clone());
+            records.push(chunk.meta);
+        }
+    }
     Ok((
-        Vec::new(),
+        records,
         EnsembleGroup {
             id: group_id.to_owned(),
-            members: Vec::new(),
+            members,
             relations: Vec::new(),
         },
     ))
+}
+
+/// The non-interactive curation inputs for a bulk-ingested guitar part: a
+/// part-qualified id, the real tuning label, and the default rights for a
+/// scraped community tab (copyrighted composition, not redistributable). Tags
+/// and reviewer are left empty for the cockpit curation pass.
+fn default_ingest_inputs(
+    score: &Score,
+    track: usize,
+    group_id: &str,
+    base_title: &str,
+    part: usize,
+) -> CurateInputs {
+    let tuning = score.tracks.get(track).map_or_else(
+        || "standard_e".to_owned(),
+        |t| ingest::tuning_label(&t.tuning),
+    );
+    let quality_flags = if score.loss.is_clean() {
+        vec![QualityFlag::Clean]
+    } else {
+        vec![QualityFlag::Lossy]
+    };
+    CurateInputs {
+        id: format!("{group_id}_g{part}"),
+        title: format!("{base_title} (guitar {part})"),
+        tuning,
+        style_cohort: StyleCohort::Core,
+        tags: Vec::new(),
+        quality_flags,
+        reviewer: None,
+        rights: RightsInfo {
+            rights_status: RightsStatus::CopyrightedComposition,
+            acquisition: Acquisition::CommunityTabSite,
+            redistributable: false,
+            notes: String::new(),
+        },
+    }
+}
+
+/// A filesystem-safe, stable id from a source stem: lowercase, runs of
+/// non-alphanumerics collapsed to one `_`, edges trimmed.
+fn slugify(stem: &str) -> String {
+    let mut slug = String::new();
+    let mut gap = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if gap && !slug.is_empty() {
+                slug.push('_');
+            }
+            slug.push(ch.to_ascii_lowercase());
+            gap = false;
+        } else {
+            gap = true;
+        }
+    }
+    slug
+}
+
+/// Bulk-ingests every tab file in `dir` into corpus chunk + group records,
+/// then builds the manifest and prints a skip report.
+fn cmd_ingest(dir: &Path, output: Option<&Path>, with_bass: bool) -> Result<(), CliError> {
+    let out = output.map_or_else(|| PathBuf::from("corpus"), Path::to_path_buf);
+    fs::create_dir_all(&out)?;
+
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file())
+        .collect();
+    entries.sort();
+
+    let mut ingested = 0_usize;
+    let mut chunk_total = 0_usize;
+    let mut skipped: Vec<(String, String)> = Vec::new();
+
+    for path in &entries {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_owned();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("untitled");
+
+        let bytes = match fs::read(path) {
+            Ok(b) => b,
+            Err(err) => {
+                skipped.push((name, format!("read error: {err}")));
+                continue;
+            }
+        };
+        let score = match import::import_score_auto(&bytes) {
+            Ok(score) => score,
+            Err(err) => {
+                skipped.push((name, format!("import error: {err}")));
+                continue;
+            }
+        };
+
+        let selected = ingest::select_ingest_tracks(&score, with_bass);
+        if selected.is_empty() {
+            skipped.push((name, "no guitar or bass track".to_owned()));
+            continue;
+        }
+
+        let group_id = slugify(stem);
+        let (records, group) = assemble_ingest_group(path, &score, &selected, &group_id, stem)?;
+        if records.is_empty() {
+            skipped.push((name, "no phrase survived splitting".to_owned()));
+            continue;
+        }
+
+        for meta in &records {
+            let json = serde_json::to_string_pretty(meta).map_err(CliError::Json)?;
+            write_output(&out.join(format!("{}.chunk.json", meta.id.0)), &json)?;
+            chunk_total = chunk_total.saturating_add(1);
+        }
+        let group_json = serde_json::to_string_pretty(&group).map_err(CliError::Json)?;
+        write_output(&out.join(format!("{group_id}.group.json")), &group_json)?;
+        ingested = ingested.saturating_add(1);
+    }
+
+    println!(
+        "ingested {ingested} file(s) into {chunk_total} phrase chunk(s) -> {}",
+        out.display()
+    );
+    if !skipped.is_empty() {
+        println!("skipped {} file(s):", skipped.len());
+        for (file, reason) in &skipped {
+            println!("  {file}: {reason}");
+        }
+    }
+
+    // Refresh the manifest over the whole corpus directory.
+    cmd_manifest(&out, None)
 }
 
 /// Splits `score` into phrase chunks and writes each to `<stem>.p<N>.chunk.json`.
@@ -2452,6 +2646,17 @@ mod tests {
         let relations = measure_group_relations(&score, &[0, 1]).expect("both parts measurable");
         assert_eq!(relations.len(), 1);
         assert_eq!(relations[0].parts, (0, 1));
+    }
+
+    #[test]
+    fn slugify_makes_a_stable_id_from_a_messy_stem() {
+        use super::slugify;
+        assert_eq!(
+            slugify("Dance Gavin Dance - Care (ver 2 by X)"),
+            "dance_gavin_dance_care_ver_2_by_x"
+        );
+        assert_eq!(slugify("A Lot Like Birds"), "a_lot_like_birds");
+        assert_eq!(slugify("--edge--"), "edge");
     }
 
     #[test]
