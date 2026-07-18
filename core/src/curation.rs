@@ -345,17 +345,26 @@ mod tests {
     }
 
     #[test]
-    fn a_cycle_is_a_diagnostic() {
-        // Two chunks quoting each other (both forward/back) — a loop.
-        let chunks = vec![
-            chunk("g_g0_p0", "g", 0, Some(1)),
-            chunk("g_g0_p1", "g", 0, Some(0)),
+    fn diagnostics_are_order_independent() {
+        // Several distinct defects: two danglings and a self-link. The
+        // diagnostics must come out in the same order however the input is
+        // permuted — determinism can't stop at the clusters and leave the
+        // error list to the iteration order.
+        let broken = vec![
+            chunk("g_g0_p0", "g", 0, None),
+            chunk("g_g0_p3", "g", 0, Some(1)), // dangling: no p1
+            chunk("g_g0_p4", "g", 0, Some(2)), // dangling: no p2
+            chunk("g_g0_p5", "g", 0, Some(5)), // self-link
         ];
-        let (_, diags) = build_clusters(&chunks);
-        assert!(
-            !diags.is_empty(),
-            "a link cycle must be reported, never silently clustered"
+        let mut shuffled = broken.clone();
+        shuffled.reverse();
+        assert_eq!(
+            build_clusters(&broken),
+            build_clusters(&shuffled),
+            "clusters and diagnostics are both order-independent"
         );
+        // And the defects are genuinely there (not an empty-vs-empty tie).
+        assert_eq!(build_clusters(&broken).1.len(), 3);
     }
 
     #[test]
