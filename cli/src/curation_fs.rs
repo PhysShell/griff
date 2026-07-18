@@ -41,9 +41,11 @@ pub enum CurationFsError {
     Encode(#[from] StoreEncodeError),
 }
 
-/// The outcome of loading: a *missing* file is an explicit, typed absence — the
-/// caller decides whether that means "start a fresh empty store" — and is never
-/// conflated with a *malformed* file, which is a hard [`CurationFsError::Decode`].
+/// The outcome of loading.
+///
+/// A *missing* file is an explicit, typed absence — the caller decides whether
+/// that means "start a fresh empty store" — and is never conflated with a
+/// *malformed* file, which is a hard [`CurationFsError::Decode`].
 #[derive(Debug)]
 pub enum StoreOnDisk {
     /// No store file exists at the path yet.
@@ -67,12 +69,12 @@ enum FailPoint {
 /// [`CurationFsError::Io`] for any read error other than "not found" (which is
 /// reported as [`StoreOnDisk::Missing`], not an error).
 pub fn load_store(path: &Path) -> Result<StoreOnDisk, CurationFsError> {
-    // STUB (red): always reports absence, so decode/round-trip tests fail.
-    let _ = (
-        path,
-        decode_store as fn(&[u8]) -> Result<CurationStoreV1, StoreDecodeError>,
-    );
-    Ok(StoreOnDisk::Missing)
+    match fs::read(path) {
+        Ok(bytes) => Ok(StoreOnDisk::Loaded(decode_store(&bytes)?)),
+        // A missing file is a typed absence the caller resolves, not a failure.
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(StoreOnDisk::Missing),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Atomically and durably writes `store` to `path`, replacing any existing one.
@@ -82,20 +84,39 @@ pub fn load_store(path: &Path) -> Result<StoreOnDisk, CurationFsError> {
 /// written); [`CurationFsError::Io`] if any filesystem step fails (the previous
 /// store is left intact and the temp is removed).
 pub fn write_store(path: &Path, store: &CurationStoreV1) -> Result<(), CurationFsError> {
-    // STUB (red): writes nothing, so persistence/atomicity tests fail.
-    let _ = (
-        path,
-        store,
-        encode_store as fn(&CurationStoreV1) -> Result<Vec<u8>, StoreEncodeError>,
-    );
-    Ok(())
+    // Encoding validates the store; an invalid one is refused before any bytes
+    // are produced, so a write never begins with garbage.
+    let bytes = encode_store(store)?;
+    atomic_write(path, &bytes, FailPoint::None)
 }
 
 /// The atomic-write core, with a test-only failure injection point.
 fn atomic_write(path: &Path, bytes: &[u8], fail: FailPoint) -> Result<(), CurationFsError> {
-    // STUB (red): a no-op that neither writes nor honors injection.
-    let _ = (path, bytes, fail);
-    Ok(())
+    let tmp = temp_sibling(path);
+    // Stage the full contents and flush them to the device before the temp is
+    // eligible to become the store; on any failure, take the temp with us. A
+    // leftover temp is harmless (it is never the canonical store), so a failed
+    // cleanup is best-effort and does not mask the original error.
+    if let Err(e) = write_temp(&tmp, bytes) {
+        fs::remove_file(&tmp).ok();
+        return Err(e);
+    }
+    if fail == FailPoint::BeforeReplace {
+        fs::remove_file(&tmp).ok();
+        return Err(injected("before"));
+    }
+    if fail == FailPoint::DuringReplace {
+        fs::remove_file(&tmp).ok();
+        return Err(injected("during"));
+    }
+    // The atomic publish: rename the fully-synced temp over the canonical path.
+    // Both POSIX and Windows (MoveFileExW) replace an existing file atomically.
+    if let Err(e) = fs::rename(&tmp, path) {
+        fs::remove_file(&tmp).ok();
+        return Err(e.into());
+    }
+    // The rename is durable only once the directory entry is flushed.
+    sync_parent_dir(path)
 }
 
 /// The fixed sibling temp path a write stages into before the rename.
@@ -109,7 +130,6 @@ fn temp_sibling(path: &Path) -> PathBuf {
 }
 
 /// Writes `bytes` to `tmp` and flushes them all the way to the device.
-#[allow(dead_code)]
 fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<(), CurationFsError> {
     let mut file = File::create(tmp)?;
     file.write_all(bytes)?;
@@ -121,7 +141,6 @@ fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<(), CurationFsError> {
 /// `fsync`s the parent directory so the rename itself is durable — on platforms
 /// that let a directory be opened as a file (POSIX). A no-op elsewhere.
 #[cfg(unix)]
-#[allow(dead_code)]
 fn sync_parent_dir(path: &Path) -> Result<(), CurationFsError> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         File::open(dir)?.sync_all()?;
@@ -132,18 +151,16 @@ fn sync_parent_dir(path: &Path) -> Result<(), CurationFsError> {
 /// Windows/other: `std` cannot `fsync` a directory handle, and the rename is the
 /// durability barrier the platform itself provides. Intentionally a no-op.
 #[cfg(not(unix))]
-#[allow(dead_code)]
-fn sync_parent_dir(_path: &Path) -> Result<(), CurationFsError> {
+#[allow(clippy::unnecessary_wraps)] // signature parity with the unix variant
+const fn sync_parent_dir(_path: &Path) -> Result<(), CurationFsError> {
     Ok(())
 }
 
 /// A helper to make an injected failure a typed I/O error.
-#[allow(dead_code)]
 fn injected(stage: &str) -> CurationFsError {
-    CurationFsError::Io(io::Error::new(
-        ErrorKind::Other,
-        format!("injected curation-store failure {stage} replace"),
-    ))
+    CurationFsError::Io(io::Error::other(format!(
+        "injected curation-store failure {stage} replace"
+    )))
 }
 
 #[cfg(test)]
@@ -170,7 +187,7 @@ mod tests {
     /// A fresh, empty scratch directory unique to this test (and process).
     fn scratch(tag: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!("griff_curfs_{}_{tag}", process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        fs::remove_dir_all(&dir).ok();
         fs::create_dir_all(&dir).expect("create scratch dir");
         dir
     }
