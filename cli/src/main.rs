@@ -45,14 +45,14 @@ struct Cli {
 enum Command {
     /// Parse a MIDI or Guitar Pro file and print a one-line summary per track.
     Import {
-        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`/`.gp`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
     },
 
     /// Print a detailed bar-by-bar inspection of a MIDI or Guitar Pro file.
     Inspect {
-        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`/`.gp`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
         /// Expand repeats (`|: … :|×N`) into the as-played bar sequence.
@@ -72,7 +72,7 @@ enum Command {
 
     /// Classify each bar of a MIDI or Guitar Pro file as Riff, Solo, Breakdown, Clean, or Unknown.
     Classify {
-        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`/`.gp`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
     },
@@ -80,7 +80,7 @@ enum Command {
     /// Measure each track's structural character (S14): pattern period,
     /// repeatability, loopability, and complexity — a "song map".
     Structure {
-        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`/`.gp`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
     },
@@ -88,7 +88,7 @@ enum Command {
     /// Detect phrase boundaries per track (S4): where one musical phrase ends
     /// and the next begins, with the heuristic signals that fired.
     Phrases {
-        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`) file.
+        /// Path to the MIDI (`.mid`) or Guitar Pro (`.gp3`/`.gp4`/`.gp5`/`.gpx`/`.gp`) file.
         #[arg(value_name = "FILE")]
         path: PathBuf,
     },
@@ -1447,6 +1447,7 @@ fn source_format(score: &Score) -> SourceFormat {
         Some("GP4") => SourceFormat::Gp4,
         Some("GP5") => SourceFormat::Gp5,
         Some("GP6") => SourceFormat::Gpx,
+        Some("GP7") => SourceFormat::Gp,
         _ => SourceFormat::Midi,
     }
 }
