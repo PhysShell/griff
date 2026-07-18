@@ -1,5 +1,5 @@
-//! Ingest-time interpretation of an imported [`Score`], for building the corpus
-//! from bulk Guitar Pro / MIDI sources.
+//! Ingest-time interpretation of an imported [`Score`](crate::score::Score),
+//! for building the corpus from bulk Guitar Pro / MIDI sources.
 //!
 //! The first concern is **track role**: a multitrack tab mixes guitars, bass,
 //! drums and vocals, but only some parts belong in a riff corpus. This module
@@ -27,10 +27,66 @@ pub enum TrackRole {
     Other,
 }
 
+/// The lowest MIDI pitch a guitar's low string is expected to reach; a fretted
+/// part whose lowest open string is at or below this is read as a bass. E1.
+const BASS_LOW_STRING_CEILING: u8 = 28;
+
 /// Classifies a track's instrumental role from its name, channel, and tuning.
+///
+/// Precedence, most reliable first:
+/// 1. **Name.** An explicit part name is trusted over structure — a track
+///    called "Bass" with a guitar's tuning is still a bass. "Bass" is checked
+///    before "guitar" so "Bass Guitar" reads as bass.
+/// 2. **Channel 9**, the General MIDI percussion channel, is drums.
+/// 3. **Tuning.** A placeholder tuning (empty, or every string the same pitch —
+///    the all-`C-1` shape a non-fretted track imports as) is not an instrument
+///    we ingest. Otherwise the string count separates bass from guitar:
+///    four or fewer is a bass, six or more a guitar, and a five-string is a
+///    bass only if its lowest string reaches into bass range.
 #[must_use]
-pub fn classify_track_role(_track: &Track) -> TrackRole {
-    TrackRole::Other
+pub fn classify_track_role(track: &Track) -> TrackRole {
+    if let Some(name) = track.name.as_deref() {
+        let name = name.to_lowercase();
+        if name.contains("bass") {
+            return TrackRole::Bass;
+        }
+        if name.contains("drum")
+            || name.contains("perc")
+            || name.contains("vocal")
+            || name.contains("voice")
+            || name.contains("sing")
+        {
+            return TrackRole::Other;
+        }
+        if name.contains("guitar") || name.contains("gtr") {
+            return TrackRole::Guitar;
+        }
+    }
+
+    if track.channel == 9 {
+        return TrackRole::Other;
+    }
+
+    let open = track.tuning.open_strings();
+    let Some(first) = open.first().map(|p| p.0) else {
+        return TrackRole::Other;
+    };
+    if open.iter().all(|p| p.0 == first) {
+        return TrackRole::Other;
+    }
+
+    match open.len() {
+        0..=4 => TrackRole::Bass,
+        5 => {
+            let lowest = open.iter().map(|p| p.0).min().unwrap_or(first);
+            if lowest <= BASS_LOW_STRING_CEILING {
+                TrackRole::Bass
+            } else {
+                TrackRole::Guitar
+            }
+        }
+        _ => TrackRole::Guitar,
+    }
 }
 
 #[cfg(test)]
@@ -59,28 +115,43 @@ mod tests {
 
     #[test]
     fn six_string_tuning_is_a_guitar() {
-        assert_eq!(classify_track_role(&track(None, 0, &STANDARD_6)), TrackRole::Guitar);
+        assert_eq!(
+            classify_track_role(&track(None, 0, &STANDARD_6)),
+            TrackRole::Guitar
+        );
     }
 
     #[test]
     fn seven_string_tuning_is_a_guitar() {
-        assert_eq!(classify_track_role(&track(None, 0, &STANDARD_7)), TrackRole::Guitar);
+        assert_eq!(
+            classify_track_role(&track(None, 0, &STANDARD_7)),
+            TrackRole::Guitar
+        );
     }
 
     #[test]
     fn four_string_tuning_is_a_bass() {
-        assert_eq!(classify_track_role(&track(None, 0, &BASS_4)), TrackRole::Bass);
+        assert_eq!(
+            classify_track_role(&track(None, 0, &BASS_4)),
+            TrackRole::Bass
+        );
     }
 
     #[test]
     fn five_string_with_a_low_b_is_a_bass() {
-        assert_eq!(classify_track_role(&track(None, 0, &BASS_5)), TrackRole::Bass);
+        assert_eq!(
+            classify_track_role(&track(None, 0, &BASS_5)),
+            TrackRole::Bass
+        );
     }
 
     #[test]
     fn all_strings_at_one_pitch_is_a_placeholder_not_an_instrument() {
         // The all-`C-1` (MIDI 0) shape a drum/vocal track imports as.
-        assert_eq!(classify_track_role(&track(None, 0, &[0, 0, 0, 0, 0, 0])), TrackRole::Other);
+        assert_eq!(
+            classify_track_role(&track(None, 0, &[0, 0, 0, 0, 0, 0])),
+            TrackRole::Other
+        );
     }
 
     #[test]
@@ -123,6 +194,9 @@ mod tests {
 
     #[test]
     fn percussion_channel_is_other_without_a_name() {
-        assert_eq!(classify_track_role(&track(None, 9, &STANDARD_6)), TrackRole::Other);
+        assert_eq!(
+            classify_track_role(&track(None, 9, &STANDARD_6)),
+            TrackRole::Other
+        );
     }
 }
