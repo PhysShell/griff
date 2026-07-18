@@ -140,7 +140,7 @@ fn norm_bar(track: &Track, bar: &MasterBar) -> NormBar {
     NormBar {
         index: bar.index,
         time_sig: [bar.time_signature.numerator, bar.time_signature.denominator],
-        tempo: bar.tempo.0,
+        tempo: bar.tempo.as_f64(),
         start_tick: bar.tick_range.start.0,
         end_tick: bar.tick_range.end.0,
         voices,
@@ -239,6 +239,10 @@ fn warning_label(warning: &ImportWarning) -> String {
             format!("track_name_invalid_utf8:{track_index}")
         }
         ImportWarning::SmpteTimingUnsupported => "smpte_timing_unsupported".to_owned(),
+        ImportWarning::TempoApproximated {
+            bar_index,
+            nearest_micros,
+        } => format!("tempo_approximated:{bar_index}:{nearest_micros}"),
         ImportWarning::Other(message) => format!("other:{message}"),
     }
 }

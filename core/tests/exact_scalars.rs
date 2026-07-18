@@ -234,17 +234,13 @@ fn export_of_an_inexact_tempo_reports_a_typed_approximation() {
     let score = one_bar_score(Tempo::from_bpm_integer(121).expect("valid"));
     let export = midi::export_score(&score).expect("export must still succeed");
     assert!(
-        export
-            .loss
-            .warnings
-            .iter()
-            .any(|w| matches!(
-                w,
-                ImportWarning::TempoApproximated {
-                    bar_index: 0,
-                    nearest_micros: 495_868,
-                }
-            )),
+        export.loss.warnings.iter().any(|w| matches!(
+            w,
+            ImportWarning::TempoApproximated {
+                bar_index: 0,
+                nearest_micros: 495_868,
+            }
+        )),
         "an inexact MIDI tempo must surface as a typed approximation, got {:?}",
         export.loss.warnings
     );

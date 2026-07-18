@@ -40,7 +40,7 @@ fn seed_score(bar_count: usize) -> Score {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("valid tempo"),
+                tempo: Tempo::from_bpm_integer(120).expect("valid tempo"),
                 repeat: RepeatMarker::default(),
             }
         })

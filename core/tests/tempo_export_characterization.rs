@@ -24,7 +24,10 @@
 )]
 
 use griff_core::{
-    event::{NoteMarks, Pitch, TechniqueSource, Tempo, Ticks, TimeSignature, Tuning, Velocity},
+    event::{
+        NoteMarks, Pitch, TechniqueEvidence, TechniqueSource, Tempo, Ticks, TimeSignature, Tuning,
+        Velocity,
+    },
     midi,
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
@@ -86,12 +89,14 @@ fn one_bar_score(tempo: Tempo) -> Score {
 }
 
 fn export_bytes(score: &Score) -> Vec<u8> {
-    midi::export_score(score).expect("export must succeed")
+    midi::export_score(score)
+        .expect("export must succeed")
+        .bytes
 }
 
 #[test]
 fn integer_bpm_120_exports_exactly_500_000_micros() {
-    let score = one_bar_score(Tempo::new(120.0).expect("120 BPM"));
+    let score = one_bar_score(Tempo::from_bpm_integer(120).expect("120 BPM"));
     let micros = tempo_meta_micros(&export_bytes(&score));
     assert_eq!(
         micros,
@@ -105,14 +110,14 @@ fn integer_bpm_121_exports_the_rounded_495_868_micros() {
     // 60 000 000 / 121 = 495 867.768… — not integral. The exporter rounds to
     // nearest; this pins the value the exact-scalar migration must keep
     // producing (while making the approximation a reported fact).
-    let score = one_bar_score(Tempo::new(121.0).expect("121 BPM"));
+    let score = one_bar_score(Tempo::from_bpm_integer(121).expect("121 BPM"));
     let micros = tempo_meta_micros(&export_bytes(&score));
     assert_eq!(micros, vec![495_868]);
 }
 
 #[test]
 fn integer_bpm_250_exports_exactly_240_000_micros() {
-    let score = one_bar_score(Tempo::new(250.0).expect("250 BPM"));
+    let score = one_bar_score(Tempo::from_bpm_integer(250).expect("250 BPM"));
     let micros = tempo_meta_micros(&export_bytes(&score));
     assert_eq!(micros, vec![240_000]);
 }
@@ -123,8 +128,8 @@ fn midi_imported_tempo_reexports_to_identical_micros() {
     // microsecond value the source carried — including one with no integral
     // BPM form (470 003 µs ≈ 127.659 BPM).
     for source_micros in [500_000_u32, 495_868, 470_003, 750_000] {
-        let bpm = 60_000_000.0_f64 / f64::from(source_micros);
-        let score = one_bar_score(Tempo::new(bpm).expect("positive finite BPM"));
+        let score =
+            one_bar_score(Tempo::from_micros_per_quarter(source_micros).expect("valid micros"));
         let bytes = export_bytes(&score);
         assert_eq!(
             tempo_meta_micros(&bytes),
@@ -148,7 +153,7 @@ fn midi_inferred_position_confidence_is_half_of_explicit() {
     // them `InferredFromMidi` with the documented placeholder confidence 0.5 —
     // exactly half of explicit. The migration re-expresses this ratio in
     // basis points (5 000 of 10 000); the ratio itself is the pinned fact.
-    let score = one_bar_score(Tempo::new(120.0).expect("120 BPM"));
+    let score = one_bar_score(Tempo::from_bpm_integer(120).expect("120 BPM"));
     let imported = midi::import_score(&export_bytes(&score)).expect("import must succeed");
 
     let note = imported
@@ -166,9 +171,10 @@ fn midi_inferred_position_confidence_is_half_of_explicit() {
     let position = note.position.expect("MIDI import infers a position");
     assert_eq!(position.evidence.source, TechniqueSource::InferredFromMidi);
     let confidence = position.evidence.confidence;
-    let explicit = griff_core::event::TechniqueEvidence::explicit().confidence;
-    assert!(
-        (confidence * 2.0 - explicit).abs() < f64::EPSILON,
-        "inferred baseline is half of explicit confidence, got {confidence}"
+    let explicit = TechniqueEvidence::explicit().confidence;
+    assert_eq!(
+        confidence.get() * 2,
+        explicit.get(),
+        "inferred baseline is half of explicit confidence, got {confidence:?}"
     );
 }

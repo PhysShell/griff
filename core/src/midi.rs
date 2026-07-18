@@ -339,18 +339,25 @@ fn abs_to_delta(
         .collect()
 }
 
-/// Convert a [`Tempo`] (BPM) to microseconds per beat, clamped to MIDI's 24-bit range.
-fn tempo_to_micros(tempo: Tempo) -> Result<u32, MidiError> {
-    let bpm = tempo.0;
-    if !bpm.is_finite() || bpm <= 0.0 {
-        return Err(MidiError::Validation(ValidationError::InvalidTempo));
+/// Convert a [`Tempo`] to microseconds per beat within MIDI's 24-bit range.
+///
+/// A tempo with an exact in-range microsecond form converts silently; any
+/// other tempo converts to its nearest in-range value and records a
+/// [`ImportWarning::TempoApproximated`] on `loss` (S16 Phase 4-pre A: an
+/// approximation is a reported fact, never a silent rounding).
+fn tempo_to_micros(tempo: Tempo, bar_index: usize, loss: &mut LossReport) -> u32 {
+    let max_u24 = u32::from(u24::max_value());
+    if let Some(exact) = tempo.to_micros_per_quarter_exact() {
+        if (1..=max_u24).contains(&exact) {
+            return exact;
+        }
     }
-    let micros = 60_000_000.0_f64 / bpm;
-    let max_u24 = f64::from(u32::from(u24::max_value()));
-    let clamped = micros.min(max_u24).max(1.0);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    // clamped is in [1.0, 16_777_215.0]; fits in u32 without loss
-    Ok(clamped.round() as u32)
+    let nearest = tempo.to_micros_per_quarter_nearest().clamp(1, max_u24);
+    loss.add(ImportWarning::TempoApproximated {
+        bar_index,
+        nearest_micros: nearest,
+    });
+    nearest
 }
 
 // ── canonical model import/export (S2) ────────────────────────────────────────
@@ -421,12 +428,27 @@ pub fn import_score(data: &[u8]) -> Result<Score, MidiError> {
     })
 }
 
+/// A serialised MIDI file plus the losses the export incurred.
+///
+/// An empty [`LossReport`] means every exported fact had an exact MIDI form;
+/// a [`ImportWarning::TempoApproximated`] entry names each tempo that had to
+/// be rounded (S16 Phase 4-pre A).
+#[derive(Debug, Clone)]
+pub struct MidiExport {
+    /// The standard MIDI file bytes.
+    pub bytes: Vec<u8>,
+    /// Approximations incurred while projecting onto MIDI's value ranges.
+    pub loss: LossReport,
+}
+
 /// Serialises a [`Score`] to standard MIDI bytes using the master timeline.
 ///
 /// The meta track is built exclusively from [`Score::master_bars`] (ADR-0003):
 /// tempo and time-signature changes are emitted at the correct ticks; track
 /// names are preserved.  Only the first [`Voice`] of each track is emitted.
-pub fn export_score(score: &Score) -> Result<Vec<u8>, MidiError> {
+/// Values with no exact MIDI form are approximated and reported on the
+/// returned [`MidiExport::loss`], never rounded silently.
+pub fn export_score(score: &Score) -> Result<MidiExport, MidiError> {
     let ppqn = Ppqn(score.ticks_per_quarter);
     // A dedicated meta/conductor chunk is always emitted (ADR-0003), so even a
     // single note track yields ≥2 chunks. SMF Type 0 must contain exactly one
@@ -434,7 +456,9 @@ pub fn export_score(score: &Score) -> Result<Vec<u8>, MidiError> {
     // here produced a spec-invalid file that strict readers reject.
     let format = Format::Parallel;
 
-    let mut smf_tracks: Vec<Vec<TrackEvent<'static>>> = vec![build_score_meta_track(score, ppqn)?];
+    let mut loss = LossReport::new();
+    let mut smf_tracks: Vec<Vec<TrackEvent<'static>>> =
+        vec![build_score_meta_track(score, ppqn, &mut loss)?];
     for track in &score.tracks {
         smf_tracks.push(build_score_note_track(track)?);
     }
@@ -448,7 +472,7 @@ pub fn export_score(score: &Score) -> Result<Vec<u8>, MidiError> {
 
     let mut out: Vec<u8> = Vec::new();
     smf.write_std(&mut out)?;
-    Ok(out)
+    Ok(MidiExport { bytes: out, loss })
 }
 
 // ── canonical helpers ─────────────────────────────────────────────────────────
@@ -484,8 +508,7 @@ fn build_master_bars(
         let micros = active_tempo(tempos, bar_start);
         let bt = bar_ticks(sig, ppqn)?;
         let bar_end = bar_start.saturating_add(bt);
-        let bpm = 60_000_000.0_f64 / f64::from(micros);
-        let tempo = Tempo::new(bpm)?;
+        let tempo = Tempo::from_micros_per_quarter(micros)?;
         let tick_range = TickRange::new(Ticks(bar_start), Ticks(bar_end))
             .map_err(|_| MidiError::TickOverflow)?;
 
@@ -675,6 +698,7 @@ fn collect_notes_with_name(
 fn build_score_meta_track(
     score: &Score,
     ppqn: Ppqn,
+    loss: &mut LossReport,
 ) -> Result<Vec<TrackEvent<'static>>, MidiError> {
     let mut abs_events: Vec<(u32, TrackEventKind<'static>)> = Vec::new();
 
@@ -683,7 +707,7 @@ fn build_score_meta_track(
 
     for mb in &score.master_bars {
         let tick = mb.tick_range.start.0;
-        let micros = tempo_to_micros(mb.tempo)?;
+        let micros = tempo_to_micros(mb.tempo, mb.index, loss);
         let sig = mb.time_signature;
 
         if prev_micros != Some(micros) {
@@ -796,8 +820,8 @@ mod tests {
     use crate::{
         event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
         score::{
-            AtomEvent as ScoreAtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport,
-            MasterBar, RepeatMarker, Score, Track as ScoreTrack2, Voice,
+            AtomEvent as ScoreAtomEvent, AtomNote, EventGroup, EventGroupKind, ImportWarning,
+            LossReport, MasterBar, RepeatMarker, Score, Track as ScoreTrack2, Voice,
         },
         slice::TickRange,
     };
@@ -836,10 +860,31 @@ mod tests {
 
     #[test]
     fn tempo_120_bpm_to_micros() {
-        let tempo = Tempo::new(120.0).expect("120 BPM is valid");
-        assert!(
-            matches!(tempo_to_micros(tempo), Ok(500_000)),
+        let tempo = Tempo::from_bpm_integer(120).expect("120 BPM is valid");
+        let mut loss = LossReport::new();
+        assert_eq!(
+            tempo_to_micros(tempo, 0, &mut loss),
+            500_000,
             "120 BPM must map to 500 000 µs/beat",
+        );
+        assert!(loss.is_clean(), "an exact tempo reports no approximation");
+    }
+
+    #[test]
+    fn tempo_121_bpm_to_micros_reports_the_approximation() {
+        let tempo = Tempo::from_bpm_integer(121).expect("121 BPM is valid");
+        let mut loss = LossReport::new();
+        assert_eq!(tempo_to_micros(tempo, 3, &mut loss), 495_868);
+        assert!(
+            loss.warnings.iter().any(|w| matches!(
+                w,
+                ImportWarning::TempoApproximated {
+                    bar_index: 3,
+                    nearest_micros: 495_868,
+                }
+            )),
+            "an inexact tempo must be a reported fact: {:?}",
+            loss.warnings
         );
     }
 
@@ -1052,7 +1097,7 @@ mod tests {
             ),
             "export must refuse a delta no VLQ can represent, not truncate it; \
              got {:?} (byte count on success)",
-            result.map(|b| b.len()),
+            result.map(|e| e.bytes.len()),
         );
     }
 
@@ -1062,7 +1107,8 @@ mod tests {
     #[test]
     fn export_never_returns_bytes_its_own_importer_rejects() {
         let score = import_score(F006_DELTA_EXCEEDS_VLQ).expect("the finding must import");
-        if let Ok(bytes) = export_score(&score) {
+        if let Ok(export) = export_score(&score) {
+            let bytes = export.bytes;
             let reimported = import_score(&bytes);
             assert!(
                 reimported.is_ok(),
@@ -1128,7 +1174,9 @@ mod tests {
     #[test]
     fn export_score_roundtrip_preserves_track_count_and_ppqn() {
         let original = import_score(VALID_MINIMAL_MID).expect("import_score must succeed");
-        let bytes = export_score(&original).expect("export_score must succeed");
+        let bytes = export_score(&original)
+            .expect("export_score must succeed")
+            .bytes;
         let reimported = import_score(&bytes).expect("re-import_score must succeed");
 
         assert_eq!(
@@ -1152,7 +1200,9 @@ mod tests {
         let score = import_score(VALID_MINIMAL_MID).expect("import_score must succeed");
         assert_eq!(score.tracks.len(), 1, "fixture must be single-track");
 
-        let bytes = export_score(&score).expect("export_score must succeed");
+        let bytes = export_score(&score)
+            .expect("export_score must succeed")
+            .bytes;
         let smf = Smf::parse(&bytes).expect("exported bytes must be valid SMF");
 
         assert!(
@@ -1200,7 +1250,7 @@ mod tests {
                 index: 0,
                 tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("valid range"),
                 time_signature: TimeSignature::new(4, 4).expect("4/4 valid"),
-                tempo: Tempo::new(140.0).expect("140 BPM valid"),
+                tempo: Tempo::from_bpm_integer(140).expect("140 BPM valid"),
                 repeat: RepeatMarker::default(),
             }],
             tracks: vec![mk_track(0), mk_track(1)],
@@ -1208,7 +1258,9 @@ mod tests {
             loss: LossReport::new(),
         };
 
-        let bytes = export_score(&score).expect("export_score must succeed");
+        let bytes = export_score(&score)
+            .expect("export_score must succeed")
+            .bytes;
         let smf = Smf::parse(&bytes).expect("exported bytes must be valid SMF");
 
         assert!(smf.tracks.len() >= 3, "meta + 2 note tracks expected");
@@ -1228,7 +1280,11 @@ mod tests {
     fn export_score_preserves_all_tempo_changes() {
         let score = import_score(TEMPO_CHANGE_MID).expect("tempo_change must import as Score");
 
-        let tempos: Vec<f64> = score.master_bars.iter().map(|mb| mb.tempo.0).collect();
+        let tempos: Vec<f64> = score
+            .master_bars
+            .iter()
+            .map(|mb| mb.tempo.as_f64())
+            .collect();
         let distinct_count = {
             // Deduplicate by rounding to nearest integer BPM.
             let mut seen: Vec<u64> = tempos
@@ -1249,10 +1305,12 @@ mod tests {
             "tempo_change fixture must import with at least 2 distinct tempos"
         );
 
-        let bytes = export_score(&score).expect("export_score must succeed");
+        let bytes = export_score(&score)
+            .expect("export_score must succeed")
+            .bytes;
         let rt = import_score(&bytes).expect("re-import_score must succeed");
 
-        let rt_tempos: Vec<f64> = rt.master_bars.iter().map(|mb| mb.tempo.0).collect();
+        let rt_tempos: Vec<f64> = rt.master_bars.iter().map(|mb| mb.tempo.as_f64()).collect();
         assert_eq!(
             tempos.len(),
             rt_tempos.len(),

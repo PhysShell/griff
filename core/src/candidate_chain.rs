@@ -882,9 +882,9 @@ fn master_bar_disagreement(want: &MasterBar, got: &MasterBar) -> Option<MasterBa
     if want.time_signature != got.time_signature {
         return Some(MasterBarField::TimeSignature);
     }
-    // Bitwise: two tempos are the same tempo or they are not, and `Tempo` is an
-    // f64 whose equality would otherwise be an approximation question.
-    if want.tempo.0.to_bits() != got.tempo.0.to_bits() {
+    // Structural: `Tempo` is an exact rational (S16 Phase 4-pre A), so two
+    // tempos are the same tempo or they are not — no bit tricks required.
+    if want.tempo != got.tempo {
         return Some(MasterBarField::Tempo);
     }
     if want.repeat != got.repeat {
@@ -1017,7 +1017,7 @@ mod tests {
         AXIS_SILENT_BOUNDARY,
     };
     use crate::event::{
-        FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, SpanTechnique,
+        ConfidenceBps, FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, SpanTechnique,
         TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
     };
     use crate::generate::{
@@ -1052,7 +1052,7 @@ mod tests {
                 index,
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).unwrap(),
                 time_signature: TimeSignature::new(4, 4).unwrap(),
-                tempo: Tempo::new(120.0).unwrap(),
+                tempo: Tempo::from_bpm_integer(120).unwrap(),
                 repeat: RepeatMarker::default(),
             });
             for &(offset, duration, pitch) in *notes {
@@ -1251,7 +1251,7 @@ mod tests {
     #[test]
     fn a_mismatched_tempo_is_rejected() {
         assert_eq!(
-            rejected_for(|s| s.master_bars[1].tempo = Tempo::new(180.0).unwrap()),
+            rejected_for(|s| s.master_bars[1].tempo = Tempo::from_bpm_integer(180).unwrap()),
             ChainError::MasterBarMismatch {
                 candidate: 1,
                 bar: 1,
@@ -1512,12 +1512,12 @@ mod tests {
 
     /// Every fact of a master bar, in a comparable form (`MasterBar` is not
     /// `PartialEq`, and `Tempo` holds an `f64`).
-    fn bar_facts(bar: &MasterBar) -> (usize, TickRange, TimeSignature, u64, RepeatMarker) {
+    fn bar_facts(bar: &MasterBar) -> (usize, TickRange, TimeSignature, Tempo, RepeatMarker) {
         (
             bar.index,
             bar.tick_range,
             bar.time_signature,
-            bar.tempo.0.to_bits(),
+            bar.tempo,
             bar.repeat,
         )
     }
@@ -1716,7 +1716,7 @@ mod tests {
         group.technique_spans.push(TechniqueSpan {
             technique: SpanTechnique::PalmMute,
             tick_range: TickRange::new(Ticks(BAR), Ticks(BAR + 960)).unwrap(),
-            evidence: TechniqueEvidence::inferred(0.42),
+            evidence: TechniqueEvidence::inferred(ConfidenceBps::new(4_200).unwrap()),
         });
         ranked_set(vec![
             candidate(
@@ -1842,7 +1842,7 @@ mod tests {
         assert_eq!(spans[0].technique, SpanTechnique::PalmMute);
         assert_eq!(
             spans[0].evidence,
-            TechniqueEvidence::inferred(0.42),
+            TechniqueEvidence::inferred(ConfidenceBps::new(4_200).unwrap()),
             "an inferred span does not arrive as fact",
         );
     }
@@ -2084,7 +2084,7 @@ mod tests {
                 constraints: GenerationConstraints {
                     bar_count: 3,
                     time_signature: TimeSignature::new(4, 4).unwrap(),
-                    tempo: Tempo::new(120.0).unwrap(),
+                    tempo: Tempo::from_bpm_integer(120).unwrap(),
                     ticks_per_quarter: Ticks(u32::from(PPQ)),
                     pitch_lo: Pitch(40),
                     pitch_hi: Pitch(90),
@@ -2373,8 +2373,9 @@ mod tests {
             "the master timeline is the one every candidate already agreed on",
         );
         for bar in &planned.score.master_bars {
-            assert!(
-                (bar.tempo.0 - 120.0).abs() < 1e-12,
+            assert_eq!(
+                bar.tempo,
+                Tempo::from_bpm_integer(120).unwrap(),
                 "tempo is the timeline's"
             );
             assert_eq!(bar.time_signature, TimeSignature::new(4, 4).unwrap());

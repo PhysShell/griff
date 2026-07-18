@@ -38,6 +38,15 @@ pub enum ImportWarning {
     /// The MIDI file used SMPTE/timecode timing; `griff` does not yet support
     /// it.
     SmpteTimingUnsupported,
+    /// A tempo with no exact microseconds-per-quarter form was exported to
+    /// MIDI as its nearest representable value (S16 Phase 4-pre A: an
+    /// approximation is a reported fact, never a silent rounding).
+    TempoApproximated {
+        /// Zero-based master-bar index whose tempo was approximated.
+        bar_index: usize,
+        /// The microseconds-per-quarter value actually written.
+        nearest_micros: u32,
+    },
     /// Any other loss not covered by the variants above.
     Other(String),
 }
@@ -86,7 +95,7 @@ pub struct SourceMeta {
 
 /// A spanning playing technique over a tick range within a voice, with its
 /// import-side evidence (ADR-0018).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TechniqueSpan {
     /// The spanning technique in effect.
     pub technique: SpanTechnique,
@@ -99,9 +108,9 @@ pub struct TechniqueSpan {
 // ── atom events ───────────────────────────────────────────────────────────────
 
 /// A note event in the canonical model, carrying absolute position.
-// `Eq` is absent: a `NotePosition` carries an `f64` confidence (ADR-0019), so
-// `AtomNote`/`AtomEvent` keep `PartialEq` only.
-#[derive(Debug, Clone, Copy, PartialEq)]
+// Structural `Eq`/`Hash` hold since the exact-scalar migration (S16 Phase
+// 4-pre A): no `f64` remains anywhere below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AtomNote {
     /// Absolute tick onset.
     pub absolute_start: Ticks,
@@ -121,7 +130,7 @@ pub struct AtomNote {
 }
 
 /// A rest (silence) in the canonical model, carrying absolute position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AtomRest {
     /// Absolute tick onset.
     pub absolute_start: Ticks,
@@ -130,7 +139,7 @@ pub struct AtomRest {
 }
 
 /// The minimal event unit in the canonical model.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AtomEvent {
     /// A sounding note.
     Note(AtomNote),
@@ -181,9 +190,9 @@ pub enum EventGroupKind {
 }
 
 /// A group of [`AtomEvent`]s sharing a musical role, plus optional technique spans.
-// `Eq` is intentionally absent: `TechniqueSpan` carries an `f64` confidence
-// (ADR-0018 Slice 2b), so the tree from here up keeps `PartialEq` only.
-#[derive(Debug, Clone, PartialEq)]
+// Structural `Eq`/`Hash` hold since the exact-scalar migration (S16 Phase
+// 4-pre A): evidence confidence is integer basis points now.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EventGroup {
     /// Structural role of this group.
     pub kind: EventGroupKind,
@@ -196,7 +205,7 @@ pub struct EventGroup {
 // ── voice, track, master bar, score ───────────────────────────────────────────
 
 /// An independent event stream within a track (needed for polyphony).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Voice {
     /// Voice identifier; 0 is the primary voice.
     pub id: u8,
@@ -205,7 +214,7 @@ pub struct Voice {
 }
 
 /// An instrument part or logical track layer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Track {
     /// Optional track name from the source format.
     pub name: Option<String>,
@@ -224,7 +233,7 @@ pub struct Track {
 /// and jump directions (D.C./D.S., coda/segno) are not yet represented; an
 /// importer that meets them records a loss and leaves this at its default.
 /// `RepeatMarker::default()` means the bar carries no repeat barline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct RepeatMarker {
     /// This bar opens a repeated section (`|:`).
     pub start: bool,
@@ -247,7 +256,7 @@ impl RepeatMarker {
 /// A score-level bar whose meter and tempo are shared across all tracks.
 ///
 /// `MasterBar` is the single source of truth for transport (ADR-0003).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MasterBar {
     /// Zero-based bar index.
     pub index: usize,

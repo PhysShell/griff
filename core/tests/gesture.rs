@@ -56,7 +56,7 @@ fn score_with_notes(bar_count: usize, notes: &[(u32, u32, u8)]) -> Score {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("120 BPM"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }
         })

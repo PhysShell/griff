@@ -27,7 +27,7 @@ use griff_core::{
     ingest,
     midi::{self, MidiError},
     novelty, rerank,
-    score::{AtomEvent, Score, Track, Voice},
+    score::{AtomEvent, LossReport, Score, Track, Voice},
     scoring,
     slice::{self, TickRange},
     split, structure, syncopation, technique, unfold,
@@ -462,6 +462,8 @@ fn cmd_swang_build(path: &Path) -> Result<(), CliError> {
     print_ranking(&set.ranked, &set.policy);
 
     let out_bytes = midi::export_score(result.selected_score())?;
+    report_export_loss(&out_bytes.loss);
+    let out_bytes = out_bytes.bytes;
     fs::write(&result.export.path, &out_bytes)?;
     println!(
         "built {bars} bars ({strategy:?}, seed {seed}) from a {tones}-tone scale \
@@ -646,7 +648,7 @@ fn cmd_inspect(path: &Path, unfold: bool) -> Result<(), CliError> {
                     bi = mb.index,
                     num = mb.time_signature.numerator,
                     den = mb.time_signature.denominator,
-                    bpm = mb.tempo.0,
+                    bpm = mb.tempo.as_f64(),
                 );
             } else {
                 println!(
@@ -654,7 +656,7 @@ fn cmd_inspect(path: &Path, unfold: bool) -> Result<(), CliError> {
                     bi = mb.index,
                     num = mb.time_signature.numerator,
                     den = mb.time_signature.denominator,
-                    bpm = mb.tempo.0,
+                    bpm = mb.tempo.as_f64(),
                 );
             }
         }
@@ -701,10 +703,20 @@ fn fmt_marks(marks: NoteMarks) -> String {
     }
 }
 
+/// Prints MIDI-export approximations to stderr, so a lossy projection is a
+/// visible fact rather than a silent rounding (S16 Phase 4-pre A).
+fn report_export_loss(loss: &LossReport) {
+    for warning in &loss.warnings {
+        eprintln!("warning: midi export approximation: {warning:?}");
+    }
+}
+
 fn cmd_export(input: &Path, output: &Path) -> Result<(), CliError> {
     let data = fs::read(input)?;
     let score = import::import_score_auto(&data)?;
     let out_bytes = midi::export_score(&score)?;
+    report_export_loss(&out_bytes.loss);
+    let out_bytes = out_bytes.bytes;
     fs::write(output, &out_bytes)?;
     println!(
         "exported {} tracks ({} bytes) -> {}",
@@ -744,7 +756,7 @@ fn cmd_classify(path: &Path) -> Result<(), CliError> {
                 bi = mb.index,
                 num = mb.time_signature.numerator,
                 den = mb.time_signature.denominator,
-                bpm = mb.tempo.0,
+                bpm = mb.tempo.as_f64(),
                 notes = feat.note_count,
                 vel = feat.avg_velocity,
                 span = feat.pitch_span,
@@ -973,6 +985,8 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
     print_ranking(ranked, policy);
 
     let out_bytes = midi::export_score(&winner.value.score)?;
+    report_export_loss(&out_bytes.loss);
+    let out_bytes = out_bytes.bytes;
     fs::write(output, &out_bytes)?;
     println!(
         "generated {bars} bars ({strategy:?}, seed {seed}) from a {tones}-tone scale \
@@ -1142,6 +1156,8 @@ fn cmd_complement(
     let candidate =
         complement::arrange_complement(&score, track_index, spec, generate::GenerationSeed(seed))?;
     let out_bytes = midi::export_score(&candidate.score)?;
+    report_export_loss(&out_bytes.loss);
+    let out_bytes = out_bytes.bytes;
     fs::write(output, &out_bytes)?;
     println!(
         "complement ({label}, seed {seed}) — part B appended as track {b} \
@@ -1845,7 +1861,7 @@ fn build_chunk_meta(
             .first()
             .map_or((120.0, (4_u8, 4_u8)), |b| {
                 (
-                    b.tempo.0,
+                    b.tempo.as_f64(),
                     (b.time_signature.numerator, b.time_signature.denominator),
                 )
             });
@@ -2380,7 +2396,7 @@ mod tests {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("120 BPM"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }],
             tracks,
@@ -2546,7 +2562,7 @@ mod tests {
                 numerator: 4,
                 denominator: 4,
             },
-            tempo: Tempo::new(120.0).expect("bpm"),
+            tempo: Tempo::from_bpm_integer(120).expect("bpm"),
             repeat: RepeatMarker::default(),
         }
     }
@@ -2710,7 +2726,7 @@ mod tests {
                         numerator: 4,
                         denominator: 4,
                     },
-                    tempo: Tempo::new(120.0).expect("120 BPM"),
+                    tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                     repeat: RepeatMarker::default(),
                 }
             })
@@ -3017,7 +3033,7 @@ mod tests {
                         numerator: 4,
                         denominator: 4,
                     },
-                    tempo: Tempo::new(120.0).expect("120 BPM"),
+                    tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                     repeat: RepeatMarker::default(),
                 }
             })
@@ -3268,7 +3284,7 @@ mod tests {
         let source = bars_score(2, vec![track]);
         fs::write(
             dir.join("a.mid"),
-            midi::export_score(&source).expect("export source"),
+            midi::export_score(&source).expect("export source").bytes,
         )
         .expect("write source");
 

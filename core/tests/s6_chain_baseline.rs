@@ -81,7 +81,7 @@ fn source() -> Score {
             index,
             tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).unwrap(),
             time_signature: TimeSignature::new(4, 4).unwrap(),
-            tempo: Tempo::new(120.0).unwrap(),
+            tempo: Tempo::from_bpm_integer(120).unwrap(),
             repeat: RepeatMarker::default(),
         });
         for &(offset, duration, pitch) in *notes {

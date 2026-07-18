@@ -14,7 +14,7 @@
 )]
 
 use griff_core::{
-    event::{SpanTechnique, TechniqueEvidence, TechniqueSource, Ticks},
+    event::{ConfidenceBps, SpanTechnique, TechniqueEvidence, TechniqueSource, Ticks},
     score::TechniqueSpan,
     slice::TickRange,
 };
@@ -23,14 +23,14 @@ use griff_core::{
 fn evidence_explicit_is_full_confidence() {
     let e = TechniqueEvidence::explicit();
     assert_eq!(e.source, TechniqueSource::Explicit);
-    assert_eq!(e.confidence, 1.0);
+    assert_eq!(e.confidence, ConfidenceBps::MAX);
 }
 
 #[test]
 fn evidence_inferred_carries_confidence() {
-    let e = TechniqueEvidence::inferred(0.6);
+    let e = TechniqueEvidence::inferred(ConfidenceBps::new(6_000).expect("in range"));
     assert_eq!(e.source, TechniqueSource::InferredFromMidi);
-    assert_eq!(e.confidence, 0.6);
+    assert_eq!(e.confidence, ConfidenceBps::new(6_000).expect("in range"));
 }
 
 #[test]

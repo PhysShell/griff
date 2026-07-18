@@ -650,7 +650,7 @@ fn tempo_map_of(score: &Score) -> TempoMap {
         score
             .master_bars
             .iter()
-            .map(|mb| (mb.tick_range.start.0, mb.tempo.0))
+            .map(|mb| (mb.tick_range.start.0, mb.tempo.as_f64()))
             .collect(),
     )
 }
@@ -1861,7 +1861,7 @@ impl CockpitApp {
         let mid = self.out_dir.join(format!("{stem}.mid"));
         let json = self.out_dir.join(format!("{stem}.json"));
 
-        let bytes = export_score(score).map_err(|err| format!("{err:?}"))?;
+        let bytes = export_score(score).map_err(|err| format!("{err:?}"))?.bytes;
         fs::write(&mid, &bytes).map_err(|e| format!("cannot write {}: {e}", mid.display()))?;
         let text = serde_json::to_string_pretty(&provenance).map_err(|err| err.to_string())?;
         fs::write(&json, text).map_err(|e| format!("cannot write {}: {e}", json.display()))?;
@@ -1982,7 +1982,9 @@ impl CockpitApp {
         let mid = self.out_dir.join(format!("{stem}.mid"));
         let json = self.out_dir.join(format!("{stem}.json"));
 
-        let bytes = export_score(&entry.score).map_err(|err| format!("{err:?}"))?;
+        let bytes = export_score(&entry.score)
+            .map_err(|err| format!("{err:?}"))?
+            .bytes;
         fs::write(&mid, &bytes).map_err(|e| format!("cannot write {}: {e}", mid.display()))?;
         let text = serde_json::to_string_pretty(&sidecar).map_err(|err| err.to_string())?;
         fs::write(&json, text).map_err(|e| format!("cannot write {}: {e}", json.display()))?;
@@ -2387,7 +2389,7 @@ impl CockpitApp {
         let row = set.rows.get(i).ok_or("no such candidate")?;
         let score = set.scores.get(i).ok_or("no such candidate")?;
 
-        let bytes = export_score(score).map_err(|e| format!("{e:?}"))?;
+        let bytes = export_score(score).map_err(|e| format!("{e:?}"))?.bytes;
         fs::write(&path, &bytes).map_err(|e| format!("{e}"))?;
 
         let provenance = serde_json::json!({
@@ -3997,7 +3999,7 @@ mod tests {
                 index: i as usize,
                 tick_range: TickRange::new(Ticks(i * BAR), Ticks((i + 1) * BAR)).expect("range"),
                 time_signature: TimeSignature::new(4, 4).expect("4/4"),
-                tempo: Tempo::new(120.0).expect("120"),
+                tempo: Tempo::from_bpm_integer(120).expect("120"),
                 repeat: RepeatMarker::default(),
             })
             .collect();
@@ -5088,6 +5090,7 @@ mod tests {
         let path = app.write_chain_keep(chain_id).expect("the chain exports");
         let written = fs::read(&path).expect("the file is there");
         let expected = export_score(&app.history.get(chain_id).expect("entry").score)
+            .map(|e| e.bytes)
             .expect("the snapshot exports");
         assert_eq!(written, expected, "the bytes are the captured snapshot's");
         let sidecar: serde_json::Value =
@@ -5469,8 +5472,9 @@ mod tests {
 
         let path = app.write_chain_keep(id).expect("the chain exports");
         let written = fs::read(&path).expect("the file is there");
-        let expected =
-            export_score(&app.history.get(id).expect("entry").score).expect("the snapshot exports");
+        let expected = export_score(&app.history.get(id).expect("entry").score)
+            .expect("the snapshot exports")
+            .bytes;
         assert_eq!(
             written, expected,
             "the bytes are the captured assembled score's, through the one canonical path",
@@ -5497,7 +5501,9 @@ mod tests {
             .find(|e| e.source == CandidateSource::GlobalChain)
             .expect("recorded")
             .id;
-        let old_bytes = export_score(&app.history.get(old).expect("entry").score).expect("exports");
+        let old_bytes = export_score(&app.history.get(old).expect("entry").score)
+            .expect("exports")
+            .bytes;
 
         app.gen_panel.seed = 8_675_309;
         app.gen_panel.bars = 3;
@@ -5616,7 +5622,9 @@ mod tests {
             .and_then(|s| s.strip_prefix("kept -> "))
             .expect("a path");
         let written = fs::read(path).expect("the file is there");
-        let expected = export_score(&chain.score).expect("the snapshot exports");
+        let expected = export_score(&chain.score)
+            .expect("the snapshot exports")
+            .bytes;
         assert_eq!(
             written, expected,
             "the bytes are the chain's, not the S6 winner's"

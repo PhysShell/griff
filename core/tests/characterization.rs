@@ -75,7 +75,7 @@ fn dump_score(score: &Score, out: &mut String) {
             mb.index,
             mb.time_signature.numerator,
             mb.time_signature.denominator,
-            mb.tempo.0,
+            mb.tempo.as_f64(),
             mb.tick_range.start.0,
             mb.tick_range.end.0,
         )
@@ -121,7 +121,7 @@ fn generate_is_deterministic_golden() {
         constraints: GenerationConstraints {
             bar_count: 3,
             time_signature: TimeSignature::new(7, 8).unwrap(),
-            tempo: Tempo::new(160.0).unwrap(),
+            tempo: Tempo::from_bpm_integer(160).unwrap(),
             ticks_per_quarter: Ticks(480),
             pitch_lo: Pitch(36),
             pitch_hi: Pitch(72),

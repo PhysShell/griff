@@ -84,7 +84,7 @@ mod tests {
             tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
                 .expect("ordered range"),
             time_signature: TimeSignature::new(4, 4).expect("valid meter"),
-            tempo: Tempo::new(120.0).expect("valid tempo"),
+            tempo: Tempo::from_bpm_integer(120).expect("valid tempo"),
             repeat,
         }
     }

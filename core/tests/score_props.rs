@@ -219,7 +219,7 @@ fn build_score(bars: Vec<BarSpec>) -> Score {
             index: i,
             tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(len))).unwrap(),
             time_signature: TimeSignature::new(num, den).unwrap(),
-            tempo: Tempo::new(120.0).unwrap(),
+            tempo: Tempo::from_bpm_integer(120).unwrap(),
             repeat: RepeatMarker::default(),
         })
         .collect();

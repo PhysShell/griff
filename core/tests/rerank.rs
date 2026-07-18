@@ -69,7 +69,7 @@ const fn constraints(bar_count: usize) -> GenerationConstraints {
             numerator: 4,
             denominator: 4,
         },
-        tempo: Tempo(120.0),
+        tempo: Tempo::FALLBACK_120,
         ticks_per_quarter: Ticks(480),
         pitch_lo: Pitch(36), // C2
         pitch_hi: Pitch(72), // C5

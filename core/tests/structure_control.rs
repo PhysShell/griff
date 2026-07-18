@@ -47,7 +47,7 @@ fn constraints(bar_count: usize) -> GenerationConstraints {
             numerator: 4,
             denominator: 4,
         },
-        tempo: Tempo(120.0),
+        tempo: Tempo::from_bpm_integer(120).expect("valid BPM"),
         ticks_per_quarter: Ticks(480),
         // Wide range so per-copy transpositions are not clamped away.
         pitch_lo: Pitch(40),

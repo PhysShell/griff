@@ -456,7 +456,7 @@ mod tests {
                 index: 0,
                 tick_range: TickRange::new(Ticks(0), Ticks(BAR)).expect("ordered"),
                 time_signature: TimeSignature::new(4, 4).expect("4/4"),
-                tempo: Tempo::new(120.0).expect("120 BPM"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }],
             tracks: vec![Track {
@@ -530,7 +530,7 @@ mod tests {
                 index: i,
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature::new(4, 4).expect("4/4"),
-                tempo: Tempo::new(120.0).expect("120"),
+                tempo: Tempo::from_bpm_integer(120).expect("120"),
                 repeat: RepeatMarker::default(),
             });
             event_groups.push(EventGroup {

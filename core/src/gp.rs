@@ -68,12 +68,16 @@ fn cumulative_bar_starts(meters: &[(u8, u8)]) -> Vec<u32> {
 
 /// Per-bar tempo with carry-forward: a bar with no explicit tempo (GP `0`)
 /// inherits the previous bar's; the default before any tempo is 120 BPM.
-fn carry_tempos(raw_tempos: &[i32]) -> Vec<f64> {
+fn carry_tempos(raw_tempos: &[i32]) -> Vec<u32> {
     let mut tempos = Vec::with_capacity(raw_tempos.len());
-    let mut current = 120.0_f64;
+    let mut current = 120_u32;
     for &raw in raw_tempos {
-        if raw > 0 {
-            current = f64::from(raw);
+        // GP stores integer BPM; it passes through exactly (S16 Phase
+        // 4-pre A), and non-positive values keep the carried tempo.
+        if let Ok(bpm) = u32::try_from(raw) {
+            if bpm > 0 {
+                current = bpm;
+            }
         }
         tempos.push(current);
     }
@@ -251,7 +255,7 @@ fn gp_song_to_score(song: &guitarpro::Song) -> Score {
 fn build_gp_master_bars(
     meters: &[(u8, u8)],
     starts: &[u32],
-    tempos: &[f64],
+    tempos: &[u32],
     repeats: &[RepeatMarker],
 ) -> Vec<MasterBar> {
     meters
@@ -265,8 +269,8 @@ fn build_gp_master_bars(
                     numerator: 4,
                     denominator: 4,
                 });
-            let tempo =
-                Tempo::new(tempos.get(idx).copied().unwrap_or(120.0)).unwrap_or(Tempo(120.0_f64));
+            let tempo = Tempo::from_bpm_integer(tempos.get(idx).copied().unwrap_or(120))
+                .unwrap_or(Tempo::FALLBACK_120);
 
             MasterBar {
                 index: idx,
@@ -743,9 +747,9 @@ mod tests {
         // A tempo set once holds until changed; a leading gap is the 120 default.
         assert_eq!(
             carry_tempos(&[122, 0, 0, 90, 0]),
-            vec![122.0, 122.0, 122.0, 90.0, 90.0]
+            vec![122, 122, 122, 90, 90]
         );
-        assert_eq!(carry_tempos(&[0, 0]), vec![120.0, 120.0]);
+        assert_eq!(carry_tempos(&[0, 0]), vec![120, 120]);
     }
 
     #[test]
@@ -762,10 +766,11 @@ mod tests {
             .collect();
         assert_eq!(ranges, vec![(0, 3840), (3840, 5760), (5760, 9600)]);
         assert_eq!(bars[1].time_signature.numerator, 2);
-        // Tempo: bar 0 explicit 120, bar 1 carries it forward, bar 2 changes to 90.
-        assert!((119.5..120.5).contains(&bars[0].tempo.0));
-        assert!((119.5..120.5).contains(&bars[1].tempo.0));
-        assert!((89.5..90.5).contains(&bars[2].tempo.0));
+        // Tempo: bar 0 explicit 120, bar 1 carries it forward, bar 2 changes to
+        // 90 — exact integer BPM now that the scalar is rational.
+        assert_eq!(bars[0].tempo, Tempo::from_bpm_integer(120).unwrap());
+        assert_eq!(bars[1].tempo, Tempo::from_bpm_integer(120).unwrap());
+        assert_eq!(bars[2].tempo, Tempo::from_bpm_integer(90).unwrap());
     }
 
     // ── gp_repeat ─────────────────────────────────────────────────────────────

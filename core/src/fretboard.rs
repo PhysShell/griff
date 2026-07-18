@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use crate::event::{FretboardPosition, NotePosition, Pitch, Tuning};
+use crate::event::{ConfidenceBps, FretboardPosition, NotePosition, Pitch, Tuning};
 use crate::score::{AtomEvent, AtomNote, Voice};
 
 /// Conventional highest fret considered when enumerating candidates.
@@ -26,7 +26,7 @@ pub const STANDARD_MAX_FRET: u8 = 24;
 /// Confidence assigned to a MIDI-inferred position. A documented placeholder —
 /// a margin-based confidence (best vs runner-up path) is a future refinement
 /// (ADR-0019).
-const INFERRED_CONFIDENCE: f64 = 0.5;
+const INFERRED_CONFIDENCE: ConfidenceBps = ConfidenceBps::HALF;
 
 /// Named, versioned cost weights for the fingering DP.
 ///

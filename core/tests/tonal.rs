@@ -75,7 +75,7 @@ fn master_bars(bar_count: usize) -> Vec<MasterBar> {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("120 BPM"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }
         })

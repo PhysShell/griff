@@ -71,7 +71,7 @@ fn walk_request() -> RuleGenerationRequest {
                 numerator: 4,
                 denominator: 4,
             },
-            tempo: Tempo(120.0),
+            tempo: Tempo::from_bpm_integer(120).expect("valid BPM"),
             ticks_per_quarter: Ticks(480),
             pitch_lo: Pitch(36), // C2
             pitch_hi: Pitch(72), // C5

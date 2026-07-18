@@ -49,7 +49,7 @@ fn build_score(bar_count: usize, ppqn: u16, pitches: &[u8]) -> Option<Score> {
             index: i,
             tick_range: TickRange::new(Ticks(start), Ticks(end)).ok()?,
             time_signature: TimeSignature::new(4, 4).ok()?,
-            tempo: Tempo::new(120.0).ok()?,
+            tempo: Tempo::from_bpm_integer(120).ok()?,
             repeat: RepeatMarker::default(),
         });
     }

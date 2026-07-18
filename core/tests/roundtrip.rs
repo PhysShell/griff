@@ -79,7 +79,9 @@ fn time_sigs(score: &Score) -> Vec<(u8, u8)> {
 }
 
 fn roundtrip(score: &Score) -> Score {
-    let bytes = midi::export_score(score).expect("export must succeed");
+    let bytes = midi::export_score(score)
+        .expect("export must succeed")
+        .bytes;
     midi::import_score(&bytes).expect("re-import must succeed")
 }
 
@@ -96,7 +98,10 @@ fn dump(tag: &str, score: &Score, out: &mut String) {
         writeln!(
             out,
             "  bar {} {}/{} {:.1}bpm",
-            mb.index, mb.time_signature.numerator, mb.time_signature.denominator, mb.tempo.0,
+            mb.index,
+            mb.time_signature.numerator,
+            mb.time_signature.denominator,
+            mb.tempo.as_f64(),
         )
         .expect(INFALLIBLE);
     }
@@ -155,8 +160,8 @@ fn roundtrip_preserves_bar_alignment() {
         );
 
         // Export is deterministic.
-        let a = midi::export_score(&original).expect("export");
-        let b = midi::export_score(&original).expect("export");
+        let a = midi::export_score(&original).expect("export").bytes;
+        let b = midi::export_score(&original).expect("export").bytes;
         assert_eq!(a, b, "{name}: export must be byte-deterministic");
 
         let mut snap = String::new();

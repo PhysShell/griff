@@ -62,12 +62,12 @@ fuzz_target!(|input: FuzzInput| {
     let denominator = 1_u8.wrapping_shl(denom_exp);
 
     let tpq = Ticks(u32::from(input.tpq.max(1)));
-    let tempo_bpm = f64::from(input.tempo_offset).max(0.0) + 60.0;
+    let tempo_bpm = u32::from(input.tempo_offset).saturating_add(60);
 
     let Ok(time_sig) = TimeSignature::new(numerator, denominator) else {
         return;
     };
-    let Ok(tempo) = Tempo::new(tempo_bpm) else {
+    let Ok(tempo) = Tempo::from_bpm_integer(tempo_bpm) else {
         return;
     };
 

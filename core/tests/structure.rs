@@ -61,7 +61,7 @@ fn build_score(bars: &[Vec<u8>]) -> Score {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("120 BPM"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }
         })
@@ -274,7 +274,7 @@ fn measures_all_voices_of_a_track() {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("120 BPM"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }
         })
@@ -354,7 +354,7 @@ fn loopability_penalizes_leading_silence() {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("120 BPM"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }
         })
@@ -502,7 +502,7 @@ fn no_subbar_period_on_a_mixed_meter_timeline() {
             numerator: 3,
             denominator: 4,
         },
-        tempo: Tempo::new(120.0).expect("120 BPM"),
+        tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
         repeat: RepeatMarker::default(),
     });
     for (i, &p) in [40_u8, 47, 40].iter().enumerate() {

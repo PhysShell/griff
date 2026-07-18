@@ -186,7 +186,7 @@ pub fn build_chunk(
     }
     let (tempo_bpm, time_signature) = score.master_bars.first().map_or((120.0, (4u8, 4u8)), |b| {
         (
-            b.tempo.0,
+            b.tempo.as_f64(),
             (b.time_signature.numerator, b.time_signature.denominator),
         )
     });
