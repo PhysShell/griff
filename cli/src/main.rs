@@ -1377,6 +1377,29 @@ fn chunks_for_segments(
         .collect()
 }
 
+/// Assembles one source file into corpus records for bulk ingest: every
+/// selected track is phrase-split, each phrase chunk is linked to a per-file
+/// ensemble group (schema v4) so a reader can tell which chunks came from one
+/// tab, and all carry the default community-tab rights. Returns the phrase
+/// chunks and the group; the caller writes them. Relations stay empty here —
+/// this slice records provenance, not measured inter-part dependencies.
+fn assemble_ingest_group(
+    _path: &Path,
+    _score: &Score,
+    _selected: &[usize],
+    group_id: &str,
+    _base_title: &str,
+) -> Result<(Vec<ChunkMeta>, EnsembleGroup), CliError> {
+    Ok((
+        Vec::new(),
+        EnsembleGroup {
+            id: group_id.to_owned(),
+            members: Vec::new(),
+            relations: Vec::new(),
+        },
+    ))
+}
+
 /// Splits `score` into phrase chunks and writes each to `<stem>.p<N>.chunk.json`.
 fn curate_phrases(
     path: &Path,
@@ -2429,6 +2452,93 @@ mod tests {
         let relations = measure_group_relations(&score, &[0, 1]).expect("both parts measurable");
         assert_eq!(relations.len(), 1);
         assert_eq!(relations[0].parts, (0, 1));
+    }
+
+    #[test]
+    fn ingest_assembles_phrase_chunks_linked_as_one_group() {
+        use super::assemble_ingest_group;
+        use griff_core::corpus::{Acquisition, RightsStatus};
+        use std::path::Path;
+
+        let gtr1 = Track {
+            name: Some("Guitar 1".to_owned()),
+            channel: 0,
+            voices: vec![voice_of(
+                0,
+                vec![
+                    note(0, 480, 52),
+                    note(1920, 480, 55),
+                    note(3840, 480, 52),
+                    note(5760, 480, 57),
+                ],
+            )],
+            tuning: Tuning::standard_e(),
+        };
+        let drop_d = Tuning::new(
+            [64_u8, 59, 55, 50, 45, 38]
+                .iter()
+                .map(|&m| Pitch::new(m).expect("valid pitch"))
+                .collect(),
+        );
+        let gtr2 = Track {
+            name: Some("Guitar 2".to_owned()),
+            channel: 0,
+            voices: vec![voice_of(
+                0,
+                vec![
+                    note(0, 480, 50),
+                    note(1920, 480, 53),
+                    note(3840, 480, 50),
+                    note(5760, 480, 55),
+                ],
+            )],
+            tuning: drop_d,
+        };
+        let score = bars_score(4, vec![gtr1, gtr2]);
+
+        let (chunks, group) = assemble_ingest_group(
+            Path::new("Some Band - Song.gp"),
+            &score,
+            &[0, 1],
+            "some_band_song",
+            "Some Band - Song",
+        )
+        .expect("assemble succeeds");
+
+        assert!(
+            chunks.len() >= 2,
+            "each of the two guitars yields at least one phrase chunk"
+        );
+        assert_eq!(group.id, "some_band_song");
+        assert_eq!(group.members.len(), chunks.len());
+        assert!(
+            group.relations.is_empty(),
+            "a provenance group records no measured relations in this slice"
+        );
+
+        for chunk in &chunks {
+            let link = chunk
+                .ensemble
+                .as_ref()
+                .expect("each chunk links to the group");
+            assert_eq!(link.group_id, "some_band_song");
+            assert!(link.part_index == 0 || link.part_index == 1);
+            let rights = chunk.rights.as_ref().expect("each chunk carries rights");
+            assert_eq!(rights.rights_status, RightsStatus::CopyrightedComposition);
+            assert_eq!(rights.acquisition, Acquisition::CommunityTabSite);
+            assert!(!rights.redistributable);
+        }
+
+        let part0 = chunks
+            .iter()
+            .find(|c| c.ensemble.as_ref().is_some_and(|e| e.part_index == 0))
+            .expect("a part-0 chunk");
+        let part1 = chunks
+            .iter()
+            .find(|c| c.ensemble.as_ref().is_some_and(|e| e.part_index == 1))
+            .expect("a part-1 chunk");
+        assert_eq!(part0.tuning, "standard_e");
+        assert_eq!(part1.tuning, "drop_d");
     }
 
     #[test]
