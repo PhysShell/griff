@@ -60,14 +60,19 @@ front-ends and audio build on them:
       `ratatui` redraw; follow-cursor autoscroll is implemented for playback.)
 - [x] `eframe`/`egui` native window — the canonical desktop target (piano-roll
       canvas, pan/zoom), reusing the same `PianoRollView` (the cockpit, ADR-0027).
-- [ ] MIDI playback via `midir`, with a playhead overlay. Until then the cockpit
-      **does not synthesise audio**: the Generate panel's `open` hands a kept
-      `.mid` to whatever the OS has registered for it (a notation editor, a DAW).
-      The playhead is visual only.
-- [ ] **Griff textual playground** — editable request/constraint text with live
-      parse diagnostics and immediate candidate refresh. Future S15 harmonic
-      fixture scripts may be edited here, but typed core structures remain the
-      source of truth.
+- [~] **In-cockpit playback** — the accepted **Swang Playground Slice 2
+      transport** (2026-07-16) auditions candidates inside the cockpit
+      (`show_score → focus_on_track`; All-Notes-Off, loop remap, tempo, and
+      playhead inherited), and Global Chain Audition reuses that stack
+      unchanged. Remaining: optional `midir` system-MIDI-out routing (DAW /
+      hardware synth); the Generate panel's `open` still hands a kept `.mid`
+      to whatever the OS has registered for it.
+- [~] **Textual playground** — landed as the **Swang Playground**, Slices 1–3
+      (program editing, the Slice 2 transport, Slice 3 favorite / reject /
+      history / provenance — PR #126). Remaining: editable generation
+      request/constraint text with live parse diagnostics beyond Swang
+      programs. Future S15 harmonic fixture scripts may be edited here, but
+      typed core structures remain the source of truth.
 - [~] **Candidate/provenance inspector** — **generation slice landed 2026-07-13**:
       the cockpit's **Generate panel** (`g`) asks for a candidate set over the
       loaded corpus (seed tab, seed, bars, variants/strategy, gesture) and browses
