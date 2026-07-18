@@ -18,7 +18,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::corpus::{source_sha256, ChunkId, ChunkMeta, ReviewerDecision, SwancoreTag};
+use crate::corpus::{
+    source_sha256, ChunkId, ChunkMeta, ReviewerDecision, SwancoreTag, SCHEMA_VERSION,
+};
 
 /// The one wire version this module reads and writes.
 pub const CURATION_STORE_VERSION: u32 = 1;
@@ -133,7 +135,7 @@ pub struct ProjectedCuration {
 }
 
 /// Why a stored event no longer applies to the current corpus.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrphanReason {
     /// The chunk is gone from the current corpus.
     MissingChunk,
@@ -161,12 +163,27 @@ pub struct ReconciledCuration {
 
 // ── fingerprints ────────────────────────────────────────────────────────────
 
-/// The pinned material fingerprint of one chunk: `ChunkId` + `sha256` +
-/// `track_index` + `bar_range`, hashed. A chunk without `sha256` or
-/// `track_index` is [`FingerprintError::UnpinnedChunk`] — no filename fallback.
+/// The pinned material fingerprint of one chunk.
+///
+/// `ChunkId` + `sha256` + `track_index` + `bar_range`, hashed. A chunk without
+/// `sha256` or `track_index` is [`FingerprintError::UnpinnedChunk`] — no
+/// filename fallback.
 #[allow(clippy::missing_errors_doc)]
-pub fn chunk_fingerprint(_chunk: &ChunkMeta) -> Result<ChunkFingerprint, FingerprintError> {
-    Ok(ChunkFingerprint("stub".to_owned()))
+pub fn chunk_fingerprint(chunk: &ChunkMeta) -> Result<ChunkFingerprint, FingerprintError> {
+    let unpinned = || FingerprintError::UnpinnedChunk {
+        chunk_id: chunk.id.clone(),
+    };
+    let sha = chunk.source.sha256.as_deref().ok_or_else(unpinned)?;
+    let track = chunk.source.track_index.ok_or_else(unpinned)?;
+    let bars = match chunk.source.bar_range {
+        Some((first, last)) => format!("{first}-{last}"),
+        None => "none".to_owned(),
+    };
+    let canonical = format!(
+        "chunk-v9\nid={}\nsha256={sha}\ntrack={track}\nbars={bars}",
+        chunk.id.0
+    );
+    Ok(ChunkFingerprint(source_sha256(canonical.as_bytes())))
 }
 
 /// The corpus fingerprint: the schema version plus the sorted set of chunk
@@ -174,10 +191,19 @@ pub fn chunk_fingerprint(_chunk: &ChunkMeta) -> Result<ChunkFingerprint, Fingerp
 /// field (tags, reviewer, timestamps).
 #[allow(clippy::missing_errors_doc)]
 pub fn corpus_fingerprint(
-    _schema_version: u32,
-    _chunks: &[ChunkMeta],
+    schema_version: u32,
+    chunks: &[ChunkMeta],
 ) -> Result<CorpusFingerprint, FingerprintError> {
-    Ok(CorpusFingerprint("stub".to_owned()))
+    let mut fingerprints: Vec<String> = chunks
+        .iter()
+        .map(|c| chunk_fingerprint(c).map(|f| f.0))
+        .collect::<Result<_, _>>()?;
+    fingerprints.sort();
+    let canonical = format!(
+        "corpus-v9\nschema={schema_version}\n{}",
+        fingerprints.join("\n")
+    );
+    Ok(CorpusFingerprint(source_sha256(canonical.as_bytes())))
 }
 
 // ── encode / decode ─────────────────────────────────────────────────────────
@@ -185,15 +211,103 @@ pub fn corpus_fingerprint(
 /// Serializes a store into its one canonical byte form (events and tags
 /// canonicalized first), so the same logical store always encodes identically.
 #[must_use]
-pub fn encode_store(_store: &CurationStoreV1) -> Vec<u8> {
-    Vec::new()
+pub fn encode_store(store: &CurationStoreV1) -> Vec<u8> {
+    let mut canonical = store.clone();
+    canonicalize(&mut canonical);
+    // Our types are plain structs/enums of strings, numbers, and vecs, so
+    // serialization is infallible; the default is unreachable.
+    serde_json::to_vec(&canonical).unwrap_or_default()
 }
 
 /// Decodes and validates store bytes, canonicalizing the result. A malformed
 /// store is a typed error, never an empty store.
 #[allow(clippy::missing_errors_doc)]
-pub fn decode_store(_bytes: &[u8]) -> Result<CurationStoreV1, StoreDecodeError> {
-    Err(StoreDecodeError::MalformedStore("stub".to_owned()))
+pub fn decode_store(bytes: &[u8]) -> Result<CurationStoreV1, StoreDecodeError> {
+    #[derive(Deserialize)]
+    struct VersionProbe {
+        version: u32,
+    }
+    // Read the explicit version first — the format never guesses its shape.
+    let probe: VersionProbe = serde_json::from_slice(bytes)
+        .map_err(|e| StoreDecodeError::MalformedStore(e.to_string()))?;
+    if probe.version != CURATION_STORE_VERSION {
+        return Err(StoreDecodeError::UnsupportedVersion {
+            found: probe.version,
+        });
+    }
+    let mut store: CurationStoreV1 = serde_json::from_slice(bytes)
+        .map_err(|e| StoreDecodeError::MalformedStore(e.to_string()))?;
+
+    let mut seen: HashSet<&CurationEventId> = HashSet::new();
+    for event in &store.events {
+        let empty = |field: &'static str| StoreDecodeError::EmptyField {
+            field,
+            event: event.event_id.clone(),
+        };
+        if event.event_id.0.is_empty() {
+            return Err(empty("event_id"));
+        }
+        if event.chunk_id.0.is_empty() {
+            return Err(empty("chunk_id"));
+        }
+        if event.chunk_fingerprint.0.is_empty() {
+            return Err(empty("chunk_fingerprint"));
+        }
+        if event.corpus_fingerprint.0.is_empty() {
+            return Err(empty("corpus_fingerprint"));
+        }
+        if event.reviewer.0.is_empty() {
+            return Err(empty("reviewer"));
+        }
+        if !valid_timestamp(&event.occurred_at) {
+            return Err(StoreDecodeError::InvalidTimestamp {
+                event: event.event_id.clone(),
+                value: event.occurred_at.clone(),
+            });
+        }
+        if !seen.insert(&event.event_id) {
+            return Err(StoreDecodeError::DuplicateEventId {
+                id: event.event_id.clone(),
+            });
+        }
+    }
+    canonicalize(&mut store);
+    Ok(store)
+}
+
+/// Canonical form: each event's tags sorted and deduped, events ordered by
+/// `(occurred_at, event_id)` — so one logical store has one byte representation.
+fn canonicalize(store: &mut CurationStoreV1) {
+    for event in &mut store.events {
+        event.tags.sort_unstable();
+        event.tags.dedup();
+    }
+    store
+        .events
+        .sort_by(|a, b| (&a.occurred_at, &a.event_id).cmp(&(&b.occurred_at, &b.event_id)));
+}
+
+/// Whether `s` is a minimal ISO-8601 UTC timestamp `YYYY-MM-DDTHH:MM:SS(.fff)?Z`.
+fn valid_timestamp(s: &str) -> bool {
+    let Some(core) = s.strip_suffix('Z') else {
+        return false;
+    };
+    let (datetime, frac) = match core.split_once('.') {
+        Some((dt, f)) => (dt, Some(f)),
+        None => (core, None),
+    };
+    if let Some(f) = frac {
+        if f.is_empty() || !f.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+    }
+    // dddd-dd-ddTdd:dd:dd
+    let mask = "dddd-dd-ddTdd:dd:dd";
+    datetime.len() == mask.len()
+        && datetime.chars().zip(mask.chars()).all(|(c, m)| match m {
+            'd' => c.is_ascii_digit(),
+            lit => c == lit,
+        })
 }
 
 // ── projection ──────────────────────────────────────────────────────────────
@@ -201,33 +315,84 @@ pub fn decode_store(_bytes: &[u8]) -> Result<CurationStoreV1, StoreDecodeError> 
 /// Projects events to the latest decision per chunk, by `(occurred_at,
 /// event_id)`. Independent of input order; cluster context is not projected.
 #[must_use]
-pub fn project(_events: &[CurationEvent]) -> ProjectedCuration {
+pub fn project(events: &[CurationEvent]) -> ProjectedCuration {
+    let mut latest: BTreeMap<&ChunkId, &CurationEvent> = BTreeMap::new();
+    for event in events {
+        let wins = latest.get(&event.chunk_id).is_none_or(|current| {
+            (&event.occurred_at, &event.event_id) > (&current.occurred_at, &current.event_id)
+        });
+        if wins {
+            latest.insert(&event.chunk_id, event);
+        }
+    }
     ProjectedCuration {
-        by_chunk: BTreeMap::new(),
+        by_chunk: latest
+            .into_iter()
+            .map(|(chunk, event)| {
+                (
+                    chunk.clone(),
+                    ProjectedDecision {
+                        event_id: event.event_id.clone(),
+                        decision: event.decision,
+                        reviewer: event.reviewer.clone(),
+                        occurred_at: event.occurred_at.clone(),
+                        tags: event.tags.clone(),
+                        note: event.note.clone(),
+                    },
+                )
+            })
+            .collect(),
     }
 }
 
 // ── reconciliation ──────────────────────────────────────────────────────────
 
-/// Reconciles a store's events against the current corpus. An event stays
-/// active when its chunk is present with the same pinned fingerprint (even if
-/// the shared corpus fingerprint moved, or the cluster regrouped); it is
-/// orphaned when the chunk is gone or its material changed. No fuzzy remap.
+/// Reconciles a store's events against the current corpus.
+///
+/// An event stays active when its chunk is present with the same pinned
+/// fingerprint (even if the shared corpus fingerprint moved, or the cluster
+/// regrouped); it is orphaned when the chunk is gone or its material changed.
+/// No fuzzy remap.
 #[allow(clippy::missing_errors_doc)]
 pub fn reconcile(
-    _store: &CurationStoreV1,
-    _current_chunks: &[ChunkMeta],
+    store: &CurationStoreV1,
+    current_chunks: &[ChunkMeta],
 ) -> Result<ReconciledCuration, FingerprintError> {
+    let current_corpus = corpus_fingerprint(SCHEMA_VERSION, current_chunks)?;
+    let mut current: BTreeMap<&str, ChunkFingerprint> = BTreeMap::new();
+    for chunk in current_chunks {
+        current.insert(chunk.id.0.as_str(), chunk_fingerprint(chunk)?);
+    }
+
+    let mut active = Vec::new();
+    let mut orphaned = Vec::new();
+    for event in &store.events {
+        match current.get(event.chunk_id.0.as_str()) {
+            None => orphaned.push(OrphanedEvent {
+                event: event.clone(),
+                reason: OrphanReason::MissingChunk,
+            }),
+            // The chunk's material is unchanged — active even if the shared
+            // corpus fingerprint moved, or the cluster regrouped. No fuzzy remap.
+            Some(fingerprint) if *fingerprint == event.chunk_fingerprint => {
+                active.push(event.clone());
+            }
+            Some(_) => orphaned.push(OrphanedEvent {
+                event: event.clone(),
+                reason: OrphanReason::ChangedChunkFingerprint,
+            }),
+        }
+    }
     Ok(ReconciledCuration {
-        active: Vec::new(),
-        orphaned: Vec::new(),
-        corpus_match: false,
+        active,
+        orphaned,
+        corpus_match: store.corpus_fingerprint == current_corpus,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::{
         chunk_fingerprint, corpus_fingerprint, decode_store, encode_store, project, reconcile,
@@ -277,7 +442,7 @@ mod tests {
     }
 
     fn pinned(id: &str) -> ChunkMeta {
-        meta(id, Some("hashof_".into()), Some(0), Some((0, 3)))
+        meta(id, Some("hashof_"), Some(0), Some((0, 3)))
     }
 
     fn event(id: &str, chunk: &str, at: &str, fp: &str) -> CurationEvent {
@@ -430,7 +595,7 @@ mod tests {
         let mut early = event("e_z", "c1", "2026-07-18T10:00:00Z", "fp1");
         early.decision = ReviewerDecision::Rejected;
         let late = event("e_a", "c1", "2026-07-18T12:00:00Z", "fp1");
-        let projected = project(&[late.clone(), early]);
+        let projected = project(&[late, early]);
         assert_eq!(
             projected.by_chunk[&ChunkId("c1".to_owned())].decision,
             ReviewerDecision::Accepted,
@@ -440,9 +605,9 @@ mod tests {
         let a = event("e_a", "c2", "2026-07-18T10:00:00Z", "fp2");
         let mut z = event("e_z", "c2", "2026-07-18T10:00:00Z", "fp2");
         z.reviewer = ReviewerId("bob".to_owned());
-        let projected = project(&[a, z]);
+        let tie = project(&[a, z]);
         assert_eq!(
-            projected.by_chunk[&ChunkId("c2".to_owned())].reviewer,
+            tie.by_chunk[&ChunkId("c2".to_owned())].reviewer,
             ReviewerId("bob".to_owned()),
             "the greater event_id wins on an equal timestamp"
         );
@@ -508,10 +673,13 @@ mod tests {
             SwancoreTag::Slide, // duplicate
         ];
         let decoded = decode_store(&encode_store(&store(vec![e]))).expect("decodes");
+        // Canonical order is the tag enum's declaration order (Slide precedes
+        // Bend), not alphabetical — deterministic is what matters, and the
+        // duplicate is gone.
         assert_eq!(
             decoded.events[0].tags,
-            vec![SwancoreTag::Bend, SwancoreTag::Slide],
-            "sorted and deduped"
+            vec![SwancoreTag::Slide, SwancoreTag::Bend],
+            "sorted (by enum order) and deduped"
         );
     }
 
