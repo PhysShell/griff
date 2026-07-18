@@ -15,6 +15,7 @@
 //! decision moving or vanishing.
 
 use std::collections::{BTreeMap, HashSet};
+use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
@@ -64,7 +65,8 @@ pub struct CurationEvent {
     pub decision: ReviewerDecision,
     /// Who decided.
     pub reviewer: ReviewerId,
-    /// ISO-8601 UTC timestamp (validated on decode).
+    /// Canonical UTC timestamp `YYYY-MM-DDTHH:MM:SSZ` (second precision, no
+    /// fractional part); validated on both encode and decode.
     pub occurred_at: String,
     /// The corpus fingerprint the decision was made against.
     pub corpus_fingerprint: CorpusFingerprint,
@@ -136,8 +138,9 @@ pub enum StoreEncodeError {
 /// Why a fingerprint could not be computed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FingerprintError {
-    /// The chunk lacks the pinned identity (`sha256` / `track_index`) a durable
-    /// decision must bind to; a filename is not an identity.
+    /// The chunk lacks the pinned identity (`sha256` / `track_index` /
+    /// `bar_range`) a durable decision must bind to; a filename is not an
+    /// identity, and a partial pin is not one either.
     UnpinnedChunk { chunk_id: ChunkId },
 }
 
@@ -189,9 +192,11 @@ pub struct ReconciledCuration {
 
 /// The pinned material fingerprint of one chunk.
 ///
-/// `ChunkId` + `sha256` + `track_index` + `bar_range`, hashed. A chunk without
-/// `sha256` or `track_index` is [`FingerprintError::UnpinnedChunk`] — no
-/// filename fallback.
+/// `ChunkId` + `sha256` + `track_index` + `bar_range`, hashed. All three pins
+/// are required: a chunk missing any of `sha256`, `track_index`, or `bar_range`
+/// is [`FingerprintError::UnpinnedChunk`]. There are no whole-track chunks —
+/// every corpus chunk is a bar range — so a missing range is an incomplete pin,
+/// not an identity, and there is no filename fallback.
 #[allow(clippy::missing_errors_doc)]
 pub fn chunk_fingerprint(chunk: &ChunkMeta) -> Result<ChunkFingerprint, FingerprintError> {
     let unpinned = || FingerprintError::UnpinnedChunk {
@@ -199,12 +204,9 @@ pub fn chunk_fingerprint(chunk: &ChunkMeta) -> Result<ChunkFingerprint, Fingerpr
     };
     let sha = chunk.source.sha256.as_deref().ok_or_else(unpinned)?;
     let track = chunk.source.track_index.ok_or_else(unpinned)?;
-    let bars = match chunk.source.bar_range {
-        Some((first, last)) => format!("{first}-{last}"),
-        None => "none".to_owned(),
-    };
+    let (first, last) = chunk.source.bar_range.ok_or_else(unpinned)?;
     let canonical = format!(
-        "chunk-v9\nid={}\nsha256={sha}\ntrack={track}\nbars={bars}",
+        "chunk-v9\nid={}\nsha256={sha}\ntrack={track}\nbars={first}-{last}",
         chunk.id.0
     );
     Ok(ChunkFingerprint(source_sha256(canonical.as_bytes())))
@@ -241,8 +243,8 @@ pub fn corpus_fingerprint(
 pub fn encode_store(store: &CurationStoreV1) -> Result<Vec<u8>, StoreEncodeError> {
     let mut canonical = store.clone();
     canonicalize(&mut canonical);
-    // TODO(green): validate before serializing.
-    Ok(serde_json::to_vec(&canonical).unwrap_or_default())
+    validate_store(&canonical).map_err(StoreEncodeError::Invalid)?;
+    serde_json::to_vec(&canonical).map_err(|e| StoreEncodeError::Serialize(e.to_string()))
 }
 
 /// Decodes and validates store bytes, canonicalizing the result. A malformed
@@ -330,27 +332,68 @@ fn canonicalize(store: &mut CurationStoreV1) {
         .sort_by(|a, b| (&a.occurred_at, &a.event_id).cmp(&(&b.occurred_at, &b.event_id)));
 }
 
-/// Whether `s` is a minimal ISO-8601 UTC timestamp `YYYY-MM-DDTHH:MM:SS(.fff)?Z`.
+/// Whether `s` is the module's canonical UTC timestamp: exactly
+/// `YYYY-MM-DDTHH:MM:SSZ` — second precision, **no fractional part** — with every
+/// field in its real civil-calendar range (leap years included).
+///
+/// Fixed width and zero-padded is the point: for two canonical timestamps,
+/// byte-lexicographic order equals chronological order, which is what lets
+/// [`project`] use plain `String` comparison as a clock. A variable-width
+/// fractional part would break that (`…00Z` would sort after `…00.5Z`), so it is
+/// rejected rather than normalized.
 fn valid_timestamp(s: &str) -> bool {
-    let Some(core) = s.strip_suffix('Z') else {
+    // 2026-07-18T10:00:00Z — 20 ASCII bytes, fixed separators.
+    let bytes = s.as_bytes();
+    if bytes.len() != 20 {
+        return false;
+    }
+    let sep = |i: usize, c: u8| bytes.get(i) == Some(&c);
+    if !(sep(4, b'-')
+        && sep(7, b'-')
+        && sep(10, b'T')
+        && sep(13, b':')
+        && sep(16, b':')
+        && sep(19, b'Z'))
+    {
+        return false;
+    }
+    let field = |r: Range<usize>| -> Option<u32> {
+        let part = s.get(r)?;
+        if part.bytes().all(|c| c.is_ascii_digit()) {
+            part.parse().ok()
+        } else {
+            None
+        }
+    };
+    let (Some(year), Some(month), Some(day), Some(hour), Some(min), Some(sec)) = (
+        field(0..4),
+        field(5..7),
+        field(8..10),
+        field(11..13),
+        field(14..16),
+        field(17..19),
+    ) else {
         return false;
     };
-    let (datetime, frac) = match core.split_once('.') {
-        Some((dt, f)) => (dt, Some(f)),
-        None => (core, None),
-    };
-    if let Some(f) = frac {
-        if f.is_empty() || !f.chars().all(|c| c.is_ascii_digit()) {
-            return false;
+    (1..=12).contains(&month)
+        && (1..=days_in_month(year, month)).contains(&day)
+        && hour <= 23
+        && min <= 59
+        && sec <= 59
+}
+
+/// Days in a civil-calendar month, proleptic-Gregorian leap rule. `0` for a
+/// month outside `1..=12` (an out-of-range month fails its own check first).
+const fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
+            29
         }
+        2 => 28,
+        _ => 0,
     }
-    // dddd-dd-ddTdd:dd:dd
-    let mask = "dddd-dd-ddTdd:dd:dd";
-    datetime.len() == mask.len()
-        && datetime.chars().zip(mask.chars()).all(|(c, m)| match m {
-            'd' => c.is_ascii_digit(),
-            lit => c == lit,
-        })
 }
 
 // ── projection ──────────────────────────────────────────────────────────────
