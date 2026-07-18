@@ -364,4 +364,24 @@ mod tests {
         // A single D#2 open string (contrived) exercises the sharp spelling.
         assert_eq!(tuning_label(&tuning_of(&[39, 39])), "ds2_ds2");
     }
+
+    #[test]
+    fn names_a_tuning_regardless_of_stored_string_order() {
+        // Real Guitar Pro files store some tunings low-string-first and others
+        // high-string-first; the label must not depend on that. Standard E with
+        // the low E first is still standard E.
+        assert_eq!(
+            tuning_label(&tuning_of(&[40, 45, 50, 55, 59, 64])),
+            "standard_e"
+        );
+    }
+
+    #[test]
+    fn the_same_tuning_gets_one_label_either_way_round() {
+        // Drop C, high-string-first and low-string-first, must collapse to one
+        // spelling rather than two mirror-image labels.
+        let high_first = tuning_of(&[62, 57, 53, 48, 43, 36]);
+        let low_first = tuning_of(&[36, 43, 48, 53, 57, 62]);
+        assert_eq!(tuning_label(&high_first), tuning_label(&low_first));
+    }
 }
