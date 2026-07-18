@@ -1867,3 +1867,35 @@ Architectural decisions go to [`adr/`](adr/) instead.
   is a different thing. No k-best, no weight tuning, no S9 adaptation, no S15,
   no S17 rendering, and no new audio backend: A/B reuses the S8 Slice 2
   playback stack unchanged, and export reuses the canonical `Score` → MIDI path.
+
+- 2026-07-18 — In the context of **S16 Phase 4** (exact canonical score
+  text and patches), facing an external design review of the round-trip
+  contract's scope, we decided to **re-partition Phase 4 in the stage
+  document only** — a docs-only planning clarification: ADR-0029's status
+  and decision are unchanged, frozen Phases 0–3 are untouched, and no
+  implementation scope opens. The planning clarifications now recorded in
+  [`stages/S16-swang-language-and-verified-lifting.md`](stages/S16-swang-language-and-verified-lifting.md):
+  (1) **exact scalars precede canonical text** — `Tempo(f64)` becomes an
+  exact GCD-normalized rational BPM (`from_bpm_integer` /
+  `from_micros_per_quarter` only; `Tempo::new(f64)` is removed, not kept
+  as a compatibility escape hatch) and `TechniqueEvidence.confidence`
+  becomes `ConfidenceBps(u16)` (Phase 4-pre A); (2) **exact and
+  normalized equality are two independent contracts** —
+  `ExactSemanticDiff` over the full canonical `Score`, and
+  `NormalizedMusicalDiff` as an explicitly lossy, versioned development
+  of the ADR-0020 projection (Phase 4-pre B); (3) **patches separate
+  from dump/verify** because stable addressing is its own problem —
+  composite selectors with typed ambiguity failures come first, and the
+  persistent-ID decision is deferred to Phase 4C evidence; (4) **the
+  exact writer synthesizes no ties** — a bar-crossing note is one note
+  with its duration; ties may return later only as authoring sugar;
+  (5) **every `EventGroupKind` is ExactSemantic**; collapses live only
+  inside named, versioned normalization policies; (6) **MIDI gets its
+  own deliberately weaker playback-projection contract** (Phase 4D) and
+  stays out of the semantic round-trip gate; (7) **a full-corpus
+  acceptance harness** (Phase 4B) reports five categories with a stable
+  hash and baseline deltas — non-blocking first, motivated by run cost
+  and signal quality, not corpus availability (`corpus.zip` is tracked
+  in-repo; verifying its rights/redistribution status is recorded there
+  as an open action). Planning range, not commitment: 8–12 PRs for
+  4-pre + 4A, 13–18 for the full set.
