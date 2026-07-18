@@ -65,8 +65,137 @@ pub enum ClusterDiagnostic {
 #[must_use]
 #[allow(clippy::too_many_lines)] // one cohesive pass: resolve links, roots, then group
 pub fn build_clusters(chunks: &[ChunkMeta]) -> (Vec<CurationCluster>, Vec<ClusterDiagnostic>) {
-    let _ = chunks;
-    (Vec::new(), Vec::new())
+    let by_id: HashMap<&str, &ChunkMeta> = chunks.iter().map(|c| (c.id.0.as_str(), c)).collect();
+    let mut diagnostics = Vec::new();
+    let mut bad: HashSet<String> = HashSet::new();
+    // id -> None (root) or Some(parent id); absent means excluded by a diagnostic.
+    let mut parent: HashMap<String, Option<String>> = HashMap::new();
+
+    for c in chunks {
+        let id = c.id.0.clone();
+        let Some(dup) = &c.duplicate else {
+            parent.insert(id, None);
+            continue;
+        };
+        let Some((prefix, own)) = split_phrase(&id) else {
+            diagnostics.push(ClusterDiagnostic::UnresolvableProvenance {
+                chunk: c.id.clone(),
+            });
+            bad.insert(id);
+            continue;
+        };
+        if dup.of == own {
+            diagnostics.push(ClusterDiagnostic::SelfLink {
+                chunk: c.id.clone(),
+            });
+            bad.insert(id);
+            continue;
+        }
+        if dup.of > own {
+            diagnostics.push(ClusterDiagnostic::ForwardLink {
+                chunk: c.id.clone(),
+                of: dup.of,
+                own,
+            });
+            bad.insert(id);
+            continue;
+        }
+        let target = format!("{prefix}_p{}", dup.of);
+        let Some(target_meta) = by_id.get(target.as_str()) else {
+            diagnostics.push(ClusterDiagnostic::DanglingLink {
+                chunk: c.id.clone(),
+                target: ChunkId(target),
+            });
+            bad.insert(id);
+            continue;
+        };
+        if target_meta.ensemble != c.ensemble {
+            diagnostics.push(ClusterDiagnostic::CrossRunLink {
+                chunk: c.id.clone(),
+                target: ChunkId(target),
+            });
+            bad.insert(id);
+            continue;
+        }
+        parent.insert(id, Some(target));
+    }
+
+    // Resolve each chunk to its root, detecting a cycle or a chain into an
+    // excluded chunk. The "earlier only" rule already forbids cycles, so this
+    // is a defensive net rather than an expected path.
+    let mut root_of: HashMap<String, String> = HashMap::new();
+    for c in chunks {
+        let start = c.id.0.clone();
+        if bad.contains(&start) || root_of.contains_key(&start) {
+            continue;
+        }
+        let mut path: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut cur = start;
+        let root = loop {
+            if !seen.insert(cur.clone()) {
+                for node in &path {
+                    diagnostics.push(ClusterDiagnostic::Cycle {
+                        chunk: ChunkId(node.clone()),
+                    });
+                }
+                break None;
+            }
+            match parent.get(&cur) {
+                Some(None) => break Some(cur.clone()),
+                Some(Some(next)) => {
+                    path.push(cur.clone());
+                    cur = next.clone();
+                }
+                None => break None,
+            }
+        };
+        match root {
+            Some(root_id) => {
+                for node in path {
+                    root_of.insert(node, root_id.clone());
+                }
+                root_of.insert(root_id.clone(), root_id);
+            }
+            None => {
+                for node in path {
+                    bad.insert(node);
+                }
+            }
+        }
+    }
+
+    let mut members: HashMap<String, Vec<String>> = HashMap::new();
+    for c in chunks {
+        let id = &c.id.0;
+        if bad.contains(id) {
+            continue;
+        }
+        if let Some(root) = root_of.get(id) {
+            members.entry(root.clone()).or_default().push(id.clone());
+        }
+    }
+
+    let mut clusters: Vec<CurationCluster> = members
+        .into_iter()
+        .map(|(root, mut ids)| {
+            ids.sort();
+            let variants: Vec<ChunkId> = ids
+                .into_iter()
+                .filter(|i| i != &root)
+                .map(ChunkId)
+                .collect();
+            let size = variants.len().saturating_add(1);
+            CurationCluster {
+                key: ChunkId(root.clone()),
+                representative: ChunkId(root),
+                variants,
+                size,
+            }
+        })
+        .collect();
+    clusters.sort_by(|a, b| a.key.0.cmp(&b.key.0));
+    (clusters, diagnostics)
 }
 
 /// Splits a phrase-chunk id into `(run_prefix, phrase_index)` at its trailing
