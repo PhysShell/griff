@@ -11,6 +11,7 @@ pub mod closure;
 pub mod complement;
 pub mod corpus;
 pub mod curation;
+pub mod curation_store;
 pub mod dump;
 pub mod event;
 pub mod feature;
