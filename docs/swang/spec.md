@@ -17,7 +17,8 @@ Status of each section:
 | 1. Semantic core | **Frozen (Phase 0 accepted).** Changes require a new language level. |
 | 2. Experimental transport syntax | **Superseded** by §3 at Phase 3 closure; retained as historical record of the Phase-2 contract. |
 | 3. Surface grammar | **Frozen (Phase 3 closed).** The operators the audible demo earned; changes require a new language level. |
-| 4. Deferred research | No promised names, no promised semantics. |
+| 4. Exact canonical score text | **Proposed (Phase 4A0).** The grammar contract for `dump`/`verify`/`fmt`; freezes at Phase 4A3 acceptance as language level 2. |
+| 5. Deferred research | No promised names, no promised semantics. |
 
 ## 1. Semantic core (frozen — Phase 0 accepted)
 
@@ -591,7 +592,259 @@ never changes; time-domain errors at the value that must change (`unit`,
 `tail`, the kernel literal); `build` runs the generation strategy and the
 program's own `export` (no output flag exists).
 
-## 4. Deferred research
+## 4. Exact canonical score text (Phase 4A — Proposed)
+
+This section is the **grammar contract** for the exact textual form of the
+canonical [`Score`] (S16 Phase 4A, re-partitioned per the 2026-07-18
+decisions-log entry). It assigns **exactly one canonical textual form to
+every canonical model fact** and closes every representation ambiguity
+before any writer or parser exists. Until Phase 4A3's laws are proven this
+section is Proposed; at acceptance it freezes as **language level 2**
+(additive over level 1, per §1.1).
+
+The writer is a boring mirror of the tree: no normalization beyond the
+model's own stored order, no synthetic ties, no musical guesses. The
+parser is fail-closed with typed `SWG`-coded diagnostics and source spans,
+and lowers only what the text states — no hidden defaults beyond the
+absence rules this section declares.
+
+### 4.1 Laws
+
+```text
+parse(format(score)) ~= score          (ExactSemanticDiff is empty)
+format(parse(text))  == canonical_text (bytes)
+fmt(fmt(text))       == fmt(text)      (bytes)
+```
+
+The first law's oracle is `exact_semantic_diff` (Phase 4-pre B1): an empty
+exact report is the normative proof, not bare `Eq` alone and never the
+normalized policy.
+
+### 4.2 Header and document form
+
+A score-text file is a Swang file: the §1.1 header applies byte-exactly,
+at level 2:
+
+```text
+swang 2
+```
+
+After the header and one blank line, the document is a single `score`
+block. Collections are written as **repeated singular blocks in stored
+order** (`master_bar`, `track`, `voice`, `group`, `note`, `rest`, `span`,
+`warning`); an empty collection is **zero occurrences**. Fields appear in
+**model declaration order**, each on its own line — the same order the
+Phase 4-pre B1 comparator walks, so a semantic diff and a text diff agree
+about where things live.
+
+### 4.3 The reference document
+
+```text
+swang 2
+
+score {
+  ppq 480
+  master_bar {
+    index 0
+    range 0..1920
+    meter 4/4
+    tempo 120
+    repeat { start true play_count 2 }
+  }
+  track {
+    name "lead"
+    channel 0
+    voice {
+      id 0
+      group {
+        kind single
+        note {
+          start 0
+          duration 240
+          pitch 40
+          velocity 96
+          marks [accent]
+          position { string 6 fret 0 evidence explicit 10000 }
+        }
+        rest { start 480 duration 240 }
+        span { technique palm_mute range 0..480 evidence explicit 10000 }
+      }
+    }
+    tuning [64 59 55 50 45 40]
+  }
+  source_meta { format "GP5" }
+  loss {
+    warning other "w0"
+    warning tempo_approximated { bar_index 0 nearest_micros 495868 }
+  }
+}
+```
+
+### 4.4 The field mapping (one canonical form per canonical fact)
+
+| Canonical fact | Keyword / form | Notes |
+|---|---|---|
+| `Score::ticks_per_quarter` | `ppq <u16>` | first field of `score` |
+| `Score::master_bars[i]` | `master_bar { … }` | repeated, stored order |
+| `MasterBar::index` | `index <usize>` | stored value, not position |
+| `MasterBar::tick_range` | `range <u32>..<u32>` | half-open `[start, end)` |
+| `MasterBar::time_signature` | `meter <num>/<den>` | e.g. `7/8` |
+| `MasterBar::tempo` | `tempo <n>` or `tempo <num>/<den>` | §4.6 |
+| `MasterBar::repeat` | `repeat { start <bool> play_count <u8> }` | omitted iff equal to `RepeatMarker::default()` (§4.8) |
+| `Score::tracks[i]` | `track { … }` | repeated, stored order |
+| `Track::name` | `name "<string>"` | omitted iff `None` |
+| `Track::channel` | `channel <u8>` | |
+| `Track::voices[i]` | `voice { … }` | repeated, stored order |
+| `Voice::id` | `id <u8>` | |
+| `Voice::event_groups[i]` | `group { … }` | repeated, stored order |
+| `EventGroup::kind` | `kind <variant>` | §4.7; `tuplet { num <u8> den <u8> }` |
+| `EventGroup::atoms[i]` | `note { … }` / `rest { … }` | repeated, stored order |
+| `AtomNote::absolute_start` | `start <u32>` | absolute ticks |
+| `AtomNote::duration` | `duration <u32>` | may cross barlines; **no ties** (§4.9) |
+| `AtomNote::pitch` | `pitch <u8>` | `0..=127` |
+| `AtomNote::velocity` | `velocity <u8>` | `0..=127` |
+| `AtomNote::marks` | `marks [<mark> …]` | omitted iff empty; `NoteMark::ALL` order (§4.7) |
+| `AtomNote::position` | `position { string <u8> fret <u8> evidence <source> <bps> }` | omitted iff `None` |
+| `AtomRest::absolute_start` | `start <u32>` | |
+| `AtomRest::duration` | `duration <u32>` | |
+| `EventGroup::technique_spans[i]` | `span { technique <variant> range <u32>..<u32> evidence <source> <bps> }` | repeated, stored order |
+| `TechniqueEvidence` | `evidence <source> <bps>` | `explicit`/`inferred_from_midi`; bps always written (§4.6) |
+| `Track::tuning` | `tuning [<u8> …]` | open-string pitches, string 1 first; model order (after `voice` blocks — the model declares tuning last) |
+| `Score::source_meta` | `source_meta { … }` | block omitted iff `None`; `format "<string>"` line omitted iff its `Option` is `None` — `source_meta {}` therefore means `Some(SourceMeta { format: None })` and is the one meaningful empty block |
+| `Score::loss` | `loss { warning … }` | block omitted iff no warnings; warnings positional |
+| `ImportWarning` | `warning <variant> …` | §4.7 payload forms |
+
+### 4.5 Lexical form
+
+- UTF-8, LF line endings, exactly one trailing newline at EOF.
+- Indentation is two spaces per nesting depth; one field per line; single
+  `U+0020` between tokens; no alignment padding.
+- Canonical output contains no comments and no blank lines except the one
+  after the header. Parser input may vary whitespace freely between tokens
+  and lines; `fmt` canonicalizes whitespace only. **Field and block order
+  is grammar, not style**: out-of-order fields are a typed parse error,
+  never reordered.
+- Duplicate singleton fields are a typed error (fail closed, §4.10).
+
+### 4.6 Numbers
+
+- All integers are plain decimal, unsigned, no signs, no separators, and
+  **no leading zeros** (`0` is the zero form) — §3.2's `SWG0401` doctrine
+  applies unchanged.
+- `tempo` is the exact rational BPM (4-pre A): `tempo 120` iff the reduced
+  denominator is 1, else `tempo <num>/<den>` in the reduced form
+  (`bpm_numerator`/`bpm_denominator`). An unreduced or zero-part fraction
+  is a typed error; no decimal sugar exists at this level.
+- Confidence is always the plain basis-points integer `0..=10000`, and it
+  is **always written** — `evidence explicit 10000` spells its confidence
+  out because the model can hold any `(source, bps)` pair, and the text
+  mirrors the model, not the constructor conventions.
+- Range bounds and tick values are `u32`; `ppq` is nonzero `u16`;
+  out-of-range values are typed errors at parse, before lowering.
+
+### 4.7 Enum literals
+
+Variant literals are the `snake_case` of the model variant, matching the
+established ADR-0020 wire labels where those exist:
+
+- `EventGroupKind`: `single`, `chord`, `arpeggio`, `strum`,
+  `tuplet { num <u8> den <u8> }`, `grace`.
+- `NoteMark` (in `marks [...]`, canonical order = `NoteMark::ALL`):
+  `accent`, `ghost`, `staccato`, `dead_note`, `harmonic_natural`,
+  `harmonic_pinch`, `tap`.
+- `SpanTechnique`: `slide`, `bend`, `legato`, `palm_mute`, `hammer_on`,
+  `pull_off`, `vibrato`, `let_ring`.
+- `TechniqueSource`: `explicit`, `inferred_from_midi`.
+- `ImportWarning`:
+  `warning track_name_invalid_utf8 { track_index <usize> }`,
+  `warning smpte_timing_unsupported`,
+  `warning tempo_approximated { bar_index <usize> nearest_micros <u32> }`,
+  `warning other "<string>"`.
+
+A new model variant extends these lists in the same level bump that adds
+it; the Phase 4A0 inventory tests destructure every enum exhaustively so
+the compiler, not a reviewer, notices the gap.
+
+### 4.8 Absence rules (`None`, empty, defaults)
+
+Absence is meaningful only where this table says so; everything else is
+always written:
+
+| Value | Canonical absence |
+|---|---|
+| `Option<T>` fields (`name`, `position`, `source_meta`, `SourceMeta::format`) | field/block omitted iff `None` |
+| collections (`master_bar`, `track`, `voice`, `group`, atoms, `span`, `warning`, `marks`) | zero occurrences / list omitted iff empty |
+| `MasterBar::repeat` | omitted iff `== RepeatMarker::default()` (`start false`, `play_count 0`) |
+
+The `repeat` rule is a **declared absence value**, not a hidden default:
+the spec names the exact reconstructed value, the writer omits only that
+exact value, and any other repeat marker is always printed. Everything
+else has no default of any kind.
+
+### 4.9 Time, and the deliberate absence of ties
+
+The text mirrors `absolute_start` + `duration` exactly. A note belongs to
+no bar syntactically; events are not grouped under `master_bar` blocks,
+and a duration freely crosses barlines as one `note`. The writer never
+splits a note or synthesizes a tie; ties may appear in a later level only
+as authoring sugar that lowers to a single canonical note.
+
+### 4.10 Diagnostics (reserved for 4A2/4A4)
+
+Score-text diagnostics take the `SWG05xx` range, with §1.5 span rules
+(syntax-class errors carry source spans). Reserved names, bound to codes
+when 4A2 lands: unknown field; duplicate singleton field; field out of
+canonical order; integer out of range or with leading zeros; unreduced or
+zero-part tempo fraction; invalid range (`start > end`); unknown enum
+literal; malformed escape; unterminated string or block; input past the
+closing brace of `score`.
+
+### 4.11 Expressibility record (alphaTab #1484)
+
+alphaTex's exporter round-trip attempt (alphaTab issue #1484) enumerates
+the holes an input-first text language grows. The defense here is
+structural — the text is generated from the model inventory, and the
+inventory tests break compilation when the model grows — but the list is
+still recorded against this section, item by item:
+
+| #1484 item | Disposition here |
+|---|---|
+| Whammy types, bend types | Not canonical model facts (a bend is a `SpanTechnique` flag, not a curve); nothing to lose — becomes expressible only when the model gains it, in the same level bump |
+| Clef ottava, simile marks, double bar, common time signature | Notation/engraving; not canonical model facts |
+| Escape sequences in strings | Expressible: §4.12 defines the closed escape set; negative tests in 4A4 |
+| Score metadata (instructions, notice, tab) | `source_meta` is the model's only metadata and is expressible; richer metadata follows the model, never the grammar alone |
+| Transpose | Not a model fact (pitches are absolute) |
+| Rasgueado | Not a model fact (no such technique variant) |
+| Legatos | Expressible: `span { technique legato … }` |
+| Beat text, tempo automation text | Not model facts; tempo is exact per master bar |
+| Instrument changes | Not a model fact (one channel per track) |
+| Fermata | Not a model fact |
+| Harmonic values | Expressible as marks (`harmonic_natural`, `harmonic_pinch`); harmonic *values* are not model facts |
+| MultiVoice | Expressible: repeated `voice` blocks with ids |
+
+Every "not a model fact" row is a fact about the **canonical model**, not
+a silent grammar hole: the text loses nothing the model holds, which is
+the only expressibility promise a mirror can make. 4A4 encodes this table
+as negative tests.
+
+### 4.12 String escaping
+
+Strings are double-quoted UTF-8. Exactly these escapes exist:
+`\\`, `\"`, `\n`, `\r`, `\t`, and `\u{h…}` (1–6 lowercase hex digits, no
+leading zeros) for every other C0 control and `U+007F`. All other scalars
+appear raw. Canonical output uses the shorthand escapes where they exist
+and `\u{…}` only for the remaining control characters; escaping a
+character that does not require it is non-canonical input that `fmt`
+normalizes.
+
+### 4.13 Out of scope for Phase 4A
+
+Selectors and patches (4C), persistent or sequential identifiers, path
+serialization, normalized acceptance gates (4B), MIDI playback
+equivalence (4D), authoring conveniences, ties as an entity, and any
+canonical-model change in service of a prettier grammar.
+
+## 5. Deferred research
 
 Named without reserved syntax or promised semantics (see the S16 stage doc
 for admission bars):
