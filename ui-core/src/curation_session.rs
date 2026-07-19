@@ -14,21 +14,21 @@
 //! decision's identity (ADR-0030 §8): a regrouped cluster does not move a
 //! decision. That invariant lives in core's `reconcile`; this layer only feeds it.
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use griff_core::corpus::{ChunkId, ChunkMeta, ReviewerDecision, SwancoreTag, SCHEMA_VERSION};
 use griff_core::curation::build_clusters;
 use griff_core::curation_store::{
-    chunk_fingerprint, corpus_fingerprint, project, reconcile as core_reconcile, CorpusFingerprint,
-    CurationContext, CurationEvent, CurationEventId, CurationStoreV1, FingerprintError,
-    ProjectedCuration, ReconciledCuration, ReviewerId, CURATION_STORE_VERSION,
+    chunk_fingerprint, corpus_fingerprint, project, reconcile as core_reconcile, CurationContext,
+    CurationEvent, CurationEventId, CurationStoreV1, FingerprintError, ProjectedCuration,
+    ReconciledCuration, ReviewerId, CURATION_STORE_VERSION,
 };
 
-/// One decision to record. The opaque `event_id` and canonical `occurred_at`
-/// come from the boundary (mint with [`mint_event_id`] / [`canonical_timestamp`]);
-/// the fingerprints and cluster context are derived from the corpus by
-/// [`CurationSession::record`].
+/// One decision to record.
+///
+/// The opaque `event_id` and canonical `occurred_at` come from the boundary
+/// (mint with [`mint_event_id`] / [`canonical_timestamp`]); the fingerprints and
+/// cluster context are derived from the corpus by [`CurationSession::record`].
 #[derive(Debug, Clone)]
 pub struct RecordRequest {
     pub chunk_id: ChunkId,
@@ -67,14 +67,14 @@ impl CurationSession {
         loaded: Option<CurationStoreV1>,
         corpus: &[ChunkMeta],
     ) -> Result<Self, FingerprintError> {
-        // STUB (red): ignores the corpus, leaving the empty store unpinned (an
-        // empty fingerprint), so the pinned-empty-store test fails.
-        let _ = corpus;
-        let store = loaded.unwrap_or(CurationStoreV1 {
-            version: CURATION_STORE_VERSION,
-            corpus_fingerprint: CorpusFingerprint(String::new()),
-            events: Vec::new(),
-        });
+        let store = match loaded {
+            Some(store) => store,
+            None => CurationStoreV1 {
+                version: CURATION_STORE_VERSION,
+                corpus_fingerprint: corpus_fingerprint(SCHEMA_VERSION, corpus)?,
+                events: Vec::new(),
+            },
+        };
         Ok(Self { store })
     }
 
@@ -85,18 +85,35 @@ impl CurationSession {
     /// [`RecordError::UnknownChunk`] if the chunk is absent from `corpus`;
     /// [`RecordError::Unpinned`] if it lacks a pinned identity.
     pub fn record(&mut self, req: RecordRequest, corpus: &[ChunkMeta]) -> Result<(), RecordError> {
-        // STUB (red): drops the decision, so the append/projection tests fail.
-        let _ = (req, corpus, &mut self.store);
+        let chunk = corpus
+            .iter()
+            .find(|c| c.id == req.chunk_id)
+            .ok_or_else(|| RecordError::UnknownChunk {
+                chunk_id: req.chunk_id.clone(),
+            })?;
+        let chunk_fingerprint = chunk_fingerprint(chunk).map_err(RecordError::Unpinned)?;
+        let corpus_fingerprint =
+            corpus_fingerprint(SCHEMA_VERSION, corpus).map_err(RecordError::Unpinned)?;
+        let context = cluster_context(&req.chunk_id, corpus);
+        self.store.events.push(CurationEvent {
+            event_id: req.event_id,
+            chunk_id: req.chunk_id,
+            chunk_fingerprint,
+            decision: req.decision,
+            reviewer: req.reviewer,
+            occurred_at: req.occurred_at,
+            corpus_fingerprint,
+            context,
+            tags: req.tags,
+            note: req.note,
+        });
         Ok(())
     }
 
     /// The latest decision per chunk (core's projection; cluster context excluded).
     #[must_use]
     pub fn projected(&self) -> ProjectedCuration {
-        // STUB (red): empty, so the projection tests fail.
-        ProjectedCuration {
-            by_chunk: BTreeMap::new(),
-        }
+        project(&self.store.events)
     }
 
     /// Reconciles the session's decisions against the current corpus.
@@ -104,26 +121,20 @@ impl CurationSession {
     /// # Errors
     /// [`FingerprintError`] if a current chunk cannot be fingerprinted.
     pub fn reconcile(&self, corpus: &[ChunkMeta]) -> Result<ReconciledCuration, FingerprintError> {
-        // STUB (red): claims everything orphaned-free and unmatched, so the
-        // active/orphaned tests fail.
-        let _ = corpus;
-        Ok(ReconciledCuration {
-            active: Vec::new(),
-            orphaned: Vec::new(),
-            corpus_match: false,
-        })
+        core_reconcile(&self.store, corpus)
     }
 
     /// The store, for the boundary to encode and persist.
     #[must_use]
-    pub fn store(&self) -> &CurationStoreV1 {
+    pub const fn store(&self) -> &CurationStoreV1 {
         &self.store
     }
 }
 
-/// The cluster audit snapshot for `chunk_id`: its dedup cluster's representative
-/// and all members (itself when it is a singleton). Never part of the decision's
-/// identity — a navigation/audit fact only.
+/// The cluster audit snapshot for `chunk_id`.
+///
+/// Its dedup cluster's representative and all members (itself when it is a
+/// singleton). Never part of the decision's identity — a navigation/audit fact.
 fn cluster_context(chunk_id: &ChunkId, corpus: &[ChunkMeta]) -> CurationContext {
     let (clusters, _diagnostics) = build_clusters(corpus);
     for cluster in &clusters {
@@ -143,30 +154,65 @@ fn cluster_context(chunk_id: &ChunkId, corpus: &[ChunkMeta]) -> CurationContext 
     }
 }
 
-/// Mints an opaque decision-event id: an RFC-4122 **v4 UUID** from 16
-/// boundary-supplied random bytes. The randomness is the boundary's; this only
-/// stamps the version (4) and variant (10) bits and the canonical hyphenated hex
-/// layout, so the id is opaque, unique, and stable.
+/// Mints an opaque decision-event id: an RFC-4122 **v4 UUID**.
+///
+/// From 16 boundary-supplied random bytes — the randomness is the boundary's;
+/// this only stamps the version (4) and variant (10) bits and the canonical
+/// hyphenated hex layout, so the id is opaque, unique, and stable.
 #[must_use]
 pub fn mint_event_id(bytes: [u8; 16]) -> CurationEventId {
-    // STUB (red): returns a fixed non-UUID, so the format/uniqueness test fails.
-    let _ = bytes;
-    CurationEventId("stub".to_owned())
+    let id = bytes
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| match i {
+            6 => (b & 0x0f) | 0x40, // version 4
+            8 => (b & 0x3f) | 0x80, // variant 10xx
+            _ => b,
+        })
+        .enumerate()
+        .fold(String::with_capacity(36), |mut acc, (i, byte)| {
+            if matches!(i, 4 | 6 | 8 | 10) {
+                acc.push('-');
+            }
+            // Writing hex into a String is infallible.
+            write!(acc, "{byte:02x}").ok();
+            acc
+        });
+    CurationEventId(id)
 }
 
-/// Formats a Unix-epoch second count as the canonical `YYYY-MM-DDTHH:MM:SSZ`
-/// timestamp the store requires — second precision, no fractional part (which
+/// Formats a Unix-epoch second count as the canonical timestamp the store wants.
+///
+/// `YYYY-MM-DDTHH:MM:SSZ` — second precision, no fractional part (which
 /// `curation_store` rejects). Howard Hinnant's civil-from-days, no `chrono`.
 #[must_use]
+// Bounded civil-from-days: `epoch_secs` is clamped non-negative and every
+// intermediate product stays well within i64 for any realistic year, so the
+// arithmetic cannot overflow — the lint carries no signal here.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn canonical_timestamp(epoch_secs: i64) -> String {
-    // STUB (red): empty, so the timestamp tests fail.
-    let _ = epoch_secs;
-    String::new()
+    let secs = epoch_secs.max(0);
+    let (hh, mm, ss) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
+    let z = secs / 86_400 + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
 
     use super::{canonical_timestamp, mint_event_id, CurationSession, RecordError, RecordRequest};
     use griff_core::corpus::{
@@ -215,9 +261,9 @@ mod tests {
 
     fn corpus() -> Vec<ChunkMeta> {
         vec![
-            chunk("c0", "hash0", None),
-            chunk("c1", "hash1", Some(0)), // c1 duplicates c0 → one cluster {c0,[c1]}
-            chunk("c2", "hash2", None),
+            chunk("a_p0", "hash0", None),
+            chunk("a_p1", "hash1", Some(0)), // a_p1 duplicates a_p0 → cluster {a_p0,[a_p1]}
+            chunk("a_p2", "hash2", None),
         ]
     }
 
@@ -258,7 +304,7 @@ mod tests {
         session
             .record(
                 request(
-                    "c0",
+                    "a_p0",
                     "e1",
                     "2026-07-19T10:00:00Z",
                     ReviewerDecision::Accepted,
@@ -269,7 +315,7 @@ mod tests {
         assert_eq!(session.store().events.len(), 1);
         let projected = session.projected();
         assert_eq!(
-            decision(&projected.by_chunk[&ChunkId("c0".to_owned())]),
+            decision(&projected.by_chunk[&ChunkId("a_p0".to_owned())]),
             ReviewerDecision::Accepted,
         );
     }
@@ -281,7 +327,7 @@ mod tests {
         session
             .record(
                 request(
-                    "c0",
+                    "a_p0",
                     "e1",
                     "2026-07-19T10:00:00Z",
                     ReviewerDecision::Rejected,
@@ -292,7 +338,7 @@ mod tests {
         session
             .record(
                 request(
-                    "c0",
+                    "a_p0",
                     "e2",
                     "2026-07-19T11:00:00Z",
                     ReviewerDecision::Accepted,
@@ -306,7 +352,7 @@ mod tests {
             "two events, not a mutation"
         );
         assert_eq!(
-            decision(&session.projected().by_chunk[&ChunkId("c0".to_owned())]),
+            decision(&session.projected().by_chunk[&ChunkId("a_p0".to_owned())]),
             ReviewerDecision::Accepted,
             "the later decision wins",
         );
@@ -319,7 +365,7 @@ mod tests {
         session
             .record(
                 request(
-                    "c0",
+                    "a_p0",
                     "e_a",
                     "2026-07-19T10:00:00Z",
                     ReviewerDecision::Rejected,
@@ -330,7 +376,7 @@ mod tests {
         session
             .record(
                 request(
-                    "c0",
+                    "a_p0",
                     "e_z",
                     "2026-07-19T10:00:00Z",
                     ReviewerDecision::Accepted,
@@ -339,7 +385,7 @@ mod tests {
             )
             .expect("record z");
         assert_eq!(
-            decision(&session.projected().by_chunk[&ChunkId("c0".to_owned())]),
+            decision(&session.projected().by_chunk[&ChunkId("a_p0".to_owned())]),
             ReviewerDecision::Accepted,
             "the greater event_id wins on an equal timestamp",
         );
@@ -352,7 +398,7 @@ mod tests {
         session
             .record(
                 request(
-                    "c1",
+                    "a_p1",
                     "e1",
                     "2026-07-19T10:00:00Z",
                     ReviewerDecision::Accepted,
@@ -363,7 +409,7 @@ mod tests {
         let context = &session.store().events[0].context;
         assert_eq!(
             context.cluster_members,
-            vec![ChunkId("c0".to_owned()), ChunkId("c1".to_owned())],
+            vec![ChunkId("a_p0".to_owned()), ChunkId("a_p1".to_owned())],
             "the dedup cluster {{c0, c1}} is snapshotted as audit context",
         );
     }
@@ -375,7 +421,7 @@ mod tests {
         session
             .record(
                 request(
-                    "c1",
+                    "a_p1",
                     "e1",
                     "2026-07-19T10:00:00Z",
                     ReviewerDecision::Accepted,
@@ -383,12 +429,12 @@ mod tests {
                 &corpus,
             )
             .expect("record");
-        // The corpus regroups: c1 no longer duplicates c0 (its cluster changed),
-        // but its own material (sha/track/range) is unchanged.
+        // The corpus regroups: a_p1 no longer duplicates a_p0 (its cluster
+        // changed), but its own material (sha/track/range) is unchanged.
         let regrouped = vec![
-            chunk_no_dup("c0", "hash0"),
-            chunk_no_dup("c1", "hash1"),
-            chunk_no_dup("c2", "hash2"),
+            chunk_no_dup("a_p0", "hash0"),
+            chunk_no_dup("a_p1", "hash1"),
+            chunk_no_dup("a_p2", "hash2"),
         ];
         let reconciled = session.reconcile(&regrouped).expect("reconcile");
         assert_eq!(reconciled.active.len(), 1, "the decision stays active");
@@ -402,7 +448,7 @@ mod tests {
         session
             .record(
                 request(
-                    "c0",
+                    "a_p0",
                     "e1",
                     "2026-07-19T10:00:00Z",
                     ReviewerDecision::Accepted,
@@ -410,8 +456,8 @@ mod tests {
                 &corpus,
             )
             .expect("record");
-        // c0's material changes (new sha); c1/c2 gone.
-        let changed = vec![chunk_no_dup("c0", "DIFFERENT")];
+        // a_p0's material changes (new sha); a_p1/a_p2 gone.
+        let changed = vec![chunk_no_dup("a_p0", "DIFFERENT")];
         let reconciled = session.reconcile(&changed).expect("reconcile");
         assert_eq!(reconciled.orphaned.len(), 1, "the changed chunk orphans it");
         assert!(reconciled.active.is_empty());
@@ -456,10 +502,12 @@ mod tests {
 
     #[test]
     fn canonical_timestamp_is_second_precision_utc() {
-        // 2026-07-19T10:00:00Z = 1_784_282_400 seconds since the epoch.
+        // Two well-known anchors, so the assertion doesn't depend on my own
+        // epoch arithmetic: the epoch itself, and "one billion seconds".
+        assert_eq!(canonical_timestamp(0), "1970-01-01T00:00:00Z");
         assert_eq!(
-            canonical_timestamp(1_784_282_400),
-            "2026-07-19T10:00:00Z",
+            canonical_timestamp(1_000_000_000),
+            "2001-09-09T01:46:40Z",
             "exact civil time, second precision, no fractional part",
         );
         // A minted timestamp is accepted by the store (it round-trips through decode).
@@ -467,9 +515,9 @@ mod tests {
         session
             .record(
                 request(
-                    "c0",
+                    "a_p0",
                     "e1",
-                    &canonical_timestamp(1_784_282_400),
+                    &canonical_timestamp(1_000_000_000),
                     ReviewerDecision::Accepted,
                 ),
                 &corpus(),
