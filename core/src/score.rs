@@ -54,7 +54,7 @@ pub enum ImportWarning {
 /// Ordered list of losses gathered during a format import or export.
 ///
 /// An empty report means a clean, lossless conversion.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct LossReport {
     /// Ordered warnings; empty when conversion was lossless.
     pub warnings: Vec<ImportWarning>,
@@ -85,7 +85,7 @@ impl LossReport {
 // ── source metadata ────────────────────────────────────────────────────────────
 
 /// Format-level metadata carried alongside the canonical model.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct SourceMeta {
     /// Identifier of the originating format, e.g. `"MIDI"`, `"GP5"`.
     pub format: Option<String>,
@@ -274,7 +274,9 @@ pub struct MasterBar {
 ///
 /// `Score` is the root of the canonical hierarchy:
 /// `Score → MasterBar` (transport) and `Score → Track → Voice → EventGroup → AtomEvent` (content).
-#[derive(Debug, Clone)]
+// Structural `Eq`/`Hash` hold on the whole document since the exact-scalar
+// migration (S16 Phase 4-pre A/B): no `f64` remains anywhere in the tree.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Score {
     /// Tick resolution — pulses per quarter note.
     pub ticks_per_quarter: u16,
