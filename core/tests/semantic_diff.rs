@@ -33,8 +33,8 @@ use griff_core::{
         MasterBar, RepeatMarker, Score, SourceMeta, TechniqueSpan, Track, Voice,
     },
     semantic_diff::{
-        exact_semantic_diff, SemanticDiffMode, SemanticDifference, SemanticDifferenceKind,
-        SemanticPathSegment,
+        exact_semantic_diff, SemanticDiffMode, SemanticDiffReport, SemanticDifference,
+        SemanticDifferenceKind, SemanticPathSegment,
     },
     slice::TickRange,
 };
@@ -263,12 +263,36 @@ fn removed_master_bar_is_a_cardinality_mismatch() {
 // ── mutation matrix: master bar ───────────────────────────────────────────────
 
 #[test]
-fn mutated_bar_index_is_reported_under_the_expected_side_coordinates() {
+fn mutated_bar_index_drops_the_index_annotation_from_the_path() {
     assert_diff(
         |s| s.master_bars[1].index = 9,
-        "score.master_bars[index=1,ordinal=1].index",
+        "score.master_bars[ordinal=1].index",
         &SemanticDifferenceKind::ValueMismatch,
     );
+}
+
+#[test]
+fn mutated_bar_index_paths_are_identical_in_both_directions() {
+    let a = base();
+    let mut b = base();
+    b.master_bars[1].index = 9;
+    let forward = exact_semantic_diff(&a, &b);
+    let backward = exact_semantic_diff(&b, &a);
+    assert_eq!(forward.differences.len(), 1);
+    assert_eq!(backward.differences.len(), 1);
+    let f = &forward.differences[0];
+    let r = &backward.differences[0];
+    assert_eq!(f.path, r.path, "typed paths are equal, not just rendered");
+    assert_eq!(
+        f.path.segments().get(1),
+        Some(&SemanticPathSegment::MasterBar {
+            ordinal: 1,
+            index: None,
+        }),
+        "the disputed coordinate is omitted from the annotation"
+    );
+    assert_eq!(f.expected, r.actual, "diagnostics invert");
+    assert_eq!(f.actual, r.expected);
 }
 
 #[test]
@@ -385,11 +409,58 @@ fn removed_voice_is_a_cardinality_mismatch() {
 }
 
 #[test]
-fn mutated_voice_id_is_reported_under_the_expected_side_id() {
+fn mutated_voice_id_drops_the_id_annotation_from_the_path() {
     assert_diff(
         |s| s.tracks[1].voices[0].id = 3,
-        "score.tracks[1].voices[id=1,ordinal=0].id",
+        "score.tracks[1].voices[ordinal=0].id",
         &SemanticDifferenceKind::ValueMismatch,
+    );
+}
+
+#[test]
+fn mutated_voice_id_paths_are_identical_in_both_directions() {
+    let a = base();
+    let mut b = base();
+    b.tracks[1].voices[0].id = 3;
+    let forward = exact_semantic_diff(&a, &b);
+    let backward = exact_semantic_diff(&b, &a);
+    assert_eq!(forward.differences.len(), 1);
+    let f = &forward.differences[0];
+    let r = &backward.differences[0];
+    assert_eq!(f.path, r.path, "typed paths are equal in both directions");
+    assert!(
+        f.path.segments().contains(&SemanticPathSegment::Voice {
+            ordinal: 0,
+            id: None,
+        }),
+        "the disputed id is omitted"
+    );
+}
+
+#[test]
+fn descendant_mismatch_under_disputed_voice_id_has_one_path_both_ways() {
+    // The voice id differs AND a note below it differs: the descendant's
+    // path must be identical in both directions — the disputed id never
+    // leaks into the annotation.
+    let a = base();
+    let mut b = base();
+    b.tracks[1].voices[0].id = 3;
+    match &mut b.tracks[1].voices[0].event_groups[0].atoms[0] {
+        AtomEvent::Note(note) => note.pitch = Pitch::new(48).expect("valid"),
+        AtomEvent::Rest(_) => panic!("fixture note"),
+    }
+    let forward = exact_semantic_diff(&a, &b);
+    let backward = exact_semantic_diff(&b, &a);
+    assert_eq!(forward.differences.len(), 2);
+    assert_eq!(backward.differences.len(), 2);
+    for (f, r) in forward.differences.iter().zip(backward.differences.iter()) {
+        assert_eq!(f.path, r.path, "typed paths agree pairwise, in order");
+        assert_eq!(f.expected, r.actual);
+        assert_eq!(f.actual, r.expected);
+    }
+    assert_eq!(
+        forward.differences[1].path.to_string(),
+        "score.tracks[1].voices[ordinal=0].event_groups[0].atoms[0].pitch"
     );
 }
 
@@ -416,6 +487,71 @@ fn single_replaced_by_chord_is_a_variant_mismatch_in_exact_mode() {
         "score.tracks[0].voices[id=0,ordinal=0].event_groups[0].kind",
         &SemanticDifferenceKind::VariantMismatch,
     );
+}
+
+/// Diffs two `base()` copies whose first group kinds are set to `e` / `a`.
+fn kind_diff(e: EventGroupKind, a: EventGroupKind) -> SemanticDiffReport {
+    let mut expected = base();
+    expected.tracks[0].voices[0].event_groups[0].kind = e;
+    let mut actual = base();
+    actual.tracks[0].voices[0].event_groups[0].kind = a;
+    exact_semantic_diff(&expected, &actual)
+}
+
+#[test]
+fn tuplet_num_change_is_a_value_mismatch_on_kind_num() {
+    let report = kind_diff(
+        EventGroupKind::Tuplet { num: 3, den: 2 },
+        EventGroupKind::Tuplet { num: 5, den: 2 },
+    );
+    assert_eq!(report.differences.len(), 1, "{:#?}", report.differences);
+    let diff = &report.differences[0];
+    assert_eq!(
+        diff.path.to_string(),
+        "score.tracks[0].voices[id=0,ordinal=0].event_groups[0].kind.num"
+    );
+    assert_eq!(diff.kind, SemanticDifferenceKind::ValueMismatch);
+    assert_eq!(diff.expected.as_deref(), Some("3"));
+    assert_eq!(diff.actual.as_deref(), Some("5"));
+}
+
+#[test]
+fn tuplet_den_change_is_a_value_mismatch_on_kind_den() {
+    let report = kind_diff(
+        EventGroupKind::Tuplet { num: 3, den: 2 },
+        EventGroupKind::Tuplet { num: 3, den: 4 },
+    );
+    assert_eq!(report.differences.len(), 1, "{:#?}", report.differences);
+    let diff = &report.differences[0];
+    assert_eq!(
+        diff.path.to_string(),
+        "score.tracks[0].voices[id=0,ordinal=0].event_groups[0].kind.den"
+    );
+    assert_eq!(diff.kind, SemanticDifferenceKind::ValueMismatch);
+}
+
+#[test]
+fn tuplet_replaced_by_chord_is_a_variant_mismatch_on_kind() {
+    let report = kind_diff(
+        EventGroupKind::Tuplet { num: 3, den: 2 },
+        EventGroupKind::Chord,
+    );
+    assert_eq!(report.differences.len(), 1, "{:#?}", report.differences);
+    let diff = &report.differences[0];
+    assert_eq!(
+        diff.path.to_string(),
+        "score.tracks[0].voices[id=0,ordinal=0].event_groups[0].kind"
+    );
+    assert_eq!(diff.kind, SemanticDifferenceKind::VariantMismatch);
+}
+
+#[test]
+fn identical_tuplets_produce_no_difference() {
+    let report = kind_diff(
+        EventGroupKind::Tuplet { num: 3, den: 2 },
+        EventGroupKind::Tuplet { num: 3, den: 2 },
+    );
+    assert!(report.is_empty(), "{:#?}", report.differences);
 }
 
 // ── mutation matrix: atoms ────────────────────────────────────────────────────
@@ -623,16 +759,37 @@ fn dropped_source_meta_is_missing_actual() {
 }
 
 #[test]
-fn mutated_source_meta_is_a_value_mismatch() {
+fn mutated_source_format_is_a_value_mismatch_on_format() {
     assert_diff(
         |s| {
             s.source_meta = Some(SourceMeta {
                 format: Some("MIDI".to_owned()),
             });
         },
-        "score.source_meta",
+        "score.source_meta.format",
         &SemanticDifferenceKind::ValueMismatch,
     );
+}
+
+#[test]
+fn dropped_source_format_is_missing_actual_on_format() {
+    assert_diff(
+        |s| s.source_meta = Some(SourceMeta { format: None }),
+        "score.source_meta.format",
+        &SemanticDifferenceKind::MissingActual,
+    );
+}
+
+#[test]
+fn gained_source_format_is_missing_expected_on_format() {
+    let mut expected = base();
+    expected.source_meta = Some(SourceMeta { format: None });
+    let actual = base();
+    let report = exact_semantic_diff(&expected, &actual);
+    assert_eq!(report.differences.len(), 1);
+    let diff = &report.differences[0];
+    assert_eq!(diff.path.to_string(), "score.source_meta.format");
+    assert_eq!(diff.kind, SemanticDifferenceKind::MissingExpected);
 }
 
 #[test]
@@ -650,16 +807,66 @@ fn removed_loss_warning_is_a_cardinality_mismatch() {
 }
 
 #[test]
-fn mutated_loss_warning_is_a_value_mismatch_at_its_ordinal() {
+fn warning_variant_change_is_a_variant_mismatch_on_kind() {
     assert_diff(
         |s| s.loss.warnings[1] = ImportWarning::SmpteTimingUnsupported,
-        "score.loss.warnings[1]",
+        "score.loss.warnings[1].kind",
+        &SemanticDifferenceKind::VariantMismatch,
+    );
+}
+
+#[test]
+fn warning_bar_index_change_is_a_value_mismatch_on_bar_index() {
+    assert_diff(
+        |s| {
+            s.loss.warnings[1] = ImportWarning::TempoApproximated {
+                bar_index: 7,
+                nearest_micros: 495_868,
+            };
+        },
+        "score.loss.warnings[1].bar_index",
         &SemanticDifferenceKind::ValueMismatch,
     );
 }
 
 #[test]
-fn reordered_loss_warnings_are_two_value_mismatches() {
+fn warning_nearest_micros_change_is_a_value_mismatch_on_nearest_micros() {
+    assert_diff(
+        |s| {
+            s.loss.warnings[1] = ImportWarning::TempoApproximated {
+                bar_index: 0,
+                nearest_micros: 500_000,
+            };
+        },
+        "score.loss.warnings[1].nearest_micros",
+        &SemanticDifferenceKind::ValueMismatch,
+    );
+}
+
+#[test]
+fn warning_message_change_is_a_value_mismatch_on_message() {
+    assert_diff(
+        |s| s.loss.warnings[0] = ImportWarning::Other("w1".to_owned()),
+        "score.loss.warnings[0].message",
+        &SemanticDifferenceKind::ValueMismatch,
+    );
+}
+
+#[test]
+fn warning_track_index_change_is_a_value_mismatch_on_track_index() {
+    let mut expected = base();
+    expected.loss.warnings[0] = ImportWarning::TrackNameInvalidUtf8 { track_index: 1 };
+    let mut actual = base();
+    actual.loss.warnings[0] = ImportWarning::TrackNameInvalidUtf8 { track_index: 2 };
+    let report = exact_semantic_diff(&expected, &actual);
+    assert_eq!(report.differences.len(), 1);
+    let diff = &report.differences[0];
+    assert_eq!(diff.path.to_string(), "score.loss.warnings[0].track_index");
+    assert_eq!(diff.kind, SemanticDifferenceKind::ValueMismatch);
+}
+
+#[test]
+fn reordered_loss_warnings_are_two_variant_mismatches() {
     let expected = base();
     let mut actual = base();
     actual.loss.warnings.swap(0, 1);
@@ -671,7 +878,7 @@ fn reordered_loss_warnings_are_two_value_mismatches() {
         .collect();
     assert_eq!(
         paths,
-        vec!["score.loss.warnings[0]", "score.loss.warnings[1]"],
+        vec!["score.loss.warnings[0].kind", "score.loss.warnings[1].kind"],
         "warning order is a compared fact"
     );
 }
@@ -789,6 +996,59 @@ fn missing_kinds_invert_into_each_other() {
 }
 
 #[test]
+fn variant_mismatch_inverts_with_swapped_diagnostics() {
+    let a = base();
+    let mut b = base();
+    b.loss.warnings[1] = ImportWarning::SmpteTimingUnsupported;
+    let forward = exact_semantic_diff(&a, &b);
+    let backward = exact_semantic_diff(&b, &a);
+    assert_eq!(forward.differences.len(), 1);
+    let f = &forward.differences[0];
+    let r = &backward.differences[0];
+    assert_eq!(f.kind, SemanticDifferenceKind::VariantMismatch);
+    assert_eq!(r.kind, SemanticDifferenceKind::VariantMismatch);
+    assert_eq!(f.path, r.path, "typed paths equal");
+    assert_eq!(f.expected, r.actual, "diagnostic values swap");
+    assert_eq!(f.actual, r.expected);
+}
+
+#[test]
+fn the_full_inversion_contract_holds_across_mixed_kinds() {
+    // Value + variant + missing + cardinality in one pair: both directions
+    // carry the same typed paths in the same order, with kinds inverted and
+    // diagnostics swapped.
+    let a = base();
+    let mut b = base();
+    b.master_bars[0].tempo = Tempo::from_bpm_integer(121).expect("121 BPM");
+    b.tracks[0].voices[0].event_groups[0].kind = EventGroupKind::Chord;
+    b.source_meta = None;
+    b.loss.warnings.pop();
+
+    let forward = exact_semantic_diff(&a, &b);
+    let backward = exact_semantic_diff(&b, &a);
+    assert_eq!(forward.differences.len(), backward.differences.len());
+    assert!(forward.differences.len() >= 4);
+    for (f, r) in forward.differences.iter().zip(backward.differences.iter()) {
+        assert_eq!(f.path, r.path, "same typed paths, same order");
+        let inverted = match &f.kind {
+            SemanticDifferenceKind::ValueMismatch => SemanticDifferenceKind::ValueMismatch,
+            SemanticDifferenceKind::VariantMismatch => SemanticDifferenceKind::VariantMismatch,
+            SemanticDifferenceKind::CardinalityMismatch { expected, actual } => {
+                SemanticDifferenceKind::CardinalityMismatch {
+                    expected: *actual,
+                    actual: *expected,
+                }
+            }
+            SemanticDifferenceKind::MissingExpected => SemanticDifferenceKind::MissingActual,
+            SemanticDifferenceKind::MissingActual => SemanticDifferenceKind::MissingExpected,
+        };
+        assert_eq!(inverted, r.kind, "kinds invert at {}", f.path);
+        assert_eq!(f.expected, r.actual, "diagnostics swap at {}", f.path);
+        assert_eq!(f.actual, r.expected);
+    }
+}
+
+#[test]
 fn cardinality_inverts_by_swapping_counts() {
     let a = base();
     let mut b = base();
@@ -823,5 +1083,11 @@ fn the_display_form_matches_the_documented_examples() {
     );
 
     let diff = single_diff(|s| s.loss.warnings[1] = ImportWarning::SmpteTimingUnsupported);
-    assert_eq!(diff.path.to_string(), "score.loss.warnings[1]");
+    assert_eq!(diff.path.to_string(), "score.loss.warnings[1].kind");
+
+    let diff = single_diff(|s| s.tracks[1].voices[0].id = 3);
+    assert_eq!(
+        diff.path.to_string(),
+        "score.tracks[1].voices[ordinal=0].id"
+    );
 }

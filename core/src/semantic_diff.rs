@@ -13,7 +13,9 @@
 //! addressing across edits is Phase 4C's problem, and this module does not
 //! pretend to solve it. The `index` / `id` annotations on
 //! [`SemanticPathSegment::MasterBar`] / [`SemanticPathSegment::Voice`] are
-//! taken from the *expected* tree.
+//! shown only when the two trees agree on the coordinate; when the
+//! coordinate field itself differs, the annotation is omitted so
+//! `diff(a, b)` and `diff(b, a)` carry identical paths.
 //!
 //! Traversal order is deterministic depth-first in field-declaration order;
 //! for collections, cardinality is compared first and then the common prefix
@@ -26,8 +28,8 @@ use core::fmt;
 use crate::{
     event::NotePosition,
     score::{
-        AtomEvent, AtomNote, AtomRest, EventGroup, LossReport, MasterBar, Score, SourceMeta,
-        TechniqueSpan, Track, Voice,
+        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
+        MasterBar, Score, SourceMeta, TechniqueSpan, Track, Voice,
     },
 };
 
@@ -65,7 +67,14 @@ pub enum SemanticField {
     Technique,
     Evidence,
     SourceMeta,
+    Format,
     LossWarnings,
+    TupletNum,
+    TupletDen,
+    TrackIndex,
+    BarIndex,
+    NearestMicros,
+    Message,
 }
 
 impl SemanticField {
@@ -98,7 +107,14 @@ impl SemanticField {
             Self::Technique => "technique",
             Self::Evidence => "evidence",
             Self::SourceMeta => "source_meta",
+            Self::Format => "format",
             Self::LossWarnings => "loss.warnings",
+            Self::TupletNum => "num",
+            Self::TupletDen => "den",
+            Self::TrackIndex => "track_index",
+            Self::BarIndex => "bar_index",
+            Self::NearestMicros => "nearest_micros",
+            Self::Message => "message",
         }
     }
 }
@@ -108,25 +124,28 @@ impl SemanticField {
 pub enum SemanticPathSegment {
     /// The score root.
     Score,
-    /// A master bar, by position; `index` is the expected tree's stored
-    /// `MasterBar::index` annotation.
+    /// A master bar, by position; `index` annotates the stored
+    /// `MasterBar::index` only when both trees agree on it.
     MasterBar {
         /// Zero-based position in `master_bars`.
         ordinal: usize,
-        /// The expected side's stored bar index.
-        index: usize,
+        /// The agreed stored bar index; `None` when the index itself
+        /// differs, so both diff directions render the same path.
+        index: Option<usize>,
     },
     /// A track, by position.
     Track {
         /// Zero-based position in `tracks`.
         ordinal: usize,
     },
-    /// A voice, by position; `id` is the expected tree's `Voice::id`.
+    /// A voice, by position; `id` annotates `Voice::id` only when both
+    /// trees agree on it.
     Voice {
         /// Zero-based position in `voices`.
         ordinal: usize,
-        /// The expected side's voice id.
-        id: u8,
+        /// The agreed voice id; `None` when the id itself differs, so both
+        /// diff directions render the same path.
+        id: Option<u8>,
     },
     /// An event group, by position.
     EventGroup {
@@ -156,11 +175,20 @@ impl fmt::Display for SemanticPathSegment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Score => write!(f, "score"),
-            Self::MasterBar { ordinal, index } => {
-                write!(f, ".master_bars[index={index},ordinal={ordinal}]")
-            }
+            Self::MasterBar {
+                ordinal,
+                index: Some(index),
+            } => write!(f, ".master_bars[index={index},ordinal={ordinal}]"),
+            Self::MasterBar {
+                ordinal,
+                index: None,
+            } => write!(f, ".master_bars[ordinal={ordinal}]"),
             Self::Track { ordinal } => write!(f, ".tracks[{ordinal}]"),
-            Self::Voice { ordinal, id } => write!(f, ".voices[id={id},ordinal={ordinal}]"),
+            Self::Voice {
+                ordinal,
+                id: Some(id),
+            } => write!(f, ".voices[id={id},ordinal={ordinal}]"),
+            Self::Voice { ordinal, id: None } => write!(f, ".voices[ordinal={ordinal}]"),
             Self::EventGroup { ordinal } => write!(f, ".event_groups[{ordinal}]"),
             Self::Atom { ordinal } => write!(f, ".atoms[{ordinal}]"),
             Self::TechniqueSpan { ordinal } => write!(f, ".technique_spans[{ordinal}]"),
@@ -363,8 +391,8 @@ impl Walker {
 
     /// Compares a collection: cardinality first (under `Field(field)`), then
     /// the common prefix of elements, each under its own segment. `segment`
-    /// builds the element segment from the ordinal and the *expected*
-    /// element.
+    /// builds the element segment from the ordinal and *both* elements, so
+    /// coordinate annotations can be restricted to agreed values.
     // Two closures (segment shape + element comparison) plus the slices are
     // what keep every call site declarative; bundling them into a struct
     // would only rename the same six things.
@@ -374,7 +402,7 @@ impl Walker {
         field: SemanticField,
         e: &[T],
         a: &[T],
-        segment: impl Fn(usize, &T) -> SemanticPathSegment,
+        segment: impl Fn(usize, &T, &T) -> SemanticPathSegment,
         item: impl Fn(&mut Self, &T, &T),
     ) {
         if e.len() != a.len() {
@@ -390,7 +418,7 @@ impl Walker {
             });
         }
         for (ordinal, (ev, av)) in e.iter().zip(a.iter()).enumerate() {
-            self.scoped(segment(ordinal, ev), |w| item(w, ev, av));
+            self.scoped(segment(ordinal, ev, av), |w| item(w, ev, av));
         }
     }
 }
@@ -399,9 +427,10 @@ impl Walker {
 
 /// Compares two canonical scores under the exact contract.
 ///
-/// `expected` is the reference tree; segment annotations (`index`, `id`)
-/// are taken from it. The report's differences arrive in deterministic
-/// depth-first, field-declaration order.
+/// Segment annotations (`index`, `id`) appear only where both trees agree
+/// on the coordinate, so `diff(a, b)` and `diff(b, a)` carry identical
+/// paths. The report's differences arrive in deterministic depth-first,
+/// field-declaration order.
 #[must_use]
 pub fn exact_semantic_diff(expected: &Score, actual: &Score) -> SemanticDiffReport {
     if expected == actual {
@@ -441,9 +470,9 @@ fn diff_score(w: &mut Walker, expected: &Score, actual: &Score) {
         SemanticField::MasterBars,
         e_bars,
         a_bars,
-        |ordinal, bar| SemanticPathSegment::MasterBar {
+        |ordinal, e_bar, a_bar| SemanticPathSegment::MasterBar {
             ordinal,
-            index: bar.index,
+            index: (e_bar.index == a_bar.index).then_some(e_bar.index),
         },
         diff_master_bar,
     );
@@ -451,7 +480,7 @@ fn diff_score(w: &mut Walker, expected: &Score, actual: &Score) {
         SemanticField::Tracks,
         e_tracks,
         a_tracks,
-        |ordinal, _| SemanticPathSegment::Track { ordinal },
+        |ordinal, _, _| SemanticPathSegment::Track { ordinal },
         diff_track,
     );
     w.option_leaf(
@@ -461,13 +490,20 @@ fn diff_score(w: &mut Walker, expected: &Score, actual: &Score) {
         |w, e, a| {
             let SourceMeta { format: e_format } = e;
             let SourceMeta { format: a_format } = a;
-            if e_format != a_format {
-                w.record(
-                    SemanticDifferenceKind::ValueMismatch,
-                    Some(format!("{e:?}")),
-                    Some(format!("{a:?}")),
-                );
-            }
+            w.option_leaf(
+                SemanticField::Format,
+                e_format.as_ref(),
+                a_format.as_ref(),
+                |inner, e_value, a_value| {
+                    if e_value != a_value {
+                        inner.record(
+                            SemanticDifferenceKind::ValueMismatch,
+                            Some(format!("{e_value:?}")),
+                            Some(format!("{a_value:?}")),
+                        );
+                    }
+                },
+            );
         },
     );
     let LossReport {
@@ -480,17 +516,71 @@ fn diff_score(w: &mut Walker, expected: &Score, actual: &Score) {
         SemanticField::LossWarnings,
         e_warnings,
         a_warnings,
-        |ordinal, _| SemanticPathSegment::LossWarning { ordinal },
-        |w, e, a| {
-            if e != a {
-                w.record(
-                    SemanticDifferenceKind::ValueMismatch,
-                    Some(format!("{e:?}")),
-                    Some(format!("{a:?}")),
-                );
-            }
-        },
+        |ordinal, _, _| SemanticPathSegment::LossWarning { ordinal },
+        diff_import_warning,
     );
+}
+
+/// Compares two loss warnings variant- and payload-aware: a different
+/// variant is a `VariantMismatch` on `.kind`; a shared variant compares its
+/// payload fields individually. The outer match is exhaustive over the
+/// expected variant with no wildcard, so a new `ImportWarning` variant
+/// breaks this comparator's compilation.
+fn diff_import_warning(w: &mut Walker, expected: &ImportWarning, actual: &ImportWarning) {
+    let variant_mismatch = |walker: &mut Walker| {
+        walker.scoped(SemanticPathSegment::Field(SemanticField::Kind), |inner| {
+            inner.record(
+                SemanticDifferenceKind::VariantMismatch,
+                Some(format!("{expected:?}")),
+                Some(format!("{actual:?}")),
+            );
+        });
+    };
+    match expected {
+        ImportWarning::TrackNameInvalidUtf8 {
+            track_index: e_track_index,
+        } => {
+            if let ImportWarning::TrackNameInvalidUtf8 {
+                track_index: a_track_index,
+            } = actual
+            {
+                w.value_leaf(SemanticField::TrackIndex, e_track_index, a_track_index);
+            } else {
+                variant_mismatch(w);
+            }
+        }
+        ImportWarning::SmpteTimingUnsupported => {
+            if !matches!(actual, ImportWarning::SmpteTimingUnsupported) {
+                variant_mismatch(w);
+            }
+        }
+        ImportWarning::TempoApproximated {
+            bar_index: e_bar_index,
+            nearest_micros: e_nearest_micros,
+        } => {
+            if let ImportWarning::TempoApproximated {
+                bar_index: a_bar_index,
+                nearest_micros: a_nearest_micros,
+            } = actual
+            {
+                w.value_leaf(SemanticField::BarIndex, e_bar_index, a_bar_index);
+                w.value_leaf(
+                    SemanticField::NearestMicros,
+                    e_nearest_micros,
+                    a_nearest_micros,
+                );
+            } else {
+                variant_mismatch(w);
+            }
+        }
+        ImportWarning::Other(e_message) => {
+            if let ImportWarning::Other(a_message) = actual {
+                w.value_leaf(SemanticField::Message, e_message, a_message);
+            } else {
+                variant_mismatch(w);
+            }
+        }
+    }
 }
 
 fn diff_master_bar(w: &mut Walker, expected: &MasterBar, actual: &MasterBar) {
@@ -547,9 +637,9 @@ fn diff_track(w: &mut Walker, expected: &Track, actual: &Track) {
         SemanticField::Voices,
         e_voices,
         a_voices,
-        |ordinal, voice| SemanticPathSegment::Voice {
+        |ordinal, e_voice, a_voice| SemanticPathSegment::Voice {
             ordinal,
-            id: voice.id,
+            id: (e_voice.id == a_voice.id).then_some(e_voice.id),
         },
         diff_voice,
     );
@@ -570,7 +660,7 @@ fn diff_voice(w: &mut Walker, expected: &Voice, actual: &Voice) {
         SemanticField::EventGroups,
         e_groups,
         a_groups,
-        |ordinal, _| SemanticPathSegment::EventGroup { ordinal },
+        |ordinal, _, _| SemanticPathSegment::EventGroup { ordinal },
         diff_group,
     );
 }
@@ -586,21 +676,82 @@ fn diff_group(w: &mut Walker, expected: &EventGroup, actual: &EventGroup) {
         atoms: a_atoms,
         technique_spans: a_spans,
     } = actual;
-    w.variant_leaf(SemanticField::Kind, e_kind, a_kind);
+    diff_event_group_kind(w, *e_kind, *a_kind);
     w.collection(
         SemanticField::Atoms,
         e_atoms,
         a_atoms,
-        |ordinal, _| SemanticPathSegment::Atom { ordinal },
+        |ordinal, _, _| SemanticPathSegment::Atom { ordinal },
         diff_atom,
     );
     w.collection(
         SemanticField::TechniqueSpans,
         e_spans,
         a_spans,
-        |ordinal, _| SemanticPathSegment::TechniqueSpan { ordinal },
+        |ordinal, _, _| SemanticPathSegment::TechniqueSpan { ordinal },
         diff_span,
     );
+}
+
+/// Compares two group kinds payload-aware: different variants are a
+/// `VariantMismatch` on `.kind`; two tuplets compare `num` / `den` as
+/// individual `ValueMismatch`es on `.kind.num` / `.kind.den`. The outer
+/// match is exhaustive over the expected variant with no wildcard, so a new
+/// `EventGroupKind` variant breaks this comparator's compilation.
+fn diff_event_group_kind(w: &mut Walker, expected: EventGroupKind, actual: EventGroupKind) {
+    let variant_mismatch = |walker: &mut Walker| {
+        walker.scoped(SemanticPathSegment::Field(SemanticField::Kind), |inner| {
+            inner.record(
+                SemanticDifferenceKind::VariantMismatch,
+                Some(format!("{expected:?}")),
+                Some(format!("{actual:?}")),
+            );
+        });
+    };
+    match expected {
+        EventGroupKind::Single => {
+            if !matches!(actual, EventGroupKind::Single) {
+                variant_mismatch(w);
+            }
+        }
+        EventGroupKind::Chord => {
+            if !matches!(actual, EventGroupKind::Chord) {
+                variant_mismatch(w);
+            }
+        }
+        EventGroupKind::Arpeggio => {
+            if !matches!(actual, EventGroupKind::Arpeggio) {
+                variant_mismatch(w);
+            }
+        }
+        EventGroupKind::Strum => {
+            if !matches!(actual, EventGroupKind::Strum) {
+                variant_mismatch(w);
+            }
+        }
+        EventGroupKind::Tuplet {
+            num: e_num,
+            den: e_den,
+        } => {
+            if let EventGroupKind::Tuplet {
+                num: a_num,
+                den: a_den,
+            } = actual
+            {
+                w.scoped(SemanticPathSegment::Field(SemanticField::Kind), |inner| {
+                    inner.value_leaf(SemanticField::TupletNum, &e_num, &a_num);
+                    inner.value_leaf(SemanticField::TupletDen, &e_den, &a_den);
+                });
+            } else {
+                variant_mismatch(w);
+            }
+        }
+        EventGroupKind::Grace => {
+            if !matches!(actual, EventGroupKind::Grace) {
+                variant_mismatch(w);
+            }
+        }
+    }
 }
 
 fn diff_atom(w: &mut Walker, expected: &AtomEvent, actual: &AtomEvent) {
