@@ -15,6 +15,9 @@
 
 use griff_core::curation_store::{decode_store, CurationStoreV1, StoreDecodeError};
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fs, io::ErrorKind, path::Path};
+
 /// The outcome of loading the store.
 ///
 /// A *missing* file is a typed absence — the caller bootstraps a fresh empty
@@ -55,12 +58,10 @@ pub enum CurationStoreError {
 /// # Errors
 /// [`CurationStoreError::Decode`] when bytes are present but do not decode.
 pub fn classify(read: StoreBytes) -> Result<StoreOnDisk, CurationStoreError> {
-    // STUB (red): every read reads as absence, so the loaded/malformed tests fail.
-    let _ = (
-        read,
-        decode_store as fn(&[u8]) -> Result<CurationStoreV1, StoreDecodeError>,
-    );
-    Ok(StoreOnDisk::Missing)
+    match read {
+        StoreBytes::Missing => Ok(StoreOnDisk::Missing),
+        StoreBytes::Present(bytes) => Ok(StoreOnDisk::Loaded(decode_store(&bytes)?)),
+    }
 }
 
 /// Loads the store from `path` on the native desktop cockpit.
@@ -70,10 +71,13 @@ pub fn classify(read: StoreBytes) -> Result<StoreOnDisk, CurationStoreError> {
 /// [`CurationStoreError::Io`] for any read error other than "not found" (which
 /// is [`StoreOnDisk::Missing`], not an error).
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_store(path: &std::path::Path) -> Result<StoreOnDisk, CurationStoreError> {
-    // STUB (red): reports absence regardless, so the round-trip test fails.
-    let _ = path;
-    Ok(StoreOnDisk::Missing)
+pub fn load_store(path: &Path) -> Result<StoreOnDisk, CurationStoreError> {
+    match fs::read(path) {
+        Ok(bytes) => classify(StoreBytes::Present(bytes)),
+        // A missing file is a typed absence the caller resolves, not a failure.
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(StoreOnDisk::Missing),
+        Err(e) => Err(CurationStoreError::Io(e.to_string())),
+    }
 }
 
 /// Writes the store's canonical `bytes` to `path` on the native desktop cockpit.
@@ -81,15 +85,104 @@ pub fn load_store(path: &std::path::Path) -> Result<StoreOnDisk, CurationStoreEr
 /// # Errors
 /// [`CurationStoreError::Io`] if the write fails.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn write_store(path: &std::path::Path, bytes: &[u8]) -> Result<(), CurationStoreError> {
-    // STUB (red): writes nothing, so the read-back test fails.
-    let _ = (path, bytes);
-    Ok(())
+pub fn write_store(path: &Path, bytes: &[u8]) -> Result<(), CurationStoreError> {
+    fs::write(path, bytes).map_err(|e| CurationStoreError::Io(e.to_string()))
+}
+
+/// The browser byte transport: read and write `curation/store.json` in the
+/// Origin Private File System. A missing directory or file reads as
+/// [`StoreBytes::Missing`], so the caller can bootstrap a fresh store; the
+/// Missing-vs-malformed split then happens in [`classify`].
+#[cfg(target_arch = "wasm32")]
+pub use wasm::{opfs_load_store, opfs_write_store};
+
+#[cfg(target_arch = "wasm32")]
+mod wasm {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::JsFuture;
+
+    use super::StoreBytes;
+
+    /// The OPFS directory and file the store lives in — a sibling of the
+    /// `corpus/` tree, one canonical file.
+    const DIR: &str = "curation";
+    const FILE: &str = "store.json";
+
+    /// The OPFS `curation/` directory handle. `create` controls whether a
+    /// missing directory is created (write) or reported as absent (read → `None`).
+    async fn curation_dir(
+        create: bool,
+    ) -> Result<Option<web_sys::FileSystemDirectoryHandle>, JsValue> {
+        let storage = web_sys::window()
+            .ok_or_else(|| JsValue::from_str("no window"))?
+            .navigator()
+            .storage();
+        let root = JsFuture::from(storage.get_directory())
+            .await?
+            .dyn_into::<web_sys::FileSystemDirectoryHandle>()?;
+        let opts = web_sys::FileSystemGetDirectoryOptions::new();
+        opts.set_create(create);
+        match JsFuture::from(root.get_directory_handle_with_options(DIR, &opts)).await {
+            Ok(handle) => Ok(Some(
+                handle.dyn_into::<web_sys::FileSystemDirectoryHandle>()?,
+            )),
+            // Absent directory (no store recorded yet) → a typed absence, not an error.
+            Err(_) if !create => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Reads `curation/store.json`. An absent directory or file is
+    /// [`StoreBytes::Missing`]; present bytes are returned verbatim for
+    /// [`super::classify`] to decode.
+    // OPFS handles aren't `Send`, but wasm is single-threaded and the future is
+    // driven by `spawn_local`, which never requires `Send`.
+    #[allow(clippy::future_not_send)]
+    pub async fn opfs_load_store() -> Result<StoreBytes, JsValue> {
+        let Some(dir) = curation_dir(false).await? else {
+            return Ok(StoreBytes::Missing);
+        };
+        // `create` defaults to false: a missing file rejects, which we read as absence.
+        let opts = web_sys::FileSystemGetFileOptions::new();
+        let handle = match JsFuture::from(dir.get_file_handle_with_options(FILE, &opts)).await {
+            Ok(handle) => handle.dyn_into::<web_sys::FileSystemFileHandle>()?,
+            Err(_) => return Ok(StoreBytes::Missing),
+        };
+        // A `File` is a `Blob`; `Blob::text()` yields its contents as a string.
+        let blob = JsFuture::from(handle.get_file())
+            .await?
+            .dyn_into::<web_sys::Blob>()?;
+        let text = JsFuture::from(blob.text())
+            .await?
+            .as_string()
+            .unwrap_or_default();
+        Ok(StoreBytes::Present(text.into_bytes()))
+    }
+
+    /// Writes `contents` to `curation/store.json`, creating the directory and
+    /// file as needed. Returns once the writable stream is closed.
+    #[allow(clippy::future_not_send)]
+    pub async fn opfs_write_store(contents: String) -> Result<(), JsValue> {
+        let dir = curation_dir(true)
+            .await?
+            .ok_or_else(|| JsValue::from_str("no curation directory"))?;
+        let opts = web_sys::FileSystemGetFileOptions::new();
+        opts.set_create(true);
+        let file = JsFuture::from(dir.get_file_handle_with_options(FILE, &opts))
+            .await?
+            .dyn_into::<web_sys::FileSystemFileHandle>()?;
+        let writable = JsFuture::from(file.create_writable())
+            .await?
+            .dyn_into::<web_sys::FileSystemWritableFileStream>()?;
+        JsFuture::from(writable.write_with_str(&contents)?).await?;
+        JsFuture::from(writable.close()).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::{classify, StoreBytes, StoreOnDisk};
     use griff_core::corpus::{ChunkId, ReviewerDecision};
