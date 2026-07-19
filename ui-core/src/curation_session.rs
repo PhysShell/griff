@@ -4,15 +4,15 @@
 //! domain model: it holds the append-only store for one editing session, assembles
 //! a [`CurationEvent`] from a decision plus the corpus (fingerprints and the
 //! cluster audit snapshot), and projects/reconciles through core. **No I/O and no
-//! UI** — a frontend supplies the opaque `event_id` and canonical `occurred_at`
-//! (minted here from a boundary-provided random seed and clock), drives
-//! [`CurationSession::record`], then persists [`CurationSession::store`] through
-//! the OPFS/native adapter.
+//! UI** — a frontend mints the `event_id` and canonical `occurred_at` (see
+//! [`EventIdMinter`] / [`canonical_timestamp`]) from a boundary clock and random
+//! seed, drives [`CurationSession::record`], then persists
+//! [`CurationSession::store`] through the OPFS/native adapter.
 //!
 //! A decision is always **appended**, keyed by [`ChunkId`]; nothing is mutated in
 //! place. Cluster context is an audit snapshot on the event, never part of the
-//! decision's identity (ADR-0030 §8): a regrouped cluster does not move a
-//! decision. That invariant lives in core's `reconcile`; this layer only feeds it.
+//! decision's identity: a regrouped cluster does not move a decision — the
+//! invariant `curation_store::reconcile` enforces and this layer only feeds.
 
 use std::fmt::Write as _;
 
@@ -154,14 +154,61 @@ fn cluster_context(chunk_id: &ChunkId, corpus: &[ChunkMeta]) -> CurationContext 
     }
 }
 
-/// Mints an opaque decision-event id: an RFC-4122 **v4 UUID**.
+/// A stateful, **order-preserving** minter for decision-event ids.
 ///
-/// From 16 boundary-supplied random bytes — the randomness is the boundary's;
-/// this only stamps the version (4) and variant (10) bits and the canonical
-/// hyphenated hex layout, so the id is opaque, unique, and stable.
-#[must_use]
-pub fn mint_event_id(bytes: [u8; 16]) -> CurationEventId {
-    let id = bytes
+/// The store's projection picks the latest decision per chunk by `(occurred_at,
+/// event_id)`, so within one canonical second the `event_id` must decide — and a
+/// bare random UUID does not: two clicks in the same second could invert. Each
+/// minted id therefore leads with a monotonic ordering prefix,
+/// `web-{ms:016x}-{seq:08x}-{uuid}`, and the UUID is only the uniqueness tail:
+///
+/// - a later mint in the same second sorts **above** the previous one;
+/// - after a reload, [`EventIdMinter::from_store`] seeds the prefix above every
+///   id already saved, so the first new event outranks them;
+/// - the prefix is a Lamport clock (`max(now, high-water)`), so a **clock
+///   rollback never lowers it**;
+/// - the tail keeps every id unique.
+#[derive(Debug, Clone)]
+pub struct EventIdMinter {
+    /// The highest millisecond issued so far — never decreases.
+    high_water_ms: u64,
+    /// The sub-counter within `high_water_ms`, so equal/rolled-back clocks still
+    /// advance.
+    seq: u32,
+}
+
+impl EventIdMinter {
+    /// Seeds the minter above every id already in `store`, so the next mint sorts
+    /// above all saved decisions regardless of their order in the store.
+    #[must_use]
+    pub fn from_store(store: &CurationStoreV1) -> Self {
+        // STUB (red): ignores the store, so the reload test fails.
+        let _ = store;
+        Self {
+            high_water_ms: 0,
+            seq: 0,
+        }
+    }
+
+    /// Mints the next ordered, unique id from the boundary clock (`now_ms`) and a
+    /// random seed.
+    pub fn mint(&mut self, now_ms: u64, random: [u8; 16]) -> CurationEventId {
+        // STUB (red): a constant prefix that ignores the clock and never advances,
+        // so the ordering/rollback tests fail.
+        let _ = now_ms;
+        let uuid = uuid_v4(random);
+        CurationEventId(format!(
+            "web-{:016x}-{:08x}-{uuid}",
+            self.high_water_ms, self.seq
+        ))
+    }
+}
+
+/// Formats 16 random bytes as an RFC-4122 **v4 UUID** — the uniqueness tail of a
+/// minted id. Stamps the version (4) and variant (10) bits and the canonical
+/// hyphenated hex layout.
+fn uuid_v4(bytes: [u8; 16]) -> String {
+    bytes
         .iter()
         .enumerate()
         .map(|(i, &b)| match i {
@@ -177,24 +224,38 @@ pub fn mint_event_id(bytes: [u8; 16]) -> CurationEventId {
             // Writing hex into a String is infallible.
             write!(acc, "{byte:02x}").ok();
             acc
-        });
-    CurationEventId(id)
+        })
+}
+
+/// Why a clock reading could not become a canonical timestamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimestampError {
+    /// The clock reported a time before the Unix epoch. A failing or misconfigured
+    /// clock is a typed refusal, never a normalised `1970-01-01T00:00:00Z`.
+    BeforeEpoch { epoch_secs: i64 },
+    /// The time falls outside the representable four-digit civil-year range.
+    OutOfRange { epoch_secs: i64 },
 }
 
 /// Formats a Unix-epoch second count as the canonical timestamp the store wants.
 ///
 /// `YYYY-MM-DDTHH:MM:SSZ` — second precision, no fractional part (which
 /// `curation_store` rejects). Howard Hinnant's civil-from-days, no `chrono`.
-#[must_use]
-// Bounded civil-from-days: `epoch_secs` is clamped non-negative and every
-// intermediate product stays well within i64 for any realistic year, so the
-// arithmetic cannot overflow — the lint carries no signal here.
+///
+/// # Errors
+/// [`TimestampError::BeforeEpoch`] for a negative time; [`TimestampError::OutOfRange`]
+/// for a year outside `0000..=9999`. A bad clock is refused, not silently made 1970.
+// Bounded civil-from-days: `epoch_secs` is non-negative here and every
+// intermediate product stays well within i64 for any representable year, so the
+// arithmetic cannot overflow — the lint carries no signal.
 #[allow(clippy::arithmetic_side_effects)]
-pub fn canonical_timestamp(epoch_secs: i64) -> String {
+pub fn canonical_timestamp(epoch_secs: i64) -> Result<String, TimestampError> {
+    // STUB (red): clamps a bad clock to the epoch instead of refusing it, so the
+    // negative-time test fails.
     let secs = epoch_secs.max(0);
     let (hh, mm, ss) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
     let z = secs / 86_400 + 719_468;
-    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let era = z / 146_097;
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
@@ -202,7 +263,9 @@ pub fn canonical_timestamp(epoch_secs: i64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
+    Ok(format!(
+        "{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z"
+    ))
 }
 
 #[cfg(test)]
@@ -214,13 +277,17 @@ mod tests {
         clippy::indexing_slicing
     )]
 
-    use super::{canonical_timestamp, mint_event_id, CurationSession, RecordError, RecordRequest};
+    use super::{
+        canonical_timestamp, CurationSession, EventIdMinter, RecordError, RecordRequest,
+        TimestampError,
+    };
     use griff_core::corpus::{
         ChunkId, ChunkMeta, ReviewerDecision, SourceFormat, SourceRef, SCHEMA_VERSION,
     };
     use griff_core::curation_store::{
-        corpus_fingerprint, decode_store, encode_store, CurationEventId, ProjectedDecision,
-        ReviewerId,
+        corpus_fingerprint, decode_store, encode_store, ChunkFingerprint, CorpusFingerprint,
+        CurationContext, CurationEvent, CurationEventId, CurationStoreV1, ProjectedDecision,
+        ReviewerId, CURATION_STORE_VERSION,
     };
     use griff_core::novelty::PhraseDuplicate;
 
@@ -482,31 +549,71 @@ mod tests {
     }
 
     #[test]
-    fn mint_event_id_is_a_canonical_v4_uuid() {
-        let id = mint_event_id([0xab; 16]).0;
-        assert_eq!(id.len(), 36, "8-4-4-4-12 hex with hyphens");
-        let dashes: Vec<usize> = id.match_indices('-').map(|(i, _)| i).collect();
-        assert_eq!(
-            dashes,
-            vec![8, 13, 18, 23],
-            "hyphens in the canonical spots"
-        );
-        assert_eq!(id.as_bytes()[14], b'4', "version nibble is 4");
+    fn a_later_mint_in_the_same_second_sorts_higher() {
+        let mut minter = EventIdMinter::from_store(&empty_store());
+        // The second seed's UUID sorts *below* the first's, so a random-only id
+        // would invert — the ordering prefix must win.
+        let first = minter.mint(1_000, [0xff; 16]).0;
+        let second = minter.mint(1_000, [0x00; 16]).0;
         assert!(
-            matches!(id.as_bytes()[19], b'8' | b'9' | b'a' | b'b'),
-            "variant nibble is 8..b",
+            second > first,
+            "the later click sorts higher: {second} > {first}"
         );
-        // Different seeds mint different ids.
-        assert_ne!(mint_event_id([1; 16]).0, mint_event_id([2; 16]).0);
+    }
+
+    #[test]
+    fn a_reload_mints_above_the_highest_saved_id() {
+        let saved = oid(0x1_0000, 5);
+        let mut minter = EventIdMinter::from_store(&store_with_ids(&[&saved]));
+        // Even with a tiny clock, the reloaded minter continues above the saved id.
+        let next = minter.mint(1, [0; 16]).0;
+        assert!(
+            next > saved,
+            "the reloaded minter outranks the saved id: {next} > {saved}"
+        );
+    }
+
+    #[test]
+    fn a_clock_rollback_does_not_lower_the_id() {
+        let mut minter = EventIdMinter::from_store(&empty_store());
+        let first = minter.mint(1_000, [0; 16]).0;
+        // The clock jumps backwards; the next id must still sort higher.
+        let second = minter.mint(500, [0; 16]).0;
+        assert!(
+            second > first,
+            "a rolled-back clock never lowers the id: {second} > {first}"
+        );
+    }
+
+    #[test]
+    fn mints_are_unique() {
+        let mut minter = EventIdMinter::from_store(&empty_store());
+        let ids: Vec<String> = (0..8).map(|i| minter.mint(1_000, [i; 16]).0).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "every minted id is unique");
+    }
+
+    #[test]
+    fn from_store_is_independent_of_event_order() {
+        let forward = store_with_ids(&[&oid(1, 1), &oid(2, 2)]);
+        let reversed = store_with_ids(&[&oid(2, 2), &oid(1, 1)]);
+        let a = EventIdMinter::from_store(&forward).mint(0, [0; 16]).0;
+        let b = EventIdMinter::from_store(&reversed).mint(0, [0; 16]).0;
+        assert_eq!(a, b, "the seed is a max over events, not order-dependent");
     }
 
     #[test]
     fn canonical_timestamp_is_second_precision_utc() {
         // Two well-known anchors, so the assertion doesn't depend on my own
         // epoch arithmetic: the epoch itself, and "one billion seconds".
-        assert_eq!(canonical_timestamp(0), "1970-01-01T00:00:00Z");
         assert_eq!(
-            canonical_timestamp(1_000_000_000),
+            canonical_timestamp(0).expect("epoch"),
+            "1970-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            canonical_timestamp(1_000_000_000).expect("1e9"),
             "2001-09-09T01:46:40Z",
             "exact civil time, second precision, no fractional part",
         );
@@ -517,7 +624,7 @@ mod tests {
                 request(
                     "a_p0",
                     "e1",
-                    &canonical_timestamp(1_000_000_000),
+                    &canonical_timestamp(1_000_000_000).expect("1e9"),
                     ReviewerDecision::Accepted,
                 ),
                 &corpus(),
@@ -526,8 +633,57 @@ mod tests {
         decode_store(&encode_store(session.store()).expect("encode")).expect("minted ts is valid");
     }
 
+    #[test]
+    fn a_bad_clock_is_a_typed_error_not_a_1970_lie() {
+        assert_eq!(
+            canonical_timestamp(-1),
+            Err(TimestampError::BeforeEpoch { epoch_secs: -1 }),
+            "a negative clock is refused, never normalised to the epoch",
+        );
+        // A time past the four-digit-year range is also refused.
+        assert!(matches!(
+            canonical_timestamp(i64::MAX),
+            Err(TimestampError::OutOfRange { .. })
+        ));
+    }
+
     /// A pinned chunk with no duplicate link.
     fn chunk_no_dup(id: &str, sha: &str) -> ChunkMeta {
         chunk(id, sha, None)
+    }
+
+    /// A web-format ordering id with the given prefix and a fixed UUID tail.
+    fn oid(ms: u64, seq: u32) -> String {
+        format!("web-{ms:016x}-{seq:08x}-00000000-0000-4000-8000-000000000000")
+    }
+
+    fn empty_store() -> CurationStoreV1 {
+        store_with_ids(&[])
+    }
+
+    fn store_with_ids(ids: &[&str]) -> CurationStoreV1 {
+        CurationStoreV1 {
+            version: CURATION_STORE_VERSION,
+            corpus_fingerprint: CorpusFingerprint("corpus".to_owned()),
+            events: ids.iter().map(|id| event_with_id(id)).collect(),
+        }
+    }
+
+    fn event_with_id(id: &str) -> CurationEvent {
+        CurationEvent {
+            event_id: CurationEventId(id.to_owned()),
+            chunk_id: ChunkId("a_p0".to_owned()),
+            chunk_fingerprint: ChunkFingerprint("fp".to_owned()),
+            decision: ReviewerDecision::Accepted,
+            reviewer: ReviewerId("alice".to_owned()),
+            occurred_at: "2001-09-09T01:46:40Z".to_owned(),
+            corpus_fingerprint: CorpusFingerprint("corpus".to_owned()),
+            context: CurationContext {
+                cluster_representative: ChunkId("a_p0".to_owned()),
+                cluster_members: vec![ChunkId("a_p0".to_owned())],
+            },
+            tags: Vec::new(),
+            note: None,
+        }
     }
 }
