@@ -60,6 +60,7 @@ use griff_ui_core::{
 };
 
 pub mod audio;
+pub mod curation_io;
 pub mod generation;
 pub mod swang;
 

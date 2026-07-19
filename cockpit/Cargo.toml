@@ -31,6 +31,9 @@ griff-swang   = { path = "../swang" }
 # sidecar a kept candidate is stamped with (S8).
 serde         = { workspace = true }
 serde_json    = { workspace = true }
+# Typed errors for the curation-store persistence adapter (3C-A), mirroring
+# core's curation_store and the CLI's native adapter.
+thiserror     = { workspace = true }
 
 # Native desktop keeps eframe's defaults (winit + glow), exactly as Slice 1
 # shipped; the web target picks a leaner, glow-only eframe below.
