@@ -27,7 +27,7 @@ use griff_core::curation_store::{
 /// One decision to record.
 ///
 /// The opaque `event_id` and canonical `occurred_at` come from the boundary
-/// (mint with [`mint_event_id`] / [`canonical_timestamp`]); the fingerprints and
+/// (mint with [`EventIdMinter`] / [`canonical_timestamp`]); the fingerprints and
 /// cluster context are derived from the corpus by [`CurationSession::record`].
 #[derive(Debug, Clone)]
 pub struct RecordRequest {
@@ -168,6 +168,9 @@ fn cluster_context(chunk_id: &ChunkId, corpus: &[ChunkMeta]) -> CurationContext 
 /// - the prefix is a Lamport clock (`max(now, high-water)`), so a **clock
 ///   rollback never lowers it**;
 /// - the tail keeps every id unique.
+// Deliberately not `Copy`: it is a mutable accumulator, and a silent copy would
+// fork the high-water counter and let two "minters" issue colliding orders.
+#[allow(missing_copy_implementations)]
 #[derive(Debug, Clone)]
 pub struct EventIdMinter {
     /// The highest millisecond issued so far — never decreases.
@@ -182,26 +185,44 @@ impl EventIdMinter {
     /// above all saved decisions regardless of their order in the store.
     #[must_use]
     pub fn from_store(store: &CurationStoreV1) -> Self {
-        // STUB (red): ignores the store, so the reload test fails.
-        let _ = store;
-        Self {
-            high_water_ms: 0,
-            seq: 0,
-        }
+        // The seed is a max over every parseable id — order-independent.
+        let (high_water_ms, seq) = store
+            .events
+            .iter()
+            .filter_map(|event| parse_order(&event.event_id.0))
+            .max()
+            .unwrap_or((0, 0));
+        Self { high_water_ms, seq }
     }
 
     /// Mints the next ordered, unique id from the boundary clock (`now_ms`) and a
     /// random seed.
     pub fn mint(&mut self, now_ms: u64, random: [u8; 16]) -> CurationEventId {
-        // STUB (red): a constant prefix that ignores the clock and never advances,
-        // so the ordering/rollback tests fail.
-        let _ = now_ms;
+        // Lamport clock: advance the millisecond when it moves forward, otherwise
+        // bump the sub-counter, so an equal or rolled-back clock still increases.
+        if now_ms > self.high_water_ms {
+            self.high_water_ms = now_ms;
+            self.seq = 0;
+        } else {
+            self.seq = self.seq.saturating_add(1);
+        }
         let uuid = uuid_v4(random);
         CurationEventId(format!(
             "web-{:016x}-{:08x}-{uuid}",
             self.high_water_ms, self.seq
         ))
     }
+}
+
+/// Parses the `(ms, seq)` ordering prefix of a `web-{ms:016x}-{seq:08x}-…` id.
+/// `None` for any id not in that form — it simply does not seed the high-water.
+fn parse_order(id: &str) -> Option<(u64, u32)> {
+    let rest = id.strip_prefix("web-")?;
+    let (ms_hex, rest) = rest.split_once('-')?;
+    let (seq_hex, _) = rest.split_once('-')?;
+    let ms = u64::from_str_radix(ms_hex, 16).ok()?;
+    let seq = u32::from_str_radix(seq_hex, 16).ok()?;
+    Some((ms, seq))
 }
 
 /// Formats 16 random bytes as an RFC-4122 **v4 UUID** — the uniqueness tail of a
@@ -228,7 +249,7 @@ fn uuid_v4(bytes: [u8; 16]) -> String {
 }
 
 /// Why a clock reading could not become a canonical timestamp.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimestampError {
     /// The clock reported a time before the Unix epoch. A failing or misconfigured
     /// clock is a typed refusal, never a normalised `1970-01-01T00:00:00Z`.
@@ -250,9 +271,10 @@ pub enum TimestampError {
 // arithmetic cannot overflow — the lint carries no signal.
 #[allow(clippy::arithmetic_side_effects)]
 pub fn canonical_timestamp(epoch_secs: i64) -> Result<String, TimestampError> {
-    // STUB (red): clamps a bad clock to the epoch instead of refusing it, so the
-    // negative-time test fails.
-    let secs = epoch_secs.max(0);
+    if epoch_secs < 0 {
+        return Err(TimestampError::BeforeEpoch { epoch_secs });
+    }
+    let secs = epoch_secs;
     let (hh, mm, ss) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
     let z = secs / 86_400 + 719_468;
     let era = z / 146_097;
@@ -263,6 +285,9 @@ pub fn canonical_timestamp(epoch_secs: i64) -> Result<String, TimestampError> {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
+    if !(0..=9999).contains(&year) {
+        return Err(TimestampError::OutOfRange { epoch_secs });
+    }
     Ok(format!(
         "{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z"
     ))
