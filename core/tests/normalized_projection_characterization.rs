@@ -15,7 +15,9 @@
 //! - fretboard positions lose their evidence;
 //! - repeat markers are not projected;
 //! - source metadata is not projected;
-//! - the existing canonical order applies (import order does not matter).
+//! - voice order is canonicalized by id and note order by
+//!   (onset, string, fret, pitch); track order and bar order remain
+//!   positional compared facts.
 //!
 //! Characterization of existing behaviour: no new API, green before commit.
 
@@ -207,12 +209,32 @@ fn source_metadata_is_not_projected() {
 }
 
 #[test]
-fn the_canonical_order_erases_import_order() {
+fn note_order_is_canonicalized_within_a_voice() {
     let straight = one_track_score(vec![single(vec![note(0, 40), note(240, 43)])]);
     let swapped = one_track_score(vec![single(vec![note(240, 43), note(0, 40)])]);
     assert_eq!(
         normalize(&straight),
         normalize(&swapped),
         "notes land in canonical (onset, string, fret, pitch) order"
+    );
+}
+
+#[test]
+fn voice_order_is_canonicalized_by_id_in_the_projection() {
+    let voiced = |order: [(u8, u32); 2]| {
+        let mut score = one_track_score(Vec::new());
+        score.tracks[0].voices = order
+            .into_iter()
+            .map(|(id, onset)| Voice {
+                id,
+                event_groups: vec![single(vec![note(onset, 40)])],
+            })
+            .collect();
+        score
+    };
+    assert_eq!(
+        normalize(&voiced([(0, 0), (1, 480)])),
+        normalize(&voiced([(1, 480), (0, 0)])),
+        "voices land in canonical id order"
     );
 }

@@ -11,8 +11,16 @@
 //! - the distinction matrix: the same mutation judged by both contracts —
 //!   audible changes differ under both, structure/evidence/provenance-only
 //!   changes differ under Exact and are equal under Normalized v1;
-//! - v1 deliberately excludes the projection's loss labels: a musical
-//!   policy compares sounding facts, not import provenance;
+//! - v1 compares the comparison-relevant musical projection facts,
+//!   excluding import-provenance loss labels;
+//! - projection-domain boundaries are honestly recorded: with zero tracks
+//!   transport has no v1 representation, and with no master bars canonical
+//!   notes leave no normalized fact — a boundary of the current ADR-0020
+//!   projection, not canonical validity (Phase 4B must validate canonical
+//!   input before normalized classification);
+//! - order policy: voice order is canonicalized by id, note order by
+//!   (onset, string, fret, pitch); track order and bar order remain
+//!   positional compared facts;
 //! - determinism and directional inversion hold for the normalized report
 //!   too.
 
@@ -22,12 +30,16 @@
     clippy::panic,
     clippy::missing_assert_message,
     clippy::indexing_slicing,
-    clippy::missing_const_for_fn
+    clippy::missing_const_for_fn,
+    // `.ends_with(".spans")` is a semantic-path suffix, not a file
+    // extension; the witness table is one deliberate exhaustive test.
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::too_many_lines
 )]
 
 use griff_core::{
     event::{
-        ConfidenceBps, FretboardPosition, NoteMarks, NotePosition, Pitch, SpanTechnique,
+        ConfidenceBps, FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, SpanTechnique,
         TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
     },
     score::{
@@ -174,9 +186,9 @@ fn changed_onset_differs_under_both_contracts() {
 }
 
 #[test]
-fn changed_tempo_differs_under_both_contracts() {
+fn changed_tempo_on_a_projected_track_differs_under_both_contracts() {
     assert_matrix(
-        "changed tempo",
+        "changed tempo (projected track)",
         |s| s.master_bars[0].tempo = Tempo::from_bpm_integer(121).expect("121 BPM"),
         true,
         true,
@@ -289,6 +301,475 @@ fn reordered_atoms_differ_only_under_exact() {
     );
 }
 
+// ── projection-domain boundaries (honest v1 losses, not validity) ─────────────
+
+#[test]
+fn trackless_transport_differs_only_under_exact() {
+    // ADR-0020 materializes transport inside NormTrack.bars; with zero
+    // tracks, transport has no representation in v1. An honestly recorded
+    // boundary of the current projection — not a claim of canonical
+    // validity. Phase 4B must validate canonical input before normalized
+    // classification.
+    let bare = |bpm: u32| Score {
+        ticks_per_quarter: 480,
+        master_bars: vec![MasterBar {
+            index: 0,
+            tick_range: tick_range(0, 1920),
+            time_signature: TimeSignature::new(4, 4).expect("4/4"),
+            tempo: Tempo::from_bpm_integer(bpm).expect("positive BPM"),
+            repeat: RepeatMarker::default(),
+        }],
+        tracks: Vec::new(),
+        source_meta: None,
+        loss: LossReport::new(),
+    };
+    let exact = exact_semantic_diff(&bare(120), &bare(121));
+    assert!(!exact.is_empty(), "exact sees the transport change");
+    let normalized = normalized_musical_diff(&bare(120), &bare(121));
+    assert!(
+        normalized.is_empty(),
+        "with zero tracks the tempo has no v1 representation: {:#?}",
+        normalized.differences
+    );
+}
+
+#[test]
+fn notes_outside_the_master_timeline_differ_only_under_exact() {
+    // v1 compares only notes bucketed into declared master bars; canonical
+    // notes outside the projected timeline leave no normalized fact. Same
+    // honesty clause as above: a projection boundary, not validity.
+    let timeline_less = |pitch: u8| {
+        let mut score = base();
+        score.master_bars = Vec::new();
+        match &mut score.tracks[0].voices[0].event_groups[0].atoms[0] {
+            AtomEvent::Note(n) => n.pitch = Pitch::new(pitch).expect("valid"),
+            AtomEvent::Rest(_) => panic!("fixture note"),
+        }
+        score
+    };
+    let exact = exact_semantic_diff(&timeline_less(40), &timeline_less(41));
+    assert!(!exact.is_empty(), "exact sees the pitch change");
+    let normalized = normalized_musical_diff(&timeline_less(40), &timeline_less(41));
+    assert!(
+        normalized.is_empty(),
+        "without master bars no note is projected: {:#?}",
+        normalized.differences
+    );
+}
+
+// ── order policy: what is canonicalized, what stays positional ────────────────
+
+#[test]
+fn voice_order_is_canonicalized_by_id() {
+    // The same two voices (content travels with its id), stored in opposite
+    // vector orders.
+    let voiced = |order: [(u8, u32, u8); 2]| {
+        let mut score = base();
+        score.tracks[0].voices = order
+            .into_iter()
+            .map(|(id, onset, pitch)| Voice {
+                id,
+                event_groups: vec![EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![note(onset, pitch)],
+                    technique_spans: Vec::new(),
+                }],
+            })
+            .collect();
+        score
+    };
+    let ascending = voiced([(0, 0, 40), (1, 480, 43)]);
+    let descending = voiced([(1, 480, 43), (0, 0, 40)]);
+    let exact = exact_semantic_diff(&ascending, &descending);
+    assert!(!exact.is_empty(), "voice order is an exact fact");
+    let normalized = normalized_musical_diff(&ascending, &descending);
+    assert!(
+        normalized.is_empty(),
+        "v1 canonicalizes voice order by id: {:#?}",
+        normalized.differences
+    );
+}
+
+#[test]
+fn note_import_order_is_canonicalized_within_a_voice() {
+    let ordered = |reversed: bool| {
+        let mut score = base();
+        if reversed {
+            score.tracks[0].voices[0].event_groups[0].atoms.swap(0, 1);
+        }
+        score
+    };
+    let exact = exact_semantic_diff(&ordered(false), &ordered(true));
+    assert!(!exact.is_empty(), "atom order is an exact fact");
+    let normalized = normalized_musical_diff(&ordered(false), &ordered(true));
+    assert!(
+        normalized.is_empty(),
+        "v1 canonicalizes note order by (onset, string, fret, pitch): {:#?}",
+        normalized.differences
+    );
+}
+
+#[test]
+fn track_order_stays_a_positional_fact_under_both_contracts() {
+    let two_tracks = |swapped: bool| {
+        let mut score = base();
+        let second = Track {
+            name: Some("rhythm".to_owned()),
+            channel: 1,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: vec![EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![note(0, 47)],
+                    technique_spans: Vec::new(),
+                }],
+            }],
+            tuning: Tuning::standard_e(),
+        };
+        score.tracks.push(second);
+        if swapped {
+            score.tracks.swap(0, 1);
+        }
+        score
+    };
+    let exact = exact_semantic_diff(&two_tracks(false), &two_tracks(true));
+    assert!(!exact.is_empty());
+    let normalized = normalized_musical_diff(&two_tracks(false), &two_tracks(true));
+    assert!(
+        !normalized.is_empty(),
+        "track order is NOT canonicalized by v1 — it stays positional"
+    );
+}
+
+#[test]
+fn bar_order_stays_a_positional_fact_under_both_contracts() {
+    let two_bars = |reversed: bool| {
+        let mut score = base();
+        score.master_bars.push(MasterBar {
+            index: 1,
+            tick_range: tick_range(1920, 3840),
+            time_signature: TimeSignature::new(7, 8).expect("7/8"),
+            tempo: Tempo::from_bpm_integer(97).expect("97 BPM"),
+            repeat: RepeatMarker::default(),
+        });
+        if reversed {
+            score.master_bars.reverse();
+        }
+        score
+    };
+    let exact = exact_semantic_diff(&two_bars(false), &two_bars(true));
+    assert!(!exact.is_empty());
+    let normalized = normalized_musical_diff(&two_bars(false), &two_bars(true));
+    assert!(
+        !normalized.is_empty(),
+        "bar order is NOT canonicalized by v1 — it stays positional"
+    );
+}
+
+// ── span semantics: the induced label set at each onset is the fact ───────────
+
+#[test]
+fn span_no_longer_covering_an_onset_differs_under_both_at_spans() {
+    // Range endpoints and evidence are not preserved; the induced
+    // technique-label set at each note onset is. Moving the range off the
+    // first note's onset changes that set.
+    let expected = base();
+    let mut actual = base();
+    actual.tracks[0].voices[0].event_groups[0].technique_spans[0].tick_range = tick_range(240, 480);
+    let exact = exact_semantic_diff(&expected, &actual);
+    assert!(!exact.is_empty(), "the range itself is an exact fact");
+    let normalized = normalized_musical_diff(&expected, &actual);
+    assert!(!normalized.is_empty(), "the induced label set changed");
+    assert!(
+        normalized
+            .differences
+            .iter()
+            .any(|d| d.path.to_string().ends_with(".spans")),
+        "the normalized difference lands on .spans: {:#?}",
+        normalized.differences
+    );
+}
+
+// ── the projection mutation matrix ────────────────────────────────────────────
+
+/// Asserts that diffing `base()` against its mutation reports a difference
+/// with `want_path` and `want_kind`, and that forward and backward runs
+/// carry the same typed paths in the same order.
+fn assert_projection_witness(
+    label: &str,
+    mutate: impl FnOnce(&mut Score),
+    want_path: &str,
+    want_kind: &SemanticDifferenceKind,
+) {
+    let expected = base();
+    let mut actual = base();
+    mutate(&mut actual);
+    let forward = normalized_musical_diff(&expected, &actual);
+    assert!(
+        forward
+            .differences
+            .iter()
+            .any(|d| d.path.to_string() == want_path && &d.kind == want_kind),
+        "{label}: no difference {want_kind:?} at {want_path}, got {:#?}",
+        forward.differences
+    );
+    let backward = normalized_musical_diff(&actual, &expected);
+    let forward_paths: Vec<String> = forward
+        .differences
+        .iter()
+        .map(|d| d.path.to_string())
+        .collect();
+    let backward_paths: Vec<String> = backward
+        .differences
+        .iter()
+        .map(|d| d.path.to_string())
+        .collect();
+    assert_eq!(
+        forward_paths, backward_paths,
+        "{label}: both directions carry the same paths in the same order"
+    );
+}
+
+#[test]
+fn every_projection_field_has_a_witness() {
+    let bar0 = "score.tracks[0].bars[index=0,ordinal=0]";
+    let voice0 = "score.tracks[0].bars[index=0,ordinal=0].voices[id=0,ordinal=0]";
+    let value = SemanticDifferenceKind::ValueMismatch;
+
+    assert_projection_witness("ppqn", |s| s.ticks_per_quarter = 960, "score.ppqn", &value);
+    assert_projection_witness(
+        "tracks cardinality",
+        |s| {
+            s.tracks.push(Track {
+                name: None,
+                channel: 2,
+                voices: Vec::new(),
+                tuning: Tuning::standard_e(),
+            });
+        },
+        "score.tracks",
+        &SemanticDifferenceKind::CardinalityMismatch {
+            expected: 1,
+            actual: 2,
+        },
+    );
+    assert_projection_witness(
+        "name value",
+        |s| s.tracks[0].name = Some("solo".to_owned()),
+        "score.tracks[0].name",
+        &value,
+    );
+    assert_projection_witness(
+        "name dropped",
+        |s| s.tracks[0].name = None,
+        "score.tracks[0].name",
+        &SemanticDifferenceKind::MissingActual,
+    );
+    assert_projection_witness(
+        "channel",
+        |s| s.tracks[0].channel = 9,
+        "score.tracks[0].channel",
+        &value,
+    );
+    assert_projection_witness(
+        "tuning",
+        |s| {
+            s.tracks[0].tuning = Tuning::new(vec![
+                Pitch::new(62).expect("valid"),
+                Pitch::new(57).expect("valid"),
+                Pitch::new(53).expect("valid"),
+                Pitch::new(48).expect("valid"),
+                Pitch::new(43).expect("valid"),
+                Pitch::new(38).expect("valid"),
+            ]);
+        },
+        "score.tracks[0].tuning",
+        &value,
+    );
+    assert_projection_witness(
+        "bars cardinality",
+        |s| {
+            s.master_bars.push(MasterBar {
+                index: 1,
+                tick_range: tick_range(1920, 3840),
+                time_signature: TimeSignature::new(4, 4).expect("4/4"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
+            });
+        },
+        "score.tracks[0].bars",
+        &SemanticDifferenceKind::CardinalityMismatch {
+            expected: 1,
+            actual: 2,
+        },
+    );
+    // A disputed NormBar.index drops the annotation: Bar { index: None }.
+    assert_projection_witness(
+        "bar index (disputed)",
+        |s| s.master_bars[0].index = 9,
+        "score.tracks[0].bars[ordinal=0].index",
+        &value,
+    );
+    assert_projection_witness(
+        "time_sig",
+        |s| s.master_bars[0].time_signature = TimeSignature::new(3, 4).expect("3/4"),
+        &format!("{bar0}.time_sig"),
+        &value,
+    );
+    assert_projection_witness(
+        "tempo",
+        |s| s.master_bars[0].tempo = Tempo::from_bpm_integer(121).expect("121 BPM"),
+        &format!("{bar0}.tempo"),
+        &value,
+    );
+    assert_projection_witness(
+        "end_tick",
+        |s| s.master_bars[0].tick_range = tick_range(0, 2400),
+        &format!("{bar0}.end_tick"),
+        &value,
+    );
+    assert_projection_witness(
+        "start_tick",
+        |s| s.master_bars[0].tick_range = tick_range(240, 1920),
+        &format!("{bar0}.start_tick"),
+        &value,
+    );
+    assert_projection_witness(
+        "voices cardinality",
+        |s| {
+            s.tracks[0].voices.push(Voice {
+                id: 1,
+                event_groups: vec![EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![note(0, 52)],
+                    technique_spans: Vec::new(),
+                }],
+            });
+        },
+        &format!("{bar0}.voices"),
+        &SemanticDifferenceKind::CardinalityMismatch {
+            expected: 1,
+            actual: 2,
+        },
+    );
+    // A disputed NormVoice.id drops the annotation: Voice { id: None }.
+    assert_projection_witness(
+        "voice id (disputed)",
+        |s| s.tracks[0].voices[0].id = 2,
+        "score.tracks[0].bars[index=0,ordinal=0].voices[ordinal=0].id",
+        &value,
+    );
+    assert_projection_witness(
+        "notes cardinality",
+        |s| {
+            s.tracks[0].voices[0].event_groups[0].atoms.pop();
+        },
+        &format!("{voice0}.notes"),
+        &SemanticDifferenceKind::CardinalityMismatch {
+            expected: 2,
+            actual: 1,
+        },
+    );
+    assert_projection_witness(
+        "onset_tick",
+        |s| match &mut s.tracks[0].voices[0].event_groups[0].atoms[1] {
+            AtomEvent::Note(n) => n.absolute_start = Ticks(360),
+            AtomEvent::Rest(_) => panic!("fixture note"),
+        },
+        &format!("{voice0}.notes[1].onset_tick"),
+        &value,
+    );
+    assert_projection_witness(
+        "dur_tick",
+        |s| first_note(s).duration = Ticks(480),
+        &format!("{voice0}.notes[0].dur_tick"),
+        &value,
+    );
+    assert_projection_witness(
+        "pitch",
+        |s| first_note(s).pitch = Pitch::new(41).expect("valid"),
+        &format!("{voice0}.notes[0].pitch"),
+        &value,
+    );
+    assert_projection_witness(
+        "velocity",
+        |s| first_note(s).velocity = Velocity::new(60).expect("valid"),
+        &format!("{voice0}.notes[0].velocity"),
+        &value,
+    );
+    assert_projection_witness(
+        "string",
+        |s| {
+            first_note(s).position = Some(NotePosition::explicit(FretboardPosition {
+                string: 5,
+                fret: 0,
+            }));
+        },
+        &format!("{voice0}.notes[0].string"),
+        &value,
+    );
+    assert_projection_witness(
+        "fret",
+        |s| {
+            first_note(s).position = Some(NotePosition::explicit(FretboardPosition {
+                string: 6,
+                fret: 5,
+            }));
+        },
+        &format!("{voice0}.notes[0].fret"),
+        &value,
+    );
+    assert_projection_witness(
+        "string/fret dropped",
+        |s| first_note(s).position = None,
+        &format!("{voice0}.notes[0].string"),
+        &SemanticDifferenceKind::MissingActual,
+    );
+    assert_projection_witness(
+        "string/fret gained (backward of dropped)",
+        |s| first_note(s).position = None,
+        &format!("{voice0}.notes[0].fret"),
+        &SemanticDifferenceKind::MissingActual,
+    );
+    assert_projection_witness(
+        "marks",
+        |s| first_note(s).marks = NoteMarks::empty().with(NoteMark::Accent),
+        &format!("{voice0}.notes[0].marks"),
+        &value,
+    );
+    assert_projection_witness(
+        "spans",
+        |s| {
+            s.tracks[0].voices[0].event_groups[0].technique_spans[0].tick_range =
+                tick_range(240, 480);
+        },
+        &format!("{voice0}.notes[0].spans"),
+        &value,
+    );
+}
+
+#[test]
+fn a_gained_position_reports_missing_expected_on_string_and_fret() {
+    let mut expected = base();
+    match &mut expected.tracks[0].voices[0].event_groups[0].atoms[0] {
+        AtomEvent::Note(n) => n.position = None,
+        AtomEvent::Rest(_) => panic!("fixture note"),
+    }
+    let actual = base();
+    let report = normalized_musical_diff(&expected, &actual);
+    let voice0 = "score.tracks[0].bars[index=0,ordinal=0].voices[id=0,ordinal=0]";
+    for field in ["string", "fret"] {
+        assert!(
+            report.differences.iter().any(|d| {
+                d.path.to_string() == format!("{voice0}.notes[0].{field}")
+                    && d.kind == SemanticDifferenceKind::MissingExpected
+            }),
+            "{field}: expected MissingExpected, got {:#?}",
+            report.differences
+        );
+    }
+}
+
 // ── normalized paths speak the projection's shape ─────────────────────────────
 
 #[test]
@@ -346,16 +827,37 @@ fn normalized_diff_is_deterministic() {
 }
 
 #[test]
-fn normalized_diff_inverts_directionally() {
+fn normalized_diff_inverts_directionally_across_mixed_kinds() {
+    // Value + missing + cardinality in one pair: both directions carry the
+    // same typed paths in the same order, kinds invert (ValueMismatch
+    // self-inverse, MissingExpected <-> MissingActual, cardinality counts
+    // swap), diagnostics swap.
     let a = base();
     let mut b = base();
     first_note(&mut b).pitch = Pitch::new(41).expect("valid");
+    b.tracks[0].name = None;
+    b.tracks[0].voices[0].event_groups[0].atoms.pop();
+
     let forward = normalized_musical_diff(&a, &b);
     let backward = normalized_musical_diff(&b, &a);
     assert_eq!(forward.differences.len(), backward.differences.len());
+    assert!(forward.differences.len() >= 3);
     for (f, r) in forward.differences.iter().zip(backward.differences.iter()) {
-        assert_eq!(f.path, r.path, "typed paths equal in both directions");
-        assert_eq!(f.expected, r.actual, "diagnostics swap");
+        assert_eq!(f.path, r.path, "typed paths equal, in order");
+        let inverted = match &f.kind {
+            SemanticDifferenceKind::ValueMismatch => SemanticDifferenceKind::ValueMismatch,
+            SemanticDifferenceKind::VariantMismatch => SemanticDifferenceKind::VariantMismatch,
+            SemanticDifferenceKind::CardinalityMismatch { expected, actual } => {
+                SemanticDifferenceKind::CardinalityMismatch {
+                    expected: *actual,
+                    actual: *expected,
+                }
+            }
+            SemanticDifferenceKind::MissingExpected => SemanticDifferenceKind::MissingActual,
+            SemanticDifferenceKind::MissingActual => SemanticDifferenceKind::MissingExpected,
+        };
+        assert_eq!(inverted, r.kind, "kinds invert at {}", f.path);
+        assert_eq!(f.expected, r.actual, "diagnostics swap at {}", f.path);
         assert_eq!(f.actual, r.expected);
     }
 }

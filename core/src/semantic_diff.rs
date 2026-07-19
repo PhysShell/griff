@@ -30,11 +30,20 @@
 //! [`NORMALIZED_MUSICAL_POLICY_ID`] / [`NORMALIZED_MUSICAL_POLICY_VERSION`].
 //! The projection itself is unchanged; the policy pins what it means today:
 //! rests, group kinds, technique-span ranges and evidence, position
-//! evidence, repeat markers, and source metadata are not v1 facts, the
-//! canonical order erases import order, and the projection's loss labels
-//! are deliberately excluded — a musical policy compares sounding facts,
-//! not import provenance. Any widening is a `policy_version = 2`, never a
-//! silent change of what old reports meant.
+//! evidence, repeat markers, and source metadata are not v1 facts; voice
+//! order is canonicalized by id and note order by
+//! (onset, string, fret, pitch), while track order and bar order remain
+//! positional compared facts; the projection's loss labels are
+//! deliberately excluded — v1 compares the comparison-relevant musical
+//! projection facts, excluding import-provenance loss labels. Two further
+//! honestly-recorded projection boundaries (not canonical validity —
+//! Phase 4B must validate canonical input before normalized
+//! classification): ADR-0020 materializes transport inside
+//! `NormTrack::bars`, so with zero tracks transport has no v1
+//! representation; and v1 compares only notes bucketed into declared
+//! master bars, so canonical notes outside the projected timeline leave
+//! no normalized fact. Any semantic change to the policy bumps
+//! `policy_version`; it never silently changes what old reports meant.
 
 use core::fmt;
 
@@ -49,9 +58,9 @@ use crate::{
 
 // ── typed path ────────────────────────────────────────────────────────────────
 
-/// A compared leaf or collection field of the canonical model — a closed
-/// enum, so the set of compared facts is a compile-time contract, not a
-/// string convention.
+/// A compared leaf or collection field of the canonical model or one of
+/// its named projections — a closed enum, so the set of compared facts is
+/// a compile-time contract, not a string convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(missing_docs)] // each variant names the canonical field it mirrors
 pub enum SemanticField {
@@ -918,7 +927,7 @@ fn diff_span(w: &mut Walker, expected: &TechniqueSpan, actual: &TechniqueSpan) {
 /// The v1 normalized-musical policy's stable identifier (ADR-0020).
 pub const NORMALIZED_MUSICAL_POLICY_ID: &str = "adr-0020-normalized-musical";
 
-/// The v1 normalized-musical policy's version. Any semantic widening of the
+/// The v1 normalized-musical policy's version. Any semantic change to the
 /// policy bumps this; it never silently changes what old reports meant.
 pub const NORMALIZED_MUSICAL_POLICY_VERSION: u16 = 1;
 
