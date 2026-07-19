@@ -35,12 +35,16 @@ use griff_core::corpus::{ChunkMeta, ReviewerDecision, RightsStatus, StyleCohort,
 use griff_core::generation_input::CorpusMaterial;
 use griff_core::import::import_score_auto;
 use griff_core::score::Score;
+#[cfg(not(target_arch = "wasm32"))]
+use griff_core::{midi::export_score, score::LossReport};
 use griff_swang::eval;
 use griff_ui_core::history::{
     CandidateSource, ChainOutcomeRecord, ChainSupplier, CorpusContribution, GenerationRunId,
     GeneratorProvenance, HistoryId, Provenance, SessionHistory, Verdict,
 };
 use griff_ui_core::playback::{Player, TempoMap};
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs;
 
 use audio::Synth;
 use griff_core::candidate_chain::{ChainError, MasterBarField, TrackField, TransitionFactError};
@@ -1826,7 +1830,7 @@ impl CockpitApp {
     fn keep_candidate(&mut self, i: usize) {
         let outcome = self.write_keep(i);
         self.gen_panel.status = Some(match outcome {
-            Ok(path) => format!("kept {path}"),
+            Ok(written) => written.status_line("kept"),
             Err(err) => format!("keep failed: {err}"),
         });
     }
@@ -1834,10 +1838,8 @@ impl CockpitApp {
     /// Exports candidate `i` and its provenance into the out dir; returns the
     /// written `.mid` path.
     #[cfg(not(target_arch = "wasm32"))]
-    fn write_keep(&self, i: usize) -> Result<String, String> {
+    fn write_keep(&self, i: usize) -> Result<WrittenMidi, String> {
         use std::fs;
-
-        use griff_core::midi::export_score;
 
         // The exported score and its provenance come from the SAME captured run
         // — never from live panel state, which may have moved on since.
@@ -1861,11 +1863,10 @@ impl CockpitApp {
         let mid = self.out_dir.join(format!("{stem}.mid"));
         let json = self.out_dir.join(format!("{stem}.json"));
 
-        let bytes = export_score(score).map_err(|err| format!("{err:?}"))?.bytes;
-        fs::write(&mid, &bytes).map_err(|e| format!("cannot write {}: {e}", mid.display()))?;
+        let written = write_score_midi(score, &mid)?;
         let text = serde_json::to_string_pretty(&provenance).map_err(|err| err.to_string())?;
         fs::write(&json, text).map_err(|e| format!("cannot write {}: {e}", json.display()))?;
-        Ok(mid.display().to_string())
+        Ok(written)
     }
 
     /// Writes the run's assembled global chain, recording it first if it has not
@@ -1877,7 +1878,7 @@ impl CockpitApp {
             return;
         };
         self.gen_panel.status = Some(match self.write_chain_keep(id) {
-            Ok(path) => format!("kept -> {path}"),
+            Ok(written) => written.status_line("kept ->"),
             Err(err) => format!("keep failed: {err}"),
         });
     }
@@ -1921,10 +1922,8 @@ impl CockpitApp {
     /// # Errors
     /// When the entry is missing, is not a chain, or the write fails.
     #[cfg(not(target_arch = "wasm32"))]
-    fn write_chain_keep(&self, id: HistoryId) -> Result<String, String> {
+    fn write_chain_keep(&self, id: HistoryId) -> Result<WrittenMidi, String> {
         use std::fs;
-
-        use griff_core::midi::export_score;
 
         // Everything below comes from the entry — the score and the provenance
         // that describes it, recorded together and immutable since. The active
@@ -1982,13 +1981,10 @@ impl CockpitApp {
         let mid = self.out_dir.join(format!("{stem}.mid"));
         let json = self.out_dir.join(format!("{stem}.json"));
 
-        let bytes = export_score(&entry.score)
-            .map_err(|err| format!("{err:?}"))?
-            .bytes;
-        fs::write(&mid, &bytes).map_err(|e| format!("cannot write {}: {e}", mid.display()))?;
+        let written = write_score_midi(&entry.score, &mid)?;
         let text = serde_json::to_string_pretty(&sidecar).map_err(|err| err.to_string())?;
         fs::write(&json, text).map_err(|e| format!("cannot write {}: {e}", json.display()))?;
-        Ok(mid.display().to_string())
+        Ok(written)
     }
 
     /// Hands the last kept `.mid` to the OS default handler — the cheap way to
@@ -1998,9 +1994,9 @@ impl CockpitApp {
     fn open_keep(&mut self, i: usize) {
         let outcome = self
             .write_keep(i)
-            .and_then(|path| open_in_default_app(Path::new(&path)).map(|()| path));
+            .and_then(|written| open_in_default_app(Path::new(&written.path)).map(|()| written));
         self.gen_panel.status = Some(match outcome {
-            Ok(path) => format!("opened {path}"),
+            Ok(written) => written.status_line("opened"),
             Err(err) => format!("open failed: {err}"),
         });
     }
@@ -2360,7 +2356,7 @@ impl CockpitApp {
     fn swang_build(&mut self) {
         let outcome = self.write_swang_export();
         self.swang.status = match outcome {
-            Ok(path) => format!("built -> {path}"),
+            Ok(written) => written.status_line("built ->"),
             Err(err) => format!("build failed: {err}"),
         };
     }
@@ -2368,10 +2364,8 @@ impl CockpitApp {
     /// Exports the selected candidate to the program's `export` path and stamps
     /// a `.json` provenance sidecar; returns the written `.mid` path.
     #[cfg(not(target_arch = "wasm32"))]
-    fn write_swang_export(&self) -> Result<String, String> {
+    fn write_swang_export(&self) -> Result<WrittenMidi, String> {
         use std::fs;
-
-        use griff_core::midi::export_score;
 
         // Belt to the UI's suspenders: never export a result the current text
         // did not produce, even if a change somehow slipped past the editor's
@@ -2389,8 +2383,7 @@ impl CockpitApp {
         let row = set.rows.get(i).ok_or("no such candidate")?;
         let score = set.scores.get(i).ok_or("no such candidate")?;
 
-        let bytes = export_score(score).map_err(|e| format!("{e:?}"))?.bytes;
-        fs::write(&path, &bytes).map_err(|e| format!("{e}"))?;
+        let written = write_score_midi(score, Path::new(&path))?;
 
         let provenance = serde_json::json!({
             "schema": "griff.swang-build",
@@ -2402,7 +2395,7 @@ impl CockpitApp {
         let sidecar = format!("{path}.json");
         let text = serde_json::to_string_pretty(&provenance).map_err(|e| format!("{e}"))?;
         fs::write(&sidecar, text).map_err(|e| format!("{e}"))?;
-        Ok(path)
+        Ok(written)
     }
 
     /// The web target cannot write files; Build is native-only this slice.
@@ -3369,6 +3362,48 @@ impl eframe::App for CockpitApp {
     }
 }
 
+/// A `.mid` written through the one native export seam, plus the losses the
+/// export incurred — carried to the panel status, never discarded (S16 Phase
+/// 4-pre A).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone)]
+struct WrittenMidi {
+    /// The written file's display path.
+    path: String,
+    /// Export approximations (e.g. `TempoApproximated`); empty = exact.
+    loss: LossReport,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl WrittenMidi {
+    /// The panel-status line for a successful write: `"<verb> <path>"`, with
+    /// every export approximation appended. A lossy projection stays visible
+    /// without turning the write into a failure.
+    fn status_line(&self, verb: &str) -> String {
+        if self.loss.is_clean() {
+            format!("{verb} {}", self.path)
+        } else {
+            format!(
+                "{verb} {} — export approximated: {:?}",
+                self.path, self.loss.warnings
+            )
+        }
+    }
+}
+
+/// Exports `score` and writes it to `mid` — the single native seam every
+/// cockpit MIDI write (candidate / chain / Swang) goes through. Approximation
+/// never blocks the write; it travels on the returned [`WrittenMidi::loss`].
+#[cfg(not(target_arch = "wasm32"))]
+fn write_score_midi(score: &Score, mid: &Path) -> Result<WrittenMidi, String> {
+    let export = export_score(score).map_err(|err| format!("{err:?}"))?;
+    fs::write(mid, &export.bytes).map_err(|e| format!("cannot write {}: {e}", mid.display()))?;
+    Ok(WrittenMidi {
+        path: mid.display().to_string(),
+        loss: export.loss,
+    })
+}
+
 /// Hands `path` to the OS's default handler for its type. The cockpit does not
 /// synthesise audio: hearing a kept `.mid` means opening it in whatever the user
 /// already has registered (a notation editor, a DAW).
@@ -3619,6 +3654,7 @@ mod tests {
     )]
 
     use super::*;
+    use griff_core::event::Tempo;
     use std::collections::HashSet;
     use std::{env, fs};
 
@@ -5087,7 +5123,10 @@ mod tests {
             .find(|e| e.source == CandidateSource::GlobalChain)
             .expect("the chain was auditioned")
             .id;
-        let path = app.write_chain_keep(chain_id).expect("the chain exports");
+        let path = app
+            .write_chain_keep(chain_id)
+            .expect("the chain exports")
+            .path;
         let written = fs::read(&path).expect("the file is there");
         let expected = export_score(&app.history.get(chain_id).expect("entry").score)
             .map(|e| e.bytes)
@@ -5134,7 +5173,7 @@ mod tests {
             &replayed, summary,
             "the old chain's own explanation, unmoved"
         );
-        let again = app.write_chain_keep(chain_id).expect("still exports");
+        let again = app.write_chain_keep(chain_id).expect("still exports").path;
         assert_eq!(
             fs::read(&again).expect("read"),
             expected,
@@ -5451,6 +5490,99 @@ mod tests {
         );
     }
 
+    // ── the export seam surfaces approximation, and only then (S16 4-pre A) ──
+
+    /// A minimal one-bar score at `tempo`: 4/4, one track, one quarter note.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn one_bar_score_at(tempo: Tempo) -> Score {
+        use griff_core::{
+            event::{NoteMarks, Pitch, Ticks, TimeSignature, Tuning, Velocity},
+            score::{
+                AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+                RepeatMarker, Track, Voice,
+            },
+            slice::TickRange,
+        };
+        Score {
+            ticks_per_quarter: 480,
+            master_bars: vec![MasterBar {
+                index: 0,
+                tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered"),
+                time_signature: TimeSignature::new(4, 4).expect("4/4"),
+                tempo,
+                repeat: RepeatMarker::default(),
+            }],
+            tracks: vec![Track {
+                name: None,
+                channel: 0,
+                voices: vec![Voice {
+                    id: 0,
+                    event_groups: vec![EventGroup {
+                        kind: EventGroupKind::Single,
+                        atoms: vec![AtomEvent::Note(AtomNote {
+                            absolute_start: Ticks(0),
+                            duration: Ticks(480),
+                            pitch: Pitch::new(40).expect("pitch"),
+                            velocity: Velocity::new(96).expect("velocity"),
+                            marks: NoteMarks::empty(),
+                            position: None,
+                        })],
+                        technique_spans: Vec::new(),
+                    }],
+                }],
+                tuning: Tuning::standard_e(),
+            }],
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_inexact_tempo_export_writes_the_file_and_names_the_approximation() {
+        let dir = env::temp_dir().join("griff-export-loss-test");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let mid = dir.join("inexact_121.mid");
+
+        // 121 BPM has no exact microsecond form: the write must still happen…
+        let score = one_bar_score_at(Tempo::from_bpm_integer(121).expect("121 BPM"));
+        let written =
+            write_score_midi(&score, &mid).expect("approximation must not block the write");
+        assert!(
+            fs::read(&mid).map(|b| !b.is_empty()).unwrap_or(false),
+            "the .mid file is written despite the approximation"
+        );
+
+        // …and the panel status must name the approximation, not swallow it.
+        assert!(!written.loss.is_clean(), "the loss is carried, not dropped");
+        let status = written.status_line("kept");
+        assert!(
+            status.contains("TempoApproximated"),
+            "the visible status names the typed loss: {status}"
+        );
+        drop(fs::remove_file(&mid));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_clean_tempo_export_reports_no_approximation() {
+        let dir = env::temp_dir().join("griff-export-loss-test");
+        fs::create_dir_all(&dir).expect("temp dir");
+        let mid = dir.join("clean_120.mid");
+
+        let score = one_bar_score_at(Tempo::from_bpm_integer(120).expect("120 BPM"));
+        let written = write_score_midi(&score, &mid).expect("the clean export writes");
+        assert!(written.loss.is_clean());
+        let status = written.status_line("kept");
+        assert_eq!(
+            status,
+            format!("kept {}", written.path),
+            "a clean export carries no warning tail"
+        );
+        assert!(!status.contains("Approximated"));
+        drop(fs::remove_file(&mid));
+    }
+
     // ── export writes the snapshot, never a re-plan ──────────────────────────
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -5470,7 +5602,7 @@ mod tests {
             .expect("the chain was recorded")
             .id;
 
-        let path = app.write_chain_keep(id).expect("the chain exports");
+        let path = app.write_chain_keep(id).expect("the chain exports").path;
         let written = fs::read(&path).expect("the file is there");
         let expected = export_score(&app.history.get(id).expect("entry").score)
             .expect("the snapshot exports")
@@ -5512,7 +5644,8 @@ mod tests {
 
         let path = app
             .write_chain_keep(old)
-            .expect("the old chain still exports");
+            .expect("the old chain still exports")
+            .path;
         let written = fs::read(&path).expect("the file is there");
         assert_eq!(
             written, old_bytes,
@@ -5545,7 +5678,7 @@ mod tests {
             };
             chain.plan.total_cost = poison;
         }
-        let path = app.write_chain_keep(id).expect("exports");
+        let path = app.write_chain_keep(id).expect("exports").path;
         let GlobalChainOutcome::Planned(chain) =
             &app.gen_panel.active.as_ref().expect("a run").chain
         else {
@@ -5651,7 +5784,7 @@ mod tests {
             .find(|e| e.source == CandidateSource::GlobalChain)
             .expect("the chain was recorded")
             .id;
-        let path = app.write_chain_keep(id).expect("exports");
+        let path = app.write_chain_keep(id).expect("exports").path;
         let json: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
                 .expect("the sidecar is json");
@@ -5767,7 +5900,7 @@ mod tests {
         app.gen_panel.bars = 9;
         app.gen_panel.variants = 7;
 
-        let path = app.write_chain_keep(id).expect("exports");
+        let path = app.write_chain_keep(id).expect("exports").path;
         let json: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
                 .expect("json");
@@ -5802,7 +5935,8 @@ mod tests {
 
         let path = app
             .write_chain_keep(old)
-            .expect("the old entry still exports");
+            .expect("the old entry still exports")
+            .path;
         let json: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(path.replace(".mid", ".json")).expect("read"))
                 .expect("json");
@@ -5829,7 +5963,7 @@ mod tests {
             .find(|e| e.source == CandidateSource::GlobalChain)
             .expect("recorded")
             .id;
-        let path = app.write_chain_keep(id).expect("exports");
+        let path = app.write_chain_keep(id).expect("exports").path;
         let json = fs::read_to_string(path.replace(".mid", ".json")).expect("a sidecar");
         assert!(json.contains("\"suppliers\""), "the bar map: {json}");
         assert!(json.contains("\"total_cost\""), "the chain's cost: {json}");
@@ -6293,7 +6427,7 @@ mod tests {
         app.gen_panel.seed = 5;
         app.do_generate();
         app.gen_panel.seed = 99; // change the knob after the run
-        let mid = app.write_keep(1).expect("keep writes");
+        let mid = app.write_keep(1).expect("keep writes").path;
         assert!(
             mid.contains("seed5_"),
             "the filename uses the run's seed: {mid}"
@@ -6317,7 +6451,7 @@ mod tests {
         app.do_generate();
         app.gen_panel.bars = 16;
         app.gen_panel.variants = 5;
-        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes").path);
         assert_eq!(json["bars"], 4, "the sidecar keeps the run's bars");
         assert_eq!(json["variants_per_strategy"], 2, "and its variants");
         drop_keep_dir(&dir);
@@ -6336,7 +6470,7 @@ mod tests {
         app.gen_panel.variants = 2;
         app.do_generate();
         app.gen_panel.source = None; // change the selection afterwards
-        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes").path);
         assert_eq!(
             json["source"], "tabA.mid",
             "the sidecar keeps the run's source"
@@ -6352,7 +6486,7 @@ mod tests {
         app.gen_panel.variants = 2;
         app.do_generate(); // no corpus → seed-only
         app.material = Some(two_rhythm_material()); // attach afterwards
-        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes").path);
         assert_eq!(
             json["corpus"], false,
             "attachment after the run is not contribution"
@@ -6369,7 +6503,7 @@ mod tests {
         app.gen_panel.variants = 2;
         app.do_generate();
         app.material = None; // detach afterwards
-        let json = read_sidecar(&app.write_keep(0).expect("keep writes"));
+        let json = read_sidecar(&app.write_keep(0).expect("keep writes").path);
         assert_eq!(json["corpus"], true, "the run's real contribution survives");
         drop_keep_dir(&dir);
     }
@@ -6385,7 +6519,7 @@ mod tests {
             let row = &app.gen_panel.set().expect("a set").rows[1];
             (row.strategy.clone(), row.variant_seed)
         };
-        let mid = app.write_keep(1).expect("keep writes");
+        let mid = app.write_keep(1).expect("keep writes").path;
         assert!(Path::new(&mid).exists(), "the .mid is written");
         let json = read_sidecar(&mid);
         assert_eq!(
@@ -6406,7 +6540,7 @@ mod tests {
         app.do_generate();
         app.gen_panel.seed = 42;
         app.do_generate(); // a fresh run
-        let mid = app.write_keep(0).expect("keep writes");
+        let mid = app.write_keep(0).expect("keep writes").path;
         assert!(
             mid.contains("seed42_"),
             "the new run exports its own seed: {mid}"

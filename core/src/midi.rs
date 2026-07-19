@@ -702,12 +702,23 @@ fn build_score_meta_track(
 ) -> Result<Vec<TrackEvent<'static>>, MidiError> {
     let mut abs_events: Vec<(u32, TrackEventKind<'static>)> = Vec::new();
 
+    // The exact `Tempo` and its projected MPQ are tracked separately: the
+    // projection (and any approximation loss) runs once per exact-tempo
+    // change — repeated bars of one tempo never multiply warnings — while the
+    // MIDI event is emitted on projected-MPQ change. Two different exact
+    // tempos collapsing onto one MPQ still each get their own projection, so
+    // neither is lost silently.
+    let mut prev_tempo: Option<(Tempo, u32)> = None;
     let mut prev_micros: Option<u32> = None;
     let mut prev_sig: Option<TimeSignature> = None;
 
     for mb in &score.master_bars {
         let tick = mb.tick_range.start.0;
-        let micros = tempo_to_micros(mb.tempo, mb.index, loss);
+        let micros = match prev_tempo {
+            Some((tempo, micros)) if tempo == mb.tempo => micros,
+            _ => tempo_to_micros(mb.tempo, mb.index, loss),
+        };
+        prev_tempo = Some((mb.tempo, micros));
         let sig = mb.time_signature;
 
         if prev_micros != Some(micros) {
@@ -815,7 +826,8 @@ fn build_score_note_track(track: &ScoreTrack) -> Result<Vec<TrackEvent<'static>>
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        bar_ticks, build_master_bars, export_score, import_score, tempo_to_micros, MidiError, Ppqn,
+        bar_ticks, build_master_bars, build_score_meta_track, export_score, import_score,
+        tempo_to_micros, MidiError, Ppqn,
     };
     use crate::{
         event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
@@ -868,6 +880,62 @@ mod tests {
             "120 BPM must map to 500 000 µs/beat",
         );
         assert!(loss.is_clean(), "an exact tempo reports no approximation");
+    }
+
+    #[test]
+    fn repeated_inexact_tempo_reports_once_and_emits_one_event() {
+        // Three bars of one exact 121 BPM tempo: the projection (and its
+        // approximation loss) runs once, and one MIDI tempo event is emitted —
+        // repeated bars never multiply warnings. A later *different* exact
+        // tempo that lands on the same MPQ still gets its own projection.
+        let tempo_121 = Tempo::from_bpm_integer(121).expect("121 BPM is valid");
+        // 495_868 µs is exact-from-micros: same MPQ as 121's nearest, but a
+        // different exact tempo — projected again (clean), no second event.
+        let tempo_same_mpq = Tempo::from_micros_per_quarter(495_868).expect("495 868 µs is valid");
+        let bar = |index: usize, tempo: Tempo| MasterBar {
+            index,
+            tick_range: TickRange::new(
+                Ticks(u32::try_from(index).expect("small") * 1920),
+                Ticks((u32::try_from(index).expect("small") + 1) * 1920),
+            )
+            .expect("ordered"),
+            time_signature: TimeSignature::new(4, 4).expect("4/4"),
+            tempo,
+            repeat: RepeatMarker::default(),
+        };
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: vec![
+                bar(0, tempo_121),
+                bar(1, tempo_121),
+                bar(2, tempo_121),
+                bar(3, tempo_same_mpq),
+            ],
+            tracks: Vec::new(),
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        let mut loss = LossReport::new();
+        let events =
+            build_score_meta_track(&score, Ppqn(480), &mut loss).expect("meta track builds");
+
+        let tempo_events = events
+            .iter()
+            .filter(|e| matches!(e.kind, TrackEventKind::Meta(MetaMessage::Tempo(_))))
+            .count();
+        assert_eq!(
+            tempo_events, 1,
+            "one exact tempo (plus a same-MPQ successor) is one MIDI event"
+        );
+        assert_eq!(
+            loss.warnings,
+            vec![ImportWarning::TempoApproximated {
+                bar_index: 0,
+                nearest_micros: 495_868,
+            }],
+            "the approximation is reported once, at the tempo's first bar"
+        );
     }
 
     #[test]

@@ -218,6 +218,59 @@ fn one_bar_score(tempo: Tempo) -> Score {
 }
 
 #[test]
+fn midi_ceiling_micros_is_exact_and_clean() {
+    // 16 777 215 µs/quarter is u24::MAX — the slowest tempo MIDI can carry
+    // exactly. It must project exactly and export with a clean report.
+    let tempo = Tempo::from_micros_per_quarter(16_777_215).expect("valid micros");
+    assert_eq!(tempo.to_micros_per_quarter_exact(), Some(16_777_215));
+
+    let export = midi::export_score(&one_bar_score(tempo)).expect("export succeeds");
+    assert!(
+        export.loss.is_clean(),
+        "the MIDI ceiling itself is representable: {:?}",
+        export.loss.warnings
+    );
+}
+
+#[test]
+fn slower_than_the_midi_ceiling_clamps_with_a_typed_loss() {
+    // 20 000 000 µs/quarter (3 BPM) has an exact u32 form but exceeds MIDI's
+    // 24-bit tempo field: the export clamps to u24::MAX and reports it.
+    let tempo = Tempo::from_micros_per_quarter(20_000_000).expect("valid micros");
+    assert_eq!(tempo.to_micros_per_quarter_exact(), Some(20_000_000));
+
+    let export = midi::export_score(&one_bar_score(tempo)).expect("export still succeeds");
+    assert!(!export.bytes.is_empty(), "the file is still produced");
+    assert_eq!(
+        export.loss.warnings,
+        vec![ImportWarning::TempoApproximated {
+            bar_index: 0,
+            nearest_micros: 16_777_215,
+        }],
+        "clamping to the MIDI ceiling is a reported approximation"
+    );
+}
+
+#[test]
+fn faster_than_the_midi_floor_clamps_to_one_micro_with_a_typed_loss() {
+    // 100 000 000 BPM would need 0.6 µs/quarter — below MIDI's floor of 1.
+    // The export clamps to 1 µs and reports it.
+    let tempo = Tempo::from_bpm_integer(100_000_000).expect("valid BPM");
+    assert_eq!(tempo.to_micros_per_quarter_exact(), None);
+
+    let export = midi::export_score(&one_bar_score(tempo)).expect("export still succeeds");
+    assert!(!export.bytes.is_empty(), "the file is still produced");
+    assert_eq!(
+        export.loss.warnings,
+        vec![ImportWarning::TempoApproximated {
+            bar_index: 0,
+            nearest_micros: 1,
+        }],
+        "clamping to the MIDI floor is a reported approximation"
+    );
+}
+
+#[test]
 fn export_of_an_exact_tempo_reports_no_loss() {
     let score = one_bar_score(Tempo::from_bpm_integer(120).expect("valid"));
     let export = midi::export_score(&score).expect("export must succeed");

@@ -66,11 +66,16 @@ fn cumulative_bar_starts(meters: &[(u8, u8)]) -> Vec<u32> {
     starts
 }
 
+/// The integer-BPM fallback, derived from the one canonical fallback tempo —
+/// no second ad-hoc `120` literal to drift from it.
+const GP_FALLBACK_BPM: u32 = Tempo::FALLBACK_120.bpm_numerator();
+
 /// Per-bar tempo with carry-forward: a bar with no explicit tempo (GP `0`)
-/// inherits the previous bar's; the default before any tempo is 120 BPM.
+/// inherits the previous bar's; the default before any tempo is
+/// [`GP_FALLBACK_BPM`].
 fn carry_tempos(raw_tempos: &[i32]) -> Vec<u32> {
     let mut tempos = Vec::with_capacity(raw_tempos.len());
-    let mut current = 120_u32;
+    let mut current = GP_FALLBACK_BPM;
     for &raw in raw_tempos {
         // GP stores integer BPM; it passes through exactly (S16 Phase
         // 4-pre A), and non-positive values keep the carried tempo.
@@ -269,8 +274,9 @@ fn build_gp_master_bars(
                     numerator: 4,
                     denominator: 4,
                 });
-            let tempo = Tempo::from_bpm_integer(tempos.get(idx).copied().unwrap_or(120))
-                .unwrap_or(Tempo::FALLBACK_120);
+            let tempo =
+                Tempo::from_bpm_integer(tempos.get(idx).copied().unwrap_or(GP_FALLBACK_BPM))
+                    .unwrap_or(Tempo::FALLBACK_120);
 
             MasterBar {
                 index: idx,

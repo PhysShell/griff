@@ -12,7 +12,8 @@ pub enum ValidationError {
     PitchOutOfRange { value: u8 },
     /// MIDI velocity must be in the inclusive `0..=127` range.
     VelocityOutOfRange { value: u8 },
-    /// Tempo must be finite and greater than zero beats per minute.
+    /// Tempo inputs must be positive: zero BPM or zero microseconds per
+    /// quarter note has no musical meaning.
     InvalidTempo,
     /// Time-signature numerator must be greater than zero.
     InvalidTimeSignatureNumerator,
