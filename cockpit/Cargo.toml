@@ -31,6 +31,9 @@ griff-swang   = { path = "../swang" }
 # sidecar a kept candidate is stamped with (S8).
 serde         = { workspace = true }
 serde_json    = { workspace = true }
+# Typed errors for the curation-store persistence adapter (3C-A), mirroring
+# core's curation_store and the CLI's native adapter.
+thiserror     = { workspace = true }
 
 # Native desktop keeps eframe's defaults (winit + glow), exactly as Slice 1
 # shipped; the web target picks a leaner, glow-only eframe below.
@@ -61,9 +64,12 @@ web-sys              = { version = "0.3", features = [
     "AudioContext", "BaseAudioContext", "AudioNode", "AudioDestinationNode",
     "AudioParam", "GainNode", "OscillatorNode", "OscillatorType",
     # OPFS corpus persistence (ADR-0027 §3); the writable stream needs
-    # `--cfg=web_sys_unstable_apis` (set in build-web.sh).
+    # `--cfg=web_sys_unstable_apis` (set in build-web.sh). `DomException` lets the
+    # curation-store adapter (3C-A) tell a genuine NotFoundError (absence) from
+    # any other reject (SecurityError, InvalidStateError, …) that must stay an error.
     "StorageManager", "FileSystemDirectoryHandle", "FileSystemFileHandle",
     "FileSystemWritableFileStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions",
+    "DomException",
 ] }
 getrandom            = { version = "0.4", features = ["wasm_js"] }
 
