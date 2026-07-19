@@ -939,6 +939,67 @@ mod tests {
     }
 
     #[test]
+    fn different_exact_tempos_collapsing_to_one_mpq_are_each_reported() {
+        // Two *different* exact tempos, both beyond the MIDI u24 ceiling, so
+        // both project (clamped) onto the same 16_777_215 µs/q. The two
+        // properties must hold separately: every new exact tempo runs its own
+        // projection and gets its own typed loss, while an unchanged projected
+        // MPQ emits no second MIDI event.
+        let first = Tempo::from_micros_per_quarter(20_000_000).expect("valid micros");
+        let second = Tempo::from_micros_per_quarter(30_000_000).expect("valid micros");
+        assert_ne!(
+            first, second,
+            "the premise: these are distinct exact tempos"
+        );
+
+        let bar = |index: usize, tempo: Tempo| MasterBar {
+            index,
+            tick_range: TickRange::new(
+                Ticks(u32::try_from(index).expect("small") * 1920),
+                Ticks((u32::try_from(index).expect("small") + 1) * 1920),
+            )
+            .expect("ordered"),
+            time_signature: TimeSignature::new(4, 4).expect("4/4"),
+            tempo,
+            repeat: RepeatMarker::default(),
+        };
+        let score = Score {
+            ticks_per_quarter: 480,
+            master_bars: vec![bar(0, first), bar(1, second)],
+            tracks: Vec::new(),
+            source_meta: None,
+            loss: LossReport::new(),
+        };
+
+        let mut loss = LossReport::new();
+        let events =
+            build_score_meta_track(&score, Ppqn(480), &mut loss).expect("meta track builds");
+
+        let tempo_events = events
+            .iter()
+            .filter(|e| matches!(e.kind, TrackEventKind::Meta(MetaMessage::Tempo(_))))
+            .count();
+        assert_eq!(
+            tempo_events, 1,
+            "one projected MPQ is one MIDI event, however many exact tempos share it"
+        );
+        assert_eq!(
+            loss.warnings,
+            vec![
+                ImportWarning::TempoApproximated {
+                    bar_index: 0,
+                    nearest_micros: 16_777_215,
+                },
+                ImportWarning::TempoApproximated {
+                    bar_index: 1,
+                    nearest_micros: 16_777_215,
+                },
+            ],
+            "each distinct exact tempo reports its own approximation"
+        );
+    }
+
+    #[test]
     fn tempo_121_bpm_to_micros_reports_the_approximation() {
         let tempo = Tempo::from_bpm_integer(121).expect("121 BPM is valid");
         let mut loss = LossReport::new();
