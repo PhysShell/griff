@@ -10,6 +10,7 @@
 
 #![doc(hidden)]
 
+pub mod curation_fs;
 pub mod generation_input;
 pub mod rhythm_pattern;
 
