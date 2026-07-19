@@ -5549,7 +5549,7 @@ mod tests {
         let written =
             write_score_midi(&score, &mid).expect("approximation must not block the write");
         assert!(
-            fs::read(&mid).map(|b| !b.is_empty()).unwrap_or(false),
+            fs::read(&mid).is_ok_and(|b| !b.is_empty()),
             "the .mid file is written despite the approximation"
         );
 
