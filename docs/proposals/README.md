@@ -14,6 +14,9 @@ live contract.
 
 ## Index
 
+- [`active-preference-selection.md`](active-preference-selection.md) —
+  evidence-gated research design for selecting informative human-feedback
+  comparisons after the S9 baseline. Status: for discussion.
 - [`generator-reachability-lab.md`](generator-reachability-lab.md) — offline
   coverage census and target-relative symbolic comparison for the
   deterministic generators. Status: for discussion.
