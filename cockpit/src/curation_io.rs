@@ -1,15 +1,19 @@
 //! Curation-store persistence adapter for the cockpit (step 3C-A).
 //!
-//! The browser backend for [`griff_core::curation_store`]: it reads and writes
-//! the store's **canonical bytes** — the same `encode_store`/`decode_store` the
-//! CLI's native adapter uses (ADR-0027 §3: "no browser-specific wire schema") —
-//! to a single OPFS file, `curation/store.json`. A native arm mirrors it over
-//! `std::fs` for the desktop cockpit.
+//! The **browser** backend for [`griff_core::curation_store`]: it reads and
+//! writes the store's **canonical bytes** — the same `encode_store`/`decode_store`
+//! the CLI's native adapter uses (ADR-0027 §3: "no browser-specific wire schema")
+//! — to a single OPFS file, `curation/store.json`.
 //!
-//! Only the byte *transport* is per-target; the Missing-vs-malformed
-//! classification and the format itself live in core. There is deliberately **no
-//! trait abstracting this over the CLI's native adapter (3B2)**: the shared
-//! contract is core's encode/decode, which both call directly.
+//! The byte *transport* is browser-only (`#[cfg(target_arch = "wasm32")]`); it is
+//! deliberately **not** paired with a native `std::fs` backend here. Durable
+//! native persistence is the CLI's frozen `curation_fs` adapter (3B2, atomic
+//! temp-then-rename); a plain `std::fs::write` from the cockpit would be a weaker
+//! second backend, so this slice ships the browser transport and the pure,
+//! native-tested [`encode`]/[`classify`] seam — nothing degraded.
+//!
+//! There is likewise **no trait** abstracting this over the CLI adapter: the
+//! shared contract is core's encode/decode, which both call directly.
 //!
 //! **Experimental, `#[doc(hidden)]`** via the crate — not a stable API.
 
