@@ -24,7 +24,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::missing_assert_message,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn
 )]
 
 use griff_core::{

@@ -22,10 +22,24 @@
 //! of elements. Every struct is destructured exhaustively (no `..`), so a
 //! new canonical field breaks this comparator's compilation instead of
 //! silently leaving the contract.
+//!
+//! ## `NormalizedMusicalDiff` v1 (S16 Phase 4-pre B2)
+//!
+//! [`normalized_musical_diff`] compares through the ADR-0020
+//! [`NormalizedScore`] projection, named as the versioned policy
+//! [`NORMALIZED_MUSICAL_POLICY_ID`] / [`NORMALIZED_MUSICAL_POLICY_VERSION`].
+//! The projection itself is unchanged; the policy pins what it means today:
+//! rests, group kinds, technique-span ranges and evidence, position
+//! evidence, repeat markers, and source metadata are not v1 facts, the
+//! canonical order erases import order, and the projection's loss labels
+//! are deliberately excluded — a musical policy compares sounding facts,
+//! not import provenance. Any widening is a `policy_version = 2`, never a
+//! silent change of what old reports meant.
 
 use core::fmt;
 
 use crate::{
+    dump::{normalize, NormBar, NormNote, NormTrack, NormVoice, NormalizedScore},
     event::NotePosition,
     score::{
         AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
@@ -75,6 +89,17 @@ pub enum SemanticField {
     BarIndex,
     NearestMicros,
     Message,
+    Ppqn,
+    Bars,
+    Notes,
+    TimeSig,
+    StartTick,
+    EndTick,
+    OnsetTick,
+    DurTick,
+    NoteString,
+    NoteFret,
+    Spans,
 }
 
 impl SemanticField {
@@ -115,6 +140,17 @@ impl SemanticField {
             Self::BarIndex => "bar_index",
             Self::NearestMicros => "nearest_micros",
             Self::Message => "message",
+            Self::Ppqn => "ppqn",
+            Self::Bars => "bars",
+            Self::Notes => "notes",
+            Self::TimeSig => "time_sig",
+            Self::StartTick => "start_tick",
+            Self::EndTick => "end_tick",
+            Self::OnsetTick => "onset_tick",
+            Self::DurTick => "dur_tick",
+            Self::NoteString => "string",
+            Self::NoteFret => "fret",
+            Self::Spans => "spans",
         }
     }
 }
@@ -167,6 +203,19 @@ pub enum SemanticPathSegment {
         /// Zero-based position in `loss.warnings`.
         ordinal: usize,
     },
+    /// A normalized-projection bar, by position; `index` annotates the
+    /// stored bar index only when both projections agree on it.
+    Bar {
+        /// Zero-based position in the projection's `bars`.
+        ordinal: usize,
+        /// The agreed stored bar index; `None` when it differs.
+        index: Option<usize>,
+    },
+    /// A normalized-projection note, by position.
+    Note {
+        /// Zero-based position in the projection's `notes`.
+        ordinal: usize,
+    },
     /// A named field of the enclosing node.
     Field(SemanticField),
 }
@@ -193,6 +242,15 @@ impl fmt::Display for SemanticPathSegment {
             Self::Atom { ordinal } => write!(f, ".atoms[{ordinal}]"),
             Self::TechniqueSpan { ordinal } => write!(f, ".technique_spans[{ordinal}]"),
             Self::LossWarning { ordinal } => write!(f, ".loss.warnings[{ordinal}]"),
+            Self::Bar {
+                ordinal,
+                index: Some(index),
+            } => write!(f, ".bars[index={index},ordinal={ordinal}]"),
+            Self::Bar {
+                ordinal,
+                index: None,
+            } => write!(f, ".bars[ordinal={ordinal}]"),
+            Self::Note { ordinal } => write!(f, ".notes[{ordinal}]"),
             Self::Field(field) => write!(f, ".{}", field.as_str()),
         }
     }
@@ -853,4 +911,218 @@ fn diff_span(w: &mut Walker, expected: &TechniqueSpan, actual: &TechniqueSpan) {
     w.variant_leaf(SemanticField::Technique, e_technique, a_technique);
     w.value_leaf(SemanticField::TickRange, e_range, a_range);
     w.value_leaf(SemanticField::Evidence, e_evidence, a_evidence);
+}
+
+// ── the normalized-musical comparator (policy v1) ─────────────────────────────
+
+/// The v1 normalized-musical policy's stable identifier (ADR-0020).
+pub const NORMALIZED_MUSICAL_POLICY_ID: &str = "adr-0020-normalized-musical";
+
+/// The v1 normalized-musical policy's version. Any semantic widening of the
+/// policy bumps this; it never silently changes what old reports meant.
+pub const NORMALIZED_MUSICAL_POLICY_VERSION: u16 = 1;
+
+/// Compares two canonical scores under the v1 normalized-musical policy:
+/// `Score` → ADR-0020 [`NormalizedScore`] → typed diff of the projections.
+///
+/// See the module docs for what v1 deliberately does not compare. Paths
+/// speak the projection's own shape (`bars` / `notes`).
+#[must_use]
+pub fn normalized_musical_diff(expected: &Score, actual: &Score) -> SemanticDiffReport {
+    let mode = SemanticDiffMode::Normalized {
+        policy_id: NORMALIZED_MUSICAL_POLICY_ID,
+        policy_version: NORMALIZED_MUSICAL_POLICY_VERSION,
+    };
+    let e = normalize(expected);
+    let a = normalize(actual);
+    let mut walker = Walker {
+        segments: Vec::new(),
+        differences: Vec::new(),
+    };
+    walker.scoped(SemanticPathSegment::Score, |w| {
+        diff_normalized_score(w, &e, &a);
+    });
+    SemanticDiffReport {
+        mode,
+        differences: walker.differences,
+    }
+}
+
+// `loss: _` is deliberate over `..`: the field is named so a projection-shape
+// change still breaks this comparator's compilation, while the value is
+// explicitly excluded from the v1 policy.
+#[allow(clippy::unneeded_field_pattern)]
+fn diff_normalized_score(w: &mut Walker, expected: &NormalizedScore, actual: &NormalizedScore) {
+    let NormalizedScore {
+        ppqn: e_ppqn,
+        // Deliberately excluded from v1: loss labels are import provenance,
+        // not sounding music. Bound (not `..`) so a projection-shape change
+        // still breaks this comparator's compilation.
+        loss: _,
+        tracks: e_tracks,
+    } = expected;
+    let NormalizedScore {
+        ppqn: a_ppqn,
+        loss: _,
+        tracks: a_tracks,
+    } = actual;
+    w.value_leaf(SemanticField::Ppqn, e_ppqn, a_ppqn);
+    w.collection(
+        SemanticField::Tracks,
+        e_tracks,
+        a_tracks,
+        |ordinal, _, _| SemanticPathSegment::Track { ordinal },
+        diff_norm_track,
+    );
+}
+
+fn diff_norm_track(w: &mut Walker, expected: &NormTrack, actual: &NormTrack) {
+    let NormTrack {
+        name: e_name,
+        channel: e_channel,
+        tuning: e_tuning,
+        bars: e_bars,
+    } = expected;
+    let NormTrack {
+        name: a_name,
+        channel: a_channel,
+        tuning: a_tuning,
+        bars: a_bars,
+    } = actual;
+    w.option_leaf(
+        SemanticField::Name,
+        e_name.as_ref(),
+        a_name.as_ref(),
+        |inner, e_value, a_value| {
+            if e_value != a_value {
+                inner.record(
+                    SemanticDifferenceKind::ValueMismatch,
+                    Some(format!("{e_value:?}")),
+                    Some(format!("{a_value:?}")),
+                );
+            }
+        },
+    );
+    w.value_leaf(SemanticField::Channel, e_channel, a_channel);
+    w.value_leaf(SemanticField::Tuning, e_tuning, a_tuning);
+    w.collection(
+        SemanticField::Bars,
+        e_bars,
+        a_bars,
+        |ordinal, e_bar, a_bar| SemanticPathSegment::Bar {
+            ordinal,
+            index: (e_bar.index == a_bar.index).then_some(e_bar.index),
+        },
+        diff_norm_bar,
+    );
+}
+
+fn diff_norm_bar(w: &mut Walker, expected: &NormBar, actual: &NormBar) {
+    let NormBar {
+        index: e_index,
+        time_sig: e_time_sig,
+        tempo: e_tempo,
+        start_tick: e_start_tick,
+        end_tick: e_end_tick,
+        voices: e_voices,
+    } = expected;
+    let NormBar {
+        index: a_index,
+        time_sig: a_time_sig,
+        tempo: a_tempo,
+        start_tick: a_start_tick,
+        end_tick: a_end_tick,
+        voices: a_voices,
+    } = actual;
+    w.value_leaf(SemanticField::Index, e_index, a_index);
+    w.value_leaf(SemanticField::TimeSig, e_time_sig, a_time_sig);
+    w.value_leaf(SemanticField::Tempo, e_tempo, a_tempo);
+    w.value_leaf(SemanticField::StartTick, e_start_tick, a_start_tick);
+    w.value_leaf(SemanticField::EndTick, e_end_tick, a_end_tick);
+    w.collection(
+        SemanticField::Voices,
+        e_voices,
+        a_voices,
+        |ordinal, e_voice, a_voice| SemanticPathSegment::Voice {
+            ordinal,
+            id: (e_voice.id == a_voice.id).then_some(e_voice.id),
+        },
+        diff_norm_voice,
+    );
+}
+
+fn diff_norm_voice(w: &mut Walker, expected: &NormVoice, actual: &NormVoice) {
+    let NormVoice {
+        id: e_id,
+        notes: e_notes,
+    } = expected;
+    let NormVoice {
+        id: a_id,
+        notes: a_notes,
+    } = actual;
+    w.value_leaf(SemanticField::Id, e_id, a_id);
+    w.collection(
+        SemanticField::Notes,
+        e_notes,
+        a_notes,
+        |ordinal, _, _| SemanticPathSegment::Note { ordinal },
+        diff_norm_note,
+    );
+}
+
+fn diff_norm_note(w: &mut Walker, expected: &NormNote, actual: &NormNote) {
+    let NormNote {
+        onset_tick: e_onset_tick,
+        dur_tick: e_dur_tick,
+        pitch: e_pitch,
+        velocity: e_velocity,
+        string: e_string,
+        fret: e_fret,
+        marks: e_marks,
+        spans: e_spans,
+    } = expected;
+    let NormNote {
+        onset_tick: a_onset_tick,
+        dur_tick: a_dur_tick,
+        pitch: a_pitch,
+        velocity: a_velocity,
+        string: a_string,
+        fret: a_fret,
+        marks: a_marks,
+        spans: a_spans,
+    } = actual;
+    w.value_leaf(SemanticField::OnsetTick, e_onset_tick, a_onset_tick);
+    w.value_leaf(SemanticField::DurTick, e_dur_tick, a_dur_tick);
+    w.value_leaf(SemanticField::Pitch, e_pitch, a_pitch);
+    w.value_leaf(SemanticField::Velocity, e_velocity, a_velocity);
+    w.option_leaf(
+        SemanticField::NoteString,
+        e_string.as_ref(),
+        a_string.as_ref(),
+        |inner, e_value, a_value| {
+            if e_value != a_value {
+                inner.record(
+                    SemanticDifferenceKind::ValueMismatch,
+                    Some(format!("{e_value:?}")),
+                    Some(format!("{a_value:?}")),
+                );
+            }
+        },
+    );
+    w.option_leaf(
+        SemanticField::NoteFret,
+        e_fret.as_ref(),
+        a_fret.as_ref(),
+        |inner, e_value, a_value| {
+            if e_value != a_value {
+                inner.record(
+                    SemanticDifferenceKind::ValueMismatch,
+                    Some(format!("{e_value:?}")),
+                    Some(format!("{a_value:?}")),
+                );
+            }
+        },
+    );
+    w.value_leaf(SemanticField::Marks, e_marks, a_marks);
+    w.value_leaf(SemanticField::Spans, e_spans, a_spans);
 }
