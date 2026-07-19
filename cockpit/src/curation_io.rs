@@ -13,10 +13,9 @@
 //!
 //! **Experimental, `#[doc(hidden)]`** via the crate — not a stable API.
 
-use griff_core::curation_store::{decode_store, CurationStoreV1, StoreDecodeError};
-
-#[cfg(not(target_arch = "wasm32"))]
-use std::{fs, io::ErrorKind, path::Path};
+use griff_core::curation_store::{
+    decode_store, encode_store, CurationStoreV1, StoreDecodeError, StoreEncodeError,
+};
 
 /// The outcome of loading the store.
 ///
@@ -41,15 +40,19 @@ pub enum StoreBytes {
     Present(Vec<u8>),
 }
 
-/// Everything that can go wrong loading the store.
+/// Everything that can go wrong loading or saving the store.
 #[derive(Debug, thiserror::Error)]
 pub enum CurationStoreError {
-    /// A storage operation failed.
+    /// A storage/transport operation failed (and is *not* a benign absence).
     #[error("curation store I/O failed: {0}")]
     Io(String),
     /// Bytes are present but are not a valid store (malformed or rule-violating).
     #[error("curation store on disk is invalid: {0}")]
     Decode(#[from] StoreDecodeError),
+    /// The store to save is itself invalid — refused before any bytes are
+    /// written, so a transport never carries non-canonical or invalid data.
+    #[error("curation store cannot be encoded: {0}")]
+    Encode(#[from] StoreEncodeError),
 }
 
 /// Classifies a raw read: a missing location is a typed absence; present bytes
@@ -64,29 +67,20 @@ pub fn classify(read: StoreBytes) -> Result<StoreOnDisk, CurationStoreError> {
     }
 }
 
-/// Loads the store from `path` on the native desktop cockpit.
+/// Encodes a store to the canonical bytes a transport writes.
+///
+/// This is the fallible, *validated* step every write shares: an invalid store
+/// is refused here — a typed [`CurationStoreError::Encode`] — before any I/O, so
+/// a transport can never persist non-canonical or rule-violating bytes. Core's
+/// [`encode_store`] is the only encoder; there is no cockpit-side serializer.
 ///
 /// # Errors
-/// [`CurationStoreError::Decode`] if the file exists but is invalid;
-/// [`CurationStoreError::Io`] for any read error other than "not found" (which
-/// is [`StoreOnDisk::Missing`], not an error).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn load_store(path: &Path) -> Result<StoreOnDisk, CurationStoreError> {
-    match fs::read(path) {
-        Ok(bytes) => classify(StoreBytes::Present(bytes)),
-        // A missing file is a typed absence the caller resolves, not a failure.
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(StoreOnDisk::Missing),
-        Err(e) => Err(CurationStoreError::Io(e.to_string())),
-    }
-}
-
-/// Writes the store's canonical `bytes` to `path` on the native desktop cockpit.
-///
-/// # Errors
-/// [`CurationStoreError::Io`] if the write fails.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn write_store(path: &Path, bytes: &[u8]) -> Result<(), CurationStoreError> {
-    fs::write(path, bytes).map_err(|e| CurationStoreError::Io(e.to_string()))
+/// [`CurationStoreError::Encode`] if the store violates a domain rule.
+pub fn encode(store: &CurationStoreV1) -> Result<Vec<u8>, CurationStoreError> {
+    // STUB (red): serializes the store directly instead of through the canonical
+    // encoder, so the canonical-bytes test fails; invalid stores still refuse.
+    encode_store(store)?;
+    serde_json::to_vec(store).map_err(|e| CurationStoreError::Io(e.to_string()))
 }
 
 /// The browser byte transport: read and write `curation/store.json` in the
@@ -184,7 +178,7 @@ mod wasm {
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-    use super::{classify, StoreBytes, StoreOnDisk};
+    use super::{classify, encode, StoreBytes, StoreOnDisk};
     use griff_core::corpus::{ChunkId, ReviewerDecision};
     use griff_core::curation_store::{
         encode_store, ChunkFingerprint, CorpusFingerprint, CurationContext, CurationEvent,
@@ -252,36 +246,34 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn native_write_then_load_round_trips_and_absence_is_missing() {
-        use super::{load_store, write_store};
-        use std::{env, fs, process};
-
-        let dir = env::temp_dir().join(format!("griff_curio_{}", process::id()));
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("mkdir");
-        let path = dir.join("store.json");
-
-        // Absent file → Missing.
-        assert!(matches!(
-            load_store(&path).expect("load absent"),
-            StoreOnDisk::Missing
-        ));
-
-        let store = sample();
-        let bytes = encode_store(&store).expect("encodes");
-        write_store(&path, &bytes).expect("write");
+    fn encode_produces_the_canonical_bytes_not_a_second_serializer() {
+        // Events out of canonical order: the real encoder sorts and dedups
+        // (that is what "canonical" means); a plain serializer preserves input
+        // order, so `encode` must equal core's `encode_store`, byte for byte.
+        let mut store = sample();
+        store.events.push(CurationEvent {
+            event_id: CurationEventId("e0".to_owned()),
+            occurred_at: "2026-07-18T09:00:00Z".to_owned(),
+            ..store.events[0].clone()
+        });
+        // Now [e1@10:00, e0@09:00] — unsorted.
         assert_eq!(
-            fs::read(&path).expect("reread"),
-            bytes,
-            "bytes land verbatim"
+            encode(&store).expect("encodes"),
+            encode_store(&store).expect("canonical"),
+            "encode must route through the canonical encoder"
         );
-        match load_store(&path).expect("load present") {
-            StoreOnDisk::Loaded(loaded) => assert_eq!(loaded, store),
-            StoreOnDisk::Missing => panic!("written store must load"),
-        }
+    }
 
-        fs::remove_dir_all(&dir).ok();
+    #[test]
+    fn encode_refuses_an_invalid_store() {
+        // Two events share an id: the domain model rejects it, and that refusal
+        // must surface as a typed Encode error before any transport runs.
+        let mut store = sample();
+        store.events.push(store.events[0].clone());
+        assert!(matches!(
+            encode(&store),
+            Err(super::CurationStoreError::Encode(_))
+        ));
     }
 }
