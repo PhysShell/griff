@@ -1,5 +1,7 @@
 //! Fundamental musical event types.
 
+use core::{cmp::Ordering, num::NonZeroU32};
+
 /// Maximum value accepted by MIDI 7-bit fields.
 pub const MIDI_7_BIT_MAX: u8 = 127;
 
@@ -10,7 +12,8 @@ pub enum ValidationError {
     PitchOutOfRange { value: u8 },
     /// MIDI velocity must be in the inclusive `0..=127` range.
     VelocityOutOfRange { value: u8 },
-    /// Tempo must be finite and greater than zero beats per minute.
+    /// Tempo inputs must be positive: zero BPM or zero microseconds per
+    /// quarter note has no musical meaning.
     InvalidTempo,
     /// Time-signature numerator must be greater than zero.
     InvalidTimeSignatureNumerator,
@@ -22,6 +25,8 @@ pub enum ValidationError {
     InvalidTickRange,
     /// Counting musical items exceeded the platform `usize` capacity.
     CountOverflow,
+    /// Confidence basis points must be in the inclusive `0..=10_000` range.
+    ConfidenceOutOfRange { value: u16 },
     /// Generation requires at least one pitch to repeat.
     EmptyPitchSequence,
     /// PPQN resolution must be greater than zero.
@@ -85,18 +90,174 @@ impl Velocity {
     }
 }
 
-/// Tempo in beats per minute.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct Tempo(pub f64);
+/// Microseconds in one minute — the MIDI tempo conversion constant.
+const MICROS_PER_MINUTE: u32 = 60_000_000;
+
+/// Greatest common divisor (Euclid), for canonical fraction reduction.
+// The `%` cannot fault: the loop guard holds `b != 0` on every iteration.
+#[allow(clippy::arithmetic_side_effects)]
+const fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+/// Tempo in beats per minute, held exactly as a GCD-reduced rational
+/// `numerator / denominator` (S16 Phase 4-pre A).
+///
+/// Both real sources are integers — Guitar Pro stores integer BPM and MIDI
+/// stores integer microseconds per quarter note — and the rational form
+/// represents each exactly, so tempo equality is structural and no `f64`
+/// lives in the model. [`Tempo::as_f64`] exists only for playback / UI /
+/// validator boundaries; export back to MIDI goes through the split
+/// [`Tempo::to_micros_per_quarter_exact`] /
+/// [`Tempo::to_micros_per_quarter_nearest`] projections so an approximation
+/// is a visible fact, never a silent rounding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Tempo {
+    /// Reduced BPM numerator.
+    num: NonZeroU32,
+    /// Reduced BPM denominator.
+    den: NonZeroU32,
+}
 
 impl Tempo {
-    /// Creates a tempo after checking that it is finite and positive.
-    pub fn new(beats_per_minute: f64) -> Result<Self, ValidationError> {
-        if beats_per_minute.is_finite() && beats_per_minute > 0.0 {
-            Ok(Self(beats_per_minute))
-        } else {
-            Err(ValidationError::InvalidTempo)
+    /// 120 BPM — the fallback importers substitute when a source names no
+    /// usable tempo (the adapters' long-standing default).
+    pub const FALLBACK_120: Self = Self {
+        num: NonZeroU32::MIN.saturating_add(119),
+        den: NonZeroU32::MIN,
+    };
+
+    /// Creates a tempo from an integer BPM (the Guitar Pro source form).
+    pub const fn from_bpm_integer(bpm: u32) -> Result<Self, ValidationError> {
+        match NonZeroU32::new(bpm) {
+            Some(num) => Ok(Self {
+                num,
+                den: NonZeroU32::MIN,
+            }),
+            None => Err(ValidationError::InvalidTempo),
         }
+    }
+
+    /// Creates a tempo from microseconds per quarter note (the MIDI source
+    /// form), reduced to the canonical fraction.
+    // The divisions cannot fault: `gcd_u32(MICROS_PER_MINUTE, _)` divides a
+    // non-zero constant, so `g >= 1`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub const fn from_micros_per_quarter(micros: u32) -> Result<Self, ValidationError> {
+        let g = gcd_u32(MICROS_PER_MINUTE, micros);
+        match (
+            NonZeroU32::new(MICROS_PER_MINUTE / g),
+            NonZeroU32::new(micros / g),
+        ) {
+            (Some(num), Some(den)) => Ok(Self { num, den }),
+            _ => Err(ValidationError::InvalidTempo),
+        }
+    }
+
+    /// The reduced BPM numerator.
+    #[must_use]
+    pub const fn bpm_numerator(self) -> u32 {
+        self.num.get()
+    }
+
+    /// The reduced BPM denominator (`1` for an integer BPM).
+    #[must_use]
+    pub const fn bpm_denominator(self) -> u32 {
+        self.den.get()
+    }
+
+    /// The exact microseconds-per-quarter form, when one exists.
+    ///
+    /// `None` means this tempo has no integral MIDI representation; callers
+    /// must then choose [`Tempo::to_micros_per_quarter_nearest`] explicitly
+    /// and report the approximation.
+    // Bounded arithmetic: `total <= 60e6 * (2^32 - 1) < 2^58` fits `u64`,
+    // and `num >= 1` (NonZero), so `%` and `/` cannot fault.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[must_use]
+    pub fn to_micros_per_quarter_exact(self) -> Option<u32> {
+        let total = u64::from(MICROS_PER_MINUTE) * u64::from(self.den.get());
+        let num = u64::from(self.num.get());
+        if total % num == 0 {
+            u32::try_from(total / num).ok()
+        } else {
+            None
+        }
+    }
+
+    /// The nearest microseconds-per-quarter form (round half up, clamped to
+    /// `1..=u32::MAX`). An approximation — pair it with a reported loss.
+    // Bounded arithmetic: `total < 2^58` and `num / 2 < 2^32`, so the sum
+    // fits `u64`; `num >= 1` (NonZero), so `/` cannot fault.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[must_use]
+    pub fn to_micros_per_quarter_nearest(self) -> u32 {
+        let total = u64::from(MICROS_PER_MINUTE) * u64::from(self.den.get());
+        let num = u64::from(self.num.get());
+        let rounded = (total + num / 2) / num;
+        u32::try_from(rounded).unwrap_or(u32::MAX).max(1)
+    }
+
+    /// The BPM as a float — a boundary projection for playback, UI, and
+    /// validator dumps only; never an input to model semantics.
+    #[must_use]
+    pub fn as_f64(self) -> f64 {
+        f64::from(self.num.get()) / f64::from(self.den.get())
+    }
+}
+
+impl PartialOrd for Tempo {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Tempo {
+    /// Orders by musical speed via exact cross-multiplication (no floats).
+    // Bounded arithmetic: `(2^32 - 1)^2 < 2^64` fits `u64`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn cmp(&self, other: &Self) -> Ordering {
+        let lhs = u64::from(self.num.get()) * u64::from(other.den.get());
+        let rhs = u64::from(other.num.get()) * u64::from(self.den.get());
+        lhs.cmp(&rhs)
+    }
+}
+
+/// Confidence in basis points, `0..=10_000` (S16 Phase 4-pre A).
+///
+/// The exact replacement for the former `f64` confidence in `[0, 1]`:
+/// `10_000` bps is full (explicit) confidence, `5_000` the documented
+/// MIDI-inference placeholder. Integer, ordered, hashable — so evidence
+/// participates in structural equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ConfidenceBps(u16);
+
+impl ConfidenceBps {
+    /// Full confidence: `10_000` bps, carried by explicit evidence.
+    pub const MAX: Self = Self(10_000);
+
+    /// Half confidence: `5_000` bps — the documented MIDI-inference
+    /// placeholder baseline (ADR-0019).
+    pub const HALF: Self = Self(5_000);
+
+    /// Creates a confidence after checking the `0..=10_000` range.
+    pub const fn new(value: u16) -> Result<Self, ValidationError> {
+        if value <= Self::MAX.0 {
+            Ok(Self(value))
+        } else {
+            Err(ValidationError::ConfidenceOutOfRange { value })
+        }
+    }
+
+    /// The raw basis-points value.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
     }
 }
 
@@ -162,28 +323,30 @@ pub enum TechniqueSource {
 }
 
 /// Provenance on a technique: its [`TechniqueSource`] plus a confidence in
-/// `[0, 1]` (ADR-0018). Keeps inferred techniques from masquerading as fact.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// basis points (ADR-0018; exact scalars per S16 Phase 4-pre A). Keeps
+/// inferred techniques from masquerading as fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TechniqueEvidence {
     /// Where the technique came from.
     pub source: TechniqueSource,
-    /// Confidence in `[0, 1]`; `1.0` for `Explicit`.
-    pub confidence: f64,
+    /// Confidence in basis points; [`ConfidenceBps::MAX`] for `Explicit`.
+    pub confidence: ConfidenceBps,
 }
 
 impl TechniqueEvidence {
-    /// Source-of-truth evidence (e.g. Guitar Pro): `Explicit`, confidence `1.0`.
+    /// Source-of-truth evidence (e.g. Guitar Pro): `Explicit`, full
+    /// confidence.
     #[must_use]
     pub const fn explicit() -> Self {
         Self {
             source: TechniqueSource::Explicit,
-            confidence: 1.0,
+            confidence: ConfidenceBps::MAX,
         }
     }
 
     /// MIDI-inferred evidence with the given confidence.
     #[must_use]
-    pub const fn inferred(confidence: f64) -> Self {
+    pub const fn inferred(confidence: ConfidenceBps) -> Self {
         Self {
             source: TechniqueSource::InferredFromMidi,
             confidence,
@@ -306,7 +469,7 @@ pub struct FretboardPosition {
 /// A note's chosen fretboard position together with its import-side evidence
 /// (ADR-0019). Guitar Pro positions are `Explicit`; positions inferred from MIDI
 /// carry `InferredFromMidi` plus a confidence.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NotePosition {
     /// The `(string, fret)` location.
     pub position: FretboardPosition,
@@ -326,7 +489,7 @@ impl NotePosition {
 
     /// A MIDI-inferred position with the given confidence.
     #[must_use]
-    pub const fn inferred(position: FretboardPosition, confidence: f64) -> Self {
+    pub const fn inferred(position: FretboardPosition, confidence: ConfidenceBps) -> Self {
         Self {
             position,
             evidence: TechniqueEvidence::inferred(confidence),
@@ -339,7 +502,7 @@ impl NotePosition {
 ///
 /// The reference that maps pitch ↔ (string, fret) (ADR-0018). Carried per
 /// [`crate::score::Track`]; defaults to [`Tuning::standard_e`] (ADR-0006).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tuning {
     open_strings: Vec<Pitch>,
 }
@@ -435,15 +598,21 @@ mod tests {
     }
 
     #[test]
-    fn tempo_accepts_positive_finite_values() {
-        assert_eq!(Tempo::new(120.0), Ok(Tempo(120.0)));
+    fn tempo_accepts_positive_integer_bpm() {
+        let tempo = Tempo::from_bpm_integer(120);
+        assert_eq!(tempo.map(Tempo::bpm_numerator), Ok(120));
+        assert_eq!(tempo.map(Tempo::bpm_denominator), Ok(1));
+        assert_eq!(tempo, Ok(Tempo::FALLBACK_120));
     }
 
     #[test]
-    fn tempo_rejects_invalid_values() {
-        assert_eq!(Tempo::new(0.0), Err(ValidationError::InvalidTempo));
+    fn tempo_rejects_zero_inputs() {
         assert_eq!(
-            Tempo::new(f64::INFINITY),
+            Tempo::from_bpm_integer(0),
+            Err(ValidationError::InvalidTempo)
+        );
+        assert_eq!(
+            Tempo::from_micros_per_quarter(0),
             Err(ValidationError::InvalidTempo)
         );
     }

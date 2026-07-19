@@ -551,7 +551,7 @@ mod tests {
     }
 
     fn tempo_120() -> Tempo {
-        Tempo::new(120.0).expect("120 BPM valid")
+        Tempo::from_bpm_integer(120).expect("120 BPM valid")
     }
 
     fn tick_range(start: u32, end: u32) -> TickRange {

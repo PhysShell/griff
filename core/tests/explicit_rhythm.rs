@@ -46,7 +46,7 @@ fn constraints(bar_count: usize) -> GenerationConstraints {
             numerator: 4,
             denominator: 4,
         },
-        tempo: Tempo(120.0),
+        tempo: Tempo::from_bpm_integer(120).expect("valid BPM"),
         ticks_per_quarter: Ticks(u32::from(PPQN)),
         pitch_lo: Pitch(36),
         pitch_hi: Pitch(72),
@@ -121,7 +121,7 @@ fn seed_score(bar_count: usize) -> Score {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("valid tempo"),
+                tempo: Tempo::from_bpm_integer(120).expect("valid tempo"),
                 repeat: RepeatMarker::default(),
             }
         })

@@ -17,7 +17,8 @@
 
 use griff_core::{
     event::{
-        FretboardPosition, NoteMarks, NotePosition, Pitch, TechniqueSource, Ticks, Tuning, Velocity,
+        ConfidenceBps, FretboardPosition, NoteMarks, NotePosition, Pitch, TechniqueSource, Ticks,
+        Tuning, Velocity,
     },
     fretboard::{assign_inferred_positions, FingeringWeights, STANDARD_MAX_FRET},
     midi::import_score,
@@ -49,14 +50,17 @@ fn note_position_explicit_is_full_confidence() {
     let np = NotePosition::explicit(FretboardPosition { string: 1, fret: 0 });
     assert_eq!(np.position, FretboardPosition { string: 1, fret: 0 });
     assert_eq!(np.evidence.source, TechniqueSource::Explicit);
-    assert_eq!(np.evidence.confidence, 1.0);
+    assert_eq!(np.evidence.confidence, ConfidenceBps::MAX);
 }
 
 #[test]
 fn note_position_inferred_carries_confidence() {
-    let np = NotePosition::inferred(FretboardPosition { string: 2, fret: 3 }, 0.5);
+    let np = NotePosition::inferred(
+        FretboardPosition { string: 2, fret: 3 },
+        ConfidenceBps::HALF,
+    );
     assert_eq!(np.evidence.source, TechniqueSource::InferredFromMidi);
-    assert_eq!(np.evidence.confidence, 0.5);
+    assert_eq!(np.evidence.confidence, ConfidenceBps::HALF);
 }
 
 #[test]

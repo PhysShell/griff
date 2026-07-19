@@ -70,7 +70,7 @@ fn sample_score() -> Score {
             index: 0,
             tick_range: range,
             time_signature: TimeSignature::new(4, 4).expect("valid meter"),
-            tempo: Tempo::new(120.0).expect("valid tempo"),
+            tempo: Tempo::from_bpm_integer(120).expect("valid tempo"),
             repeat: RepeatMarker::default(),
         }],
         tracks: vec![Track {
@@ -118,7 +118,7 @@ fn bar_voices_sorted_by_id_regardless_of_import_order() {
             index: 0,
             tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered range"),
             time_signature: TimeSignature::new(4, 4).expect("valid meter"),
-            tempo: Tempo::new(120.0).expect("valid tempo"),
+            tempo: Tempo::from_bpm_integer(120).expect("valid tempo"),
             repeat: RepeatMarker::default(),
         }],
         tracks: vec![Track {
@@ -179,7 +179,7 @@ fn same_onset_notes_sorted_by_string_before_pitch() {
             index: 0,
             tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered range"),
             time_signature: TimeSignature::new(4, 4).expect("valid meter"),
-            tempo: Tempo::new(120.0).expect("valid tempo"),
+            tempo: Tempo::from_bpm_integer(120).expect("valid tempo"),
             repeat: RepeatMarker::default(),
         }],
         tracks: vec![Track {

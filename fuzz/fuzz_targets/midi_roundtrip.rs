@@ -20,11 +20,11 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     // A typed export error is an acceptable outcome, not an oracle failure.
-    let Ok(bytes) = griff_core::midi::export_score(&score) else {
+    let Ok(export) = griff_core::midi::export_score(&score) else {
         return;
     };
     let reimported =
-        griff_core::midi::import_score(&bytes).expect("exported MIDI must re-import");
+        griff_core::midi::import_score(&export.bytes).expect("exported MIDI must re-import");
     assert_eq!(
         score.ticks_per_quarter, reimported.ticks_per_quarter,
         "roundtrip must preserve PPQN"

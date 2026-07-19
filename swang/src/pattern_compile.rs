@@ -658,7 +658,7 @@ mod tests {
                         numerator,
                         denominator,
                     },
-                    tempo: Tempo::new(120.0).expect("valid tempo"),
+                    tempo: Tempo::from_bpm_integer(120).expect("valid tempo"),
                     repeat: RepeatMarker::default(),
                 };
                 start += len;

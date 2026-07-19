@@ -125,7 +125,10 @@ pub fn build_view(score: &Score) -> PianoRollView {
         .chain(once(bars_end))
         .collect();
 
-    let tempo_bpm = score.master_bars.first().map_or(120.0, |b| b.tempo.0);
+    let tempo_bpm = score
+        .master_bars
+        .first()
+        .map_or(120.0, |b| b.tempo.as_f64());
 
     PianoRollView {
         ppq: score.ticks_per_quarter,
@@ -189,7 +192,7 @@ mod tests {
                     index: i,
                     tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                     time_signature: TimeSignature::new(4, 4).expect("4/4"),
-                    tempo: Tempo::new(120.0).expect("120 BPM"),
+                    tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                     repeat: RepeatMarker::default(),
                 }
             })

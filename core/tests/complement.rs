@@ -72,7 +72,7 @@ fn score_with_part_a(bar_count: usize, pitches: &[u8]) -> Score {
                     numerator: 4,
                     denominator: 4,
                 },
-                tempo: Tempo::new(120.0).expect("120 BPM"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }
         })
@@ -464,7 +464,7 @@ fn rhythm_lock_preserves_irregular_grid_and_meter_change() {
                 numerator: 4,
                 denominator: 4,
             },
-            tempo: Tempo::new(120.0).expect("120 BPM"),
+            tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
             repeat: RepeatMarker::default(),
         },
         MasterBar {
@@ -474,7 +474,7 @@ fn rhythm_lock_preserves_irregular_grid_and_meter_change() {
                 numerator: 3,
                 denominator: 4,
             },
-            tempo: Tempo::new(120.0).expect("120 BPM"),
+            tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
             repeat: RepeatMarker::default(),
         },
     ];
@@ -610,7 +610,7 @@ fn analyze_part_includes_spanning_techniques() {
                 numerator: 4,
                 denominator: 4,
             },
-            tempo: Tempo(120.0),
+            tempo: Tempo::from_bpm_integer(120).expect("valid BPM"),
             repeat: RepeatMarker::default(),
         }],
         tracks: vec![Track {

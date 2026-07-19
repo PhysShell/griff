@@ -144,7 +144,7 @@ mod tests {
                         numerator: 4,
                         denominator: 4,
                     },
-                    tempo: Tempo::new(120.0).unwrap(),
+                    tempo: Tempo::from_bpm_integer(120).unwrap(),
                     repeat: RepeatMarker::default(),
                 }
             })
@@ -219,7 +219,7 @@ mod tests {
     fn one_source_is_parsed_once_for_all_its_chunks() {
         let dir = env::temp_dir().join(format!("griff_loadcache_{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let bytes = midi::export_score(&two_bar_source()).unwrap();
+        let bytes = midi::export_score(&two_bar_source()).unwrap().bytes;
         let sha = source_sha256(&bytes);
         fs::write(dir.join("s.mid"), &bytes).unwrap();
         for (id, bars) in [("a", (0_u32, 0_u32)), ("b", (1, 1))] {
