@@ -77,10 +77,7 @@ pub fn classify(read: StoreBytes) -> Result<StoreOnDisk, CurationStoreError> {
 /// # Errors
 /// [`CurationStoreError::Encode`] if the store violates a domain rule.
 pub fn encode(store: &CurationStoreV1) -> Result<Vec<u8>, CurationStoreError> {
-    // STUB (red): serializes the store directly instead of through the canonical
-    // encoder, so the canonical-bytes test fails; invalid stores still refuse.
-    encode_store(store)?;
-    serde_json::to_vec(store).map_err(|e| CurationStoreError::Io(e.to_string()))
+    Ok(encode_store(store)?)
 }
 
 /// The browser byte transport: read and write `curation/store.json` in the
@@ -95,88 +92,140 @@ mod wasm {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::JsFuture;
 
-    use super::StoreBytes;
+    use griff_core::curation_store::CurationStoreV1;
+
+    use super::{encode, CurationStoreError, StoreBytes};
 
     /// The OPFS directory and file the store lives in — a sibling of the
     /// `corpus/` tree, one canonical file.
     const DIR: &str = "curation";
     const FILE: &str = "store.json";
 
-    /// The OPFS `curation/` directory handle. `create` controls whether a
-    /// missing directory is created (write) or reported as absent (read → `None`).
+    /// Whether `err` is a genuine "does not exist" — the *only* reject that means
+    /// absence. A `SecurityError`, `InvalidStateError`, or anything else is a real
+    /// failure and must not masquerade as "no store yet".
+    fn is_not_found(err: &JsValue) -> bool {
+        err.dyn_ref::<web_sys::DomException>()
+            .is_some_and(|e| e.name() == "NotFoundError")
+    }
+
+    /// Maps a transport reject to a typed [`CurationStoreError::Io`], preferring
+    /// the `DOMException` message.
+    fn transport(err: &JsValue) -> CurationStoreError {
+        let message = err
+            .dyn_ref::<web_sys::DomException>()
+            .map_or_else(|| format!("{err:?}"), web_sys::DomException::message);
+        CurationStoreError::Io(message)
+    }
+
+    /// The OPFS `curation/` directory handle. `create` controls whether a missing
+    /// directory is created (write) or reported as absent (read → `None`). Only a
+    /// genuine `NotFoundError` is absence; every other reject is an error.
     async fn curation_dir(
         create: bool,
-    ) -> Result<Option<web_sys::FileSystemDirectoryHandle>, JsValue> {
+    ) -> Result<Option<web_sys::FileSystemDirectoryHandle>, CurationStoreError> {
         let storage = web_sys::window()
-            .ok_or_else(|| JsValue::from_str("no window"))?
+            .ok_or_else(|| CurationStoreError::Io("no window".to_owned()))?
             .navigator()
             .storage();
         let root = JsFuture::from(storage.get_directory())
-            .await?
-            .dyn_into::<web_sys::FileSystemDirectoryHandle>()?;
+            .await
+            .map_err(|e| transport(&e))?
+            .dyn_into::<web_sys::FileSystemDirectoryHandle>()
+            .map_err(|e| transport(&e))?;
         let opts = web_sys::FileSystemGetDirectoryOptions::new();
         opts.set_create(create);
         match JsFuture::from(root.get_directory_handle_with_options(DIR, &opts)).await {
             Ok(handle) => Ok(Some(
-                handle.dyn_into::<web_sys::FileSystemDirectoryHandle>()?,
+                handle
+                    .dyn_into::<web_sys::FileSystemDirectoryHandle>()
+                    .map_err(|e| transport(&e))?,
             )),
-            // Absent directory (no store recorded yet) → a typed absence, not an error.
-            Err(_) if !create => Ok(None),
-            Err(err) => Err(err),
+            Err(err) if !create && is_not_found(&err) => Ok(None),
+            Err(err) => Err(transport(&err)),
         }
     }
 
     /// Reads `curation/store.json`. An absent directory or file is
-    /// [`StoreBytes::Missing`]; present bytes are returned verbatim for
-    /// [`super::classify`] to decode.
+    /// [`StoreBytes::Missing`]; a non-`NotFound` reject is a typed error. Present
+    /// bytes are read losslessly (`ArrayBuffer`, not a UTF-8 text decode) so the
+    /// Missing-vs-malformed split can happen faithfully in [`super::classify`].
     // OPFS handles aren't `Send`, but wasm is single-threaded and the future is
     // driven by `spawn_local`, which never requires `Send`.
     #[allow(clippy::future_not_send)]
-    pub async fn opfs_load_store() -> Result<StoreBytes, JsValue> {
+    pub async fn opfs_load_store() -> Result<StoreBytes, CurationStoreError> {
         let Some(dir) = curation_dir(false).await? else {
             return Ok(StoreBytes::Missing);
         };
-        // `create` defaults to false: a missing file rejects, which we read as absence.
+        // `create` defaults to false: a missing file is a NotFound reject → absence.
         let opts = web_sys::FileSystemGetFileOptions::new();
         let handle = match JsFuture::from(dir.get_file_handle_with_options(FILE, &opts)).await {
-            Ok(handle) => handle.dyn_into::<web_sys::FileSystemFileHandle>()?,
-            Err(_) => return Ok(StoreBytes::Missing),
+            Ok(handle) => handle
+                .dyn_into::<web_sys::FileSystemFileHandle>()
+                .map_err(|e| transport(&e))?,
+            Err(err) if is_not_found(&err) => return Ok(StoreBytes::Missing),
+            Err(err) => return Err(transport(&err)),
         };
-        // A `File` is a `Blob`; `Blob::text()` yields its contents as a string.
         let blob = JsFuture::from(handle.get_file())
-            .await?
-            .dyn_into::<web_sys::Blob>()?;
-        let text = JsFuture::from(blob.text())
-            .await?
-            .as_string()
-            .unwrap_or_default();
-        Ok(StoreBytes::Present(text.into_bytes()))
+            .await
+            .map_err(|e| transport(&e))?
+            .dyn_into::<web_sys::Blob>()
+            .map_err(|e| transport(&e))?;
+        // Raw bytes, not `Blob::text()`: a UTF-8 decode could rewrite malformed
+        // input before `decode_store` ever sees it.
+        let buffer = JsFuture::from(blob.array_buffer())
+            .await
+            .map_err(|e| transport(&e))?;
+        let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+        Ok(StoreBytes::Present(bytes))
     }
 
-    /// Writes `contents` to `curation/store.json`, creating the directory and
-    /// file as needed. Returns once the writable stream is closed.
+    /// Encodes `store` to its canonical bytes and writes them to
+    /// `curation/store.json`, creating the directory and file as needed.
+    ///
+    /// An invalid store is refused by [`encode`] before any I/O (a typed
+    /// [`CurationStoreError::Encode`]), so the transport only ever carries
+    /// canonical bytes. Returns once the writable stream is closed.
     #[allow(clippy::future_not_send)]
-    pub async fn opfs_write_store(contents: String) -> Result<(), JsValue> {
+    pub async fn opfs_write_store(store: &CurationStoreV1) -> Result<(), CurationStoreError> {
+        let bytes = encode(store)?;
         let dir = curation_dir(true)
             .await?
-            .ok_or_else(|| JsValue::from_str("no curation directory"))?;
+            .ok_or_else(|| CurationStoreError::Io("no curation directory".to_owned()))?;
         let opts = web_sys::FileSystemGetFileOptions::new();
         opts.set_create(true);
         let file = JsFuture::from(dir.get_file_handle_with_options(FILE, &opts))
-            .await?
-            .dyn_into::<web_sys::FileSystemFileHandle>()?;
+            .await
+            .map_err(|e| transport(&e))?
+            .dyn_into::<web_sys::FileSystemFileHandle>()
+            .map_err(|e| transport(&e))?;
         let writable = JsFuture::from(file.create_writable())
-            .await?
-            .dyn_into::<web_sys::FileSystemWritableFileStream>()?;
-        JsFuture::from(writable.write_with_str(&contents)?).await?;
-        JsFuture::from(writable.close()).await?;
+            .await
+            .map_err(|e| transport(&e))?
+            .dyn_into::<web_sys::FileSystemWritableFileStream>()
+            .map_err(|e| transport(&e))?;
+        JsFuture::from(
+            writable
+                .write_with_u8_array(&bytes)
+                .map_err(|e| transport(&e))?,
+        )
+        .await
+        .map_err(|e| transport(&e))?;
+        JsFuture::from(writable.close())
+            .await
+            .map_err(|e| transport(&e))?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
 
     use super::{classify, encode, StoreBytes, StoreOnDisk};
     use griff_core::corpus::{ChunkId, ReviewerDecision};
