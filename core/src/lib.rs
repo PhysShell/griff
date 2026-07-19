@@ -31,6 +31,7 @@ pub mod pitch;
 pub mod rerank;
 pub mod score;
 pub mod scoring;
+pub mod semantic_diff;
 pub mod similarity;
 pub mod slice;
 pub mod split;

@@ -1,4 +1,4 @@
-//! ExactSemanticDiff (S16 Phase 4-pre B1): typed path, typed difference
+//! `ExactSemanticDiff` (S16 Phase 4-pre B1): typed path, typed difference
 //! kinds, exact recursive comparison of the canonical `Score` tree.
 //!
 //! Red-phase contract tests:
@@ -18,7 +18,9 @@
     clippy::expect_used,
     clippy::panic,
     clippy::missing_assert_message,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::missing_const_for_fn,
+    clippy::shadow_unrelated
 )]
 
 use griff_core::{
@@ -31,8 +33,8 @@ use griff_core::{
         MasterBar, RepeatMarker, Score, SourceMeta, TechniqueSpan, Track, Voice,
     },
     semantic_diff::{
-        exact_semantic_diff, SemanticDiffMode, SemanticDiffReport, SemanticDifference,
-        SemanticDifferenceKind, SemanticPathSegment,
+        exact_semantic_diff, SemanticDiffMode, SemanticDifference, SemanticDifferenceKind,
+        SemanticPathSegment,
     },
     slice::TickRange,
 };

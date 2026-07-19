@@ -113,6 +113,7 @@ jobs:
         target:
           - midi_import
           - midi_roundtrip
+          - semantic_diff
           - score_projection
           - guitar_pro_import
           - phrase_boundary

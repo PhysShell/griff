@@ -50,6 +50,13 @@ doc   = false
 bench = false
 
 [[bin]]
+name  = "semantic_diff"
+path  = "fuzz_targets/semantic_diff.rs"
+test  = false
+doc   = false
+bench = false
+
+[[bin]]
 name  = "score_projection"
 path  = "fuzz_targets/score_projection.rs"
 test  = false
