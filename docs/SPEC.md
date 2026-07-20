@@ -13,11 +13,15 @@ source-of-truth format** (strings, frets, techniques, tuning); **MIDI is a
 lossy interchange adapter** (pitch, velocity, timing only — techniques and
 fretboard positions are inferred or absent). Output is symbolic (MIDI today).
 The long-term delivery target is a **MIDI-oriented CLAP plugin** with
-human-in-the-loop curation.
+human-in-the-loop curation. S17 may render canonical scores to audio for
+articulation-aware audition, but that renderer is optional and never becomes
+the generation model or the internal source of truth.
 
 ## What griff is not
 
-- Not an audio synthesizer or audio-generation tool.
+- Not an audio-generation tool. S17 audition rendering compiles an existing
+  canonical score for listening; it does not generate music from audio or make
+  audio the model.
 - Not a general-purpose "any genre" riff generator. Swancore-first by
   decision (ADR-0005).
 - Not a neural music generator — at least not until a corpus and a working
@@ -30,7 +34,7 @@ human-in-the-loop curation.
 
 ## Delivery shape
 
-Strict staged delivery, `S0 … S16`, defined canonically in
+Strict staged delivery, `S0 … S17`, defined canonically in
 [`glossary.md`](glossary.md) §0 and detailed in [`stages/`](stages/). Each
 stage is a vertical slice with a measurable acceptance criterion. Stages are
 implemented in order; library groundwork may land earlier but does not "close"
@@ -68,6 +72,9 @@ never by renumbering existing stages.
 12. **Executable musical text lowers into the canonical model.** Swang ASTs
     and execution plans are programs/provenance, never a second score hierarchy;
     lifted programs must be verified by re-execution (ADR-0029).
+13. **Audio audition is a derived view, never source truth.** Any S17 render
+    must be reproducible from an immutable canonical score snapshot, a versioned
+    articulation profile, selected asset identities, and an explicit loss report.
 
 ## Current state
 
@@ -80,9 +87,10 @@ baseline), phrase-boundary detection (S4), the ComplementArranger first slice
 (`rhythm_lock`, S13), structure metrics (S14 Phase 0), a headless-testable
 ratatui preview, and the shared scoring vocabulary (ADR-0017). Not yet:
 string/fret positions and richer techniques (ADR-0018), the graph layer / DP
-traversal (S7), neural assistance (S12), the CLAP plugin (S10), or the Swang
-compiler and verified lifting pipeline (S16). Earlier commit stage labels
-predate this spec and are reconciled in
+traversal (S7), neural assistance (S12), the CLAP plugin (S10), the Swang
+compiler and verified lifting pipeline (S16), or articulation-aware guitar
+audition/rendering (S17). Earlier commit stage labels predate this spec and are
+reconciled in
 [`audit/2026-05-stage-label-reconciliation.md`](audit/2026-05-stage-label-reconciliation.md).
 
 ## See also
@@ -90,5 +98,7 @@ predate this spec and are reconciled in
 - [`glossary.md`](glossary.md) — the constitution.
 - [`adr/README.md`](adr/README.md) — decision index.
 - [`fuzzing.md`](fuzzing.md) — fuzz-testing policy (ADR-0010).
-- [`stages/`](stages/) — S0 … S16.
+- [`stages/`](stages/) — S0 … S17.
+- [`stages/S17-articulation-aware-guitar-rendering.md`](stages/S17-articulation-aware-guitar-rendering.md)
+  — optional semantic performance compilation and audition rendering.
 - [`decisions.log.md`](decisions.log.md) — small decisions, append-only.

@@ -1,9 +1,10 @@
 # griff
 
 A swancore-first guitar riff engine. It analyzes, slices, generates, and
-regenerates guitar parts as a structured symbolic model (MIDI in → MIDI out,
-no audio synthesis). Long-term target: a MIDI-oriented CLAP plugin with
-human-in-the-loop curation.
+regenerates guitar parts as a structured symbolic model (MIDI in → MIDI out
+today). Long-term target: a MIDI-oriented CLAP plugin with human-in-the-loop
+curation. Optional articulation-aware audio audition is planned as S17; audio
+never becomes the generation model or the internal source of truth.
 
 ## Workspace
 
@@ -19,7 +20,7 @@ human-in-the-loop curation.
 - [`docs/glossary.md`](docs/glossary.md) — the constitution (terms)
 - [`docs/preview-guide.md`](docs/preview-guide.md) — using the interactive
   preview TUI (keys, inspector, curation, complexity)
-- [`docs/stages/`](docs/stages/) — canonical roadmap S0…S16
+- [`docs/stages/`](docs/stages/) — canonical roadmap S0…S17
 - [`docs/adr/`](docs/adr/README.md) — architecture decisions
 - [`AGENTS.md`](AGENTS.md) — guide for AI agents
 
