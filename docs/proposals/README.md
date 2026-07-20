@@ -17,3 +17,7 @@ live contract.
 - [`generator-reachability-lab.md`](generator-reachability-lab.md) — offline
   coverage census and target-relative symbolic comparison for the
   deterministic generators. Status: for discussion.
+- [`reproducible-pattern-processes.md`](reproducible-pattern-processes.md) —
+  Sonic Pi-inspired finite rings, named cursors, deterministic variation
+  streams, and symbolic synchronization for future Swang/cockpit work. Status:
+  for discussion.
