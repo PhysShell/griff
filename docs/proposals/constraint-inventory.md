@@ -38,7 +38,7 @@ Qualifiers live in the reason, never in the state.
 
 ### Rule subject (orthogonal to the state, not a fifth state)
 
-"Hard" alone conflates four incompatible things. Every rule also
+"Hard" alone conflates three incompatible things. Every rule also
 declares **what it judges**:
 
 - **Candidate** — produced musical content; the only subject
@@ -121,7 +121,7 @@ or pretends a missing seed is a property of a generated note.
 | 9 | complement request/mode refusals | Request | Structure | **hard** | wired gate (mapping below) |
 | 10 | bar-geometry / meter divisibility | Request | Rhythm | **hard** | wired gate (`SWG0301/0302/0304`) |
 | 11 | seed presence for stochastic ops | Request | Structure | **hard** | wired gate (`SWG0303`, `PruneSpec`) |
-| 12 | expansion / cycle budgets | Execution | Structure | **hard** | wired gate (`ExpansionBudget`) |
+| 12 | expansion budget (`CycleBudget`: proposed, not implemented) | Execution | Structure | **hard** | wired gate (`ExpansionBudget`) |
 | 13 | tapping-transition reachability | Candidate | Technique × Fretboard | **defer** | not implemented |
 | 14 | harmonic-context membership | Candidate | Harmony | **defer** | not implemented (S15 forbids it today) |
 | 15 | voice crossing (named rule) | Candidate | Pitch × Complementarity | **opt-in** | not implemented |
@@ -196,7 +196,8 @@ is consciously not applicable yet, never a silent omission.
   rejected, and a regression test pins that. Formalizing the literal
   `pitch_lo ..= pitch_hi` reading would misclassify inputs production
   accepts today.
-- **Scope**: per generation request; dimension Pitch; per-note.
+- **Scope**: candidate notes under the request's normalized window;
+  dimension Pitch; per-note.
 - **Current status**: **by construction** — the generator draws from a
   ladder inside the normalized window; nothing re-checks emitted notes.
   The rule layer would add the (cheap) explicit check.
@@ -219,12 +220,19 @@ is consciously not applicable yet, never a silent omission.
   preserves **explicit** fretboard positions, where the check is
   meaningful today.
 - **Scope**: per track/voice; dimension Fretboard; relation:
-  simultaneous onsets with known positions.
+  **overlapping sounding spans** with known positions — not merely
+  simultaneous onsets. Two notes on one string conflict whenever their
+  sounding intervals overlap (convention `[start, end)`), even with
+  different onsets; an onset-group check would honestly implement a
+  weaker rule and miss real conflicts.
 - **Current status**: **not implemented** (and vacuous for generated
   monophonic lines); nothing checks GP-imported explicit positions
   either.
-- **Lookback / lookahead**: the onset group only. **Incremental**: yes.
-- **Evidence**: onset, the two notes, the shared string.
+- **Lookback / lookahead**: the active positioned notes whose end
+  exceeds the current start, per string.
+- **Incremental**: yes — an active-note set per string, retired as
+  spans close.
+- **Evidence**: both musical spans + the shared string.
   **Failure code**: TBD at spec.
 - **Oracle candidate**: no on its own; folded into rule 2's later
   problem.
@@ -256,6 +264,8 @@ is consciously not applicable yet, never a silent omission.
   global `(lowest, highest)` pitch, overlap is measured relative to the
   **narrower** band, and a degenerate single-pitch band overlaps iff
   the point lies inside the other band.
+- **Scope**: tracks A×B; dimension Pitch × Complementarity; relation:
+  whole-part pitch bands.
 - **Current status**: **validator only** (`validate_pair`), same as
   rule 6.
 - **Note**: the boolean compresses a graded fact; the rule layer should
@@ -310,7 +320,7 @@ is consciously not applicable yet, never a silent omission.
   semantic split above is what porting must make explicit.
 - **Lookback / Incremental**: N/A (request-level).
   **Evidence**: the variant itself + request. **Failure code**: exists
-  (the variants).
+  (the variants). **Oracle candidate**: N/A.
 
 ### 10. Bar-geometry / meter divisibility — hard · Request
 
@@ -323,6 +333,7 @@ is consciously not applicable yet, never a silent omission.
   master timeline is the single source of truth (SPEC hard rule 3).
 - **Lookback / lookahead**: the mapped span. **Incremental**: per span;
   cheap. **Evidence / failure codes**: exist (`SWG03xx`).
+  **Oracle candidate**: N/A.
 
 ### 11. Seed presence — hard · Request
 
@@ -334,21 +345,31 @@ is consciously not applicable yet, never a silent omission.
   subject split exists precisely to keep this visible.
 - **Scope**: per request/program (every stochastic operation's
   parameter set) — a Request subject.
-- **Current status**: **wired gate**. **Evidence / failure code**:
-  exist (`SWG0303`; `PruneSpec` requires the field by type).
-  **Lookback / Incremental**: N/A (request-level).
+- **Current status**: two seams with two different mechanisms, stated
+  separately per the enforcement vocabulary:
+  - Swang request seam: **wired gate** (`SWG0303`);
+  - typed `PruneSpec` API: **by construction** — an invalid object is
+    unrepresentable, which is a property of the type, not a check.
+- **Evidence / failure code**: exist (`SWG0303`) / N/A at the typed
+  seam. **Lookback / Incremental**: N/A (request-level).
+  **Oracle candidate**: N/A.
 
-### 12. Expansion / cycle budgets — hard · Execution
+### 12. Expansion budget — hard · Execution
 
 - **Statement**: expansion never exceeds its declared budget; breach is
   a typed refusal, never truncation.
-- **Current status**: **wired gate** — `ExpansionBudget` in
-  `griff-pattern`; the operator inventory adds `CycleBudget` to the
-  same family (Kani harnesses for the budget invariant are a
-  process-backlog item).
 - **Scope**: the computation, not the music — which is exactly why
-  Execution is its own subject. **Evidence**: budget + attempted size.
-  **Lookback / Incremental**: N/A.
+  Execution is its own subject.
+- **Current status**: **wired gate** — `ExpansionBudget` in
+  `griff-pattern` (Kani harnesses for the budget invariant are a
+  process-backlog item). **`CycleBudget` is a separate object with its
+  own status: not implemented** — a docs-only candidate recorded in the
+  Pattern Operator Inventory, joining this rule's family only when it
+  lands; the closed status vocabulary does not average two objects into
+  one superposed "wired".
+- **Evidence**: budget + attempted size. **Failure code**: exists
+  (typed refusal in `griff-pattern`). **Lookback / Incremental**: N/A.
+  **Oracle candidate**: N/A.
 
 ### 13. Tapping-transition reachability — defer · Candidate
 
@@ -358,7 +379,11 @@ is consciously not applicable yet, never a silent omission.
   note model (ADR-0018) defining *what* a transition is and *when*
   reachability is measurable. Classifying it hard before that model
   exists would invent the model by side effect.
-- **Other fields**: TBD with the model / N/A.
+- **Scope**: TBD with the model. **Current status**: not implemented.
+- **Lookback / lookahead**: TBD with the model. **Incremental**: TBD.
+- **Evidence**: TBD with the model. **Failure code**: TBD at spec.
+- **Oracle candidate**: possibly, once the model exists — reachability
+  in time is constraint-shaped; no problem is claimed now.
 
 ### 14. Harmonic-context membership — defer · Candidate
 
@@ -372,7 +397,11 @@ is consciously not applicable yet, never a silent omission.
   S15 phases permits a context-based hard rule.
 - **Prerequisite (named)**: a later, explicitly calibrated contract on
   top of the S15 phases *as they are accepted*.
-- **Other fields**: TBD with that contract / N/A.
+- **Scope**: TBD with that contract. **Current status**: not
+  implemented (forbidden by design today).
+- **Lookback / lookahead**: TBD. **Incremental**: TBD.
+- **Evidence**: TBD with that contract. **Failure code**: TBD at spec.
+- **Oracle candidate**: N/A.
 
 ### 15. Voice crossing — opt-in · Candidate
 
@@ -383,6 +412,8 @@ is consciously not applicable yet, never a silent omission.
 - **Classification reason**: a legitimate device in some arrangements;
   Cluster Engine treats it as a *selectable* rule, which is the right
   prior-art posture. Opt-in per `RuleScope`, never universal.
+- **Scope**: tracks A×B; dimension Pitch × Complementarity; relation:
+  the declared register order over coincident or windowed onsets.
 - **Current status**: not implemented as a named rule.
 - **Lookback / lookahead**: coincident or windowed onsets.
   **Incremental**: yes. **Evidence**: onset span + the inverted pair.
