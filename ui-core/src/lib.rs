@@ -27,6 +27,7 @@ pub mod analysis;
 pub mod capture;
 pub mod corpus;
 pub mod curation;
+pub mod curation_session;
 pub mod dock;
 pub mod generate;
 pub mod history;
