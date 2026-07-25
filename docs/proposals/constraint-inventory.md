@@ -172,12 +172,17 @@ is consciously not applicable yet, never a silent omission.
 ### 3. Max fret travel — soft · Candidate
 
 - **Statement**: consecutive-note fret jumps should stay small.
+- **Scope**: per track/voice; dimension Fretboard; relation: consecutive
+  positioned line notes.
 - **Current status**: `max_fret_jump` is a carried fact; the standing
   decision is in the code — "jump thresholds are calibration data, not
   code".
 - **Classification reason**: a threshold would be taste until calibrated
   against evidence (S9 territory); the fact is already stored, which is
-  all scoring needs. Evidence / failure code: N/A (soft).
+  all scoring needs.
+- **Lookback / lookahead**: the previous positioned note only.
+- **Evidence / failure code**: N/A (soft — never a verdict).
+- **Incremental**: yes (per adjacent positioned pair).
 - **Oracle relation**: Problem A produces exactly the calibration
   evidence a future promotion decision would need (see below).
 
@@ -295,6 +300,9 @@ is consciously not applicable yet, never a silent omission.
 | `NonUniformTimeline` | the mode cannot operate on this timeline | `Unsupported` |
 | `NoGapsToAnswer` | the mode ran and found no admissible answer | a **no-solution outcome** — the production analogue of an empty search space, *not* a candidate violation (no candidate ever existed) |
 
+- **Scope**: per arrangement request (mode + timeline + track
+  selection) — a Request subject, outside `RuleScope`'s candidate
+  vocabulary.
 - **Current status**: **wired gate** — `arrange_complement` actually
   refuses with these errors.
 - **Classification reason**: v1 claimed the "typed split already
@@ -309,10 +317,12 @@ is consciously not applicable yet, never a silent omission.
 - **Statement**: a declared unit divides the bar exactly and is
   tick-representable (`SWG0301`); incomplete tails follow the declared
   tail policy (`SWG0302`); a mapped span keeps one meter (`SWG0304`).
+- **Scope**: per mapped span of a request (declared unit + the master
+  timeline's bar geometry) — a Request subject.
 - **Current status**: **wired gate** (typed errors in the Swang seam);
   master timeline is the single source of truth (SPEC hard rule 3).
-- **Lookback / Incremental**: per span; cheap.
-  **Evidence / failure codes**: exist (`SWG03xx`).
+- **Lookback / lookahead**: the mapped span. **Incremental**: per span;
+  cheap. **Evidence / failure codes**: exist (`SWG03xx`).
 
 ### 11. Seed presence — hard · Request
 
@@ -322,8 +332,11 @@ is consciously not applicable yet, never a silent omission.
 - **Classification reason**: determinism (SPEC hard rule 6) expressed
   as admissibility of *requests*, never of musical content — the
   subject split exists precisely to keep this visible.
+- **Scope**: per request/program (every stochastic operation's
+  parameter set) — a Request subject.
 - **Current status**: **wired gate**. **Evidence / failure code**:
-  exist. **Lookback / Incremental**: N/A.
+  exist (`SWG0303`; `PruneSpec` requires the field by type).
+  **Lookback / Incremental**: N/A (request-level).
 
 ### 12. Expansion / cycle budgets — hard · Execution
 
