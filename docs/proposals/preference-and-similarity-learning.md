@@ -14,7 +14,7 @@ every frozen strategy stay untouched until an explicit acceptance contract.
 
 Griff stays hybrid; ML slots into exactly one box:
 
-```
+```text
 intent / control curves → hierarchical generation → hard constraints
   → valid candidate space → handcrafted + learned scoring → DP / k-best
   → candidate sequence → human choice → preference evidence (loop)
@@ -91,9 +91,20 @@ always compared against the handcrafted scorer.
 
 Integration is a bounded correction, never a replacement:
 
-```
+```text
 S_final = S_manual + α · S_learned      // α starts small
 ```
+
+"Bounded" is a calibration contract, not a hope about α: `S_learned` is
+calibrated to a fixed scale before mixing (standardized to zero mean and
+unit variance over a versioned calibration set of admissible candidates,
+then clipped to a documented range), so that α alone controls the maximum
+correction relative to the documented `S_manual` scale. α starts in a small
+explicit range (e.g. `(0, 0.25]`) and both the calibration parameters and α
+are part of the versioned scoring policy. Every α change reports an
+ordering-shift measurement (fraction of top-1 and top-k changes on a fixed
+evaluation set), so the learned term demonstrably remains a correction
+rather than silently dominating the ranking through scale or offset.
 
 The DP layer still assembles the path; the learner only adjusts local scores.
 A small MLP (features → 32 → 16 → score; AdamW, lr 3e-4..3e-3, weight decay

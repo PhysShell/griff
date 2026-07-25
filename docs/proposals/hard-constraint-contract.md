@@ -36,20 +36,26 @@ struct RuleScope {
 }
 ```
 
-### 2.2 Typed result — four different failures are four different states
+### 2.2 Typed result — different failures are different states
+
+Per-rule evaluation returns one of five states:
 
 ```rust
 enum ConstraintResult {
     Satisfied,
     Violated { code, musical_path, evidence, explanation },
     Unknown { reason },        // e.g. lookahead not yet available
+    Unsupported { operation }, // the rule cannot evaluate this input at all
     SolverFailure { diagnostic },
 }
 ```
 
-Never conflated: an invalid candidate, a low-scoring candidate, a solver
-timeout, an unsupported operation, and an empty search space are five
-distinct facts with distinct diagnostics. (Same discipline as the
+Two related facts deliberately live *outside* this enum: a low-scoring
+candidate is a scoring fact and never a constraint state; and an empty
+search space (a whole *problem* being UNSAT) is a problem-level outcome
+reported by the Constraint Lab's solve result (§3), distinct from a solver
+timeout or crash (`SolverFailure`). Nothing here is ever conflated: each of
+these outcomes keeps its own typed diagnostic. (Same discipline as the
 reachability lab's "no exact match within N trials ≠ unreachable".)
 
 ### 2.3 Rule metadata (Cluster Rules model)
@@ -61,9 +67,16 @@ rule supports incremental evaluation (matters for DP clients, ADR-0013/0030).
 
 Starter vocabulary — hard: physical playability, no conflicting notes on a
 string, reachable tapping transitions, complement does not double the lead
-on strong beats, notes within the scoped harmonic context (S15 Phase 2
-territory). Soft (stays in scoring, never here): minimize fret jumps, prefer
-contrary motion, preserve corpus rhythm identity, register variety.
+on strong beats. Soft (stays in scoring, never here): minimize fret jumps,
+prefer contrary motion, preserve corpus rhythm identity, register variety.
+
+Harmonic-context membership is deliberately absent from the hard list: the
+S15 Phase 2 contract carries tonal context as *optional* evidence with no
+pitch restriction and no production behaviour change — chromatic passing
+tones, borrowed notes and tensions stay legal by design. Any context-based
+hard rejection waits for a later, explicitly calibrated contract on top of
+the accepted S15 phases; until then tonal context influences nothing in
+this layer.
 
 ### 2.4 What is *not* learned
 
@@ -77,7 +90,7 @@ Production never shells out to a solver — solver versions and search
 strategies would turn determinism into decoration. Offline, a solver is
 exactly the right tool:
 
-```
+```text
 Griff typed problem → solver-neutral IR → MiniZinc adapter → solution / UNSAT / evidence
 ```
 

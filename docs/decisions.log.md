@@ -1899,3 +1899,20 @@ Architectural decisions go to [`adr/`](adr/) instead.
   in-repo; verifying its rights/redistribution status is recorded there
   as an open action). Planning range, not commitment: 8–12 PRs for
   4-pre + 4A, 13–18 for the full set.
+
+- 2026-07-25 — In the context of distilling the 2026-07 generation/ML and
+  algorithmic-music-ecosystem research memos into four discussion drafts
+  (`docs/proposals/`), facing the prior-art-first rule's requirement that
+  surveys be recorded in a canonical decision record while proposals are
+  transient discussion artifacts, we decided for logging the surveyed
+  sources here — pattern/process: Sonic Pi, Isobar, Total Serialism, TOT,
+  Fenv, HWFC, Glicol, Mutwo, SCAMP, Sardine/FoxDot; constraints:
+  Strasheela, Cluster Engine, Cluster Rules, MiniZinc/clojure2minizinc;
+  learning/benchmarks: timbremetrics and the timbre-dissimilarity
+  literature, PCGNN novelty decomposition, pairwise learning-to-rank,
+  Bayesian optimization/MES; editing/UX: MOZLib, nn_terrain, Ossia Score,
+  MaxMSP MCP, Neoscore — with per-source adopt/adapt/reject detail kept in
+  the four proposals, and against deferring the record until each
+  proposal's acceptance, to achieve a durable canonical trace of the
+  survey regardless of each proposal's fate, accepting a coarse-grained
+  duplication of the proposals' prior-art sections.

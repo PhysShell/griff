@@ -27,7 +27,7 @@ Prior-art pattern libraries expose `next()` on shared mutable iterators; the
 result then depends on call order and hidden global state. The Griff form is
 a pure query:
 
-```
+```text
 pattern.query(range, cursor_state, seed_streams)
   → events + next_cursor_state + provenance
 ```
@@ -44,7 +44,7 @@ precedent from `griff-pattern`), typed refusal instead of silent truncation.
 generalizes it: every stochastic operator draws from a *named* stream with
 its own identity —
 
-```
+```text
 operator_kind + operator_path + stream_version + seed + local_index
 ```
 
@@ -67,7 +67,7 @@ contract, never hidden counters.
 
 Fenv-style curves on the normalized `0..1` extent of a phrase or section:
 
-```
+```text
 density: 0.0 → 0.25, 0.5 → 0.85, 1.0 → 0.40
 ```
 
@@ -81,7 +81,7 @@ diffable, and a natural fit for the S14 `ComplexityProfile` measurement side
 
 The HWFC lesson, restated for music:
 
-```
+```text
 section structure → phrase roles → motif families → events → fretboard realization
 ```
 
@@ -124,7 +124,8 @@ document directly.
 - Embedding Ruby/Lisp/Clojure/Max runtimes or any live-coding engine.
 - Infinite patterns, wall-clock `sleep`, user threads, or a second timeline.
 - A second score model (Mutwo's tree is prior art for *transform* shapes
-  only; the canonical model stays the single internal model, ADR-0011).
+  only; the canonical model stays the single internal model — ADR-0002
+  established it, ADR-0011 retired the legacy linear layer).
 - A text DSL beyond Swang; text syntax only ever sits on top of the typed IR.
 - Handing canonical timing to a browser audio engine (Tone.js is an audition
   backend at most; SCAMP's lesson stands — canonical symbolic timing,

@@ -11,7 +11,7 @@ surfaces; the editing contract would eventually deserve an ADR.
 
 Instead of an army of sliders, named modules with semantic parameters:
 
-```
+```text
 Creep
   window: 5 notes
   shift: 1
@@ -29,13 +29,19 @@ never grows behaviour the typed layer doesn't have.
 
 A 2-D map over deterministic variants of a source:
 
-```
+```text
 X: rhythmic displacement    Y: register / contour change
 color: playability or score    size: novelty    boundary: hard-constraint validity
 ```
 
 Every point has a full identity — `source_hash + operator_program_hash +
-seed bundle + policy version` — so clicking a point reproduces it exactly.
+seed bundle + policy version + generation context hash +
+constraint-contract version + generator schema version` — so clicking a
+point reproduces it exactly, and the same identity can never reproduce a
+different candidate after any bound input or version changes. The context
+component follows the existing cockpit precedent: a produced set is already
+bound to the immutable run context that made it (`ActiveGenerateRun` in
+`cockpit/src/generation.rs`), so identity and provenance cannot drift apart.
 The candidate space is treated as axes around a source (rhythm / contour /
 register / technique / complement variations), with per-axis freezing via
 named seed streams, lineage display, A/B against the source, and visible
@@ -47,22 +53,27 @@ proposal).
 
 Operations an agent (or macro system) may perform:
 
-```
+```text
 inspect_score | inspect_selection | explain_candidate
 preview_transform | validate_transform | apply_transform | undo_transform
 ```
 
 Contract for every mutating operation — the editing transaction:
 
-1. typed payload; 2. operates on an immutable snapshot; 3. returns a diff;
+1. typed payload; 2. operates on an immutable snapshot and carries that
+base snapshot's identity through validation to apply; 3. returns a diff;
 4. passes constraint validation *before* apply (see the constraint-contract
-proposal); 5. declares scope; 6. applies at a musical boundary; 7. is
-undoable; 8. records provenance.
+proposal); 5. declares scope; 6. applies at a musical boundary
+compare-and-swap style — the apply succeeds only if the current accepted
+snapshot still matches the transaction's base; a stale transaction is
+rejected (or explicitly revalidated against the current snapshot) rather
+than applied to a score it was never validated against; 7. is undoable;
+8. records provenance.
 
 Instead of a generic "are you sure?", confirmation states concrete
 consequences:
 
-```
+```text
 preserve_favorites: true    replace_rejected: true
 affected_axis: rhythm_only  apply_boundary: next_phrase
 ```
