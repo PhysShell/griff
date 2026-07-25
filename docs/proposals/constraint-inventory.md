@@ -1,15 +1,18 @@
 # Constraint Inventory (hard-constraint-contract discussion)
 
 Working research artifact for the hard-constraint-contract proposal: the
-rules Griff already enforces (and where), the rules the research memos
-proposed, and a classification of each under a closed taxonomy — so the
-future `RuleScope`/`RuleEvaluation` layer formalizes reality instead of
-inventing a parallel one, and so the MiniZinc oracle spike gets *real*
-problems instead of a demo toy.
+rules Griff already enforces (and *how* — wired gate vs validator vs
+by-construction), the rules the research memos proposed, and a
+classification of each under a closed taxonomy — so the future
+`RuleScope`/`RuleEvaluation` layer formalizes reality instead of
+inventing a parallel one, and so the MiniZinc oracle spike gets real,
+production-grounded problems.
 
-Status: for discussion (v1). Companion to
-[`hard-constraint-contract.md`](hard-constraint-contract.md); that
-proposal is the contract thesis, this file is the catalog.
+Status: for discussion (v2 — v1 revised per the arbiter review of
+PR #151: rule subjects, honest enforcement status, refusal-class
+mapping, exact Problem B contract).
+Companion to [`hard-constraint-contract.md`](hard-constraint-contract.md);
+that proposal is the contract thesis, this file is the catalog.
 Scope: docs-only; binds nothing.
 
 **Acceptance gate (normative for this document).** The inventory
@@ -17,42 +20,79 @@ Scope: docs-only; binds nothing.
 delivery phase. Every `hard` classification still requires its own spec
 section, failure-code vocabulary, characterization tests over today's
 behaviour (SPEC hard rule 5 where behaviour already exists), and a
-red→green slice. A classification here is a licence to *specify*, never a
-decision already taken.
+red→green slice. A classification here is a licence to *specify*, never
+a decision already taken.
 
 ## Classification taxonomy (closed — exactly four states)
 
-- **hard** — admissibility, evaluated in the rule layer
-  (`RuleEvaluation`); any `Violated` rejects the candidate under the
-  fail-closed aggregation policy of the contract proposal;
+- **hard** — admissibility; any `Violated` rejects under the fail-closed
+  aggregation policy of the contract proposal;
 - **soft** — preference; lives in scoring (`Axes`/`WeightPolicy`,
   ADR-0017) and never enters the rule layer;
 - **opt-in** — a scoped arrangement constraint the user explicitly turns
   on for a `RuleScope`; absent from the default rule set;
-- **defer** — blocked on a named prerequisite; no classification decision
-  exists until that prerequisite does.
+- **defer** — blocked on a named prerequisite; no classification
+  decision exists until that prerequisite does.
 
-Qualifiers live in the reason, never in the state. Rules that are hard
-*within one subsystem's contract* but not universal are recorded as hard
-with an explicit scope — scope is part of the rule, not a fifth state.
+Qualifiers live in the reason, never in the state.
 
-## Survey baseline — what is enforced today
+### Rule subject (orthogonal to the state, not a fifth state)
 
-- `core/src/fretboard.rs`: `infer_positions` (fingering DP, ADR-0019),
-  `measure_playability` → `PlayabilityReport` — `is_playable()` is
-  `unpositionable == 0`; `max_fret_jump` is a **carried fact, not a
-  verdict**; chords are left unvoiced (deferred, ADR-0019 §7);
-  `STANDARD_MAX_FRET = 24`.
-- `core/src/complement.rs`: `PairValidation` — `coincident_dissonances`
-  (m2 / tritone / M7 on coincident onsets), `register_mud`, per-part
-  playability; `is_clean()` requires all four. Doc comment states the
-  house position explicitly: "jump thresholds are calibration data, not
-  code". `ComplementError` is a typed-refusal vocabulary
-  (`InvalidSpec`, `NoGapsToAnswer`, `NonUniformTimeline`, …).
-- `core/src/generate.rs`: `GenerationConstraints` — "hard constraints
-  that all generated phrases must satisfy": `bar_count ≥ 1`, uniform
-  time signature and tempo, `ticks_per_quarter > 0`,
-  `pitch_lo ..= pitch_hi`.
+"Hard" alone conflates four incompatible things. Every rule also
+declares **what it judges**:
+
+- **Candidate** — produced musical content; the only subject
+  `RuleEvaluation` over a candidate ever sees;
+- **Request** — a generation/arrangement request, mode, or program,
+  judged before any candidate exists;
+- **Execution** — the computation itself (budgets, refusal instead of
+  truncation).
+
+The existing `RuleScope` (tracks / voices / dimension / range /
+relation) describes Candidate rules only; Request and Execution rules
+need their own, smaller scope vocabulary in the contract. Without this
+split a future `RuleEvaluation` either bloats into checking everything,
+or pretends a missing seed is a property of a generated note.
+
+### Enforcement status (closed vocabulary)
+
+"Enforced today" overstated v1. The honest states:
+
+- **wired gate** — production path actually refuses on violation;
+- **validator only** — a checker exists and is exercised (tests/fuzz),
+  but no production path calls it as an admission gate;
+- **by construction** — the property cannot be violated because the
+  producing code only emits conforming output (this is a fact about
+  today's producer, not a check);
+- **vacuous** — the violating situation cannot currently arise, and
+  nothing checks it;
+- **not implemented**.
+
+## Survey baseline — what exists today
+
+- `core/src/fretboard.rs`: `infer_positions` (exhaustive weighted-cost
+  fingering DP, ADR-0019), `measure_playability` → `PlayabilityReport`;
+  `is_playable()` is `unpositionable == 0`; `max_fret_jump` is a
+  **carried fact, not a verdict**; chords are left unvoiced (deferred,
+  ADR-0019 §7); `STANDARD_MAX_FRET = 24`.
+- `core/src/complement.rs`: `validate_pair` → `PairValidation`
+  (`coincident_dissonances` over `DISSONANT_CLASSES = [1, 6, 11]`
+  mod 12 on coincident onsets; `register_mud` =
+  `band_overlap(bandA, bandB) > 0.5` over whole-part pitch bands,
+  overlap measured relative to the **narrower** band, degenerate
+  single-pitch band overlapping iff the point lies inside; per-part
+  playability on the highest-pitch-per-onset line under the part's own
+  tuning, `FingeringWeights::v1`, standard fret range — a chord
+  participates through its top note only). `is_clean()` requires all
+  four. **`validate_pair` is a validator, not a wired gate**: the
+  arranger produces and returns candidates without calling it; its
+  callers today are tests and the `complement_request` fuzz target.
+  `ComplementError` is a typed refusal vocabulary on *requests*.
+- `core/src/generate.rs`: `GenerationConstraints` — bar count, uniform
+  meter/tempo, tick resolution, pitch window; the window is
+  **normalized** via `PitchRange::new` (bounds accepted in either
+  order, clamped to valid MIDI) and the generator draws inside it by
+  construction.
 - `core/src/tonal.rs` (S15 Phase 1, accepted): tonal estimates are
   **evidence only** — scoped, optional, restricting no pitch. The
   generation-facing scoped-context contract with its explicit
@@ -60,246 +100,328 @@ with an explicit scope — scope is part of the rule, not a fifth state.
   **Phase 2 — proposed, not yet accepted**; today's guarantee rests on
   the accepted Phase-1 evidence-only behaviour.
 - `pattern/` + Swang seam: `ExpansionBudget` (typed refusal on breach),
-  bar-geometry divisibility and tail policy (`SWG0301`/`SWG0302`), meter
-  uniformity across a mapped span (`SWG0304`), `density` requires a seed
-  (`SWG0303`).
+  bar-geometry divisibility and tail policy (`SWG0301`/`SWG0302`),
+  meter uniformity across a mapped span (`SWG0304`), `density` requires
+  a seed (`SWG0303`).
 - DP layer (ADR-0013/0030): transition and local costs are **soft** by
-  construction; feasibility is expressed as graph shape, not as cost ∞.
+  construction; feasibility is expressed as graph shape.
 
 ## Summary
 
-| # | Rule | Dimension | State | Enforced today |
-| --- | --- | --- | --- | --- |
-| 1 | fretboard reachability (line notes) | Fretboard | **hard** | yes — `is_playable`, per-part filter |
-| 2 | chord voicing feasibility | Fretboard | **defer** | no — chords left unvoiced (ADR-0019 §7) |
-| 3 | max fret travel | Fretboard | **soft** | fact carried, never a verdict |
-| 4 | pitch range window | Pitch | **hard** | yes — `GenerationConstraints` |
-| 5 | string conflict (simultaneous notes, one string) | Fretboard | **hard** (monophonic scope) | implicit via monophonic lines |
-| 6 | coincident dissonance (pair) | Harmony × Complementarity | **hard** (complement scope) | yes — `PairValidation` |
-| 7 | register mud (pair) | Pitch × Complementarity | **hard** (complement scope) | yes — `PairValidation` |
-| 8 | strong-beat doubling (pair) | Complementarity | **opt-in** | no (decided in PR #149) |
-| 9 | timeline uniformity preconditions | Structure | **hard** (per-mode scope) | yes — typed `ComplementError`s |
-| 10 | bar-geometry / meter divisibility | Rhythm | **hard** | yes — `SWG0301/0302/0304` |
-| 11 | seed presence for stochastic ops | Structure | **hard** | yes — `SWG0303`, `PruneSpec` |
-| 12 | expansion / cycle budgets | Structure | **hard** | yes — `ExpansionBudget` |
-| 13 | tapping-transition reachability | Technique × Fretboard | **defer** | no — needs the technique evidence model |
-| 14 | harmonic-context membership | Harmony | **defer** | no — S15 forbids it by design today |
-| 15 | voice crossing (named rule) | Pitch × Complementarity | **opt-in** | partially shadowed by register mud |
+| # | Rule | Subject | Dimension | State | Current status |
+| --- | --- | --- | --- | --- | --- |
+| 1 | fretboard reachability (line notes) | Candidate | Fretboard | **hard** | validator only (+ import loss report) |
+| 2 | chord voicing feasibility (incl. unvoiced-chord string assignment) | Candidate | Fretboard | **defer** | not implemented (ADR-0019 §7) |
+| 3 | max fret travel | Candidate | Fretboard | **soft** | fact carried, never a verdict |
+| 4 | pitch window (normalized) | Candidate | Pitch | **hard** | by construction (generator domain) |
+| 5 | known-position string exclusivity | Candidate | Fretboard | **hard** | not implemented (vacuous for generated lines) |
+| 6 | coincident dissonance (pair) | Candidate | Harmony × Complementarity | **hard** (complement scope) | validator only |
+| 7 | register mud (pair) | Candidate | Pitch × Complementarity | **hard** (complement scope) | validator only |
+| 8 | forbid strong-beat doubling (pair) | Candidate | Complementarity | **opt-in** | not implemented |
+| 9 | complement request/mode refusals | Request | Structure | **hard** | wired gate (mapping below) |
+| 10 | bar-geometry / meter divisibility | Request | Rhythm | **hard** | wired gate (`SWG0301/0302/0304`) |
+| 11 | seed presence for stochastic ops | Request | Structure | **hard** | wired gate (`SWG0303`, `PruneSpec`) |
+| 12 | expansion / cycle budgets | Execution | Structure | **hard** | wired gate (`ExpansionBudget`) |
+| 13 | tapping-transition reachability | Candidate | Technique × Fretboard | **defer** | not implemented |
+| 14 | harmonic-context membership | Candidate | Harmony | **defer** | not implemented (S15 forbids it today) |
+| 15 | voice crossing (named rule) | Candidate | Pitch × Complementarity | **opt-in** | not implemented |
 
 ## Per-rule detail
 
-Field key: *Scope* is stated in `RuleScope` terms (tracks / voices /
-dimension / range / relation). *Lookback / lookahead* is what the rule
-must see beyond the event it judges. *Evidence* is what a `Violated`
-carries. *Incremental* — whether the rule can be re-evaluated per event
-for DP clients (ADR-0013/0030) without whole-candidate recomputation.
-*Oracle candidate* — suitability for the MiniZinc offline spike.
+Field discipline (per the contract proposal): every rule carries Scope,
+Current status, Lookback/lookahead, Evidence, Incremental, Failure code,
+Oracle candidacy — with an explicit `N/A` or `TBD at spec` where a field
+is consciously not applicable yet, never a silent omission.
 
-### 1. Fretboard reachability — hard
+### 1. Fretboard reachability — hard · Candidate
 
 - **Statement**: every line note has at least one playable
   `(string, fret)` under the part's tuning within `max_fret`.
-- **Scope**: per track/voice; dimension Fretboard; whole line; relation:
-  per-note.
-- **Today**: `PlayabilityReport.is_playable` (`unpositionable == 0`),
-  used as the per-part filter (ADR-0019); typed loss report on import.
-- **Lookback / lookahead**: none — reachability of a pitch is per-note
+- **Scope**: per track/voice; dimension Fretboard; whole line; per-note
+  relation.
+- **Current status**: **validator only** — `is_playable` exists and is
+  exercised (complement validator, tests, fuzz); the MIDI import path
+  *reports* unpositionable notes as losses (ADR-0019 §1) rather than
+  refusing. No production path today rejects a candidate for
+  unreachability; wiring it as a gate is exactly what the rule layer
+  would add.
+- **Lookback / lookahead**: none — reachability is per-note existence
   (path *quality* is rule 3's soft territory).
-- **Evidence**: the unpositionable note's musical path + pitch + tuning.
+- **Evidence**: unpositionable note's musical path + pitch + tuning.
+- **Failure code**: TBD at spec.
 - **Incremental**: yes (per note).
-- **Oracle candidate**: **yes — spike problem A**, with an honest
-  framing: plain reachability needs no solver (per-note existence), and
-  `infer_positions` exhaustively minimizes its weighted fingering cost
-  with travel deliberately soft — so a bounded-travel model answers a
-  *different, experimental* question, never a validation of the
-  production DP (see Problem A).
+- **Oracle candidate**: only via the experimental Problem A framing
+  below — plain reachability needs no solver, and `infer_positions`
+  exhaustively minimizes its weighted cost with travel deliberately
+  soft, so no bounded model can second-guess it.
 
-### 2. Chord voicing feasibility — defer
+### 2. Chord voicing feasibility — defer · Candidate
 
-- **Statement**: simultaneous notes admit a non-conflicting joint
-  `(string, fret)` assignment.
+- **Statement**: simultaneous pitches admit a joint, non-conflicting
+  `(string, fret)` assignment (subsumes string exclusivity for the
+  unvoiced case).
 - **Prerequisite (named)**: the chord-voicing model deferred by
   ADR-0019 §7 — today chords are deliberately left unvoiced rather than
   misvoiced, and a rule cannot precede its model.
-- **Note**: when it lands, this is the constraint-shaped problem par
-  excellence (assignment + mutual exclusion) and an obvious later oracle
-  target; it inherits rule 5 as a sub-constraint.
+- **Scope / Evidence / Failure code**: TBD with the model.
+  **Lookback / Incremental**: N/A until specified.
+- **Oracle candidate**: yes, *later* — assignment + mutual exclusion is
+  the constraint-shaped problem par excellence, but only once the model
+  exists to ground it.
 
-### 3. Max fret travel — soft
+### 3. Max fret travel — soft · Candidate
 
 - **Statement**: consecutive-note fret jumps should stay small.
-- **Today**: `max_fret_jump` is a carried fact; the complement doc
-  comment is the standing decision — "jump thresholds are calibration
-  data, not code".
+- **Current status**: `max_fret_jump` is a carried fact; the standing
+  decision is in the code — "jump thresholds are calibration data, not
+  code".
 - **Classification reason**: a threshold would be taste until calibrated
   against evidence (S9 territory); the fact is already stored, which is
-  all the rule layer needs from it. Stays in scoring/weights.
+  all scoring needs. Evidence / failure code: N/A (soft).
+- **Oracle relation**: Problem A produces exactly the calibration
+  evidence a future promotion decision would need (see below).
 
-### 4. Pitch range window — hard
+### 4. Pitch window — hard · Candidate
 
 - **Statement**: generated pitches lie within the **normalized** window
   of the two request bounds. Normalization comes first and is part of
   the rule: production passes both fields through `PitchRange::new`,
   which accepts bounds in either order (swapping `pitch_lo > pitch_hi`)
-  and clamps to valid MIDI — a reversed request is currently *supported*,
-  not rejected, and a regression test pins that. Formalizing the literal
+  and clamps to valid MIDI — a reversed request is *supported*, not
+  rejected, and a regression test pins that. Formalizing the literal
   `pitch_lo ..= pitch_hi` reading would misclassify inputs production
   accepts today.
 - **Scope**: per generation request; dimension Pitch; per-note.
-- **Today**: `GenerationConstraints` (documented as hard) via
-  `PitchRange::new` normalization.
+- **Current status**: **by construction** — the generator draws from a
+  ladder inside the normalized window; nothing re-checks emitted notes.
+  The rule layer would add the (cheap) explicit check.
 - **Lookback / lookahead**: none. **Incremental**: yes.
-- **Evidence**: offending note + bounds.
-- **Oracle candidate**: no — trivially checkable; needs no solver.
+- **Evidence**: offending note + normalized bounds.
+  **Failure code**: TBD at spec.
+- **Oracle candidate**: no — trivially checkable.
 
-### 5. String conflict — hard (monophonic scope today)
+### 5. Known-position string exclusivity — hard · Candidate
 
-- **Statement**: two simultaneously sounding notes never occupy one
-  string.
-- **Today**: implicit — the generator emits monophonic lines and chords
-  are unvoiced, so the conflict cannot currently arise; nothing *checks*
-  it.
-- **Classification reason**: hard now with the honest scope note; the
-  full polyphonic rule activates with rule 2's model and must land as an
-  explicit check, not remain an accident of monophony.
-- **Incremental**: yes (per onset group).
+- **Statement**: simultaneously sounding notes **with explicit
+  positions** never occupy one string. Where positions are absent
+  (unvoiced MIDI chords) the rule evaluates `Unknown`/`Unsupported` —
+  it does not guess; feasibility of assigning positions is rule 2's
+  deferred territory.
+- **Why the v1 framing was wrong**: v1 called this "hard (monophonic
+  scope)" because generated lines are monophonic — but that is a
+  vacuously true statement in a scope where the conflict cannot arise,
+  not a rule. And Griff is not only generated MIDI: Guitar Pro import
+  preserves **explicit** fretboard positions, where the check is
+  meaningful today.
+- **Scope**: per track/voice; dimension Fretboard; relation:
+  simultaneous onsets with known positions.
+- **Current status**: **not implemented** (and vacuous for generated
+  monophonic lines); nothing checks GP-imported explicit positions
+  either.
+- **Lookback / lookahead**: the onset group only. **Incremental**: yes.
+- **Evidence**: onset, the two notes, the shared string.
+  **Failure code**: TBD at spec.
+- **Oracle candidate**: no on its own; folded into rule 2's later
+  problem.
 
-### 6. Coincident dissonance — hard (complement scope)
+### 6. Coincident dissonance — hard (complement scope) · Candidate
 
-- **Statement**: no m2 / tritone / M7 between parts on coincident
-  onsets, within the ComplementArranger's cleanliness contract.
+- **Statement**: no interval in classes `{1, 6, 11}` mod 12 (m2 /
+  tritone / M7) between parts on coincident onsets, within the
+  ComplementArranger's cleanliness contract.
 - **Scope**: tracks A×B; dimension Harmony × Complementarity; relation:
   simultaneous onsets.
-- **Today**: `PairValidation.coincident_dissonances`, part of
-  `is_clean`.
+- **Current status**: **validator only** — counted by `validate_pair`;
+  the arranger does not call it before returning a candidate. "Clean
+  pair" is today a *measurable* property, not a *guaranteed* one.
 - **Classification reason**: hard *within the complement contract* — as
-  a universal rule it would outlaw intentional tension, so its scope is
-  the contract, not the repertoire. Widening it beyond complement would
-  be a new opt-in rule, not a widening of this one.
-- **Lookback / lookahead**: the coincident onset pair only.
+  a universal rule it would outlaw intentional tension. Widening beyond
+  complement would be a new opt-in rule, not a widening of this one.
+- **Lookback / lookahead**: the coincident onset pair.
   **Incremental**: yes (per coincidence).
 - **Evidence**: onset, both pitches, interval class.
-- **Oracle candidate**: **yes — part of spike problem B** (below).
+  **Failure code**: TBD at spec.
+- **Oracle candidate**: yes — Problem B.
 
-### 7. Register mud — hard (complement scope)
+### 7. Register mud — hard (complement scope) · Candidate
 
 - **Statement**: parts A and B do not overlap registers so heavily that
-  the pair loses separation.
-- **Today**: `PairValidation.register_mud`, part of `is_clean`.
-- **Note**: the boolean compresses a graded fact; when the rule layer
-  formalizes it, the underlying overlap measurement should surface as
-  evidence (same raw-fact-vs-verdict discipline as rule 3).
-- **Incremental**: windowed (needs both parts' registers over a span).
-- **Oracle candidate**: yes — as a register-window constraint in spike
-  problem B.
+  the pair loses separation. The current law is exact and whole-part:
+  `band_overlap(bandA, bandB) > 0.5`, where bands are each part's
+  global `(lowest, highest)` pitch, overlap is measured relative to the
+  **narrower** band, and a degenerate single-pitch band overlaps iff
+  the point lies inside the other band.
+- **Current status**: **validator only** (`validate_pair`), same as
+  rule 6.
+- **Note**: the boolean compresses a graded fact; the rule layer should
+  surface the overlap fraction as evidence (raw-fact-vs-verdict
+  discipline, as with rule 3).
+- **Lookback / lookahead**: whole part. **Incremental**: extrema are
+  maintainable per event, but the verdict is a whole-part decision over
+  the final bands — no early final answer exists mid-candidate.
+- **Evidence**: both bands + overlap fraction + threshold.
+  **Failure code**: TBD at spec.
+- **Oracle candidate**: yes — Problem B (as the exact band law, not a
+  vague "register window").
 
-### 8. Strong-beat doubling — opt-in
+### 8. Forbid strong-beat doubling — opt-in · Candidate
 
 - **Statement**: the complement does not double the lead on strong
-  beats.
-- **State source**: decided in the accepted PR #149 revision — a
-  strong-beat unison is a legitimate arrangement device; the rule enters
-  as an explicitly scoped opt-in, soft penalty by default.
-- **Today**: not implemented. **Incremental**: yes (per strong beat).
+  beats. Two distinct named objects, one state each (the closed
+  taxonomy permits no hybrid row):
+  - `forbid_strong_beat_doubling` — the **opt-in** rule catalogued
+    here;
+  - `strong_beat_doubling_penalty` — its **soft** scoring counterpart,
+    living with the other axes, not in this inventory's rule layer.
+- **State source**: the PR #149 decision — a strong-beat unison is a
+  legitimate arrangement device.
+- **Scope**: tracks A×B; strong beats per the master timeline.
+- **Current status**: not implemented (either object).
+- **Lookback / lookahead**: the strong-beat onset pair.
+  **Incremental**: yes. **Evidence**: beat position + doubled pitch.
+  **Failure code**: TBD at spec. **Oracle candidate**: as an optional
+  extension of Problem B only.
 
-### 9. Timeline uniformity preconditions — hard (per-mode scope)
+### 9. Complement request/mode refusals — hard · Request
 
-- **Statement**: certain arrangement modes require a uniform meter/span
-  across the arranged range (e.g. `counter_melody`).
-- **Today**: typed refusals — `ComplementError::NonUniformTimeline`,
-  `InvalidSpec`, `NoGapsToAnswer` — already model the contract
-  proposal's `Unsupported`/`Violated` split in miniature.
-- **Classification reason**: these are problem-level preconditions, the
-  easiest rules to port into `RuleEvaluation` because their vocabulary
-  is already typed.
+- **Statement**: an arrangement request must be compatible with its
+  mode's contract. The existing `ComplementError` vocabulary is typed,
+  **and its variants mean three different things** — the mapping the
+  rule layer must preserve rather than flatten:
 
-### 10. Bar-geometry / meter divisibility — hard
+| Variant | Meaning | Contract-proposal analogue |
+| --- | --- | --- |
+| `InvalidSpec` | ill-formed / incompatible request | request invalidity (`Violated` on a Request subject) |
+| `NonUniformTimeline` | the mode cannot operate on this timeline | `Unsupported` |
+| `NoGapsToAnswer` | the mode ran and found no admissible answer | a **no-solution outcome** — the production analogue of an empty search space, *not* a candidate violation (no candidate ever existed) |
+
+- **Current status**: **wired gate** — `arrange_complement` actually
+  refuses with these errors.
+- **Classification reason**: v1 claimed the "typed split already
+  exists"; more precisely, the typed *vocabulary* exists, and the
+  semantic split above is what porting must make explicit.
+- **Lookback / Incremental**: N/A (request-level).
+  **Evidence**: the variant itself + request. **Failure code**: exists
+  (the variants).
+
+### 10. Bar-geometry / meter divisibility — hard · Request
 
 - **Statement**: a declared unit divides the bar exactly and is
   tick-representable (`SWG0301`); incomplete tails follow the declared
   tail policy (`SWG0302`); a mapped span keeps one meter (`SWG0304`).
-- **Today**: typed errors in the Swang seam; the master timeline is the
-  single source of truth (SPEC hard rule 3).
-- **Incremental**: per span; cheap.
+- **Current status**: **wired gate** (typed errors in the Swang seam);
+  master timeline is the single source of truth (SPEC hard rule 3).
+- **Lookback / Incremental**: per span; cheap.
+  **Evidence / failure codes**: exist (`SWG03xx`).
 
-### 11. Seed presence — hard
+### 11. Seed presence — hard · Request
 
 - **Statement**: every stochastic operation names its seed; `density`
   without `seed` is refused (`SWG0303`); `PruneSpec` carries the rhythm
   seed by law.
-- **Classification reason**: determinism (SPEC hard rule 6) expressed as
-  an admissibility rule on *requests*, not on musical content — the rule
-  layer should keep that distinction visible.
+- **Classification reason**: determinism (SPEC hard rule 6) expressed
+  as admissibility of *requests*, never of musical content — the
+  subject split exists precisely to keep this visible.
+- **Current status**: **wired gate**. **Evidence / failure code**:
+  exist. **Lookback / Incremental**: N/A.
 
-### 12. Expansion / cycle budgets — hard
+### 12. Expansion / cycle budgets — hard · Execution
 
 - **Statement**: expansion never exceeds its declared budget; breach is
   a typed refusal, never truncation.
-- **Today**: `ExpansionBudget` in `griff-pattern`; the operator
-  inventory adds `CycleBudget` to the same family (Kani harnesses for
-  the budget invariant are already a process-backlog item).
+- **Current status**: **wired gate** — `ExpansionBudget` in
+  `griff-pattern`; the operator inventory adds `CycleBudget` to the
+  same family (Kani harnesses for the budget invariant are a
+  process-backlog item).
+- **Scope**: the computation, not the music — which is exactly why
+  Execution is its own subject. **Evidence**: budget + attempted size.
+  **Lookback / Incremental**: N/A.
 
-### 13. Tapping-transition reachability — defer
+### 13. Tapping-transition reachability — defer · Candidate
 
 - **Statement**: technique transitions (tapping entries/exits) are
   physically reachable in time.
 - **Prerequisite (named)**: a technique evidence model over the rich
-  note model (ADR-0018) that defines *what* a transition is and *when*
+  note model (ADR-0018) defining *what* a transition is and *when*
   reachability is measurable. Classifying it hard before that model
-  exists would invent the model by side effect (the reset-on-event
-  lesson from the operator inventory).
+  exists would invent the model by side effect.
+- **Other fields**: TBD with the model / N/A.
 
-### 14. Harmonic-context membership — defer
+### 14. Harmonic-context membership — defer · Candidate
 
 - **Statement**: notes lie within a scoped harmonic context.
 - **State source**: the S15 stage plan — accepted Phase 1 makes tonal
   context evidence-only, and the *proposed* Phase 2 contract carries an
   explicit acceptance gate of **no pitch restriction and no production
   behaviour change**; chromatic passing tones, borrowed notes and
-  tensions stay legal by design (recorded in the contract proposal after
-  the PR #149 Codex finding). Nothing in the accepted or proposed S15
-  phases permits a context-based hard rule.
+  tensions stay legal by design (recorded in the contract proposal
+  after the PR #149 Codex finding). Nothing in the accepted or proposed
+  S15 phases permits a context-based hard rule.
 - **Prerequisite (named)**: a later, explicitly calibrated contract on
-  top of the S15 phases *as they are accepted*. Until then tonal context
-  influences nothing in the rule layer.
+  top of the S15 phases *as they are accepted*.
+- **Other fields**: TBD with that contract / N/A.
 
-### 15. Voice crossing — opt-in
+### 15. Voice crossing — opt-in · Candidate
 
 - **Statement**: part B does not cross above/below part A where the
-  arrangement declares a register order.
-- **Today**: not implemented as a named rule; heavy overlap partially
-  shadowed by register mud (rule 7), which is a different fact
-  (co-occupancy, not order inversion).
-- **Classification reason**: like rule 8 — a legitimate device in some
-  arrangements (Cluster Engine treats it as a *selectable* rule, which
-  is the right prior art posture), so opt-in per `RuleScope`, never
-  universal.
+  arrangement declares a register order — a different fact from rule
+  7's co-occupancy (mud measures overlap, crossing measures order
+  inversion).
+- **Classification reason**: a legitimate device in some arrangements;
+  Cluster Engine treats it as a *selectable* rule, which is the right
+  prior-art posture. Opt-in per `RuleScope`, never universal.
+- **Current status**: not implemented as a named rule.
+- **Lookback / lookahead**: coincident or windowed onsets.
+  **Incremental**: yes. **Evidence**: onset span + the inverted pair.
+  **Failure code**: TBD at spec.
+- **Oracle candidate**: optional named extension of Problem B — not
+  part of `PairValidation` v1.
 
-## Oracle spike selection (the two real problems)
+## Oracle spike selection
 
-Per the Constraint Lab first increment, the spike models **existing**
-rules, not invented toys:
+The spike models **one existing rule set and one explicitly
+experimental, production-grounded counterfactual**. Experimental
+results provide calibration evidence and have **no authority over
+production**.
 
 - **Problem A — bounded-travel fretboard realization (experimental
   rule)**: given a monophonic line, tuning, `max_fret`, and an explicit
   travel bound, decide satisfiability of a `(string, fret)` assignment
   and return a witness or UNSAT. Two things this deliberately is *not*:
-  it is not the existing reachability rule (rule 1 is per-note existence
-  and needs no solver), and it is not a check on `infer_positions` — the
-  production DP exhaustively minimizes a weighted cost in which travel
-  is soft by standing decision (rule 3), so a bounded model answers a
-  different question and a bounded UNSAT is never a "missed feasible
-  assignment". What the spike actually measures: where an *experimental*
-  hard travel bound would bite — which real lines become UNSAT at which
-  bounds — producing calibration evidence for any future decision to
-  promote travel from soft fact to opt-in rule. Fixture export:
-  deterministic lines + tunings + bounds, archived with solver identity.
-- **Problem B — complementary pair cleanliness** (rules 6, 7, and
-  opt-in 15): given part A fixed and a candidate rhythm for part B,
-  decide whether any pitch assignment for B satisfies no-coincident-
-  dissonance + register windows (+ optional no-crossing), or prove the
-  window empty. This checks `PairValidation`'s rule set for emptiness —
-  exactly the "prove UNSAT honestly" use the Lab exists for.
+  it is not the existing reachability rule (rule 1 is per-note
+  existence and needs no solver), and it is not a check on
+  `infer_positions` — the production DP exhaustively minimizes a
+  weighted cost in which travel is soft by standing decision (rule 3),
+  so a bounded model answers a different question and a bounded UNSAT
+  is never a "missed feasible assignment". What the spike measures:
+  where an *experimental* hard travel bound would bite — which real
+  lines become UNSAT at which bounds — producing calibration evidence
+  for any future decision to promote travel from soft fact to opt-in
+  rule. Fixture export: deterministic lines + tunings + bounds,
+  archived with solver identity.
+
+- **Problem B — complement pair cleanliness (existing rule set, exact
+  contract)**: given part A fixed and a candidate rhythm for part B,
+  decide whether any pitch assignment for B satisfies the *actual*
+  `PairValidation` laws, or prove the window empty. The model is pinned
+  to production semantics, not a convenient CSP cousin:
+  - **B pitch domain (finite, named)**: the relation-mode domain the
+    arranger actually draws from (normalized band / `ScaleLadder` per
+    mode) — without a finite domain the solver trivially "solves" the
+    problem by exiling B to a far register;
+  - **playability**: A playable is an input *precondition*; B playable
+    is a constraint under B's named tuning, `FingeringWeights::v1`,
+    `STANDARD_MAX_FRET`, on the highest-pitch-per-onset line (a chord
+    participates through its top note only) — `is_clean` requires both,
+    and a Problem B without playability would be a fan adaptation of
+    `PairValidation`, not `PairValidation`;
+  - **coincident dissonance**: exact classes `{1, 6, 11}` mod 12 on
+    coincident onsets;
+  - **register mud**: the exact current law —
+    `band_overlap > 0.5` over whole-part bands, relative to the
+    narrower band, with the degenerate single-pitch rule;
+  - **voice crossing**: an optional named extension (rule 15), never
+    part of `PairValidation` v1.
 
 Both problems archive exact inputs/outputs per the Lab's manifest
 discipline; neither touches production (`deny.toml` unchanged).
@@ -307,9 +429,10 @@ discipline; neither touches production (`deny.toml` unchanged).
 ## What the inventory deliberately does not contain
 
 Workspace-level laws (forbid-unsafe, lint gates, TDD, English-only) —
-they are repository constitution (SPEC/AGENTS), not candidate-admissibility
-rules, and putting them in a `RuleScope` would confuse two different kinds
-of "hard". Scoring axes (`rerank.rs`, relation weights) — soft by
-definition, catalogued where they live. Rules whose subject matter is
-deferred by other documents (learned-model authority boundaries — the
+they are repository constitution (SPEC/AGENTS), not
+candidate-admissibility rules, and putting them in a `RuleScope` would
+confuse two different kinds of "hard". Scoring axes (`rerank.rs`,
+relation weights, `strong_beat_doubling_penalty`) — soft by definition,
+catalogued where they live. Rules whose subject matter is deferred by
+other documents (learned-model authority boundaries — the
 preference-learning proposal's non-goals govern).
