@@ -53,9 +53,12 @@ with an explicit scope — scope is part of the rule, not a fifth state.
   that all generated phrases must satisfy": `bar_count ≥ 1`, uniform
   time signature and tempo, `ticks_per_quarter > 0`,
   `pitch_lo ..= pitch_hi`.
-- `core/src/tonal.rs` (S15 Phase 1): tonal estimates are **evidence
-  only** — scoped, optional, and by the accepted S15 contract they
-  restrict no pitch and change no production behaviour.
+- `core/src/tonal.rs` (S15 Phase 1, accepted): tonal estimates are
+  **evidence only** — scoped, optional, restricting no pitch. The
+  generation-facing scoped-context contract with its explicit
+  no-pitch-restriction / no-production-change acceptance gate is S15
+  **Phase 2 — proposed, not yet accepted**; today's guarantee rests on
+  the accepted Phase-1 evidence-only behaviour.
 - `pattern/` + Swang seam: `ExpansionBudget` (typed refusal on breach),
   bar-geometry divisibility and tail policy (`SWG0301`/`SWG0302`), meter
   uniformity across a mapped span (`SWG0304`), `density` requires a seed
@@ -104,11 +107,12 @@ for DP clients (ADR-0013/0030) without whole-candidate recomputation.
   (path *quality* is rule 3's soft territory).
 - **Evidence**: the unpositionable note's musical path + pitch + tuning.
 - **Incremental**: yes (per note).
-- **Oracle candidate**: **yes — spike problem A.** The fingering DP is a
-  heuristic over a real solution space; an exact model can (a) confirm
-  UNSAT claims for unreachable lines and (b) hunt minimal
-  counterexamples where the DP's greedy-ish path misses a feasible
-  assignment under tighter travel bounds.
+- **Oracle candidate**: **yes — spike problem A**, with an honest
+  framing: plain reachability needs no solver (per-note existence), and
+  `infer_positions` exhaustively minimizes its weighted fingering cost
+  with travel deliberately soft — so a bounded-travel model answers a
+  *different, experimental* question, never a validation of the
+  production DP (see Problem A).
 
 ### 2. Chord voicing feasibility — defer
 
@@ -133,9 +137,17 @@ for DP clients (ADR-0013/0030) without whole-candidate recomputation.
 
 ### 4. Pitch range window — hard
 
-- **Statement**: generated pitches lie in `pitch_lo ..= pitch_hi`.
+- **Statement**: generated pitches lie within the **normalized** window
+  of the two request bounds. Normalization comes first and is part of
+  the rule: production passes both fields through `PitchRange::new`,
+  which accepts bounds in either order (swapping `pitch_lo > pitch_hi`)
+  and clamps to valid MIDI — a reversed request is currently *supported*,
+  not rejected, and a regression test pins that. Formalizing the literal
+  `pitch_lo ..= pitch_hi` reading would misclassify inputs production
+  accepts today.
 - **Scope**: per generation request; dimension Pitch; per-note.
-- **Today**: `GenerationConstraints` (documented as hard).
+- **Today**: `GenerationConstraints` (documented as hard) via
+  `PitchRange::new` normalization.
 - **Lookback / lookahead**: none. **Incremental**: yes.
 - **Evidence**: offending note + bounds.
 - **Oracle candidate**: no — trivially checkable; needs no solver.
@@ -240,14 +252,16 @@ for DP clients (ADR-0013/0030) without whole-candidate recomputation.
 ### 14. Harmonic-context membership — defer
 
 - **Statement**: notes lie within a scoped harmonic context.
-- **State source**: the accepted S15 contract — context is optional
-  evidence with **no pitch restriction and no production behaviour
-  change**; chromatic passing tones, borrowed notes and tensions stay
-  legal by design (recorded in the contract proposal after the PR #149
-  Codex finding).
+- **State source**: the S15 stage plan — accepted Phase 1 makes tonal
+  context evidence-only, and the *proposed* Phase 2 contract carries an
+  explicit acceptance gate of **no pitch restriction and no production
+  behaviour change**; chromatic passing tones, borrowed notes and
+  tensions stay legal by design (recorded in the contract proposal after
+  the PR #149 Codex finding). Nothing in the accepted or proposed S15
+  phases permits a context-based hard rule.
 - **Prerequisite (named)**: a later, explicitly calibrated contract on
-  top of the accepted S15 phases. Until then tonal context influences
-  nothing in the rule layer.
+  top of the S15 phases *as they are accepted*. Until then tonal context
+  influences nothing in the rule layer.
 
 ### 15. Voice crossing — opt-in
 
@@ -266,14 +280,20 @@ for DP clients (ADR-0013/0030) without whole-candidate recomputation.
 Per the Constraint Lab first increment, the spike models **existing**
 rules, not invented toys:
 
-- **Problem A — fretboard realization** (rule 1, with rule 3 as data):
-  given a monophonic line, tuning, `max_fret`, and a travel bound,
-  decide satisfiability of a `(string, fret)` assignment and return a
-  witness or UNSAT. Compared against `infer_positions` on the same
-  inputs: confirms unreachability claims exactly and hunts minimal
-  counterexamples where the DP misses feasible assignments under tight
-  bounds. Fixture export: deterministic lines + tunings, archived with
-  solver identity.
+- **Problem A — bounded-travel fretboard realization (experimental
+  rule)**: given a monophonic line, tuning, `max_fret`, and an explicit
+  travel bound, decide satisfiability of a `(string, fret)` assignment
+  and return a witness or UNSAT. Two things this deliberately is *not*:
+  it is not the existing reachability rule (rule 1 is per-note existence
+  and needs no solver), and it is not a check on `infer_positions` — the
+  production DP exhaustively minimizes a weighted cost in which travel
+  is soft by standing decision (rule 3), so a bounded model answers a
+  different question and a bounded UNSAT is never a "missed feasible
+  assignment". What the spike actually measures: where an *experimental*
+  hard travel bound would bite — which real lines become UNSAT at which
+  bounds — producing calibration evidence for any future decision to
+  promote travel from soft fact to opt-in rule. Fixture export:
+  deterministic lines + tunings + bounds, archived with solver identity.
 - **Problem B — complementary pair cleanliness** (rules 6, 7, and
   opt-in 15): given part A fixed and a candidate rhythm for part B,
   decide whether any pitch assignment for B satisfies no-coincident-
