@@ -2,7 +2,8 @@
 
 Working research artifact for the reproducible-pattern-processes proposal:
 sixteen candidate operators, each surveyed against what Griff already has,
-classified adopt / adapt / reject with a reason and a later owner.
+classified under a closed decision taxonomy with a reason and a later
+owner.
 
 Status: for discussion (v1). Companion to
 [`reproducible-pattern-processes.md`](reproducible-pattern-processes.md);
@@ -18,6 +19,21 @@ here is a licence to *specify*, never a decision already taken.
 Licence discipline: all prior art is idea-only reuse; GPL sources
 (TidalCycles, TOT) are reference systems whose code never enters this MIT
 workspace (AGENTS.md rule).
+
+## Decision taxonomy (closed — exactly four states)
+
+- **adopt** — earns its own spec section (still gated by golden vectors
+  and the red→green slice, per the acceptance gate above);
+- **adapt** — enters only after reconciliation with named existing
+  semantics; the reconciliation target is part of the decision;
+- **defer** — blocked on a named prerequisite; no adopt/adapt decision
+  exists until that prerequisite does;
+- **reject** — must not enter S16.
+
+Qualifiers ("single semantics", "sugar tier") live in the *reason*, never
+in the state. No operator in this inventory earned `reject`; the state
+exists so a future rejection is a recorded decision, not a silent
+omission.
 
 ## Survey baseline — what already exists
 
@@ -51,19 +67,19 @@ universe, *before* it is written.
 | ring / cycle | repetition backbone, finite cyclic lanes | `map_rhythm` §1.11 palette cycling | **adapt** | S16 IR |
 | rotate | phase-shift a cycle (displacement riffs) | §1.11 bar-index rotation | **adopt** (single semantics) | S16 IR |
 | reverse | retrograde | none | **adopt** | S16 IR |
-| ping-pong | forward-back oscillation | none | **adapt** (derived form) | S16 IR (sugar) |
-| stutter | per-cell repetition, rhythmic insistence | none | **adopt** | S16 IR |
+| ping-pong | forward-back oscillation | none | **adopt** (standalone) | S16 IR |
+| stutter | per-note subdivision, rhythmic insistence | none (timed semantics) | **defer** (timed layer) | Swang timed lowering |
 | creep | sliding-window walk, evolving loop | none | **adopt** | S16 IR + cockpit module |
 | pad-to-multiple | fit material to bar multiples | `map_rhythm` tail policy `rest_pad` | **adapt** | S16 IR |
 | euclidean-mask | even onset distribution | none (deterministic) | **adopt** | S16 IR |
 | urn | no-repeat-within-cycle randomness | none (`ShuffleMotifs` samples with replacement — not an urn) | **adopt** | S16 IR |
-| bounded-walk | constrained wandering line | `ConstrainedRandomWalk` strategy | **adapt** (defer) | S6 generator stays |
+| bounded-walk | constrained wandering line | `ConstrainedRandomWalk` strategy | **defer** (unification decision) | S6 generator stays |
 | multi-cycle | polymeter-style long development | none | **adopt** | S16 IR |
-| reset-on-event | re-sync axes at musical events | none (no events contract yet) | **adapt** (blocked) | S16/S8 |
+| reset-on-event | re-sync axes at musical events | none (no events contract yet) | **defer** (events contract) | S16/S8 |
 | envelope-modulation | parameter development over extent | none | **adopt** | S16 IR + S14 |
 | mask | explicit thinning by a given mask | `thin` §1.10 type contract | **adopt** (as first specified `thin` rule) | S16 spec |
 | repeat | plain finite repetition | ring; `RepeatVariation`; §1.11 cycling | **adapt** (sugar over ring) | S16 IR |
-| thin | density reduction | frozen §1.10 contract; `fractalize density/seed` | **defer to spec** | Swang spec |
+| thin | density reduction | frozen §1.10 contract; `fractalize density/seed` | **defer** (selection-rule spec) | Swang spec |
 
 ## Per-operator detail
 
@@ -138,56 +154,69 @@ this rule. *Boundedness* must hold under `ExpansionBudget`/`CycleBudget`.
 - **Decision / reason**: **adopt** — cheap, lawful, obviously useful.
 - **Later owner**: S16 pattern IR.
 
-### ping-pong — adapt (derived form)
+### ping-pong — adopt (standalone)
 
 - **Musical purpose**: forward-then-back oscillation without doubling the
   endpoints.
 - **Prior art**: Isobar ping-pong; ubiquitous in hardware sequencers.
 - **Input / output**: finite lane → forward-then-back lane with endpoints
-  not repeated. Output length is defined by case, so golden vectors cannot
-  diverge from the derived form: empty lane → empty; singleton → the
-  singleton unchanged; `n ≥ 2` → `2n−2`. (The derived form below realizes
-  exactly these lengths — `interior` of a singleton or empty lane is
-  empty.)
+  not repeated. Output length is defined by case: empty lane → empty;
+  singleton → the singleton unchanged; `n ≥ 2` → `2n−2`.
 - **Existing overlap**: none directly.
 - **Boundedness**: bounded (≤ 2n).
 - **State**: none beyond the ring cursor it usually feeds.
 - **Randomness**: none.
 - **Identity effect**: standard rule (recipe + lineage; content follows
   the output).
-- **Composition laws**: expressible as
-  `concat(p, reverse(interior(p)))` — a composition of adopted primitives.
-- **Decision / reason**: **adapt** — enters as *derived* sugar over
-  concat/reverse/ring; a primitive only if the derived form measurably
-  fails (it should not).
-- **Later owner**: S16 pattern IR (sugar tier).
+- **Composition laws**: `reverse(pingpong(p))` is a rotation of
+  `pingpong(p)`; endpoints appear exactly once per period. The equivalence
+  `pingpong(p) = concat(p, reverse(interior(p)))` is recorded as a *future
+  cross-check law* — `concat` and `interior` are in neither this inventory
+  nor S16, so it defines nothing today.
+- **Decision / reason**: **adopt** as a standalone bounded transform with
+  the case-defined output above. The earlier draft called it sugar over
+  "adopted primitives" that do not exist — sugar over a nonexistent sugar
+  factory is not a definition. If concat/interior are ever adopted, the
+  equivalence becomes a golden-vector law, and ping-pong may then be
+  *demoted* to sugar by an explicit later decision.
+- **Later owner**: S16 pattern IR.
 
-### stutter — adopt
+### stutter — defer (timed layer)
 
-- **Musical purpose**: per-cell repetition (`n` short notes where one was)
-  — rhythmic insistence, subdivision emphasis.
+- **Musical purpose**: per-note subdivision (`n` short notes sharing the
+  time span one note occupied) — rhythmic insistence. **Subdivision, not
+  stretching**: lengthening a lane at the same unit is sequence expansion
+  (`repeat` of cells), explicitly not stutter.
 - **Prior art**: Isobar stutter; live-coding idiom.
-- **Input / output**: lane + count `n` → **subdivision, not stretching**:
-  the `n` notes share the original cell's time span, each lasting
-  `unit / n`. Under `map_rhythm`'s mandatory unit this means the operator
-  changes the effective unit of the affected span; `unit / n` must remain
-  exactly representable in whole ticks at the score's PPQN, and a
+- **Input / output**: the honest form is **timed**:
+  `RhythmTemplate` / event span + count `n` → `n` adjacent notes sharing
+  the original duration, each `duration / n`; the subdivided duration must
+  remain exactly representable in whole ticks at the score's PPQN, and a
   non-representable subdivision is a typed error (the §1.11 SWG0301
-  discipline). Naively lengthening the lane to `n·len` at the *same* unit
-  is a different operation — sequence expansion, i.e. `repeat` of cells —
-  and is explicitly not stutter.
-- **Existing overlap**: none. Note the §1.10 law: two adjacent `X` are two
-  short notes, never a merged sustain — stutter output obeys it by
-  construction; merging stays with the deferred articulation operators.
-- **Boundedness**: cell count multiplies ×n — must charge the
-  `ExpansionBudget`/`CycleBudget`; exceeding is a typed refusal.
+  discipline).
+- **Existing overlap**: none. The §1.10 law survives: `n` short notes are
+  `n` notes, never a merged sustain — merging stays with the deferred
+  articulation operators.
+- **Boundedness**: note count multiplies ×n — budget-charged; exceeding is
+  a typed refusal.
 - **State**: none. **Randomness**: none.
 - **Identity effect**: standard rule (recipe + lineage; content follows
   the output).
 - **Composition laws**: `stutter(1) = id`;
-  `stutter(a) ∘ stutter(b) = stutter(a·b)`.
-- **Decision / reason**: **adopt** — simple, lawful, budget-aware.
-- **Later owner**: S16 pattern IR.
+  `stutter(a) ∘ stutter(b) = stutter(a·b)`; total extent preserved.
+- **Decision / reason**: **defer** — the semantics are clear but the
+  current pattern IR cannot express them: an `ActivitySequence` carries no
+  time, and `map_rhythm` takes one mandatory unit for the whole sequence,
+  not a per-span unit. Selective stutter therefore lives *after*
+  `map_rhythm`, as a rhythm-template / timed-event transform — a layer
+  that does not exist yet and must not be invented by an operator entry.
+  (The structural alternative — uniform grid refinement
+  `(ActivitySequence, unit, n) → (refined sequence, unit / n)`, expanding
+  every slot `X → X…X`, `. → .….` — stays inside the pattern IR but is a
+  *different, whole-sequence* operator, not selective stutter; if ever
+  wanted it enters this inventory under its own name.)
+- **Later owner**: Swang timed lowering / rhythm-template transform tier —
+  not pure `griff-pattern`.
 
 ### creep — adopt
 
@@ -286,7 +315,7 @@ this rule. *Boundedness* must hold under `ExpansionBudget`/`CycleBudget`.
   the kind of law the proptest/golden-vector discipline can pin.
 - **Later owner**: S16 pattern IR.
 
-### bounded-walk — adapt (defer)
+### bounded-walk — defer
 
 - **Musical purpose**: constrained wandering line — melodic motion without
   large leaps.
@@ -301,10 +330,10 @@ this rule. *Boundedness* must hold under `ExpansionBudget`/`CycleBudget`.
 - **Identity effect**: recipe (stream + seed).
 - **Composition laws**: all outputs within declared bounds (typed refusal
   otherwise).
-- **Decision / reason**: **adapt, deferred** — a pattern-tier walk must
-  either share semantics with the strategy or not exist; extracting it is
-  generator-unification work, not inventory work. Recording the overlap
-  here is the deliverable.
+- **Decision / reason**: **defer** — prerequisite: an explicit
+  generator-unification decision. A pattern-tier walk must either share
+  semantics with the strategy or not exist; extracting it is unification
+  work, not inventory work. Recording the overlap here is the deliverable.
 - **Later owner**: S6 generator (status quo); S16 IR only with a
   unification decision.
 
@@ -328,7 +357,7 @@ this rule. *Boundedness* must hold under `ExpansionBudget`/`CycleBudget`.
   §2.3, with its budget hazard named.
 - **Later owner**: S16 pattern IR.
 
-### reset-on-event — adapt (blocked)
+### reset-on-event — defer
 
 - **Musical purpose**: re-synchronize cursors at musical events
   (`phrase_started`, `section_changed`…) — alignment without shared
@@ -343,9 +372,9 @@ this rule. *Boundedness* must hold under `ExpansionBudget`/`CycleBudget`.
   state. **Randomness**: none.
 - **Identity effect**: recipe; changes subsequent content deterministically.
 - **Composition laws**: reset is idempotent per event instance.
-- **Decision / reason**: **adapt, blocked** — cannot be specified before
-  the events contract; adopting it now would invent that contract by
-  side effect.
+- **Decision / reason**: **defer** — prerequisite: the
+  synchronization-events contract (proposal §2.6). Deciding it now would
+  invent that contract by side effect.
 - **Later owner**: S16 IR + S8 (events surface).
 
 ### envelope-modulation — adopt
@@ -412,20 +441,34 @@ this rule. *Boundedness* must hold under `ExpansionBudget`/`CycleBudget`.
   repeat is born).
 - **Later owner**: S16 pattern IR (sugar tier).
 
-### thin — defer to spec
+### thin — defer
 
 - **Musical purpose**: density reduction of a pattern.
 - **Prior art**: live-coding `degrade`-family; `fractalize density/seed`.
-- **Input / output**: frozen — §1.10.
+- **Input / output**: frozen — §1.10 (`Pattern2D -> Pattern2D`, may only
+  flip `X -> .`).
 - **Existing overlap**: this *is* the spec's operator; the proven concrete
   rule is seeded density pruning, already named by
   `fractalize density/seed` (§3.4).
-- **Decision / reason**: **defer to spec** — this inventory adds no new
-  decision; it only enumerates the candidate selection-rule families for
-  the future spec section: explicit mask (above), euclidean selection,
-  seeded density (exists). Per §3.4 the language must not pre-create a
-  vaguer abstraction, and this row exists to make that impossible to do by
-  accident.
+- **Boundedness**: shape- and length-preserving by the frozen type
+  contract; trivially bounded.
+- **State**: not fixed by the type contract; a property of the concrete
+  selection rule (explicit mask: none; seeded density: none beyond the
+  seed; a future stateful rule would have to declare its cursor).
+- **Randomness**: not a property of `thin` as a type; supplied by the
+  concrete rule (explicit mask: none; seeded density: one named stream).
+- **Identity effect**: rule identity + parameters enter the recipe; each
+  application adds a lineage step; content changes exactly when at least
+  one `X` actually flips.
+- **Composition laws**: dimensions, coordinates, cell count and
+  post-`linearize` length preserved; monotone — never adds active cells;
+  hence `thin_a ∘ thin_b` is itself a thin.
+- **Decision / reason**: **defer** — prerequisite: the §1.10 selection-rule
+  spec section. This inventory adds no new decision; it only enumerates
+  the candidate rule families for that section: explicit mask (above),
+  euclidean selection, seeded density (exists). Per §3.4 the language must
+  not pre-create a vaguer abstraction, and this row exists to make that
+  impossible to do by accident.
 - **Later owner**: Swang spec.
 
 ## What the inventory deliberately does not contain

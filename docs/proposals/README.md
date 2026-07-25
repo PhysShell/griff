@@ -19,9 +19,10 @@ live contract.
   deterministic generators. Status: for discussion.
 - [`pattern-operator-inventory.md`](pattern-operator-inventory.md) — sixteen
   candidate pattern operators surveyed against `griff-pattern`, the Swang
-  spec, and the generator; classified adopt / adapt / reject with reasons
-  and later owners. Companion artifact to the pattern-processes proposal.
-  Status: for discussion.
+  spec, and the generator; classified under a closed four-state taxonomy
+  (adopt / adapt / defer / reject) with reasons and later owners.
+  Companion artifact to the pattern-processes proposal. Status: for
+  discussion.
 - [`reproducible-pattern-processes.md`](reproducible-pattern-processes.md) —
   bounded, seed-isolated pattern operators, control curves, and
   boundary-applied edits as a layer above the canonical score, extending the
