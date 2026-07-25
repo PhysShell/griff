@@ -17,6 +17,11 @@ live contract.
 - [`generator-reachability-lab.md`](generator-reachability-lab.md) — offline
   coverage census and target-relative symbolic comparison for the
   deterministic generators. Status: for discussion.
+- [`pattern-operator-inventory.md`](pattern-operator-inventory.md) — sixteen
+  candidate pattern operators surveyed against `griff-pattern`, the Swang
+  spec, and the generator; classified adopt / adapt / reject with reasons
+  and later owners. Companion artifact to the pattern-processes proposal.
+  Status: for discussion.
 - [`reproducible-pattern-processes.md`](reproducible-pattern-processes.md) —
   bounded, seed-isolated pattern operators, control curves, and
   boundary-applied edits as a layer above the canonical score, extending the
