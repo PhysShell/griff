@@ -9,6 +9,12 @@ memos on generation, optimization and ML)
 Scope: docs-only until accepted; binds nothing. Feeds S9 (feedback layer)
 and complements the Generator Reachability Lab proposal. `rerank.rs` and
 every frozen strategy stay untouched until an explicit acceptance contract.
+Relation to S9: the canonical S9 Phase 1 plan — explainable EMA weight
+updates, "no gradient descent / RL before S10" — **remains governing until
+this proposal is accepted**. Acceptance explicitly *revises* S9 Phase 1
+(the pairwise learner replaces or extends the EMA baseline by decision, and
+the stage doc is amended accordingly); this proposal never sits beside S9
+as a second, competing adoption queue.
 
 ## 1. Architecture position
 
@@ -42,11 +48,23 @@ different question; they are not competitors:
 
 S8 already emits the raw material: favorite / reject / history with full
 candidate provenance (Swang Playground Slice 3, PR #126). Stage 0 is a data
-contract, not a model: persist each judgement as `(context, candidate A,
-candidate B or set, choice, provenance, session identity)` so that pairwise
-labels can be *derived* later. The scarce resource in this project is human
-listening, not CPU (reachability-lab Phase 0 premise) — evidence collection
-must therefore be designed before any learner exists.
+contract, not a model — and existing favorite/reject events are *not*
+automatically pairwise labels: today's session history is not a controlled
+comparison protocol. Each judgement is persisted with enough context to
+derive labels honestly later:
+
+```text
+explicit pairwise choice ≠ unary favorite/reject   (kept distinct)
+which candidates were exposed + their display order
+which were actually auditioned; listening duration / completion
+generation-set identity, provenance, session identity
+```
+
+The absence of a favorite is not a loss against every neighbour, and Skip
+is not dislike (S9 already states this; Stage 0 preserves it). The scarce
+resource in this project is human listening, not CPU (reachability-lab
+Phase 0 premise) — evidence collection must therefore be designed before
+any learner exists.
 
 ## 3. Stage 1 — symbolic SSL embeddings, retrieval-only
 
@@ -67,18 +85,27 @@ understanding.
 ## 4. Stage 2 — Human Similarity Benchmark (the gate)
 
 Adopted from timbremetrics methodology, transposed to symbolic riffs.
-Anchor A, candidates B/C; questions: more similar to A? better variation of
-A? better complement to A? too close (a copy)? too far (unrelated)?
+Anchor A, candidates B/C — but the questions are **separate benchmark
+tasks, not one similarity function**:
 
-Metrics: triplet agreement, pairwise agreement, top-k retrieval, rank
-correlation (Kendall/Spearman), NDCG, per-user consistency, cross-user
-generalisation, bootstrap confidence intervals. Compared systems:
-handcrafted symbolic distances (the existing `similarity.rs` /
-`novelty.rs` vocabulary), corpus features, learned embeddings, combinations.
+- *similarity* — which is more similar to A?
+- *variation* — which is a better variation of A?
+- *complementarity* — which better complements A? (often demands
+  difference, not closeness — the opposite gradient from similarity);
+- *copy detection* — which is too close / too far?
 
-**Gate rule: no embedding or learned distance enters production scoring
-until it beats or matches the handcrafted baseline on this benchmark.**
-Cosine distance is not human perception until proven so.
+Each task has its own dataset, metrics, and its own gate. Metrics per task:
+triplet agreement, pairwise agreement, top-k retrieval, rank correlation
+(Kendall/Spearman), NDCG, per-user consistency, cross-user generalisation,
+bootstrap confidence intervals. Compared systems: handcrafted symbolic
+distances (the existing `similarity.rs` / `novelty.rs` vocabulary), corpus
+features, learned embeddings, combinations.
+
+**Gate rule: no embedding or learned distance enters production scoring for
+a given task until it beats or matches the handcrafted baseline on that
+task's benchmark.** A metric that wins on motif similarity earns no licence
+to rank complementary-guitar candidates. Cosine distance is not human
+perception until proven so.
 
 ## 5. Stage 3 — linear pairwise reranker, bounded correction
 

@@ -36,27 +36,42 @@ struct RuleScope {
 }
 ```
 
-### 2.2 Typed result — different failures are different states
+### 2.2 Typed results — production rules and the offline Lab are two contracts
 
-Per-rule evaluation returns one of five states:
+Per-rule production evaluation returns one of four states; solver outcomes
+belong to a separate, Lab-only type, because the solver is strictly offline
+and a solver failure must never be expressible as a production rule result:
 
 ```rust
-enum ConstraintResult {
+enum RuleEvaluation {
     Satisfied,
     Violated { code, musical_path, evidence, explanation },
     Unknown { reason },        // e.g. lookahead not yet available
     Unsupported { operation }, // the rule cannot evaluate this input at all
-    SolverFailure { diagnostic },
+}
+
+enum ConstraintLabOutcome {
+    Sat { solution, evidence },
+    Unsat { proof_or_core },   // the empty-search-space fact lives here
+    SolverFailure { diagnostic }, // timeout/crash — never "Unsat", never a rule result
 }
 ```
 
-Two related facts deliberately live *outside* this enum: a low-scoring
-candidate is a scoring fact and never a constraint state; and an empty
-search space (a whole *problem* being UNSAT) is a problem-level outcome
-reported by the Constraint Lab's solve result (§3), distinct from a solver
-timeout or crash (`SolverFailure`). Nothing here is ever conflated: each of
-these outcomes keeps its own typed diagnostic. (Same discipline as the
-reachability lab's "no exact match within N trials ≠ unreachable".)
+A low-scoring candidate deliberately appears in neither type: it is a
+scoring fact, not a constraint state. (Same discipline as the reachability
+lab's "no exact match within N trials ≠ unreachable".)
+
+**Aggregation policy (fail-closed).** Which state admits a candidate is part
+of the contract, not left to callers:
+
+- any `Violated` → the candidate is rejected;
+- `Satisfied` by every applicable rule → admissible;
+- `Unknown` / `Unsupported` → typed refusal by default; a rule may be
+  admitted with an explicit, versioned deferment policy (e.g. "unknown
+  until lookahead arrives, re-evaluated at the boundary"), and that policy
+  is named in the evaluation's provenance;
+- `SolverFailure` cannot occur here by construction — it is not a variant
+  of `RuleEvaluation`.
 
 ### 2.3 Rule metadata (Cluster Rules model)
 
@@ -66,9 +81,15 @@ failure code, evidence path, human-readable explanation, and whether the
 rule supports incremental evaluation (matters for DP clients, ADR-0013/0030).
 
 Starter vocabulary — hard: physical playability, no conflicting notes on a
-string, reachable tapping transitions, complement does not double the lead
-on strong beats. Soft (stays in scoring, never here): minimize fret jumps,
-prefer contrary motion, preserve corpus rhythm identity, register variety.
+string, reachable tapping transitions. Soft (stays in scoring, never here):
+minimize fret jumps, prefer contrary motion, preserve corpus rhythm
+identity, register variety.
+
+Complement-vs-lead doubling on strong beats is deliberately *not* a hard
+rule: a strong-beat unison is a legitimate, sometimes intentional
+arrangement device. It enters the vocabulary as an opt-in, explicitly
+scoped arrangement constraint (a `RuleScope` relation the user turns on),
+and as a soft penalty by default — never as universal illegality.
 
 Harmonic-context membership is deliberately absent from the hard list: the
 S15 Phase 2 contract carries tonal context as *optional* evidence with no

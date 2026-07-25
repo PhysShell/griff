@@ -6,6 +6,11 @@ agents are allowed to *touch* the candidate space.
 Status: proposal for discussion (v1)
 Scope: docs-only until accepted; binds nothing. UX directions for S8/S16
 surfaces; the editing contract would eventually deserve an ADR.
+Splitting plan: this document bundles three architectural topics with
+different owners, acceptance contracts, and timelines. It is tolerable as
+one research distillation, but on acceptance it splits into at least
+*transactional-score-editing*, *candidate-space-exploration*, and
+*cockpit-technique-modules*; no single ADR inherits the whole file.
 
 ## 1. Technique modules (MOZLib model)
 
@@ -34,14 +39,28 @@ X: rhythmic displacement    Y: register / contour change
 color: playability or score    size: novelty    boundary: hard-constraint validity
 ```
 
-Every point has a full identity — `source_hash + operator_program_hash +
-seed bundle + policy version + generation context hash +
-constraint-contract version + generator schema version` — so clicking a
-point reproduces it exactly, and the same identity can never reproduce a
-different candidate after any bound input or version changes. The context
-component follows the existing cockpit precedent: a produced set is already
-bound to the immutable run context that made it (`ActiveGenerateRun` in
-`cockpit/src/generation.rs`), so identity and provenance cannot drift apart.
+Every point carries **three distinct identities**, never conflated into one
+"full identity", because they answer different questions and serve
+different consumers:
+
+```text
+GenerationRecipeId   what ran, and in which environment: source_hash,
+                     operator_program_hash, seed bundle, policy version,
+                     generation context hash, constraint-contract version,
+                     generator schema version  → reproducibility, cache keys
+CandidateContentId   hash of the canonical Score / selected extent
+                     → dedup, favorites, "is this the same music?"
+LineageId            which source and transform chain produced it
+                     → provenance display, undo trees, history
+```
+
+Two different recipes can produce a byte-identical `Score`; one recipe can
+produce a different output after an implementation fix (version bump).
+Favorites and dedup key on content, reproduction keys on recipe, history
+keys on lineage. The recipe's context component follows the existing
+cockpit precedent: a produced set is already bound to the immutable run
+context that made it (`ActiveGenerateRun` in `cockpit/src/generation.rs`),
+so identity and provenance cannot drift apart.
 The candidate space is treated as axes around a source (rhythm / contour /
 register / technique / complement variations), with per-axis freezing via
 named seed streams, lineage display, A/B against the source, and visible
@@ -63,12 +82,19 @@ Contract for every mutating operation — the editing transaction:
 1. typed payload; 2. operates on an immutable snapshot and carries that
 base snapshot's identity through validation to apply; 3. returns a diff;
 4. passes constraint validation *before* apply (see the constraint-contract
-proposal); 5. declares scope; 6. applies at a musical boundary
-compare-and-swap style — the apply succeeds only if the current accepted
-snapshot still matches the transaction's base; a stale transaction is
-rejected (or explicitly revalidated against the current snapshot) rather
-than applied to a score it was never validated against; 7. is undoable;
-8. records provenance.
+proposal); 5. declares scope; 6. commits compare-and-swap style — the
+commit succeeds only if the current accepted snapshot still matches the
+transaction's base; a stale transaction is rejected (or explicitly
+revalidated against the current snapshot) rather than applied to a score
+it was never validated against; 7. is undoable; 8. records provenance.
+
+Committing and hearing are **two separate transactions**:
+`commit_transform` creates the new immutable accepted snapshot immediately
+(this is where CAS, undo, and history live), while
+`activate_snapshot_at_boundary` switches playback to it at the chosen
+musical boundary. Canonical editing therefore never depends on transport
+state, and undo has a single unambiguous answer — it operates on committed
+snapshots, whether or not the audible switch has happened yet.
 
 Instead of a generic "are you sure?", confirmation states concrete
 consequences:

@@ -45,8 +45,13 @@ generalizes it: every stochastic operator draws from a *named* stream with
 its own identity —
 
 ```text
-operator_kind + operator_path + stream_version + seed + local_index
+operator_kind + operator_id + stream_version + seed + local_index
 ```
+
+`operator_id` is a *stable semantic identity*, never a positional AST path:
+inserting a neighbouring operator must not shift any other operator's
+stream, or "independent" streams would silently regenerate half the piece
+on an unrelated edit.
 
 so that (a) freezing one axis (pitch) while regenerating another (rhythm) is
 a first-class operation, (b) changing one operator's implementation bumps its
@@ -60,8 +65,12 @@ draw silently shifts every other operator's output.
 Pitch, rhythm, articulation, velocity and register may cycle with different
 periods (Sonic Pi's `ring`/`tick`); the full period is the LCM of the axis
 periods. This yields long controlled development from small material and is
-trivially finite and hashable. Cursors are explicit state in the query
-contract, never hidden counters.
+finite and hashable — but finite is not small: an LCM over several axes can
+be astronomically large, so materializing the full period is forbidden. A
+`CycleBudget` (in the `ExpansionBudget` family) bounds every expansion, and
+exceeding it is a typed refusal; queries evaluate windows lazily and never
+require the whole cycle. Cursors are explicit state in the query contract,
+never hidden counters.
 
 ### 2.4 Control curves (envelopes) instead of scalar sliders
 
@@ -70,6 +79,14 @@ Fenv-style curves on the normalized `0..1` extent of a phrase or section:
 ```text
 density: 0.0 → 0.25, 0.5 → 0.85, 1.0 → 0.40
 ```
+
+Decimal notation above is presentation syntax only: curve positions and
+values use versioned rational or fixed-point representations, per the S16
+no-floats-in-semantics law (the same discipline that converts `Tempo(f64)`
+to an exact rational). The interpolation law between breakpoints is an
+explicit, versioned part of the curve's semantics (step or linear-rational
+first; anything smoother needs its own versioned definition), so the same
+three breakpoints can never evaluate differently in two implementations.
 
 Candidate targets: complexity, note density, register target, variation
 strength, technique likelihood, harmonic tension, complement activity,
