@@ -17,3 +17,18 @@ live contract.
 - [`generator-reachability-lab.md`](generator-reachability-lab.md) — offline
   coverage census and target-relative symbolic comparison for the
   deterministic generators. Status: for discussion.
+- [`reproducible-pattern-processes.md`](reproducible-pattern-processes.md) —
+  bounded, seed-isolated pattern operators, control curves, and
+  boundary-applied edits as a layer above the canonical score, extending the
+  S16 pattern core. Status: for discussion.
+- [`hard-constraint-contract.md`](hard-constraint-contract.md) — one typed
+  rule layer separating legality from preference, plus MiniZinc as a strictly
+  offline oracle (Constraint Lab). Status: for discussion.
+- [`preference-and-similarity-learning.md`](preference-and-similarity-learning.md)
+  — the staged, benchmark-gated order in which ML enters Griff: preference
+  evidence, retrieval-only embeddings, a human similarity benchmark, then a
+  bounded linear reranker. Feeds S9. Status: for discussion.
+- [`transactional-editing-and-candidate-terrain.md`](transactional-editing-and-candidate-terrain.md)
+  — technique modules, a deterministic symbolic candidate terrain, and a
+  transactional agent-editing contract for the cockpit. Status: for
+  discussion.
