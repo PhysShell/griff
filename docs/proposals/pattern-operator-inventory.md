@@ -34,7 +34,8 @@ workspace (AGENTS.md rule).
   operators with distinct output types*.
 - Generator (`core/src/generate.rs`): strategies
   `ConstrainedRandomWalk` (leap-penalised walk), `ShuffleMotifs`
-  (per-bar shuffle), `RepeatVariation` (repeat + last-note variation),
+  (per-slot independent degree sampling with replacement, despite the
+  name), `RepeatVariation` (repeat + last-note variation),
   `MotifTransposeVariation`; per-bar grid rotation by bar index; seeded
   `Xorshift64`.
 
@@ -55,7 +56,7 @@ universe, *before* it is written.
 | creep | sliding-window walk, evolving loop | none | **adopt** | S16 IR + cockpit module |
 | pad-to-multiple | fit material to bar multiples | `map_rhythm` tail policy `rest_pad` | **adapt** | S16 IR |
 | euclidean-mask | even onset distribution | none (deterministic) | **adopt** | S16 IR |
-| urn | no-repeat randomness | `ShuffleMotifs` strategy | **adopt** | S16 IR |
+| urn | no-repeat-within-cycle randomness | none (`ShuffleMotifs` samples with replacement — not an urn) | **adopt** | S16 IR |
 | bounded-walk | constrained wandering line | `ConstrainedRandomWalk` strategy | **adapt** (defer) | S6 generator stays |
 | multi-cycle | polymeter-style long development | none | **adopt** | S16 IR |
 | reset-on-event | re-sync axes at musical events | none (no events contract yet) | **adapt** (blocked) | S16/S8 |
@@ -67,8 +68,13 @@ universe, *before* it is written.
 ## Per-operator detail
 
 Field key: *Prior art* names idea sources only. *Identity effect* uses the
-recipe / content / lineage split from the transactional-editing proposal.
-*Boundedness* must hold under `ExpansionBudget`/`CycleBudget`.
+recipe / content / lineage split from the transactional-editing proposal,
+with one rule stated once instead of per row: every applied operator's
+parameters enter the **recipe** (program hash) and every application adds a
+**lineage** step; **content** identity changes exactly when the produced
+canonical output differs (which, for a transforming operator on an active
+lane, is the normal case). Per-operator notes record only deviations from
+this rule. *Boundedness* must hold under `ExpansionBudget`/`CycleBudget`.
 
 ### ring / cycle — adapt
 
@@ -108,7 +114,8 @@ recipe / content / lineage split from the transactional-editing proposal.
 - **State**: none (pure); rotating-per-cycle is `rotate ∘ ring`, not new
   state.
 - **Randomness**: none.
-- **Identity effect**: recipe only.
+- **Identity effect**: standard rule (recipe + lineage; content follows
+  the output).
 - **Composition laws**: `rotate(a) ∘ rotate(b) = rotate(a+b mod n)`;
   preserves multiset and length; commutes with `reverse` up to sign.
 - **Decision / reason**: **adopt**, with the explicit constraint that the
@@ -124,7 +131,8 @@ recipe / content / lineage split from the transactional-editing proposal.
 - **Existing overlap**: none.
 - **Boundedness**: length-preserving.
 - **State**: none. **Randomness**: none.
-- **Identity effect**: recipe only.
+- **Identity effect**: standard rule (recipe + lineage; content follows
+  the output).
 - **Composition laws**: involution (`reverse ∘ reverse = id`); preserves
   multiset and length.
 - **Decision / reason**: **adopt** — cheap, lawful, obviously useful.
@@ -135,13 +143,18 @@ recipe / content / lineage split from the transactional-editing proposal.
 - **Musical purpose**: forward-then-back oscillation without doubling the
   endpoints.
 - **Prior art**: Isobar ping-pong; ubiquitous in hardware sequencers.
-- **Input / output**: finite lane → lane of length `2n−2` (endpoints not
-  repeated), then typically ring-ed.
+- **Input / output**: finite lane → forward-then-back lane with endpoints
+  not repeated. Output length is defined by case, so golden vectors cannot
+  diverge from the derived form: empty lane → empty; singleton → the
+  singleton unchanged; `n ≥ 2` → `2n−2`. (The derived form below realizes
+  exactly these lengths — `interior` of a singleton or empty lane is
+  empty.)
 - **Existing overlap**: none directly.
 - **Boundedness**: bounded (≤ 2n).
 - **State**: none beyond the ring cursor it usually feeds.
 - **Randomness**: none.
-- **Identity effect**: recipe only.
+- **Identity effect**: standard rule (recipe + lineage; content follows
+  the output).
 - **Composition laws**: expressible as
   `concat(p, reverse(interior(p)))` — a composition of adopted primitives.
 - **Decision / reason**: **adapt** — enters as *derived* sugar over
@@ -154,14 +167,23 @@ recipe / content / lineage split from the transactional-editing proposal.
 - **Musical purpose**: per-cell repetition (`n` short notes where one was)
   — rhythmic insistence, subdivision emphasis.
 - **Prior art**: Isobar stutter; live-coding idiom.
-- **Input / output**: lane + count `n` → lane of length `n·len`.
+- **Input / output**: lane + count `n` → **subdivision, not stretching**:
+  the `n` notes share the original cell's time span, each lasting
+  `unit / n`. Under `map_rhythm`'s mandatory unit this means the operator
+  changes the effective unit of the affected span; `unit / n` must remain
+  exactly representable in whole ticks at the score's PPQN, and a
+  non-representable subdivision is a typed error (the §1.11 SWG0301
+  discipline). Naively lengthening the lane to `n·len` at the *same* unit
+  is a different operation — sequence expansion, i.e. `repeat` of cells —
+  and is explicitly not stutter.
 - **Existing overlap**: none. Note the §1.10 law: two adjacent `X` are two
   short notes, never a merged sustain — stutter output obeys it by
   construction; merging stays with the deferred articulation operators.
-- **Boundedness**: multiplies length ×n — must charge the
+- **Boundedness**: cell count multiplies ×n — must charge the
   `ExpansionBudget`/`CycleBudget`; exceeding is a typed refusal.
 - **State**: none. **Randomness**: none.
-- **Identity effect**: recipe only.
+- **Identity effect**: standard rule (recipe + lineage; content follows
+  the output).
 - **Composition laws**: `stutter(1) = id`;
   `stutter(a) ∘ stutter(b) = stutter(a·b)`.
 - **Decision / reason**: **adopt** — simple, lawful, budget-aware.
@@ -179,7 +201,8 @@ recipe / content / lineage split from the transactional-editing proposal.
 - **Boundedness**: `repetitions` is finite and budget-charged.
 - **State**: window-position cursor, explicit.
 - **Randomness**: none.
-- **Identity effect**: recipe only.
+- **Identity effect**: standard rule (recipe + lineage; content follows
+  the output).
 - **Composition laws**: windows preserve source order; output is a
   subsequence-of-concatenation fact usable by provenance.
 - **Decision / reason**: **adopt** — high musical value, clean semantics,
@@ -199,7 +222,8 @@ recipe / content / lineage split from the transactional-editing proposal.
   of extending tail policy).
 - **Boundedness**: adds < one unit of rests; bounded.
 - **State**: none. **Randomness**: none.
-- **Identity effect**: recipe only; changes content (rests are content).
+- **Identity effect**: standard rule (recipe + lineage; content changes —
+  rests are content).
 - **Composition laws**: idempotent at the same unit.
 - **Decision / reason**: **adapt** — reconcile with tail policy first.
 - **Later owner**: S16 pattern IR / Swang spec.
@@ -211,13 +235,20 @@ recipe / content / lineage split from the transactional-editing proposal.
 - **Prior art**: Toussaint's Euclidean-rhythms result; Sonic Pi `spread`;
   Total Serialism euclid; widespread.
 - **Input / output**: `(k, n, rotation)` → `ActivitySequence` of length
-  `n` (as a *generator*); applied to a pattern it is a fully specified
-  thinning rule (see `mask` / `thin`).
+  `n` (as a *generator*). As a thinning rule it is **not** fully specified
+  by the 1-D sequence alone: the `thin` contract operates on `Pattern2D`
+  *before* `linearize`, and aligning a 1-D sequence onto a multi-row
+  pattern selects different coordinates under `row_major` vs `snake`. The
+  thinning form therefore either produces a *shaped* (`Pattern2D`) mask or
+  carries an explicit, declared traversal/alignment parameter — that
+  mapping is part of the future spec section, and without it only the 1-D
+  generator is defined (see `mask` / `thin`).
 - **Existing overlap**: none; deterministic, so it does not overlap the
   seeded density pruning of `fractalize`.
 - **Boundedness**: length `n`, trivially bounded.
 - **State**: none. **Randomness**: none.
-- **Identity effect**: recipe only.
+- **Identity effect**: standard rule (recipe + lineage; content follows
+  the output).
 - **Composition laws**: rotation composes with `rotate`;
   `E(n, n) = all-on`, `E(0, n) = all-off`.
 - **Decision / reason**: **adopt** as an activity-sequence generator; as a
@@ -226,22 +257,31 @@ recipe / content / lineage split from the transactional-editing proposal.
 
 ### urn — adopt
 
-- **Musical purpose**: randomness without immediate repetition — draw
-  without replacement, refill when empty.
+- **Musical purpose**: randomness **without repetition within a cycle** —
+  draw without replacement, refill when empty. Without-replacement alone
+  does *not* prevent a repeat at the refill boundary (the last item of one
+  cycle can open the next); boundary behaviour is its own explicit spec
+  choice: the base operator guarantees within-cycle uniqueness only, and a
+  `no_boundary_repeat` variant (refill excludes the previous cycle's last
+  element as the first draw) is a separately named option, not a silent
+  default.
 - **Prior art**: Total Serialism urn; serial-composition practice.
 - **Input / output**: lane + named seed stream → permuted draw sequence;
   refills per exhausted cycle.
-- **Existing overlap**: `ShuffleMotifs` shuffles degrees per bar — an
-  urn-shaped idea inside one strategy. The IR operator must not silently
-  re-specify that strategy; if adopted, the strategy is later re-expressed
-  or the two are documented as distinct.
+- **Existing overlap**: **none** — an earlier draft claimed
+  `ShuffleMotifs` was urn-shaped, but the strategy draws each slot
+  independently (`prng.next_mod(window_len)`, sampling *with* replacement,
+  repeats possible within a bar; no permutation, no cycle state). It is
+  not an urn, and no later "re-expression" may quietly replace its
+  semantics with one.
 - **Boundedness**: one permutation per cycle; bounded.
 - **State**: remaining-items cursor, explicit.
 - **Randomness**: one named stream (`urn` kind, stable `operator_id`).
 - **Identity effect**: recipe (stream identity + seed); content varies with
   seed by design.
 - **Composition laws**: each cycle emits each element exactly once
-  (permutation invariant — a golden-vector property).
+  (permutation invariant — a golden-vector property); the boundary-repeat
+  guarantee holds only under the named variant.
 - **Decision / reason**: **adopt** — the permutation invariant is exactly
   the kind of law the proptest/golden-vector discipline can pin.
 - **Later owner**: S16 pattern IR.
@@ -280,7 +320,8 @@ recipe / content / lineage split from the transactional-editing proposal.
   astronomical; full-period materialization is forbidden, windows are
   evaluated lazily, budget breach is a typed refusal.
 - **State**: one cursor per axis. **Randomness**: none.
-- **Identity effect**: recipe only.
+- **Identity effect**: standard rule (recipe + lineage; content follows
+  the output).
 - **Composition laws**: combined period divides LCM of axis periods;
   per-axis projection recovers each ring.
 - **Decision / reason**: **adopt** — the core payoff of the proposal's
@@ -334,9 +375,12 @@ recipe / content / lineage split from the transactional-editing proposal.
   deterministic sculpting of density.
 - **Prior art**: Isobar mask; TidalCycles boolean patterns (idea only,
   GPL).
-- **Input / output**: `Pattern2D` + explicit mask → `Pattern2D`; exactly
-  the frozen §1.10 `thin` type contract (may only flip `X -> .`, preserves
-  dimensions, cell count, coordinates, post-`linearize` length).
+- **Input / output**: `Pattern2D` + explicit **shaped** mask (same
+  dimensions) → `Pattern2D`; exactly the frozen §1.10 `thin` type contract
+  (may only flip `X -> .`, preserves dimensions, cell count, coordinates,
+  post-`linearize` length). A 1-D mask source (e.g. euclidean-mask output)
+  becomes a shaped mask only through an explicit, declared traversal — the
+  alignment rule is part of the spec section, never an implicit default.
 - **Existing overlap**: `thin` §1.10 (type fixed, selection rule
   unspecified); `fractalize density/seed` (seeded selection rule, already
   shipped).
@@ -360,7 +404,8 @@ recipe / content / lineage split from the transactional-editing proposal.
   palette cycling, and the `RepeatVariation` strategy.
 - **Boundedness**: ×n, budget-charged.
 - **State**: none. **Randomness**: none.
-- **Identity effect**: recipe only.
+- **Identity effect**: standard rule (recipe + lineage; content follows
+  the output).
 - **Composition laws**: `repeat(1) = id`; finite unrolling of `ring`.
 - **Decision / reason**: **adapt** — sugar over ring with an explicit
   budget; rejected as an independent primitive (that is how the third
