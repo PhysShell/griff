@@ -27,6 +27,12 @@ live contract.
   bounded, seed-isolated pattern operators, control curves, and
   boundary-applied edits as a layer above the canonical score, extending the
   S16 pattern core. Status: for discussion.
+- [`constraint-inventory.md`](constraint-inventory.md) — fifteen rules
+  catalogued against what the code already enforces, classified under a
+  closed taxonomy (hard / soft / opt-in / defer) with scope, lookback,
+  evidence, and incremental-evaluation notes; selects the two real
+  problems for the MiniZinc oracle spike. Companion artifact to the
+  hard-constraint-contract proposal. Status: for discussion.
 - [`hard-constraint-contract.md`](hard-constraint-contract.md) — one typed
   rule layer separating legality from preference, plus MiniZinc as a strictly
   offline oracle (Constraint Lab). Status: for discussion.
