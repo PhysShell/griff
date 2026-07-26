@@ -34,7 +34,7 @@ pub fn solve_exact(problem: &OracleProblem) -> Outcome {
         return Outcome::Unsat { nodes: 0 };
     }
 
-    let mut assignment: Vec<i64> = Vec::with_capacity(problem.vars.len());
+    let mut assignment: Vec<i64> = Vec::with_capacity(problem.vars().len());
     let mut nodes: u64 = 0;
     if search(problem, &domains, &mut assignment, &mut nodes) {
         Outcome::Sat {
@@ -51,23 +51,23 @@ pub fn solve_exact(problem: &OracleProblem) -> Outcome {
 /// The check the external-solver cross-check runs on parsed witnesses.
 #[must_use]
 pub fn verify_witness(problem: &OracleProblem, witness: &[i64]) -> bool {
-    witness.len() == problem.vars.len()
+    witness.len() == problem.vars().len()
         && problem
-            .vars
+            .vars()
             .iter()
             .zip(witness)
             .all(|(var, value)| var.domain.contains(value))
-        && problem.constraints.iter().all(|c| check_full(c, witness))
+        && problem.constraints().iter().all(|c| check_full(c, witness))
 }
 
 /// Applies unary constraints (forbidden interval classes) to the domains.
 fn prefiltered_domains(problem: &OracleProblem) -> Vec<Vec<i64>> {
     let mut domains: Vec<Vec<i64>> = problem
-        .vars
+        .vars()
         .iter()
         .map(|v: &IntVar| v.domain.clone())
         .collect();
-    for constraint in &problem.constraints {
+    for constraint in problem.constraints() {
         if let Constraint::ForbiddenIntervalClasses {
             var,
             fixed,
@@ -91,9 +91,9 @@ fn search(
     assignment: &mut Vec<i64>,
     nodes: &mut u64,
 ) -> bool {
-    if assignment.len() == problem.vars.len() {
+    if assignment.len() == problem.vars().len() {
         return problem
-            .constraints
+            .constraints()
             .iter()
             .all(|c| check_full(c, assignment));
     }
@@ -114,7 +114,7 @@ fn search(
 
 /// Sound partial checks over the currently assigned prefix.
 fn consistent_partial(problem: &OracleProblem, assignment: &[i64]) -> bool {
-    problem.constraints.iter().all(|constraint| {
+    problem.constraints().iter().all(|constraint| {
         match constraint {
             Constraint::AbsDiffLe { a, b, bound } => {
                 match (assignment.get(a.0), assignment.get(b.0)) {

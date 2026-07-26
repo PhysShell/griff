@@ -25,8 +25,13 @@ use griff_constraint_lab::manifest::{
 };
 use griff_constraint_lab::problems::{bounded_travel_problem, pair_cleanliness_problem, PairSpec};
 use griff_constraint_lab::solve::{solve_exact, verify_witness, Outcome};
-use griff_core::event::{Pitch, Tuning};
+use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
 use griff_core::fretboard::STANDARD_MAX_FRET;
+use griff_core::score::{
+    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
+    Track, Voice,
+};
+use griff_core::slice::TickRange;
 
 const QUARTER: u32 = 480;
 
@@ -43,36 +48,80 @@ fn fixture_line() -> Vec<Pitch> {
         .collect()
 }
 
+/// Builds a one-bar 4/4 canonical `Score` whose single Standard-E track
+/// plays the given `(onset, pitch)` quarter notes — every Problem B fixture
+/// starts from the canonical model, per the `PairSpec` contract.
+fn part_a_score(notes: &[(u32, u8)]) -> Score {
+    const BAR: u32 = 4 * QUARTER;
+    Score {
+        ticks_per_quarter: 480,
+        master_bars: vec![MasterBar {
+            index: 0,
+            tick_range: TickRange::new(Ticks(0), Ticks(BAR)).expect("ordered"),
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
+            repeat: RepeatMarker::default(),
+        }],
+        tracks: vec![Track {
+            name: Some("A".to_string()),
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: notes
+                    .iter()
+                    .map(|&(onset, p)| EventGroup {
+                        kind: EventGroupKind::Single,
+                        atoms: vec![AtomEvent::Note(AtomNote {
+                            absolute_start: Ticks(onset),
+                            duration: Ticks(QUARTER),
+                            pitch: pitch(p),
+                            velocity: Velocity::new(90).expect("valid velocity"),
+                            marks: NoteMarks::empty(),
+                            position: None,
+                        })],
+                        technique_spans: Vec::new(),
+                    })
+                    .collect(),
+            }],
+            tuning: Tuning::standard_e(),
+        }],
+        source_meta: None,
+        loss: LossReport::new(),
+    }
+}
+
 /// The Problem B SAT fixture: A in the low-mid register, B constrained to a
 /// consonant upper-register domain.
 fn fixture_pair_sat() -> PairSpec {
-    PairSpec {
-        a_line: vec![
-            (0, pitch(52)),
-            (QUARTER, pitch(55)),
-            (2 * QUARTER, pitch(52)),
-            (3 * QUARTER, pitch(57)),
-        ],
-        b_onsets: vec![0, QUARTER, 2 * QUARTER, 3 * QUARTER],
-        b_domain: [64u8, 66, 67, 69, 71, 72, 74, 76]
+    let score = part_a_score(&[(0, 52), (QUARTER, 55), (2 * QUARTER, 52), (3 * QUARTER, 57)]);
+    PairSpec::from_score_part_a(
+        &score,
+        0,
+        vec![0, QUARTER, 2 * QUARTER, 3 * QUARTER],
+        [64u8, 66, 67, 69, 71, 72, 74, 76]
             .iter()
             .map(|&p| pitch(p))
             .collect(),
-        tuning: Tuning::standard_e(),
-        max_fret: STANDARD_MAX_FRET,
-    }
+        Tuning::standard_e(),
+    )
+    .expect("SAT fixture spec builds")
 }
 
 /// The Problem B UNSAT fixture: no coincident onsets, but the only available
 /// B band sits inside A's — register mud alone forces UNSAT.
 fn fixture_pair_mud() -> PairSpec {
-    PairSpec {
-        a_line: vec![(0, pitch(45)), (QUARTER, pitch(57))],
-        b_onsets: vec![2 * QUARTER, 3 * QUARTER],
-        b_domain: [48u8, 50, 52].iter().map(|&p| pitch(p)).collect(),
-        tuning: Tuning::standard_e(),
-        max_fret: STANDARD_MAX_FRET,
-    }
+    let score = part_a_score(&[(0, 45), (QUARTER, 57)]);
+    PairSpec::from_score_part_a(
+        &score,
+        0,
+        vec![2 * QUARTER, 3 * QUARTER],
+        [48u8, 50, 52].iter().map(|&p| pitch(p)).collect(),
+        Tuning::standard_e(),
+    )
+    .expect("mud fixture spec builds")
 }
 
 fn outcome_record(problem: &OracleProblem, outcome: &Outcome) -> OutcomeRecord {
@@ -81,7 +130,7 @@ fn outcome_record(problem: &OracleProblem, outcome: &Outcome) -> OutcomeRecord {
             status: Status::Sat,
             witness: Some(
                 problem
-                    .vars
+                    .vars()
                     .iter()
                     .zip(witness)
                     .map(|(v, &value)| (v.name.clone(), value))
@@ -192,7 +241,7 @@ fn run_fixture(
     runs: &Path,
     minizinc: Option<&(String, String)>,
 ) -> bool {
-    println!("== {slug} ({})", problem.name);
+    println!("== {slug} ({})", problem.name());
     let model = to_minizinc(problem);
     let model_path = fixtures.join(format!("{slug}.mzn"));
     fs::write(&model_path, &model).expect("model writes");
@@ -211,7 +260,7 @@ fn run_fixture(
         &RunManifest {
             schema: SCHEMA.to_string(),
             version: SCHEMA_VERSION,
-            problem: problem.name.clone(),
+            problem: problem.name().to_string(),
             fingerprint_hex: fingerprint_hex.clone(),
             solver: SolverIdentity {
                 name: "griff-lab-exact".to_string(),
@@ -221,10 +270,46 @@ fn run_fixture(
         },
     );
 
+    external_cross_check(
+        slug,
+        problem,
+        &model_path,
+        runs,
+        minizinc,
+        &fingerprint_hex,
+        reference_record.status,
+    )
+}
+
+/// Removes a stale external manifest, if present.
+fn remove_stale(external_manifest: &Path) {
+    if external_manifest.exists() {
+        fs::remove_file(external_manifest).expect("stale external manifest removed");
+        println!("  removed stale {}", external_manifest.display());
+    }
+}
+
+/// The external half of a fixture run. Stale-evidence rule: an external
+/// manifest may exist on disk only when *this* run produced it —
+/// reference-only runs and failed external runs remove it, so the archive
+/// can never pair fresh reference evidence with a previous run's external
+/// verdict.
+#[allow(clippy::too_many_arguments)] // a linear pipeline stage, not an API
+fn external_cross_check(
+    slug: &str,
+    problem: &OracleProblem,
+    model_path: &Path,
+    runs: &Path,
+    minizinc: Option<&(String, String)>,
+    fingerprint_hex: &str,
+    reference_status: Status,
+) -> bool {
+    let external_manifest = runs.join(format!("{slug}.minizinc-chuffed.json"));
     let Some((bin, version)) = minizinc else {
+        remove_stale(&external_manifest);
         return true;
     };
-    match run_minizinc(bin, &model_path) {
+    match run_minizinc(bin, model_path) {
         Ok(external_record) => {
             println!("  minizinc:  {:?} ({version})", external_record.status);
             // Status agreement alone would trust an unvalidated external
@@ -237,7 +322,7 @@ fn run_fixture(
                         .map(|(name, value)| (name.as_str(), *value))
                         .collect();
                     let ordered: Option<Vec<i64>> = problem
-                        .vars
+                        .vars()
                         .iter()
                         .map(|v| by_name.get(v.name.as_str()).copied())
                         .collect();
@@ -248,15 +333,15 @@ fn run_fixture(
             if !witness_valid {
                 eprintln!("  external witness violates the IR on {slug}");
             }
-            let agree = witness_valid && external_record.status == reference_record.status;
+            let agree = witness_valid && external_record.status == reference_status;
             write_manifest(
                 runs,
                 &format!("{slug}.minizinc-chuffed"),
                 &RunManifest {
                     schema: SCHEMA.to_string(),
                     version: SCHEMA_VERSION,
-                    problem: problem.name.clone(),
-                    fingerprint_hex,
+                    problem: problem.name().to_string(),
+                    fingerprint_hex: fingerprint_hex.to_string(),
                     solver: SolverIdentity {
                         name: "minizinc/chuffed".to_string(),
                         version: version.clone(),
@@ -271,6 +356,7 @@ fn run_fixture(
         }
         Err(e) => {
             eprintln!("  minizinc failed on {slug}: {e}");
+            remove_stale(&external_manifest);
             false
         }
     }
@@ -347,10 +433,16 @@ fn main() {
         minizinc.as_ref(),
     );
 
-    if all_agree {
-        println!("all fixtures: solvers agree");
-    } else {
+    if !all_agree {
         eprintln!("solver disagreement or failure — see above");
         std::process::exit(1);
+    }
+    if minizinc.is_some() {
+        println!("all fixtures: solvers agree");
+    } else {
+        println!(
+            "reference-only run: no external solver, no agreement claim; \
+             any stale external manifests were removed"
+        );
     }
 }

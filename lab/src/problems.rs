@@ -10,7 +10,7 @@
 //! `band_overlap > 1/2` register-mud law.
 
 use griff_core::event::{Pitch, Tuning};
-use griff_core::fretboard::{measure_playability, FingeringWeights};
+use griff_core::fretboard::{measure_playability, FingeringWeights, STANDARD_MAX_FRET};
 use griff_core::score::{AtomEvent, Score};
 use thiserror::Error;
 
@@ -50,6 +50,13 @@ pub enum LabError {
     NoSuchTrack {
         /// The requested track index.
         index: usize,
+    },
+    /// A B onset appears more than once — Problem B promises exactly one
+    /// pitch variable per onset.
+    #[error("duplicate B onset {onset}")]
+    DuplicateBOnset {
+        /// The duplicated onset.
+        onset: u32,
     },
 }
 
@@ -96,20 +103,21 @@ pub fn bounded_travel_problem(
     Ok(OracleProblem::new("bounded-travel", vars, constraints))
 }
 
-/// Specification for Problem B: part A fixed, one pitch variable per B onset
-/// over a shared finite domain.
+/// Specification for Problem B: part A fixed, one pitch variable per B
+/// onset over a shared finite domain. **Opaque**: the only constructor is
+/// [`PairSpec::from_score_part_a`], so every archived problem starts from
+/// the canonical score model, A and B carry their own named tunings
+/// (production `part_playability` measures each part under its own), and
+/// [`STANDARD_MAX_FRET`] is fixed as Problem B law — the production
+/// validator never takes a fret-range parameter, so neither does the
+/// oracle.
 #[derive(Debug, Clone)]
 pub struct PairSpec {
-    /// Part A's monophonic line as `(onset, pitch)`.
-    pub a_line: Vec<(u32, Pitch)>,
-    /// B onsets (one pitch variable each).
-    pub b_onsets: Vec<u32>,
-    /// The finite pitch domain B may draw from (relation-mode domain).
-    pub b_domain: Vec<Pitch>,
-    /// The tuning both playability checks run under.
-    pub tuning: Tuning,
-    /// Highest fret considered.
-    pub max_fret: u8,
+    a_line: Vec<(u32, Pitch)>,
+    b_onsets: Vec<u32>,
+    b_domain: Vec<Pitch>,
+    a_tuning: Tuning,
+    b_tuning: Tuning,
 }
 
 impl PairSpec {
@@ -126,13 +134,14 @@ impl PairSpec {
     /// # Errors
     ///
     /// [`LabError::NoSuchTrack`] when `track_index` is out of range;
-    /// [`LabError::EmptyLine`] when the track has no note atoms.
+    /// [`LabError::EmptyLine`] when the track has no note atoms;
+    /// [`LabError::DuplicateBOnset`] when a B onset repeats.
     pub fn from_score_part_a(
         score: &Score,
         track_index: usize,
         b_onsets: Vec<u32>,
         b_domain: Vec<Pitch>,
-        max_fret: u8,
+        b_tuning: Tuning,
     ) -> Result<Self, LabError> {
         let track = score
             .tracks
@@ -156,13 +165,31 @@ impl PairSpec {
         // register band over all notes; only playability folds, and it does
         // so inside the problem builder.
         let a_line: Vec<(u32, Pitch)> = notes.into_iter().map(|(o, p)| (o, Pitch(p))).collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for &onset in &b_onsets {
+            if !seen.insert(onset) {
+                return Err(LabError::DuplicateBOnset { onset });
+            }
+        }
         Ok(Self {
             a_line,
             b_onsets,
             b_domain,
-            tuning: track.tuning.clone(),
-            max_fret,
+            a_tuning: track.tuning.clone(),
+            b_tuning,
         })
+    }
+
+    /// Part A's full note snapshot, onset-sorted.
+    #[must_use]
+    pub fn a_line(&self) -> &[(u32, Pitch)] {
+        &self.a_line
+    }
+
+    /// The B onsets (one pitch variable each).
+    #[must_use]
+    pub fn b_onsets(&self) -> &[u32] {
+        &self.b_onsets
     }
 }
 
@@ -189,9 +216,9 @@ pub fn pair_cleanliness_problem(spec: &PairSpec) -> Result<OracleProblem, LabErr
     let a_top_line = fold_top_note_line(&spec.a_line);
     let a_report = measure_playability(
         &a_top_line,
-        &spec.tuning,
+        &spec.a_tuning,
         &FingeringWeights::v1(),
-        spec.max_fret,
+        STANDARD_MAX_FRET,
     );
     if !a_report.is_playable() {
         return Err(LabError::PartAUnplayable {
@@ -204,7 +231,7 @@ pub fn pair_cleanliness_problem(spec: &PairSpec) -> Result<OracleProblem, LabErr
     let playable: Vec<i64> = spec
         .b_domain
         .iter()
-        .filter(|&&p| !spec.tuning.candidates(p, spec.max_fret).is_empty())
+        .filter(|&&p| !spec.b_tuning.candidates(p, STANDARD_MAX_FRET).is_empty())
         .map(|&p| i64::from(p.0))
         .collect();
     let removed = spec.b_domain.len().saturating_sub(playable.len());

@@ -43,6 +43,17 @@ pub enum IrError {
         /// The offending denominator.
         den: i64,
     },
+    /// A band constraint has no member variables (`min([])` is undefined).
+    #[error("band constraint has no member variables")]
+    EmptyBand {},
+    /// A fixed band with `lo > hi` describes nothing.
+    #[error("fixed band [{lo}, {hi}] is reversed")]
+    ReversedFixedBand {
+        /// The claimed low bound.
+        lo: i64,
+        /// The claimed high bound.
+        hi: i64,
+    },
 }
 
 /// Index of a variable within its [`OracleProblem`].
@@ -114,15 +125,14 @@ pub enum Constraint {
     },
 }
 
-/// A complete oracle problem: named, finite, canonical.
+/// A complete oracle problem: named, finite, canonical, **opaque** — the
+/// fields are private so the construction-time invariants cannot be broken
+/// afterwards; read access goes through the immutable accessors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OracleProblem {
-    /// Problem name (manifest and emission header identity).
-    pub name: String,
-    /// Variables, in emission order.
-    pub vars: Vec<IntVar>,
-    /// Constraints, in emission order.
-    pub constraints: Vec<Constraint>,
+    name: String,
+    vars: Vec<IntVar>,
+    constraints: Vec<Constraint>,
 }
 
 impl OracleProblem {
@@ -206,6 +216,24 @@ impl OracleProblem {
             vars,
             constraints,
         })
+    }
+
+    /// Problem name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Variables, in emission order.
+    #[must_use]
+    pub fn vars(&self) -> &[IntVar] {
+        &self.vars
+    }
+
+    /// Constraints, in emission order.
+    #[must_use]
+    pub fn constraints(&self) -> &[Constraint] {
+        &self.constraints
     }
 
     /// FNV-1a 64 over the canonical serialization: stable across runs,
