@@ -70,12 +70,18 @@ following the established optional-field, forward-compatible schema pattern
   **leakage-safe holdout and source-identity splits**. It makes **no** claim of
   cover-detection, arrangement equivalence, or musical similarity, and it is
   **not** a production-scoring signal. Same `song_id` means "do not let these
-  leak across a train/eval boundary", nothing more. Cover versions are a
-  curator-policy edge case, resolved by one rule stated in the schema doc: a
-  cover that shares the composition shares the `song_id` (leakage-safe by
-  default); a curator who deems a cover musically distinct records that as a
-  reason, not as a silent regrouping. (Closed states, qualifiers in reasons —
-  the house rule.)
+  leak across a train/eval boundary", nothing more.
+
+- **`song_id` is Work identity, with no musical-distinctness override.** Every
+  manifestation, arrangement, edition, and cover of one composition **must** carry
+  the same `song_id`; musical or arrangement distinctness does **not** change Work
+  identity. Allowing a curator to split a cover onto a different `song_id`
+  because it "sounds different" would turn the field back into a similarity /
+  arrangement grouping and let one work re-cross the holdout boundary — the exact
+  leak this ADR closes. If separating expressions or arrangements ever becomes
+  useful, that is a *separate* `arrangement_id` / `expression_id` (a lower FRBR
+  level) or an explicit split policy; one field does not play both FRBR Work and
+  a taste judgement.
 
 - **Fail-closed holdout, formalized.** The Phase-0 audit's three modes become a
   bound contract:
@@ -87,17 +93,32 @@ following the established optional-field, forward-compatible schema pattern
     target's is *not* fail-closed: a pre-v10 or uncurated record with
     `song_id = None` may be an alternate transcription of the *same* composition,
     and an equality filter would silently retain it — re-leaking the held-out
-    song. So the mode additionally **excludes (or refuses the run on) every
-    source with `song_id = None`** before material construction: an unidentified
-    record cannot be proven *not* to be an alternate of the target, so it must
-    not remain. The manifest `songs` cross-check validates that coverage. A song
-    holdout then excludes every chunk whose source carries the target `song_id`,
-    with no unidentified source surviving to leak.
+    song. The **initial contract is strict refusal**: the preflight **MUST
+    refuse the run** when any participating unique source lacks `song_id`, before
+    material construction. (Conservatively *excluding* all `None` sources instead
+    is also leakage-safe, but it silently shrinks the corpus and changes the
+    benchmark population, so it is a **separate, explicitly versioned policy**,
+    not the default.) A song holdout then excludes every chunk whose source
+    carries the target `song_id`, with no unidentified source surviving to leak.
 
-- **Manifest cross-check (defence-in-depth, optional).** The manifest may carry
-  a `songs` map (`SongId → [sha256]`) so a loader can validate that every source
-  claiming a `song_id` is enumerated, catching typos. This is a check, not the
-  primary mechanism; the per-source field is authoritative.
+- **Corpus identity invariants (checked in the same preflight).** Because
+  `SourceRef` is stored per chunk while `sha256` identifies the *file*, the
+  preflight validates, before any holdout:
+  1. all chunks sharing a `sha256` carry the **same** `song_id` (else one file
+     gets split `song_id`s across chunk records and a song holdout excludes only
+     part of the file — chunk-level leakage re-introduced through the very field
+     meant to stop it);
+  2. no `sha256` maps to two different `SongId`s;
+  3. if the `songs` manifest is present, `manifest ↔ SourceRef.song_id` agree
+     **both ways** (every manifest entry has matching sources, every labelled
+     source is enumerated).
+  A violation is a typed refusal, not a silent pick.
+
+- **Manifest cross-check (defence-in-depth, optional).** The `songs` map
+  (`SongId → [sha256]`) is a *convenience and typo check*, not the coverage
+  proof: corpus-wide coverage is proven by the preflight scan of every
+  participating source's `song_id` (invariant 1–2), which runs whether or not a
+  manifest exists. The per-source field is authoritative.
 
 The implementation is a separate red→green slice once this ADR is accepted:
 characterization tests first (SPEC hard rule 5 — schema round-trip must not
