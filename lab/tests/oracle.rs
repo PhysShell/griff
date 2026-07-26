@@ -1,6 +1,6 @@
 //! Red → contract tests for the Constraint Lab spike.
 //!
-//! Pins the public lab API: the solver-neutral IR, deterministic MiniZinc
+//! Pins the public lab API: the solver-neutral IR, deterministic `MiniZinc`
 //! emission, the exact reference solver, and the two Constraint Inventory
 //! problems (bounded-travel realization; complement pair cleanliness pinned to
 //! the production `PairValidation` laws). References `griff_constraint_lab`
@@ -241,10 +241,7 @@ fn band_overlap_constraint_mirrors_the_degenerate_single_pitch_rule() {
     // constraint (overlap <= 1/2) demands an empty intersection.
     let containing = OracleProblem::new(
         "degenerate-contained",
-        vec![
-            IntVar::new("b0", vec![50]),
-            IntVar::new("b1", vec![55]),
-        ],
+        vec![IntVar::new("b0", vec![50]), IntVar::new("b1", vec![55])],
         vec![Constraint::BandOverlapAtMost {
             vars: vec![VarId(0), VarId(1)],
             fixed_lo: 52,
@@ -260,10 +257,7 @@ fn band_overlap_constraint_mirrors_the_degenerate_single_pitch_rule() {
 
     let above = OracleProblem::new(
         "degenerate-clear",
-        vec![
-            IntVar::new("b0", vec![55]),
-            IntVar::new("b1", vec![57]),
-        ],
+        vec![IntVar::new("b0", vec![55]), IntVar::new("b1", vec![57])],
         vec![Constraint::BandOverlapAtMost {
             vars: vec![VarId(0), VarId(1)],
             fixed_lo: 52,
@@ -296,7 +290,10 @@ fn unpositionable_pitch_is_a_typed_refusal() {
     // Pitch 30 is below every open string in Standard E.
     let err = bounded_travel_problem(&[pitch(30)], &std_e(), STANDARD_MAX_FRET, 12)
         .expect_err("nothing can play MIDI 30 in Standard E");
-    assert!(matches!(err, LabError::UnpositionablePitch { index: 0, .. }));
+    assert!(matches!(
+        err,
+        LabError::UnpositionablePitch { index: 0, .. }
+    ));
 }
 
 #[test]

@@ -8,6 +8,12 @@
 //! - **Problem B** — complement pair cleanliness (the existing
 //!   `PairValidation` rule set, pinned to production semantics).
 //!
-//! Shape: typed problem → solver-neutral IR → MiniZinc emission + an exact
+//! Shape: typed problem → solver-neutral IR → `MiniZinc` emission + an exact
 //! in-repo reference solver → archived manifests. Research tooling only:
 //! nothing here is a production dependency, and no production path calls it.
+
+pub mod emit;
+pub mod ir;
+pub mod manifest;
+pub mod problems;
+pub mod solve;
