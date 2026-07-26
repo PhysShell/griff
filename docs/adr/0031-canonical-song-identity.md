@@ -152,7 +152,8 @@ ADR binds nothing until accepted (`docs/adr/README.md`).
   system; it records curator groupings, not discovered ones.
 - It grants no production-scoring authority and changes no generation behaviour;
   it is provenance for holdout and dedup only.
-- It does not retro-link existing corpus files: pre-v10 records stay
-  `song_id = None`, and a `HoldoutTargetSong` run **excludes** every such record
-  (an unidentified file may be an alternate of the target) until a curator
-  groups them — fail-closed, not silently backfilled.
+- It does not retro-link existing corpus files: pre-v10 records remain
+  `song_id = None`. Under the **default** `HoldoutTargetSong` policy the preflight
+  **refuses the entire run** until every participating unique source is curated;
+  conservative *exclusion* of unknown sources is permitted only under a separate,
+  explicitly versioned policy (Decision). Fail-closed, never silently backfilled.
