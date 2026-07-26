@@ -362,13 +362,28 @@ slips past an absolute fingerprint by design.
 
 The leakage contract is therefore channel-specific:
 
-- **Source provenance (primary):** every corpus contribution carries song id,
-  chunk id, and source range. `HoldoutTargetSong` excludes every chunk of the
-  target song; `HoldoutTargetFragment` excludes every chunk of the same song
-  whose source range **overlaps or contains** the target fragment — not
-  merely exact range matches, since a larger chunk containing the target
-  leaks it just as surely. This deterministic identity-and-range filtering
-  happens *before* rhythm templates or novelty references are compiled.
+- **Source provenance (primary):** every corpus contribution carries chunk id
+  and source range, plus a source-**file** identity (`sha256`). `HoldoutTargetSong`
+  excludes every chunk of the target song; `HoldoutTargetFragment` excludes
+  every chunk of the same source whose source range **overlaps or contains** the
+  target fragment — not merely exact range matches, since a larger chunk
+  containing the target leaks it just as surely. This deterministic
+  identity-and-range filtering happens *before* rhythm templates or novelty
+  references are compiled.
+
+  **Phase-0 finding (song identity is missing).** The current corpus model
+  (schema v9) has **no canonical song id** — only `sha256` (a single file's
+  content hash), `filename`, a free-form `title`, and `EnsembleRef.group_id`
+  (siblings of one source span). So `HoldoutTargetSourceFile` and
+  `HoldoutTargetFragment` are fail-closed-implementable (on `sha256` + `bar_range`,
+  rejecting/migrating `sha256`-less records), but **`HoldoutTargetSong` is not
+  implementable fail-closed today**: two tabs of one composition (MIDI vs GP5)
+  have different hashes, so one would leak while the other is held out. This
+  mode is retained, but claiming it requires a **canonical `song_id`** (or a
+  versioned manifest mapping several source files to one song) as a **Phase-1
+  prerequisite** — see
+  [`../audit/2026-07-generator-reachability-metric-inventory.md`](../audit/2026-07-generator-reachability-metric-inventory.md)
+  §3.
 - **Rhythm channel (defence-in-depth):** rhythm-grid fingerprint of the
   target (onsets + durations, no pitch) checked against every supplied
   template, plus an onset/duration subsequence check.

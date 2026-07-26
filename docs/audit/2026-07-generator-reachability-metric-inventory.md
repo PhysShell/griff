@@ -31,13 +31,17 @@ for that discussion, not a decision.
 - **Three different "the melodic line" extractors already exist.** Adding a
   fourth is the standing hazard the proposal warns about (§3, "No third
   slightly-different definition of the melodic line").
-- **Holdout is feasible** and enforceable *before* corpus material is compiled,
-  **conditional on fail-closed handling of records that lack a content
-  identity**: `sha256` is `Option` (pre-v9), and the loader falls back to the
-  basename ("a filename is not an identity") — so holdout must reject or migrate
-  `sha256`-less records rather than trust a filename. Source identity is also
-  **structurally dropped** the moment `CorpusMaterial` is built — a blocker for
-  *post-hoc leak attribution*, not for holdout.
+- **Holdout runs at the right place** (before corpus material is compiled), but
+  the model carries a source-**file** identity, not a **song** identity, so the
+  modes split: **file-** and **fragment-level** holdout are a CONDITIONAL PASS
+  (require `sha256`; `sha256`-less records must fail closed, since the loader
+  falls back to a basename and "a filename is not an identity"), while
+  **`HoldoutTargetSong` is BLOCKED today** — no canonical `song_id` groups the
+  several tabs of one composition, so a song holdout would silently keep the
+  GP5 while excluding the MIDI. A canonical song identity is a Phase-1
+  prerequisite (§3). Source identity is also **structurally dropped** the moment
+  `CorpusMaterial` is built — a blocker for *post-hoc leak attribution*, not for
+  holdout.
 - **No benchmark infrastructure exists** (no `criterion`, no `benches/`). The
   cost benchmark is specified below with a zero-production-code harness; the
   numbers are `TBD (unmeasured)` because the Rust toolchain was unavailable in
@@ -181,18 +185,39 @@ metric-vocabulary drift, which the proposal's own measurement-policy contract
 
 ## 3. Holdout feasibility (proposal §5 item 3, §6 holdout discipline)
 
-**Verdict: PASS, conditional on fail-closed handling of records without a
-content identity — holdout is enforceable before corpus material is compiled;
-one content-identity condition, one range caveat, and one attribution blocker
-are recorded.**
+**Verdict: per holdout mode — the model carries a source-*file* identity, not a
+*song* identity, so the three modes do not pass together.** Holdout runs at the
+right place in the pipeline (before material construction), but "which chunks
+belong together" is answerable only at file granularity today:
+
+- **`HoldoutTargetSourceFile` — CONDITIONAL PASS.** Requires `source.sha256`;
+  records lacking it fall back to the basename ("a filename is not an identity")
+  and must **fail closed** (reject or migrate) rather than be trusted.
+- **`HoldoutTargetFragment` — CONDITIONAL PASS, within one identified source
+  file.** Requires `sha256` *and* `bar_range` handling (`None` = whole-source
+  overlap, below).
+- **`HoldoutTargetSong` — BLOCKED today.** There is **no canonical song
+  identity** in the model, so "every chunk of the target song" cannot be
+  enforced fail-closed: two tabs of one composition (MIDI vs GP5, or two GP
+  editions) have different `sha256`, and one would remain in the corpus while
+  the other is held out — a source-*file* holdout mislabelled as a *song*
+  holdout. This mode needs a canonical `song_id` (or a versioned manifest
+  mapping several source files to one song) as a **Phase-1 prerequisite**.
+
+One range caveat and one attribution blocker are also recorded below.
 
 Provenance carried by a chunk (`core/src/corpus.rs`, `SCHEMA_VERSION = 9`
 `:58`): `ChunkMeta { id: ChunkId, title, source: SourceRef, … }` (`:369`);
 `SourceRef { filename, format, bar_range: Option<(u32, u32)>, track_index:
 Option<u32>, sha256: Option<String>, … }` (`:98`; `track_index` + `sha256` added
-in v9 so "a second-guitar chunk must not reload as the first"). Chunk id and
-song identity (`title`, `filename`, `sha256`) are **required**; the source range
-`bar_range` is **`Option`**.
+in v9 so "a second-guitar chunk must not reload as the first"). The identities
+available are a **source-file** identity — `sha256` (content hash of one file,
+verified on load) and `filename` (basename) — plus a **free-form `title`**;
+there is **no canonical song identity**. `title` is an arbitrary string, and
+`EnsembleRef.group_id` (`corpus.rs:275`) links "one source span, several parts"
+(sibling guitars of one section) — **not** every representation of a song, so it
+cannot substitute for a `song_id`. Chunk id and `title` are required; `sha256`,
+`track_index`, and the source range `bar_range` are each **`Option`**.
 
 Path (verified end-to-end):
 
@@ -204,10 +229,11 @@ Path (verified end-to-end):
 - **Clean holdout insertion point:** the `Vec<LoadedChunk>` handed to
   `corpus_material(loaded, skipped)` (`core/src/generation_input.rs:137`). Every
   element still exposes `.meta.id`, `.meta.title`, and `.meta.source`
-  (`filename` / `sha256` / `bar_range` / `track_index`). Both holdout predicates
-  the proposal names are satisfiable here: "every chunk of the target song"
-  (match `filename`/`sha256`/`title`/`ensemble.group_id`) and "every chunk whose
-  source range overlaps or contains the target" (match `bar_range`).
+  (`filename` / `sha256` / `bar_range` / `track_index`) — enough for the
+  **file-** and **fragment-level** predicates (match `sha256`; then `bar_range`
+  overlap). The **song-level** predicate is *not* satisfiable here: no field
+  groups the several source files of one song, so `HoldoutTargetSong` stays
+  BLOCKED until a canonical `song_id` exists (verdict above).
 - **Identity-drop point (recorded):** `CorpusMaterial` is built at
   `core/src/generation_input.rs:152-157` with fields `rhythms:
   Vec<RhythmTemplate>`, `references: Vec<Score>`, `gesture`, `skipped` — **no
@@ -226,13 +252,15 @@ Three Phase-1 items follow, each named honestly rather than waved off:
   `sha256.unwrap_or_else(|| filename)` (`cli/src/generation_input.rs:87-91`),
   verifying the hash only `if let Some(expected)` (`:99-101`) — its own comment
   states "a filename is not an identity". So a corpus containing pre-v9
-  (`sha256`-less) records **cannot reliably implement `HoldoutTargetSong` by
-  content identity**, and a naive PASS would let a leaky run wear the costume of
-  a valid holdout. The proposal's own §6 law resolves this: holdout modes **fail
-  closed** — records lacking `sha256` must be **rejected or migrated** in
-  holdout mode, never trusted by basename. Absent that, the missing content
-  identity is a Phase-1 blocker, not a footnote. (Records *with* `sha256` are
-  fully reliable — the content check runs and a mismatch is a hard failure.)
+  (`sha256`-less) records **cannot reliably implement even file-level holdout**,
+  and a naive PASS would let a leaky run wear the costume of a valid holdout.
+  The proposal's own §6 law resolves this: holdout modes **fail closed** —
+  records lacking `sha256` must be **rejected or migrated** in holdout mode,
+  never trusted by basename. Absent that, the missing content identity is a
+  Phase-1 blocker, not a footnote. (Records *with* `sha256` are reliable **as a
+  source-file identity** — the content check runs and a mismatch is a hard
+  failure — but that is file identity, not the song identity `HoldoutTargetSong`
+  needs; see the verdict.)
 - **Caveat (holdout correctness):** because `bar_range` is `Option`, a
   range-overlap holdout must treat `bar_range == None` (whole-source) records as
   overlapping *any* range of the same file/`sha256`; ignoring `None` would
@@ -247,7 +275,10 @@ Three Phase-1 items follow, each named honestly rather than waved off:
   itself runs upstream of the drop and needs no such change.
 
 This confirms the proposal's own §6 statement that holdout must be enforced "by
-source identity before material construction" — the plumbing supports it.
+source identity before material construction" — the plumbing supports it *at
+file and fragment granularity*. What the model lacks is the **song** grouping
+`HoldoutTargetSong` names; §6 should keep that mode but record that it is not
+fail-closed-implementable today and needs a canonical song identity first.
 
 ## 4. Target eligibility contract (proposal §5 item 4)
 
