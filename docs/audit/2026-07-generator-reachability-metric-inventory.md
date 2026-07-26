@@ -304,11 +304,26 @@ eligibility unit must be defined by Phase 1, not referenced.
   `ScaleLadder` (`generate.rs:395`).
 
 **Eligibility record (recommended shape for Phase 1):** every benchmark target
-carries an explicit projection/eligibility record naming: the source (song id +
-`bar_range` + `track_index`), the projection applied (top-line monophonic), and
-an eligibility verdict (`Eligible` monophonic, or a typed `Ineligible`-reason —
-polyphonic / technique-bearing / empty). The verdict is a *fact about the
-projection*, mirroring the constraint-lab's "input precondition" discipline.
+carries an explicit projection/eligibility record whose identity fields match
+the per-mode holdout doctrine of §3 (different modes rest on different
+identifiers, so the record must carry each explicitly rather than a vague
+"source"):
+
+```text
+source_sha256      // REQUIRED for HoldoutTargetSourceFile and HoldoutTargetFragment
+canonical_song_id  // REQUIRED for HoldoutTargetSong; Option — unavailable today
+bar_range          // Option; None = whole-source (fragment-mode overlap rule, §3)
+track_index        // Option
+projection         // top-line monophonic (§4)
+eligibility        // Eligible monophonic | typed Ineligible: polyphonic / technique-bearing / empty
+```
+
+`source_sha256` and `canonical_song_id` are the load-bearing additions: the DTO
+keeps `canonical_song_id` optional (the model has none today), but
+`HoldoutTargetSong` **typed-refuses** a target lacking it, and the file/fragment
+modes typed-refuse a target lacking `source_sha256` — fail-closed, never a
+basename fallback. The eligibility verdict is a *fact about the projection*,
+mirroring the constraint-lab's "input precondition" discipline.
 
 ## 5. Cost benchmark (proposal §5 item 5)
 

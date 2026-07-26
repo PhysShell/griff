@@ -224,7 +224,7 @@ until this proposal is accepted):
 
    | Proposed fact | Existing source | Decision |
    | --- | --- | --- |
-   | Exact onset set | none | new |
+   | Exact onset set | `syncopation::track_onsets` (private) / `top_line` | extend |
    | Exact pitch on paired onsets | `novelty` line extraction partly relevant | extend |
    | Interval contour | `novelty` transitions | reuse/extend |
    | IOI sequence | `novelty` normalized IOI grid | reuse/extend |
@@ -344,7 +344,13 @@ struct StoredAxis {
 ### Holdout discipline
 
 ```rust
-pub enum CorpusMode { NoCorpus, HoldoutTargetSong, HoldoutTargetFragment, LeakyDiagnostic }
+pub enum CorpusMode {
+    NoCorpus,
+    HoldoutTargetSourceFile, // by source `sha256` (Phase-0 finding: the mode that PASSes today)
+    HoldoutTargetFragment,   // sha256 + bar_range, within one source file
+    HoldoutTargetSong,       // BLOCKED until a canonical song_id exists (Phase-1 prerequisite)
+    LeakyDiagnostic,
+}
 ```
 
 The production pipeline feeds corpus chunks in as rhythm templates and novelty
