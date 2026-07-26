@@ -1943,3 +1943,41 @@ Architectural decisions go to [`adr/`](adr/) instead.
   that the reference solver is leaf-checked (no propagation) and that
   external-solver availability is environment-dependent — both recorded
   in the audit report.
+
+- 2026-07-26 — In the context of designing the Human Similarity Benchmark
+  (`docs/proposals/human-similarity-benchmark.md`, the companion spec for
+  Step 2 (§4) of the preference-and-similarity-learning proposal), facing the
+  prior-art-first rule's requirement that a survey be recorded in a
+  canonical decision record rather than only inside a transient proposal,
+  we decided for logging the benchmark-methodology sources here —
+  timbremetrics / timbre-dissimilarity-metrics (triplet forced-choice
+  agreement, top-k agreement, the Mantel test, and confound-controlled
+  datasets — the methodology transposed to symbolic riffs); the
+  pairwise-aggregation literature (Bradley–Terry / TrueSkill-style) noted
+  only as a possible later aggregator of *derived* pairwise labels, no
+  model adopted; and standard listening-test hygiene (bounded
+  comparison counts, randomized presentation order, repeated/catch trials
+  for per-listener reliability) — with per-source adopt/idea-only detail
+  kept in the proposal, and against deferring the record until the
+  proposal's acceptance, to achieve a durable canonical trace of the
+  survey regardless of the proposal's fate, accepting a coarse-grained
+  duplication of the proposal's §2.9 prior-art section (the same trade-off
+  the 2026-07-25 four-proposals survey entry accepted). Idea reuse only;
+  GPL sources never contribute code to this MIT workspace.
+
+- 2026-07-26 — In the context of revising the Human Similarity Benchmark to
+  v2 after the PR #153 arbiter review, facing the arbiter's finding that a
+  gate comparing two independent confidence intervals is statistically
+  wrong, we decided for a **paired per-item non-inferiority test on a
+  clustered bootstrap** — bootstrapping the paired difference
+  `Δ_i = correct(candidate, i) − correct(baseline, i)`, gating on
+  `lower_CI(mean Δ) ≥ −δ` with a pre-registered margin, fixed confidence
+  level / resample count / seed, and resampling over the clustering units
+  (users and source songs) rather than rows — surveyed from standard
+  non-inferiority and paired hierarchical/cluster bootstrap practice, and
+  against a row bootstrap of two per-arm CIs, to achieve a gate that tests
+  superiority on the *same* items without letting a few listeners'
+  many clicks masquerade as many independent listeners, accepting that the
+  resampling must be reimplemented natively (no stats crate added; lean
+  dependency posture) and that the non-inferiority margin `δ` is a spec-time
+  decision. Idea reuse only.
