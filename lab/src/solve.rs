@@ -46,14 +46,105 @@ pub fn solve_exact(problem: &OracleProblem) -> Outcome {
     }
 }
 
-/// Propagating solver — same outcome contract as [`solve_exact`], but prunes
-/// domains by constraint propagation before and during search.
+/// Propagating solver — the same outcome contract as [`solve_exact`], but with
+/// forward-checking propagation of the binary travel bound layered onto the
+/// search, so branches that plain backtracking would enter are pruned early.
 ///
-/// Pending implementation; pinned by `lab/tests/propagate.rs` (differential
-/// against [`solve_exact`]). The green step replaces this body.
+/// Only *sound* pruning is applied: a value is dropped from a variable's domain
+/// only when it violates an [`Constraint::AbsDiffLe`] against an already-assigned
+/// partner, and a branch is abandoned only when some still-unassigned variable
+/// has no travel-consistent value left. The whole-band [`Constraint::BandOverlapAtMost`]
+/// keeps the reference's exact partial prune and leaf check. Because every prune
+/// removes only values/branches that provably extend to no solution, the solver
+/// reports `Sat` iff a solution exists — i.e. it agrees with [`solve_exact`] on
+/// every problem — and it is deterministic (variables in declaration order,
+/// values ascending, as the reference).
 #[must_use]
-pub fn solve_propagate(_problem: &OracleProblem) -> Outcome {
-    todo!("constraint-propagation solver — green step")
+pub fn solve_propagate(problem: &OracleProblem) -> Outcome {
+    let base = prefiltered_domains(problem);
+    if base.iter().any(Vec::is_empty) {
+        return Outcome::Unsat { nodes: 0 };
+    }
+    let mut assignment: Vec<i64> = Vec::with_capacity(problem.vars().len());
+    let mut nodes: u64 = 0;
+    if mac_search(problem, &base, &mut assignment, &mut nodes) {
+        Outcome::Sat {
+            witness: assignment,
+            nodes,
+        }
+    } else {
+        Outcome::Unsat { nodes }
+    }
+}
+
+/// Backtracking search with forward checking of the travel bound.
+fn mac_search(
+    problem: &OracleProblem,
+    base: &[Vec<i64>],
+    assignment: &mut Vec<i64>,
+    nodes: &mut u64,
+) -> bool {
+    if assignment.len() == problem.vars().len() {
+        return problem
+            .constraints()
+            .iter()
+            .all(|c| check_full(c, assignment));
+    }
+    let index = assignment.len();
+    let Some(domain) = base.get(index) else {
+        return false;
+    };
+    for &value in domain {
+        // Skip values that break the travel bound against an assigned partner —
+        // a sound prune that never removes a solution value.
+        if !absdiff_ok_for(problem, assignment, index, value) {
+            continue;
+        }
+        *nodes = nodes.saturating_add(1);
+        assignment.push(value);
+        if consistent_partial(problem, assignment)
+            && forward_check_ok(problem, base, assignment)
+            && mac_search(problem, base, assignment, nodes)
+        {
+            return true;
+        }
+        assignment.pop();
+    }
+    false
+}
+
+/// Whether assigning variable `index` the value `value` respects every
+/// [`Constraint::AbsDiffLe`] whose *other* endpoint is already assigned.
+fn absdiff_ok_for(problem: &OracleProblem, assignment: &[i64], index: usize, value: i64) -> bool {
+    problem.constraints().iter().all(|constraint| {
+        let Constraint::AbsDiffLe { a, b, bound } = constraint else {
+            return true;
+        };
+        let partner = if a.0 == index {
+            b.0
+        } else if b.0 == index {
+            a.0
+        } else {
+            return true;
+        };
+        assignment
+            .get(partner)
+            .is_none_or(|&other| (value - other).abs() <= *bound)
+    })
+}
+
+/// Forward check: every still-unassigned variable retains at least one value
+/// consistent with the travel bound against the current prefix. A wipe-out here
+/// means the prefix extends to no solution, so the branch is pruned — soundly,
+/// since only travel-inconsistent values are excluded from the count.
+fn forward_check_ok(problem: &OracleProblem, base: &[Vec<i64>], assignment: &[i64]) -> bool {
+    (assignment.len()..problem.vars().len()).all(|j| {
+        base.get(j).is_some_and(|domain| {
+            domain
+                .iter()
+                .any(|&value| absdiff_ok_for(problem, assignment, j, value))
+        })
+    })
 }
 
 /// Checks a complete assignment against the problem: full length, every

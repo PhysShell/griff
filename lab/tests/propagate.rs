@@ -70,24 +70,27 @@ fn e_minor_line() -> Vec<Pitch> {
 #[test]
 fn agrees_on_bounded_travel_unsat_frontier() {
     // bound 2 is provably UNSAT (spike finding); propagation must also say UNSAT.
-    let p = bounded_travel_problem(&e_minor_line(), &std_e(), STANDARD_MAX_FRET, 2)
-        .expect("builds");
-    assert!(!is_sat(&solve_exact(&p)), "reference sanity: bound 2 is UNSAT");
+    let p =
+        bounded_travel_problem(&e_minor_line(), &std_e(), STANDARD_MAX_FRET, 2).expect("builds");
+    assert!(
+        !is_sat(&solve_exact(&p)),
+        "reference sanity: bound 2 is UNSAT"
+    );
     assert_agrees(&p);
 }
 
 #[test]
 fn agrees_on_bounded_travel_sat_frontier() {
-    let p = bounded_travel_problem(&e_minor_line(), &std_e(), STANDARD_MAX_FRET, 3)
-        .expect("builds");
+    let p =
+        bounded_travel_problem(&e_minor_line(), &std_e(), STANDARD_MAX_FRET, 3).expect("builds");
     assert!(is_sat(&solve_exact(&p)), "reference sanity: bound 3 is SAT");
     assert_agrees(&p);
 }
 
 #[test]
 fn agrees_on_bounded_travel_loose() {
-    let p = bounded_travel_problem(&e_minor_line(), &std_e(), STANDARD_MAX_FRET, 24)
-        .expect("builds");
+    let p =
+        bounded_travel_problem(&e_minor_line(), &std_e(), STANDARD_MAX_FRET, 24).expect("builds");
     assert_agrees(&p);
 }
 
@@ -95,8 +98,8 @@ fn agrees_on_bounded_travel_loose() {
 
 #[test]
 fn is_deterministic() {
-    let p = bounded_travel_problem(&e_minor_line(), &std_e(), STANDARD_MAX_FRET, 3)
-        .expect("builds");
+    let p =
+        bounded_travel_problem(&e_minor_line(), &std_e(), STANDARD_MAX_FRET, 3).expect("builds");
     assert_eq!(solve_propagate(&p), solve_propagate(&p));
 }
 
@@ -133,7 +136,10 @@ fn agrees_on_all_small_absdiff_problems() {
             }
         }
     }
-    assert!(checked >= 900, "expected the full small grid, got {checked}");
+    assert!(
+        checked >= 900,
+        "expected the full small grid, got {checked}"
+    );
 }
 
 #[test]
