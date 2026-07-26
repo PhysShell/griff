@@ -7,13 +7,18 @@ presentation contract, and metric-to-gate mapping for the four-task human
 benchmark that proposal names as *the gate* (its Step 2, §4). This document
 designs the benchmark; it does not build it.
 
-Status: for discussion (v2 — v1 revised per the PR #153 arbiter review:
-paired-difference non-inferiority gate with a cluster bootstrap; corrected
-derived-pairwise semantics (B-over-C in the context of A, never A-over-B);
-a versioned presentation profile with anchor-audition evidence; immutable
-item-manifest binding; a single-question copy-detection task; difficulty
-strata; ranking metrics demoted to diagnostics; and the parent's `Stage N`
-sequence relabelled `Step N`). Companion to
+Status: for discussion (v2.1 — v2 revised per the second PR #153 arbiter
+review, a consistency pass: parent learner + copy-detection wording
+synchronized to the contextual/single-question forms; audition order
+randomized and recorded independently of screen layout; difficulty strata
+made task-specific (they were not constructible for copy-detection or
+complementarity under one near/far scale); paired tie handling made symmetric
+across both predictors; the complementarity floor put behind a superiority
+gate; per-stratum evidence floors added; concrete v1 policy ids bound; stale
+metadata cleaned. v2 itself introduced the paired-difference cluster-bootstrap
+gate, corrected B-over-C semantics, the presentation profile, immutable
+item-manifest binding, single-question copy-detection, and the `Stage`→`Step`
+relabelling.) Companion to
 [`preference-and-similarity-learning.md`](preference-and-similarity-learning.md);
 that proposal stays the thesis, this file is the benchmark spec.
 Scope: docs-only; binds nothing. The canonical S9 Phase 1 plan — explainable
@@ -111,9 +116,9 @@ field does not apply) — never a silent omission.
 - **Anchor source**: a corpus chunk carrying measured structure, gesture, and
   complexity (schema ≥ v6 — the fields `similarity_axes` requires).
 - **Candidate source**: two other corpus chunks (or generator variants of the
-  anchor), drawn under a **difficulty stratum** (§2.4) — from *easy* (one near,
-  one far) through *hard-negative* (same coarse stratum, different motif
-  identity) — so the pool is not dominated by trivially separable pairs. The
+  anchor), drawn under this task's **distance-margin strata** (§2.4) — from
+  `wide_margin` through `tie_margin`, plus a `same_stratum_distinct_motif`
+  hard-negative — so the pool is not dominated by trivially separable pairs. The
   stratum draw is fixed *before* collection and is **independent of the
   candidate metric under test** (§2.4), so the benchmark cannot degenerate into
   "does the new metric agree with the sampler".
@@ -151,7 +156,8 @@ field does not apply) — never a silent omission.
 - **Candidate source**: two deterministic generator variants of `A` (the
   reachability-lab / candidate-terrain variation axes: rhythmic displacement,
   contour, register, technique), differing in how far they depart from `A`,
-  drawn under a difficulty stratum (§2.4).
+  drawn under this task's middle-band strata (§2.4: `clearly_better` /
+  `close_call` / `both_off_band`).
 - **Gate comparison**: "good variation" is explicitly **two-sided** — a good
   variation is neither a copy nor a stranger. The baseline is a *declared
   composite* of a closeness term (similarity aggregate, §1.1) and a difference
@@ -181,19 +187,29 @@ field does not apply) — never a silent omission.
   isolation (§2.3 presentation procedure).
 - **Anchor source**: a lead guitar part (corpus track or generator output).
 - **Candidate source**: two candidate second-guitar parts against the same
-  lead. Same-source (same-song) `A`/candidate pairs are a labelled special case
-  (§2.4), never a silent default.
+  lead, drawn under this task's controlled-feature margin strata (§2.4:
+  `wide_margin` / `narrow_margin` / `tie_margin` over register-occupancy /
+  density fit — explicitly not a near/far ordering). Same-source (same-song)
+  `A`/candidate pairs are a labelled special case (§2.4), never a silent
+  default.
 - **Gate comparison**: this task rewards **difference that fits**, not
   closeness — a complement that doubles the lead is worse. Because no
   handcrafted preference distance exists (below), the paired-difference gate
   runs the candidate metric against the **declared floor baseline** of §2.7
   (a random / legality-only predictor), not against a similarity distance.
-- **Pass criterion**: `TBD at spec` in one respect only — *which* floor
-  baseline (random, or legality-only via `validate_pair`, or a newly specified
-  handcrafted complementarity distance that earns its own spec section). The
-  gate *form* is fixed: the §2.6 non-inferiority test of the paired difference
-  against whichever floor is chosen. The decision procedure: pick the floor
-  from pilot evidence, not now.
+- **Pass criterion**: a **superiority** gate, not the non-inferiority form used
+  for §1.1–§1.2 — because "no worse than a coin toss (or a legality filter)" is
+  not evidence a learned complement ranker is worth production authority.
+  Against a random / legality-only floor the gate is `lower_CI(mean Δ) ≥ ε`
+  with a **pre-registered `ε > 0`** (§2.6), i.e. the candidate must *beat* the
+  floor by a margin, not merely match it. `TBD at spec` in one respect only —
+  *which* floor (random, legality-only via `validate_pair`, or a newly
+  specified handcrafted complementarity distance that earns its own spec
+  section and then uses the ordinary non-inferiority gate); the decision
+  procedure is to pick it from pilot evidence. An honest alternative the spec
+  may take instead: declare complementarity **ungateable** until a meaningful
+  handcrafted baseline exists — "match random and enter production" is not on
+  the table.
 - **Gate metric**: triplet agreement, with **cross-user generalization** (§2.6)
   weighted heavily, because complementarity judgements are expected to vary
   most between listeners.
@@ -297,7 +313,9 @@ enumerated exactly.
 - `presentation_profile_id` — the versioned presentation profile (§2.3) the
   listener actually heard the item under.
 - `derivation_policy_id` — the versioned policy under which pairwise labels are
-  derived from this record (below).
+  derived from this record (below). The accepted v1 policy is
+  `contextual_bc_preference_v1` (the corrected B-over-C / C-over-B derivation);
+  an unknown id is a typed refusal.
 - `dataset_split_id` — the versioned split (train / validation / test, and
   held-out-user membership) this item belongs to (§2.4, §2.6).
 
@@ -306,9 +324,11 @@ enumerated exactly.
 - `task` — closed enum, exactly the four of §1:
   `{ similarity, variation, complementarity, copy_detection }`.
 - `question_variant` — a value from a **closed, versioned question-variant
-  registry** (not a free-form string): the enumerated wordings the spec admits
-  per task (§1 gives the v1 wording; robustness variants are registry entries,
-  each with an id).
+  registry** (not a free-form string). The v1 registry is exactly one wording
+  per task — `{ similarity_v1, variation_v1, complementarity_mix_v1,
+  copy_detection_v1 }` (the §1 wordings); robustness variants are later
+  registry entries, each with its own id. An unknown id is a typed refusal
+  (below).
 - `session_id` — the session this judgement belongs to.
 - `user_id` — the listener, as an **irreversible pseudonym** under the privacy
   contract below. Distinct from `session_id`: one user runs many sessions, and
@@ -339,6 +359,11 @@ different datum from an informed one, and must be filterable.
 - `exposure` — the full ordered set of candidates presented, as their content
   ids, in `display_order` (the on-screen order). Both stored: a choice is
   uninterpretable without the display order that framed it (order bias — §2.5).
+- `audition_order` — the **realized playback order** of the stimuli, recorded
+  **independently of `display_order`** (a stimulus can sit second on screen yet
+  play last). This is the order randomized in §2.3/§2.5 to break the
+  recency confound, and the field the analysis conditions on — screen layout
+  and playback order are two different confounds and are stored separately.
 - `anchor_audition` — `{ anchor_played, anchor_listen_ms, anchor_completed,
   anchor_replay_count }`.
 - `candidate_audition` — per exposed candidate: `{ auditioned, listen_ms,
@@ -426,36 +451,59 @@ lead_candidate_mix_policy   // for §1.3: relative gain/pan of lead vs complemen
 normalization_version       // loudness normalization across stimuli
 ```
 
-**Procedure.** Every task presents under one profile, in a fixed order, with
-replays permitted under the *same* profile and counted (§2.2):
+**Procedure.** Every task presents under one profile, with replays permitted
+under the *same* profile and counted (§2.2). The anchor is always heard first;
+the **two candidate stimuli are presented in a randomized order**, so neither
+is systematically the most recent audition before the choice (a recency
+confound the fixed `A → B → C` order of v2 left uncontrolled):
 
-- similarity / variation / copy-detection: `A`, then `B`, then `C`.
-- complementarity: `A` solo, then `A+B` together, then `A+C` together — the
-  listener judges the two mixes, never the candidates alone (§1.3).
+- similarity / variation / copy-detection: `A`, then the candidates in a
+  randomized order — `A → B → C` or `A → C → B`.
+- complementarity: `A` solo, then the two mixes in a randomized order —
+  `A → A+B → A+C` or `A → A+C → A+B` — the listener judges the mixes, never
+  the candidates alone (§1.3).
 
-All realized playback identities (which stimulus, under which profile, for how
+The **realized order is recorded in `audition_order`** (§2.2),
+**independently of `display_order`**, and the analysis conditions on it. All
+realized playback identities (which stimulus, under which profile, for how
 long) enter the audition evidence. A judgement whose stimuli were rendered
 under an unrecognised profile version is refused, not silently pooled with
 another profile's data.
 
 ### 2.4 Sampling protocol
 
-- **Difficulty strata (against too-easy and circular triplets).** For every
-  task, candidate pairs are drawn into named difficulty strata, fixed *before*
-  collection and **independent of the candidate metric under evaluation** — so
-  the benchmark cannot reduce to "does the new metric agree with the sampler":
-  - `easy` — near vs far;
-  - `medium` — near vs medium;
-  - `hard` — near vs near;
-  - `hard_negative` — same coarse stratum, different motif identity;
-  - `baseline_tie` — the handcrafted baseline's margin is near zero.
+- **Difficulty strata (against too-easy and circular triplets) —
+  task-specific, not one global scale.** Candidate pairs are drawn into named
+  difficulty strata, fixed *before* collection and **independent of the
+  candidate metric under evaluation** — so the benchmark cannot reduce to "does
+  the new metric agree with the sampler". A single near/far scale is not
+  constructible for every task (a copy-detection item is *defined* as
+  copy-vs-remote, so it has no "near vs near" form; complementarity has no
+  natural near/far ordering at all — closeness to `A` can make a second guitar
+  *worse*). Each task therefore declares **its own** strata over a
+  controlled-feature margin, never a borrowed near/far label, and each task
+  populates **only its own** declared strata:
+  - **similarity** — distance-margin strata: `wide_margin` / `mid_margin` /
+    `narrow_margin` / `tie_margin` (the controlled similarity-feature gap
+    between the two candidates, from large down to ≈ 0), plus a
+    `same_stratum_distinct_motif` hard-negative (comparable feature profile,
+    different motif identity).
+  - **variation** — strata by distance from the middle-band variation optimum
+    (§1.2): `clearly_better` / `close_call` / `both_off_band` (one too close +
+    one too far vs two similarly-placed candidates).
+  - **complementarity** — strata by a controlled-feature or candidate-metric
+    margin (register-occupancy / density fit), explicitly **not** called
+    near/far: `wide_margin` / `narrow_margin` / `tie_margin`.
+  - **copy-detection** — quotation-strength boundary strata:
+    `obvious_copy_vs_remote` / `threshold_adjacent_copy_vs_noncopy` /
+    `two_threshold_adjacent` (both candidates near the copy threshold).
 
-  A metric that wins only on `easy` (a riff against a musical refrigerator) has
-  not passed; the gate is read **per stratum and in aggregate** (§2.6), so an
-  easy-item win cannot mask a `hard_negative` loss. The near/far/medium
-  bucketing is a coarse pre-stratification device recorded in the item
-  manifest; it is never revealed to the listener and never treated as the
-  ground-truth label.
+  A metric that wins only on the wide-margin stratum (a riff against a musical
+  refrigerator) has not passed; the gate is read **per stratum and in
+  aggregate** (§2.6), so a wide-margin win cannot mask a narrow-margin or
+  hard-negative loss. The margin bucketing is a pre-stratification device
+  recorded in the item manifest; it is never revealed to the listener and
+  never treated as the ground-truth label.
 - **Stratification over corpus axes.** Beyond difficulty, items are stratified
   over the schema-v6 per-axis `ComplexityProfile` (rhythmic, pitch, technical,
   harmonic, playability — `core/src/structure.rs`) and over the
@@ -509,13 +557,19 @@ another profile's data.
   down-weighted or excluded under a documented rule. Repeated probes are the
   *same* item observed twice — the bootstrap (§2.6) must treat them as
   dependent, never as fresh independent evidence.
-- **Minimum evidence threshold.** No task gate (§2.6) may be *read* until a
-  floor of evidence exists, so a lucky handful of triplets cannot "pass" a
-  task. Proposed floors: **≥ 50 triplets per user per task** and **≥ 5 distinct
-  users** for any cross-user claim. Both numbers are `TBD at spec`: the decision
-  procedure fixes them from the target cluster-bootstrap CI width (§2.6) — the
-  floor is whatever makes the CI lower bound a meaningful non-inferiority test
-  rather than noise — not asserted by taste here.
+- **Minimum evidence threshold — aggregate *and* per stratum.** No task gate
+  (§2.6) may be *read* until a floor of evidence exists, so a lucky handful of
+  triplets cannot "pass" a task. Proposed aggregate floors: **≥ 50 triplets per
+  user per task** and **≥ 5 distinct users** for any cross-user claim. But the
+  gate is normative *per stratum* (§2.4, §2.6), and an aggregate floor cannot
+  certify five underpopulated sub-gates by administrative osmosis — so **no
+  per-stratum gate may be read until that stratum independently meets the
+  pre-registered minimum user, source-group, and effective-item counts**
+  (effective, i.e. after collapsing repeated probes within a cluster — §2.6).
+  All these numbers are `TBD at spec`: the decision procedure fixes them from
+  the target cluster-bootstrap CI width (§2.6) — the floor is whatever makes the
+  CI lower bound a meaningful test rather than noise — not asserted by taste
+  here.
 
 ### 2.6 The statistical gate, and which metric reads it
 
@@ -529,16 +583,21 @@ bootstraps the **paired difference**.
 **Per item `i`**, with the human choice as ground truth:
 
 ```text
-Δ_i = correct(candidate, i) − correct(baseline, i)      // each ∈ {0, 1} (or the
-                                                        // tie rule below), so
-                                                        // Δ_i ∈ {−1, 0, +1}
+Δ_i = correct(candidate, i) − correct(baseline, i)      // each ∈ {0, 0.5, 1}
+                                                        // under the tie rule
+                                                        // below, so Δ_i ∈ [−1, 1]
 ```
 
-**Gate:** `lower_CI( mean Δ ) ≥ −δ`, where
+**Gate — two forms, one shape.** Against a real handcrafted baseline
+(similarity, variation, copy-detection) the gate is **non-inferiority**:
+`lower_CI(mean Δ) ≥ −δ`. Against a *floor* baseline (complementarity, where no
+handcrafted distance exists — §1.3, §2.7) it is **superiority**:
+`lower_CI(mean Δ) ≥ ε` with a **pre-registered `ε > 0`** — merely matching a
+coin toss or a legality filter is not evidence, so the candidate must beat the
+floor by a margin. In both:
 
-- `δ = 0` for a strict "no worse than baseline", or a **pre-registered
-  non-inferiority margin** `δ > 0` fixed before collection (never after seeing
-  results);
+- `δ` / `ε` are **pre-registered before collection** (never chosen after seeing
+  results); `δ = 0` is the strict "no worse than baseline";
 - the confidence level is fixed (default **95%**), as are the bootstrap
   **resample count** and **seed**, so the interval is reproducible;
 - the **resampling unit is a cluster, not a row**: a **paired hierarchical /
@@ -549,20 +608,28 @@ bootstraps the **paired difference**.
 - **repeated probes** (§2.5) are collapsed within their cluster, never counted
   as independent draws;
 - the gate is evaluated **per difficulty stratum (§2.4) and in aggregate** — a
-  stratum failure is a failure even if the aggregate passes.
+  stratum failure is a failure even if the aggregate passes, and a stratum is
+  read only once it meets its own evidence floor (§2.5).
 
-**Baseline ties are handled deterministically.** When the baseline's two
-candidate scores are equal (the `baseline_tie` stratum, or any exact tie), the
-baseline's `correct(baseline, i)` is defined by a single pre-registered rule —
-**half-credit** (`0.5`) by default, with *abstain* (drop the item from the
-baseline arm) and a fixed fallback ordering as the named alternatives — chosen
-at spec, not improvised per run.
+**Prediction ties are handled deterministically and symmetrically — for
+*either* predictor, never one arm.** A tie is when a predictor's two candidate
+scores are equal (the `tie_margin` stratum, or any exact tie), so it makes no
+prediction. One pre-registered rule, bound to the archive as part of the gate
+policy, applies to the candidate metric and the baseline alike:
+
+- **default — half-credit:** a tie scores `correct = 0.5` for that predictor on
+  that item (so `Δ_i` can be `±0.5`). Symmetric, and it never breaks the
+  pairing.
+- **alternative — paired abstention:** if *either* predictor ties on an item,
+  the **whole paired item is removed from `Δ`** (never from just one arm —
+  dropping one side would destroy `Δ_i` and bias the comparison). Chosen at
+  spec; the two systems never run under different tie rules.
 
 **Metric-to-gate mapping (explicit, not implicit).**
 
 | Metric | Role | Applies to |
 | --- | --- | --- |
-| Triplet agreement | **the gate metric** (paired-difference non-inferiority, above) | all four tasks |
+| Triplet agreement | **the gate metric** (paired-difference; non-inferiority vs a real baseline, superiority vs a floor — above) | all four tasks |
 | Pairwise agreement (on *derived* labels, §2.2) | secondary diagnostic | similarity, variation |
 | Per-user consistency | data-quality **precondition** read before any gate | all four |
 | Cross-user generalization (user-disjoint split, §2.4) | generalization check, gated | all four; weighted heaviest for complementarity |
@@ -579,16 +646,18 @@ Two rules make the table binding:
   pool and collects a ranking, with its own record fields) — named here as
   future work, not smuggled into the triplet gate.
 - **The gate is the paired difference, clustered.** A point-estimate win inside
-  overlapping per-arm intervals does not pass; only the non-inferiority test on
-  the clustered paired difference does.
+  overlapping per-arm intervals does not pass; only the paired-difference test
+  on the clustered bootstrap does — non-inferiority (`≥ −δ`) against a real
+  baseline, superiority (`≥ ε`, `ε > 0`) against a floor (§2.6).
 
 ### 2.7 Baselines and compared systems
 
 The handcrafted baselines are **named code**, and "baseline distance" is
 defined per task rather than assumed uniform. Learned embeddings and learned
 distances enter later and, per the parent proposal's gate rule, must pass the
-§2.6 non-inferiority gate *on that task* before earning any production use — a
-win on one task is no licence on another (§1).
+§2.6 gate *on that task* before earning any production use — non-inferiority
+against a real baseline, or **superiority against a floor** where no baseline
+exists (complementarity) — a win on one task is no licence on another (§1).
 
 - **similarity** — baseline prediction = the candidate with the higher
   similarity aggregate to `A` under `similarity_weights_v3`
@@ -604,9 +673,11 @@ win on one task is no licence on another (§1).
 - **complementarity** — **honestly, no baseline distance.**
   `complement.rs::validate_pair` is a legality validator (and not a wired
   gate), producing `is_clean` rather than a graded preference. The gate
-  therefore runs against a **declared floor** (random / legality-only), and the
-  learned complementarity score must clear that floor under §2.6; the floor's
-  identity is chosen at spec (§1.3).
+  therefore runs against a **declared floor** (random / legality-only) under the
+  **superiority** form (`≥ ε`, `ε > 0`) — the learned score must *beat* the
+  floor, not match it — or complementarity is declared ungateable until a
+  meaningful handcrafted baseline exists; the choice is made at spec (§1.3,
+  §2.6).
 - **copy-detection** — baseline prediction = `novelty.rs` quotation facts
   (`quote_novelty`, `ngram_novelty`, longest common contiguous transition run),
   transposition- and resolution-robust by construction, predicting the copy as

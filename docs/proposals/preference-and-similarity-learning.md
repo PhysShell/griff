@@ -97,7 +97,9 @@ tasks, not one similarity function**:
 - *variation* — which is a better variation of A?
 - *complementarity* — which better complements A? (often demands
   difference, not closeness — the opposite gradient from similarity);
-- *copy detection* — which is too close / too far?
+- *copy detection* — which candidate is too close to A to count as original?
+  (a single observable question; the remote candidate is a labelled control,
+  never a derived "too far" judgement — see the companion §1.4);
 
 Each task has its own dataset, metrics, and its own gate. Metrics per task:
 triplet agreement, pairwise agreement, top-k retrieval, rank correlation
@@ -117,9 +119,12 @@ perception until proven so.
 First learner: standardized features (harmonic fit, rhythmic fit, pitch/fret
 movement, density, repetition, novelty, playability, register, technique
 usage, phrase role, transition cost — largely the existing explainable
-axes), linear model `S(x) = wᵀf(x) + b`, pairwise logistic loss on derived
-A-over-B labels, L2 regularization, source-disjoint split, multiple seeds,
-always compared against the handcrafted scorer.
+axes), linear model `S(x) = wᵀf(x) + b`, pairwise logistic loss on the
+**contextual `B-over-C` / `C-over-B` labels** the benchmark derives —
+conditioned on anchor, task, and question variant, never a fabricated
+`A-over-B` observation the listener never made (companion §2.2) —
+L2 regularization, source-disjoint split, multiple seeds, always compared
+against the handcrafted scorer.
 
 Integration is a bounded correction, never a replacement:
 

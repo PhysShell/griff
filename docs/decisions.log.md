@@ -1946,7 +1946,7 @@ Architectural decisions go to [`adr/`](adr/) instead.
 
 - 2026-07-26 — In the context of designing the Human Similarity Benchmark
   (`docs/proposals/human-similarity-benchmark.md`, the companion spec for
-  Stage 2 of the preference-and-similarity-learning proposal), facing the
+  Step 2 (§4) of the preference-and-similarity-learning proposal), facing the
   prior-art-first rule's requirement that a survey be recorded in a
   canonical decision record rather than only inside a transient proposal,
   we decided for logging the benchmark-methodology sources here —
