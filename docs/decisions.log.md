@@ -1964,3 +1964,20 @@ Architectural decisions go to [`adr/`](adr/) instead.
   duplication of the proposal's §2.9 prior-art section (the same trade-off
   the 2026-07-25 four-proposals survey entry accepted). Idea reuse only;
   GPL sources never contribute code to this MIT workspace.
+
+- 2026-07-26 — In the context of revising the Human Similarity Benchmark to
+  v2 after the PR #153 arbiter review, facing the arbiter's finding that a
+  gate comparing two independent confidence intervals is statistically
+  wrong, we decided for a **paired per-item non-inferiority test on a
+  clustered bootstrap** — bootstrapping the paired difference
+  `Δ_i = correct(candidate, i) − correct(baseline, i)`, gating on
+  `lower_CI(mean Δ) ≥ −δ` with a pre-registered margin, fixed confidence
+  level / resample count / seed, and resampling over the clustering units
+  (users and source songs) rather than rows — surveyed from standard
+  non-inferiority and paired hierarchical/cluster bootstrap practice, and
+  against a row bootstrap of two per-arm CIs, to achieve a gate that tests
+  superiority on the *same* items without letting a few listeners'
+  many clicks masquerade as many independent listeners, accepting that the
+  resampling must be reimplemented natively (no stats crate added; lean
+  dependency posture) and that the non-inferiority margin `δ` is a spec-time
+  decision. Idea reuse only.
