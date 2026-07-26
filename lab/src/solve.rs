@@ -46,6 +46,16 @@ pub fn solve_exact(problem: &OracleProblem) -> Outcome {
     }
 }
 
+/// Propagating solver — same outcome contract as [`solve_exact`], but prunes
+/// domains by constraint propagation before and during search.
+///
+/// Pending implementation; pinned by `lab/tests/propagate.rs` (differential
+/// against [`solve_exact`]). The green step replaces this body.
+#[must_use]
+pub fn solve_propagate(_problem: &OracleProblem) -> Outcome {
+    todo!("constraint-propagation solver — green step")
+}
+
 /// Checks a complete assignment against the problem: full length, every
 /// value inside its variable's domain, and every constraint satisfied.
 /// The check the external-solver cross-check runs on parsed witnesses.
