@@ -5,7 +5,7 @@
   "fingerprint_hex": "d0675880e7adf4b0",
   "solver": {
     "name": "minizinc/chuffed",
-    "version": "MiniZinc to FlatZinc converter, version 2.8.7, build 1478320236"
+    "version": "frontend: MiniZinc to FlatZinc converter, version 2.8.7, build 1478320236; backend: Chuffed 0.13.2 (org.chuffed.chuffed, cp, lcg, int)"
   },
   "outcome": {
     "status": "unsat",

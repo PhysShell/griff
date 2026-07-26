@@ -1929,3 +1929,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   production or CI impact, accepting that the lab is built and run only
   on demand and its results live as committed fixtures, manifests, and
   the audit report rather than as a CI gate.
+
+- 2026-07-25 — In the context of the Constraint Lab spike's solver design,
+  facing the prior-art-first rule for a non-trivial component, we decided
+  for MiniZinc (MPL-2.0) as the external offline oracle with the Chuffed
+  backend (MIT; the bundled Gecode binary was rejected for a hard libEGL
+  runtime dependency) invoked strictly as an optional external binary,
+  plus a hand-rolled exact backtracking reference solver in-crate, and
+  against linking any CP/SAT library crate (e.g. russcip, varisat,
+  copris-style bindings) or making the solver a build dependency, to
+  achieve archived cross-checked evidence with zero workspace dependency
+  impact and full determinism control over the reference path, accepting
+  that the reference solver is leaf-checked (no propagation) and that
+  external-solver availability is environment-dependent — both recorded
+  in the audit report.

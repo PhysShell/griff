@@ -46,7 +46,11 @@ green implementation followed; `griff-core` remained untouched and green.
 ## Results (archived under `lab/fixtures/` and `lab/runs/`)
 
 Solvers: `griff-lab-exact` v1 (reference) and MiniZinc 2.8.7
-(build 1478320236, chuffed backend). **All five fixtures: outcomes agree.**
+(frontend build 1478320236) with the **Chuffed 0.13.2** backend — both
+identities recorded separately in every manifest. External SAT witnesses
+are re-verified against the IR before an agreement is recorded, and a
+non-zero solver exit is a failure, never archived evidence. **All five
+fixtures: outcomes agree.**
 
 | Fixture | Reference | MiniZinc/chuffed |
 | --- | --- | --- |
@@ -81,9 +85,9 @@ use-case the Lab exists for.
   scope.
 - One shared B domain per problem; relation-mode-specific per-onset
   domains are follow-up work.
-- The external cross-check compares SAT/UNSAT status; witness equality is
-  not required (both solvers' witnesses are verified against the
-  constraints instead).
+- Witness equality between solvers is not required; every SAT witness
+  (reference and external) is verified against the IR constraints
+  instead, and an invalid external witness counts as disagreement.
 
 ## Follow-ups proposed
 
