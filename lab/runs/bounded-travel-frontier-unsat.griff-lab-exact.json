@@ -1,0 +1,15 @@
+{
+  "schema": "griff.constraint-lab-run",
+  "version": 1,
+  "problem": "bounded-travel",
+  "fingerprint_hex": "d0675880e7adf4b0",
+  "solver": {
+    "name": "griff-lab-exact",
+    "version": "1"
+  },
+  "outcome": {
+    "status": "unsat",
+    "witness": null,
+    "nodes": 26
+  }
+}

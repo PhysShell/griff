@@ -22,6 +22,9 @@ after Will Swan / Dance Gavin Dance / Hail The Sun.
 - `plugin/`  — CLAP plugin via nih-plug (S10+, not yet)
 - `fuzz/`    — isolated nightly cargo-fuzz crate (ADR-0010; not a workspace
   member); policy in [`docs/fuzzing.md`](docs/fuzzing.md)
+- `lab/`     — isolated offline Constraint Lab spike (research tooling; not a
+  workspace member); results in
+  [`docs/audit/2026-07-constraint-oracle-spike.md`](docs/audit/2026-07-constraint-oracle-spike.md)
 - `docs/`    — knowledge base; start at [`docs/SPEC.md`](docs/SPEC.md)
 
 ## Constitution

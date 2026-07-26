@@ -1916,3 +1916,30 @@ Architectural decisions go to [`adr/`](adr/) instead.
   proposal's acceptance, to achieve a durable canonical trace of the
   survey regardless of each proposal's fate, accepting a coarse-grained
   duplication of the proposals' prior-art sections.
+
+- 2026-07-25 — In the context of the Constraint Lab oracle spike (the
+  hard-constraint-contract proposal's first increment), facing where
+  solver-facing research tooling may live without touching the production
+  dependency posture, we decided for an isolated `lab/` crate excluded
+  from the workspace exactly like `fuzz/` (ADR-0010 precedent) with
+  `griff-core` as its only path dependency and the external MiniZinc
+  binary strictly optional at runtime, and against a workspace member or
+  a CI job, to achieve real archived solver runs (MiniZinc 2.8.7/chuffed
+  cross-checked against an exact in-repo reference solver) with zero
+  production or CI impact, accepting that the lab is built and run only
+  on demand and its results live as committed fixtures, manifests, and
+  the audit report rather than as a CI gate.
+
+- 2026-07-25 — In the context of the Constraint Lab spike's solver design,
+  facing the prior-art-first rule for a non-trivial component, we decided
+  for MiniZinc (MPL-2.0) as the external offline oracle with the Chuffed
+  backend (MIT; the bundled Gecode binary was rejected for a hard libEGL
+  runtime dependency) invoked strictly as an optional external binary,
+  plus a hand-rolled exact backtracking reference solver in-crate, and
+  against linking any CP/SAT library crate (e.g. russcip, varisat,
+  copris-style bindings) or making the solver a build dependency, to
+  achieve archived cross-checked evidence with zero workspace dependency
+  impact and full determinism control over the reference path, accepting
+  that the reference solver is leaf-checked (no propagation) and that
+  external-solver availability is environment-dependent — both recorded
+  in the audit report.

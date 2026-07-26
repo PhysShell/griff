@@ -1,0 +1,28 @@
+# Isolated offline Constraint Lab spike (hard-constraint-contract proposal,
+# first increment). Deliberately NOT a member of the parent workspace: this is
+# research tooling — it may talk to an external MiniZinc solver and carries its
+# own dependency tree, none of which is allowed to touch the production
+# workspace, its deny.toml posture, or CI. Mirrors the `fuzz/` isolation
+# precedent (ADR-0010).
+
+[package]
+name         = "griff-constraint-lab"
+version      = "0.0.0"
+publish      = false
+edition      = "2021"
+rust-version = "1.92"
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror  = "2"
+
+[dependencies.griff-core]
+path = "../core"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all      = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

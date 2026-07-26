@@ -1,0 +1,48 @@
+{
+  "schema": "griff.constraint-lab-run",
+  "version": 1,
+  "problem": "bounded-travel",
+  "fingerprint_hex": "6f2d85dccf261b0c",
+  "solver": {
+    "name": "minizinc/chuffed",
+    "version": "frontend: MiniZinc to FlatZinc converter, version 2.8.7, build 1478320236; backend: Chuffed 0.13.2 (org.chuffed.chuffed, cp, lcg, int)"
+  },
+  "outcome": {
+    "status": "sat",
+    "witness": [
+      [
+        "f0",
+        0
+      ],
+      [
+        "f1",
+        7
+      ],
+      [
+        "f2",
+        7
+      ],
+      [
+        "f3",
+        0
+      ],
+      [
+        "f4",
+        19
+      ],
+      [
+        "f5",
+        19
+      ],
+      [
+        "f6",
+        22
+      ],
+      [
+        "f7",
+        7
+      ]
+    ],
+    "nodes": 0
+  }
+}
