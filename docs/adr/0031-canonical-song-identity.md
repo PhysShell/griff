@@ -82,10 +82,17 @@ following the established optional-field, forward-compatible schema pattern
   - `HoldoutTargetSourceFile` / `HoldoutTargetFragment` — require `sha256`;
     `sha256`-less records fail closed (reject or migrate), never trusted by
     basename.
-  - `HoldoutTargetSong` — requires `song_id`; a record without it **cannot** be
-    song-held-out and is a typed refusal in that mode (or is migrated), never a
-    basename/title fallback. A song holdout excludes every chunk whose source
-    carries the target `song_id`.
+  - `HoldoutTargetSong` — requires `song_id` **coverage over the corpus**, not
+    merely a labelled target. Excluding only sources whose `song_id` equals the
+    target's is *not* fail-closed: a pre-v10 or uncurated record with
+    `song_id = None` may be an alternate transcription of the *same* composition,
+    and an equality filter would silently retain it — re-leaking the held-out
+    song. So the mode additionally **excludes (or refuses the run on) every
+    source with `song_id = None`** before material construction: an unidentified
+    record cannot be proven *not* to be an alternate of the target, so it must
+    not remain. The manifest `songs` cross-check validates that coverage. A song
+    holdout then excludes every chunk whose source carries the target `song_id`,
+    with no unidentified source surviving to leak.
 
 - **Manifest cross-check (defence-in-depth, optional).** The manifest may carry
   a `songs` map (`SongId → [sha256]`) so a loader can validate that every source
@@ -125,5 +132,6 @@ ADR binds nothing until accepted (`docs/adr/README.md`).
 - It grants no production-scoring authority and changes no generation behaviour;
   it is provenance for holdout and dedup only.
 - It does not retro-link existing corpus files: pre-v10 records stay
-  `song_id = None` and are song-un-holdout-able until a curator groups them —
-  fail-closed, not silently backfilled.
+  `song_id = None`, and a `HoldoutTargetSong` run **excludes** every such record
+  (an unidentified file may be an alternate of the target) until a curator
+  groups them — fail-closed, not silently backfilled.
