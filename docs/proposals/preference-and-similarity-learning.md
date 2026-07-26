@@ -98,8 +98,8 @@ tasks, not one similarity function**:
 - *complementarity* — which better complements A? (often demands
   difference, not closeness — the opposite gradient from similarity);
 - *copy detection* — which candidate is too close to A to count as original?
-  (a single observable question; the remote candidate is a labelled control,
-  never a derived "too far" judgement — see the companion §1.4);
+  (a single observable question; the non-chosen candidate is a labelled
+  control, never a derived "too far" judgement — see the companion §1.4);
 
 Each task has its own dataset, metrics, and its own gate. Metrics per task:
 triplet agreement, pairwise agreement, top-k retrieval, rank correlation
@@ -109,10 +109,13 @@ distances (the existing `similarity.rs` / `novelty.rs` vocabulary), corpus
 features, learned embeddings, combinations.
 
 **Gate rule: no embedding or learned distance enters production scoring for
-a given task until it beats or matches the handcrafted baseline on that
-task's benchmark.** A metric that wins on motif similarity earns no licence
-to rank complementary-guitar candidates. Cosine distance is not human
-perception until proven so.
+a given task until it passes that task's benchmark gate — beating or matching
+the task's named handcrafted baseline where one exists, or *beating* an
+explicitly declared floor by a pre-registered margin where none does (e.g.
+complementarity, which has no handcrafted distance — companion §1.3/§2.6).**
+A metric that wins on motif similarity earns no licence to rank
+complementary-guitar candidates. Cosine distance is not human perception until
+proven so.
 
 ## 5. Step 3 — linear pairwise reranker, bounded correction
 

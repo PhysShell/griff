@@ -7,8 +7,16 @@ presentation contract, and metric-to-gate mapping for the four-task human
 benchmark that proposal names as *the gate* (its Step 2, §4). This document
 designs the benchmark; it does not build it.
 
-Status: for discussion (v2.1 — v2 revised per the second PR #153 arbiter
-review, a consistency pass: parent learner + copy-detection wording
+Status: for discussion (v2.2 — v2.1 revised per the third PR #153 arbiter
+review, four surgical corrections: copy-detection candidate-source made
+constructible under its boundary strata (a non-copy need not be remote); the
+`complementarity_mix_v1` question made order-neutral to match randomized
+playback; the shared gate-comparison / pass-criterion and the parent gate rule
+taught the baseline-vs-floor distinction (non-inferiority / superiority /
+ungateable); and the statistical parameters given their own immutable
+`griff.similarity-benchmark-gate-run` v1 identity, separate from the judgement
+archive. v2.1 — the second-review consistency pass: parent learner +
+copy-detection wording
 synchronized to the contextual/single-question forms; audition order
 randomized and recorded independently of screen layout; difficulty strata
 made task-specific (they were not constructible for copy-detection or
@@ -96,11 +104,14 @@ field does not apply) — never a silent omission.
   and two candidates `B` / `C`.
 - **Anchor source** — where `A` comes from.
 - **Candidate source** — where `B` / `C` come from.
-- **Gate comparison** — the candidate metric versus the handcrafted baseline
-  (§2.7), and what is compared. The comparison is always the **paired,
-  per-item** difference of §2.6 (candidate correctness minus baseline
-  correctness on the *same* item), never two independently computed scores.
-- **Pass criterion** — the §2.6 non-inferiority gate on that paired difference.
+- **Gate comparison** — the candidate metric versus the task's **named
+  handcrafted baseline or explicitly declared floor** (§2.7), and what is
+  compared. The comparison is always the **paired, per-item** difference of §2.6
+  (candidate correctness minus baseline/floor correctness on the *same* item),
+  never two independently computed scores.
+- **Pass criterion** — the **task-appropriate §2.6 gate** on that paired
+  difference: non-inferiority against a real baseline, superiority against a
+  floor, or ungateable where neither is defensible.
 - **Gate metric** — the metric of §2.6 that reads the gate (named, not
   implicit). In v1-of-the-benchmark the only gate metric is triplet agreement;
   ranking metrics are diagnostics (§2.6), not gates.
@@ -180,16 +191,20 @@ field does not apply) — never a silent omission.
 
 ### 1.3 complementarity — *which better complements A?*
 
-- **Question**: "**A** is one guitar part. You will hear **A together with B**,
-  then **A together with C**. Which pairing works better — the second guitar
-  supporting and answering A, rather than copying or clashing with it?" The
-  listener judges the **mixes `A+B` and `A+C`**, never `B` and `C` in
-  isolation (§2.3 presentation procedure).
+- **Question** (`complementarity_mix_v1`, order-neutral so the closed wording
+  cannot contradict the randomized playback of §2.3): "**A** is one guitar
+  part. You will hear **A paired with B** and **A paired with C**, in a
+  randomized order. Which pairing works better — the second guitar supporting
+  and answering A, rather than copying or clashing with it?" The listener
+  judges the **mixes `A+B` and `A+C`**, never `B` and `C` in isolation; the UI
+  labels the pairings consistently after playback without promising which was
+  heard first (§2.3 presentation procedure).
 - **Anchor source**: a lead guitar part (corpus track or generator output).
 - **Candidate source**: two candidate second-guitar parts against the same
   lead, drawn under this task's controlled-feature margin strata (§2.4:
-  `wide_margin` / `narrow_margin` / `tie_margin` over register-occupancy /
-  density fit — explicitly not a near/far ordering). Same-source (same-song)
+  `wide_margin` / `narrow_margin` / `tie_margin` over a pre-registered
+  register-occupancy / density margin independent of every evaluated candidate
+  metric — explicitly not a near/far ordering). Same-source (same-song)
   `A`/candidate pairs are a labelled special case (§2.4), never a silent
   default.
 - **Gate comparison**: this task rewards **difference that fits**, not
@@ -239,9 +254,13 @@ field does not apply) — never a silent omission.
   close* to A to count as original?" A single two-alternative forced choice,
   asking **one** thing.
 - **Anchor source**: a corpus chunk treated as reference material.
-- **Candidate source**: one near-quotation of `A` (verbatim or
-  transposed/resolution-shifted) and one musically remote fragment. The remote
-  fragment is a **labelled control / negative**, not a second judgement: the
+- **Candidate source**: two candidates sampled under the copy-detection strata
+  of §2.4. The `obvious_copy_vs_remote` stratum uses a near-quotation of `A`
+  (verbatim or transposed/resolution-shifted) versus a **remote control**; the
+  boundary strata (`threshold_adjacent_copy_vs_noncopy`, `two_threshold_adjacent`)
+  use candidates on or near opposite sides of the pre-registered copy threshold
+  — **a non-copy candidate need not be remote**. In every stratum the listener
+  is asked only "which is the copy": the non-chosen candidate is a control, the
   listener is never asked to rule it "too far", and no "too far" label is
   derived from the record. (The task previously bundled "too close / too far"
   into one click; a 2AFC yields only which candidate looks like the copy, so
@@ -265,7 +284,7 @@ field does not apply) — never a silent omission.
   `novelty.rs` measures distance-from-reference as quotation share (its
   `PHRASE_DUPLICATE_SHARE = 0.8` default is an existing "too close" threshold),
   so the copy prediction has a real baseline. There is no positive "remoteness"
-  metric, but the task no longer asks for one — the remote candidate is a
+  metric, but the task no longer asks for one — the non-chosen candidate is a
   control, so no `TBD` remoteness baseline is owed.
 
 ## 2. The specification
@@ -294,7 +313,11 @@ unknown version is a typed refusal, never a guess.** A record does not merely
 *name* the item set, sampler, presentation, and derivation it belongs to — it
 binds their exact versions, so the same JSONL can never be silently reworked
 into a different dataset a year later while the human still "changed nothing".
-A reader that does not recognise any bound version refuses.
+A reader that does not recognise any bound version refuses. The **gate policy
+is deliberately *not* among these bindings** — collection precedes evaluation,
+so the statistical parameters live in a separate gate-run manifest (§2.6) that
+binds *this* archive's hash, letting the same evidence be re-gated without
+rewriting a byte.
 
 The record is complete enough that a Step-0 implementation could be red-tested
 from this document alone. Every field is listed; closed vocabularies are
@@ -491,8 +514,9 @@ another profile's data.
   - **variation** — strata by distance from the middle-band variation optimum
     (§1.2): `clearly_better` / `close_call` / `both_off_band` (one too close +
     one too far vs two similarly-placed candidates).
-  - **complementarity** — strata by a controlled-feature or candidate-metric
-    margin (register-occupancy / density fit), explicitly **not** called
+  - **complementarity** — strata by a **pre-registered controlled-feature or
+    sampler-policy margin that is independent of every evaluated candidate
+    metric** (register-occupancy / density fit), explicitly **not** called
     near/far: `wide_margin` / `narrow_margin` / `tie_margin`.
   - **copy-detection** — quotation-strength boundary strata:
     `obvious_copy_vs_remote` / `threshold_adjacent_copy_vs_noncopy` /
@@ -614,8 +638,8 @@ floor by a margin. In both:
 **Prediction ties are handled deterministically and symmetrically — for
 *either* predictor, never one arm.** A tie is when a predictor's two candidate
 scores are equal (the `tie_margin` stratum, or any exact tie), so it makes no
-prediction. One pre-registered rule, bound to the archive as part of the gate
-policy, applies to the candidate metric and the baseline alike:
+prediction. One pre-registered rule, part of the gate-run manifest below,
+applies to the candidate metric and the baseline alike:
 
 - **default — half-credit:** a tie scores `correct = 0.5` for that predictor on
   that item (so `Δ_i` can be `±0.5`). Symmetric, and it never breaks the
@@ -624,6 +648,33 @@ policy, applies to the candidate metric and the baseline alike:
   the **whole paired item is removed from `Δ`** (never from just one arm —
   dropping one side would destroy `Δ_i` and bias the comparison). Chosen at
   spec; the two systems never run under different tie rules.
+
+**The gate is a versioned run with its own identity, separate from the
+judgement archive.** The judgement records (§2.2) deliberately bind **no** gate
+policy — collection precedes, and is independent of, whichever model is
+evaluated later, so the same evidence can be re-gated without rewriting a byte.
+The statistical parameters live in their own immutable manifest, schema
+`griff.similarity-benchmark-gate-run`, version `1`, which binds:
+
+```text
+gate_policy_id
+judgement_archive_hash      // the exact evidence this gate ran over
+tie_rule                    // half-credit | paired-abstention (above)
+delta_or_epsilon            // δ for a real baseline, ε>0 for a floor
+gate_form                   // non_inferiority | superiority | ungateable
+confidence_level            // default 0.95
+bootstrap_resample_count
+bootstrap_seed
+resampling_procedure_version   // the cluster/hierarchical procedure
+per_stratum_evidence_floors    // min users / source-groups / effective-items
+baseline_or_floor_id           // which §2.7 baseline/floor was compared
+candidate_metric_id            // the evaluated system
+```
+
+A gate result cites a `gate_policy_id`; re-running the same `gate_policy_id`
+over the same `judgement_archive_hash` reproduces the same verdict, or declares
+a different policy. An unknown `griff.similarity-benchmark-gate-run` version is
+a typed refusal, like every other bound identity.
 
 **Metric-to-gate mapping (explicit, not implicit).**
 
