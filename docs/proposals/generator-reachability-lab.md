@@ -209,8 +209,12 @@ struct ConfigurationSummary {
 
 ## 5. Phase 0 — metric and expressivity audit
 
-No production code. Deliverable:
-`docs/audit/YYYY-MM-generator-reachability-metric-inventory.md`, answering:
+No production code. Deliverable (**drafted, not yet complete** — see
+[`../audit/2026-07-generator-reachability-metric-inventory.md`](../audit/2026-07-generator-reachability-metric-inventory.md);
+items 1–4 and 6 are answered, but **item 5's measured cost is still pending**,
+so Phase 0 is not satisfied as an evidence gate — and the draft binds nothing
+until this proposal is accepted):
+`docs/audit/2026-07-generator-reachability-metric-inventory.md`, answering:
 
 1. **Inventory** of `scoring.rs`, `similarity.rs`, `novelty.rs`,
    `syncopation.rs`, `feature.rs`, `rerank.rs`, and the relevant
@@ -220,7 +224,7 @@ No production code. Deliverable:
 
    | Proposed fact | Existing source | Decision |
    | --- | --- | --- |
-   | Exact onset set | none | new |
+   | Exact onset set | `syncopation::track_onsets` (private) / `top_line` | extend |
    | Exact pitch on paired onsets | `novelty` line extraction partly relevant | extend |
    | Interval contour | `novelty` transitions | reuse/extend |
    | IOI sequence | `novelty` normalized IOI grid | reuse/extend |
@@ -340,7 +344,13 @@ struct StoredAxis {
 ### Holdout discipline
 
 ```rust
-pub enum CorpusMode { NoCorpus, HoldoutTargetSong, HoldoutTargetFragment, LeakyDiagnostic }
+pub enum CorpusMode {
+    NoCorpus,
+    HoldoutTargetSourceFile, // by source `sha256` (Phase-0 finding: the mode that PASSes today)
+    HoldoutTargetFragment,   // sha256 + bar_range, within one source file
+    HoldoutTargetSong,       // BLOCKED until a canonical song_id exists (Phase-1 prerequisite)
+    LeakyDiagnostic,
+}
 ```
 
 The production pipeline feeds corpus chunks in as rhythm templates and novelty
@@ -358,13 +368,28 @@ slips past an absolute fingerprint by design.
 
 The leakage contract is therefore channel-specific:
 
-- **Source provenance (primary):** every corpus contribution carries song id,
-  chunk id, and source range. `HoldoutTargetSong` excludes every chunk of the
-  target song; `HoldoutTargetFragment` excludes every chunk of the same song
-  whose source range **overlaps or contains** the target fragment — not
-  merely exact range matches, since a larger chunk containing the target
-  leaks it just as surely. This deterministic identity-and-range filtering
-  happens *before* rhythm templates or novelty references are compiled.
+- **Source provenance (primary):** every corpus contribution carries chunk id
+  and source range, plus a source-**file** identity (`sha256`). `HoldoutTargetSong`
+  excludes every chunk of the target song; `HoldoutTargetFragment` excludes
+  every chunk of the same source whose source range **overlaps or contains** the
+  target fragment — not merely exact range matches, since a larger chunk
+  containing the target leaks it just as surely. This deterministic
+  identity-and-range filtering happens *before* rhythm templates or novelty
+  references are compiled.
+
+  **Phase-0 finding (song identity is missing).** The current corpus model
+  (schema v9) has **no canonical song id** — only `sha256` (a single file's
+  content hash), `filename`, a free-form `title`, and `EnsembleRef.group_id`
+  (siblings of one source span). So `HoldoutTargetSourceFile` and
+  `HoldoutTargetFragment` are fail-closed-implementable (on `sha256` + `bar_range`,
+  rejecting/migrating `sha256`-less records), but **`HoldoutTargetSong` is not
+  implementable fail-closed today**: two tabs of one composition (MIDI vs GP5)
+  have different hashes, so one would leak while the other is held out. This
+  mode is retained, but claiming it requires a **canonical `song_id`** (or a
+  versioned manifest mapping several source files to one song) as a **Phase-1
+  prerequisite** — see
+  [`../audit/2026-07-generator-reachability-metric-inventory.md`](../audit/2026-07-generator-reachability-metric-inventory.md)
+  §3.
 - **Rhythm channel (defence-in-depth):** rhythm-grid fingerprint of the
   target (onsets + durations, no pitch) checked against every supplied
   template, plus an onset/duration subsequence check.
