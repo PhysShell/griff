@@ -3,8 +3,9 @@
 //! Pins the public lab API: the solver-neutral IR, deterministic `MiniZinc`
 //! emission, the exact reference solver, and the two Constraint Inventory
 //! problems (bounded-travel realization; complement pair cleanliness pinned to
-//! the production `PairValidation` laws). References `griff_constraint_lab`
-//! modules that do not exist yet, so the suite fails until the green step.
+//! the production `PairValidation` laws). Written red-first; the green
+//! implementation and every review-driven contract change re-enter through
+//! this suite.
 
 #![allow(
     clippy::expect_used,
@@ -18,10 +19,10 @@
 
 use griff_constraint_lab::{
     emit::to_minizinc,
-    ir::{Constraint, IntVar, OracleProblem, VarId},
-    manifest::{OutcomeRecord, RunManifest, SolverIdentity},
+    ir::{Constraint, IntVar, IrError, OracleProblem, VarId},
+    manifest::{OutcomeRecord, RunManifest, SolverIdentity, Status, SCHEMA, SCHEMA_VERSION},
     problems::{bounded_travel_problem, pair_cleanliness_problem, LabError, PairSpec},
-    solve::{solve_exact, Outcome},
+    solve::{solve_exact, verify_witness, Outcome},
 };
 use griff_core::{
     complement::validate_pair,
@@ -126,16 +127,83 @@ fn fingerprint_is_stable_and_content_sensitive() {
     };
     assert_eq!(build().fingerprint(), build().fingerprint());
 
-    let other = OracleProblem::new(
-        "p",
-        vec![IntVar::new("f0", vec![0, 7])],
+    // Every field the manifests key evidence off must shift the fingerprint:
+    // domain, problem name, constraint bound, and constraint operands.
+    let base = build().fingerprint();
+    let variant = |name: &str, domain: Vec<i64>, b: usize, bound: i64| {
+        OracleProblem::new(
+            name,
+            vec![IntVar::new("f0", domain), IntVar::new("f1", vec![1])],
+            vec![Constraint::AbsDiffLe {
+                a: VarId(0),
+                b: VarId(b),
+                bound,
+            }],
+        )
+        .fingerprint()
+    };
+    let reference = variant("p", vec![0, 5], 0, 3);
+    assert_ne!(base, variant("p", vec![0, 7], 0, 3), "domain must matter");
+    assert_ne!(
+        reference,
+        variant("q", vec![0, 5], 0, 3),
+        "problem name must matter"
+    );
+    assert_ne!(
+        reference,
+        variant("p", vec![0, 5], 0, 4),
+        "constraint bound must matter"
+    );
+    assert_ne!(
+        reference,
+        variant("p", vec![0, 5], 1, 3),
+        "constraint operands must matter"
+    );
+}
+
+#[test]
+fn ir_invariants_are_validated_at_construction() {
+    // Dangling VarId.
+    let dangling = OracleProblem::try_new(
+        "bad",
+        vec![IntVar::new("x", vec![0])],
         vec![Constraint::AbsDiffLe {
             a: VarId(0),
-            b: VarId(0),
-            bound: 3,
+            b: VarId(7),
+            bound: 1,
         }],
     );
-    assert_ne!(build().fingerprint(), other.fingerprint());
+    assert!(matches!(dangling, Err(IrError::DanglingVarId { .. })));
+
+    // Empty domain.
+    let empty = OracleProblem::try_new("bad", vec![IntVar::new("x", vec![])], vec![]);
+    assert!(matches!(empty, Err(IrError::EmptyDomain { .. })));
+
+    // Duplicate names.
+    let dup = OracleProblem::try_new(
+        "bad",
+        vec![IntVar::new("x", vec![0]), IntVar::new("x", vec![1])],
+        vec![],
+    );
+    assert!(matches!(dup, Err(IrError::DuplicateName { .. })));
+
+    // MiniZinc-unsafe name.
+    let unsafe_name = OracleProblem::try_new("bad", vec![IntVar::new("2x y", vec![0])], vec![]);
+    assert!(matches!(unsafe_name, Err(IrError::UnsafeName { .. })));
+
+    // Non-positive denominator.
+    let bad_den = OracleProblem::try_new(
+        "bad",
+        vec![IntVar::new("x", vec![0])],
+        vec![Constraint::BandOverlapAtMost {
+            vars: vec![VarId(0)],
+            fixed_lo: 0,
+            fixed_hi: 4,
+            num: 1,
+            den: 0,
+        }],
+    );
+    assert!(matches!(bad_den, Err(IrError::NonPositiveDenominator { .. })));
 }
 
 // ── MiniZinc emission ─────────────────────────────────────────────────────────
@@ -272,6 +340,65 @@ fn band_overlap_constraint_mirrors_the_degenerate_single_pitch_rule() {
     );
 }
 
+#[test]
+fn band_overlap_degenerate_variable_band_takes_the_emptiness_branch() {
+    // The *variable* band is the single-pitch one (b_lo == b_hi) inside a
+    // wide fixed band: production band_overlap takes narrower = min(spans)
+    // = 0, so overlap is 1.0-iff-inside — the emptiness branch, stricter
+    // than the proportional rule, and symmetric across which band is thin.
+    let inside = OracleProblem::new(
+        "thin-b-inside",
+        vec![IntVar::new("b0", vec![50])],
+        vec![Constraint::BandOverlapAtMost {
+            vars: vec![VarId(0)],
+            fixed_lo: 45,
+            fixed_hi: 57,
+            num: 1,
+            den: 2,
+        }],
+    );
+    assert!(
+        matches!(solve_exact(&inside), Outcome::Unsat { .. }),
+        "single-pitch band inside [45,57] → overlap 1.0 → mud"
+    );
+
+    let outside = OracleProblem::new(
+        "thin-b-outside",
+        vec![IntVar::new("b0", vec![60])],
+        vec![Constraint::BandOverlapAtMost {
+            vars: vec![VarId(0)],
+            fixed_lo: 45,
+            fixed_hi: 57,
+            num: 1,
+            den: 2,
+        }],
+    );
+    assert!(
+        matches!(solve_exact(&outside), Outcome::Sat { .. }),
+        "single-pitch band outside [45,57] → overlap 0.0 → clean"
+    );
+}
+
+#[test]
+fn verify_witness_checks_a_full_assignment_against_every_constraint() {
+    let p = OracleProblem::new(
+        "verify",
+        vec![IntVar::new("x", vec![0, 5]), IntVar::new("y", vec![4, 12])],
+        vec![Constraint::AbsDiffLe {
+            a: VarId(0),
+            b: VarId(1),
+            bound: 4,
+        }],
+    );
+    assert!(verify_witness(&p, &[0, 4]), "|0-4| <= 4 holds");
+    assert!(!verify_witness(&p, &[0, 12]), "|0-12| > 4 violates");
+    assert!(!verify_witness(&p, &[0]), "partial assignment is not a witness");
+    assert!(
+        !verify_witness(&p, &[1, 4]),
+        "a witness value outside the domain is invalid"
+    );
+}
+
 // ── Problem A — bounded-travel fretboard realization ──────────────────────────
 
 #[test]
@@ -392,13 +519,91 @@ fn register_mud_alone_makes_the_pair_problem_unsat() {
     let p = pair_cleanliness_problem(&spec).expect("problem builds");
     assert!(matches!(solve_exact(&p), Outcome::Unsat { .. }));
 
-    // Production agrees on a representative assignment.
-    let score = two_track_score(
-        &[(0, 45), (QUARTER, 57)],
-        &[(2 * QUARTER, 50), (3 * QUARTER, 52)],
+    // Production agrees on *every* assignment in the domain — the UNSAT
+    // claim is exhaustive, so its cross-check must be too (2 onsets × {50, 52}).
+    for b0 in [50u8, 52] {
+        for b1 in [50u8, 52] {
+            let score = two_track_score(
+                &[(0, 45), (QUARTER, 57)],
+                &[(2 * QUARTER, b0), (3 * QUARTER, b1)],
+            );
+            let v = validate_pair(&score, 0, 1).expect("validate ok");
+            assert!(
+                !v.is_clean(),
+                "register mud must flag B = ({b0}, {b1}): {v:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pair_spec_from_score_is_a_full_note_snapshot_of_the_canonical_model() {
+    // Track A holds a chord at onset 0 (45 under 52). validate_pair counts
+    // dissonances and builds the register band over *all* notes, so the
+    // snapshot must carry the full onset-sorted note list — only playability
+    // folds to the top note, and it does so inside the problem builder.
+    let score = two_track_score(&[(0, 45), (0, 52), (QUARTER, 55)], &[]);
+    let from_score = PairSpec::from_score_part_a(
+        &score,
+        0,
+        vec![0, QUARTER],
+        vec![pitch(64), pitch(67), pitch(71)],
+        STANDARD_MAX_FRET,
+    )
+    .expect("extraction succeeds");
+    assert_eq!(
+        from_score.a_line,
+        vec![(0, pitch(45)), (0, pitch(52)), (QUARTER, pitch(55))]
     );
+
+    let manual = PairSpec {
+        a_line: vec![(0, pitch(45)), (0, pitch(52)), (QUARTER, pitch(55))],
+        b_onsets: vec![0, QUARTER],
+        b_domain: vec![pitch(64), pitch(67), pitch(71)],
+        tuning: std_e(),
+        max_fret: STANDARD_MAX_FRET,
+    };
+    let a = pair_cleanliness_problem(&from_score).expect("builds");
+    let b = pair_cleanliness_problem(&manual).expect("builds");
+    assert_eq!(
+        a.fingerprint(),
+        b.fingerprint(),
+        "a canonical-score snapshot and the manual spec build the same problem"
+    );
+
+    let missing = PairSpec::from_score_part_a(
+        &score,
+        7,
+        vec![0],
+        vec![pitch(64)],
+        STANDARD_MAX_FRET,
+    );
+    assert!(matches!(missing, Err(LabError::NoSuchTrack { .. })));
+}
+
+#[test]
+fn chordal_a_playability_folds_to_the_top_note_like_production() {
+    // Production part_playability folds each onset to its highest pitch
+    // before the fingering DP: MIDI 30 under a playable 64 must not refuse
+    // the problem, because validate_pair never measures the 30.
+    let spec = PairSpec {
+        a_line: vec![(0, pitch(30)), (0, pitch(64))],
+        b_onsets: vec![2 * QUARTER],
+        b_domain: vec![pitch(76)],
+        tuning: std_e(),
+        max_fret: STANDARD_MAX_FRET,
+    };
+    let p = pair_cleanliness_problem(&spec)
+        .expect("the folded line (64) is playable, so the problem must build");
+    assert!(matches!(solve_exact(&p), Outcome::Sat { .. }));
+
+    // And production agrees end-to-end on the reconstructed pair.
+    let score = two_track_score(&[(0, 30), (0, 64)], &[(2 * QUARTER, 76)]);
     let v = validate_pair(&score, 0, 1).expect("validate ok");
-    assert!(!v.is_clean(), "register mud must flag the pair: {v:?}");
+    assert!(
+        v.is_clean(),
+        "production folds the chord for playability and calls this clean: {v:?}"
+    );
 }
 
 #[test]
@@ -433,8 +638,8 @@ fn unplayable_b_domain_pitches_are_filtered_out_not_ignored() {
 #[test]
 fn run_manifest_serializes_with_schema_identity_and_round_trips() {
     let m = RunManifest {
-        schema: "griff.constraint-lab-run".to_string(),
-        version: 1,
+        schema: SCHEMA.to_string(),
+        version: SCHEMA_VERSION,
         problem: "tiny".to_string(),
         fingerprint_hex: "00ff".to_string(),
         solver: SolverIdentity {
@@ -442,13 +647,19 @@ fn run_manifest_serializes_with_schema_identity_and_round_trips() {
             version: "1".to_string(),
         },
         outcome: OutcomeRecord {
-            status: "sat".to_string(),
+            status: Status::Sat,
             witness: Some(vec![("f0".to_string(), 0)]),
             nodes: 3,
         },
     };
     let json = serde_json::to_string_pretty(&m).expect("serializes");
     assert!(json.contains("\"schema\": \"griff.constraint-lab-run\""));
+    assert!(
+        json.contains("\"status\": \"sat\""),
+        "the typed status keeps the lowercase wire form: {json}"
+    );
     let back: RunManifest = serde_json::from_str(&json).expect("round-trips");
     assert_eq!(back, m);
+    assert_eq!(SCHEMA, "griff.constraint-lab-run");
+    assert_eq!(SCHEMA_VERSION, 1);
 }
