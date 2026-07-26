@@ -67,7 +67,7 @@ pub fn solve_propagate(problem: &OracleProblem) -> Outcome {
     }
     let mut assignment: Vec<i64> = Vec::with_capacity(problem.vars().len());
     let mut nodes: u64 = 0;
-    if mac_search(problem, &base, &mut assignment, &mut nodes) {
+    if forward_check_search(problem, &base, &mut assignment, &mut nodes) {
         Outcome::Sat {
             witness: assignment,
             nodes,
@@ -78,7 +78,7 @@ pub fn solve_propagate(problem: &OracleProblem) -> Outcome {
 }
 
 /// Backtracking search with forward checking of the travel bound.
-fn mac_search(
+fn forward_check_search(
     problem: &OracleProblem,
     base: &[Vec<i64>],
     assignment: &mut Vec<i64>,
@@ -104,7 +104,7 @@ fn mac_search(
         assignment.push(value);
         if consistent_partial(problem, assignment)
             && forward_check_ok(problem, base, assignment)
-            && mac_search(problem, base, assignment, nodes)
+            && forward_check_search(problem, base, assignment, nodes)
         {
             return true;
         }
@@ -129,8 +129,26 @@ fn absdiff_ok_for(problem: &OracleProblem, assignment: &[i64], index: usize, val
         };
         assignment
             .get(partner)
-            .is_none_or(|&other| (value - other).abs() <= *bound)
+            .is_none_or(|&other| abs_diff_le(value, other, *bound))
     })
+}
+
+/// `|x - y| <= bound`, computed in `i128` so no `i64` domain value or bound can
+/// overflow the subtraction (e.g. `0 - i64::MIN`). A negative bound is
+/// unsatisfiable. The IR advertises arbitrary `i64` domains and bounds
+/// ([`OracleProblem::try_new`] imposes no numeric range), so every travel-bound
+/// comparison — in the reference solver and the propagating one alike — routes
+/// through here; a hidden "not too far apart" precondition would make the
+/// public IR type a lie.
+fn abs_diff_le(x: i64, y: i64, bound: i64) -> bool {
+    bound >= 0 && (i128::from(x) - i128::from(y)).abs() <= i128::from(bound)
+}
+
+/// Whether `|value - fixed| mod 12` is one of the forbidden `classes`, in
+/// `i128` so `value - fixed` cannot overflow for extreme `i64` inputs.
+fn interval_class_forbidden(value: i64, fixed: i64, classes: &[i64]) -> bool {
+    let class = (i128::from(value) - i128::from(fixed)).abs().rem_euclid(12);
+    classes.iter().any(|&c| i128::from(c) == class)
 }
 
 /// Forward check: every still-unassigned variable retains at least one value
@@ -176,10 +194,7 @@ fn prefiltered_domains(problem: &OracleProblem) -> Vec<Vec<i64>> {
         } = constraint
         {
             if let Some(domain) = domains.get_mut(var.0) {
-                domain.retain(|&value| {
-                    let class = (value - fixed).abs().rem_euclid(12);
-                    !classes.contains(&class)
-                });
+                domain.retain(|&value| !interval_class_forbidden(value, *fixed, classes));
             }
         }
     }
@@ -219,7 +234,7 @@ fn consistent_partial(problem: &OracleProblem, assignment: &[i64]) -> bool {
         match constraint {
             Constraint::AbsDiffLe { a, b, bound } => {
                 match (assignment.get(a.0), assignment.get(b.0)) {
-                    (Some(&x), Some(&y)) => (x - y).abs() <= *bound,
+                    (Some(&x), Some(&y)) => abs_diff_le(x, y, *bound),
                     _ => true,
                 }
             }
@@ -227,10 +242,9 @@ fn consistent_partial(problem: &OracleProblem, assignment: &[i64]) -> bool {
                 var,
                 fixed,
                 classes,
-            } => assignment.get(var.0).is_none_or(|&value| {
-                let class = (value - fixed).abs().rem_euclid(12);
-                !classes.contains(&class)
-            }),
+            } => assignment
+                .get(var.0)
+                .is_none_or(|&value| !interval_class_forbidden(value, *fixed, classes)),
             Constraint::BandOverlapAtMost {
                 vars,
                 fixed_lo,
@@ -241,19 +255,20 @@ fn consistent_partial(problem: &OracleProblem, assignment: &[i64]) -> bool {
                 let Some((b_lo, b_hi)) = running_band(vars, assignment) else {
                     return true; // no band member assigned yet
                 };
-                let a_span = fixed_hi - fixed_lo;
-                let i_lo = (*fixed_lo).max(b_lo);
-                let i_hi = (*fixed_hi).min(b_hi);
+                // i128 throughout: band extrema and thresholds are arbitrary i64.
+                let a_span = i128::from(*fixed_hi) - i128::from(*fixed_lo);
+                let i_lo = i128::from(*fixed_lo).max(i128::from(b_lo));
+                let i_hi = i128::from(*fixed_hi).min(i128::from(b_hi));
                 let ov = (i_hi - i_lo).max(0);
                 if a_span == 0 {
                     // The band only grows: once the fixed point is inside,
                     // the intersection can never become empty again.
                     return i_hi < i_lo;
                 }
-                if b_hi - b_lo >= a_span {
+                if i128::from(b_hi) - i128::from(b_lo) >= a_span {
                     // narrower is already pinned to the fixed span, and the
                     // overlap can only grow: prune when already too large.
-                    return ov * den <= a_span * num;
+                    return ov * i128::from(*den) <= a_span * i128::from(*num);
                 }
                 true
             }
@@ -265,17 +280,16 @@ fn consistent_partial(problem: &OracleProblem, assignment: &[i64]) -> bool {
 fn check_full(constraint: &Constraint, assignment: &[i64]) -> bool {
     match constraint {
         Constraint::AbsDiffLe { a, b, bound } => match (assignment.get(a.0), assignment.get(b.0)) {
-            (Some(&x), Some(&y)) => (x - y).abs() <= *bound,
+            (Some(&x), Some(&y)) => abs_diff_le(x, y, *bound),
             _ => false,
         },
         Constraint::ForbiddenIntervalClasses {
             var,
             fixed,
             classes,
-        } => assignment.get(var.0).is_some_and(|&value| {
-            let class = (value - fixed).abs().rem_euclid(12);
-            !classes.contains(&class)
-        }),
+        } => assignment
+            .get(var.0)
+            .is_some_and(|&value| !interval_class_forbidden(value, *fixed, classes)),
         Constraint::BandOverlapAtMost {
             vars,
             fixed_lo,
@@ -286,16 +300,18 @@ fn check_full(constraint: &Constraint, assignment: &[i64]) -> bool {
             let Some((b_lo, b_hi)) = running_band(vars, assignment) else {
                 return false;
             };
-            let i_lo = (*fixed_lo).max(b_lo);
-            let i_hi = (*fixed_hi).min(b_hi);
+            // i128 throughout: band extrema and thresholds are arbitrary i64.
+            let i_lo = i128::from(*fixed_lo).max(i128::from(b_lo));
+            let i_hi = i128::from(*fixed_hi).min(i128::from(b_hi));
             let ov = (i_hi - i_lo).max(0);
-            let narrower = (fixed_hi - fixed_lo).min(b_hi - b_lo);
+            let narrower = (i128::from(*fixed_hi) - i128::from(*fixed_lo))
+                .min(i128::from(b_hi) - i128::from(b_lo));
             if narrower == 0 {
                 // Degenerate single-pitch band: clean iff the intersection is
                 // empty — mirroring `band_overlap`'s 1.0-iff-inside rule.
                 i_hi < i_lo
             } else {
-                ov * den <= narrower * num
+                ov * i128::from(*den) <= narrower * i128::from(*num)
             }
         }
     }

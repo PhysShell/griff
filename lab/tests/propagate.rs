@@ -32,6 +32,12 @@ fn is_sat(o: &Outcome) -> bool {
     matches!(o, Outcome::Sat { .. })
 }
 
+fn nodes(o: &Outcome) -> u64 {
+    match o {
+        Outcome::Sat { nodes, .. } | Outcome::Unsat { nodes } => *nodes,
+    }
+}
+
 fn pitch(p: u8) -> Pitch {
     Pitch::new(p).expect("valid pitch")
 }
@@ -146,8 +152,9 @@ fn agrees_on_all_small_absdiff_problems() {
 fn agrees_on_all_small_band_problems() {
     // The hard case: a whole-band global whose band is the min/max over vars,
     // overlap measured relative to the narrower band, with the degenerate
-    // single-point rule. Two and three band members, several thresholds and
-    // fixed bands.
+    // single-point rule. Two band members here (three-member and mixed cases
+    // live in `agrees_on_three_var_band_and_travel_chain`), several thresholds
+    // and fixed bands.
     let doms = small_domains();
     let fixed_bands = [(0, 0), (1, 1), (0, 3), (1, 2)];
     let thresholds = [(0, 1), (1, 2), (1, 1)]; // <=0, <=1/2, <=1
@@ -198,6 +205,203 @@ fn agrees_on_combined_absdiff_and_forbidden_classes() {
                 ],
             );
             assert_agrees(&p);
+        }
+    }
+}
+
+// ── propagation actually prunes (not exact-backtracking renamed) ──────────────
+//
+// Agreement alone is satisfied by `solve_propagate = solve_exact`. These pin the
+// distinguishing property: on constructed fixtures the forward-checked search
+// explores *strictly fewer* nodes than the reference, while still returning the
+// same outcome, a valid witness, and a deterministic result.
+
+#[test]
+fn prunes_more_than_reference_on_unsat_disjoint_bound() {
+    // x ∈ {0..3}, y ∈ {10..13}, |x - y| ≤ 0 ⇒ UNSAT. Forward checking wipes out
+    // y at every x without descending; plain backtracking tries every (x, y).
+    let p = OracleProblem::new(
+        "unsat_disjoint",
+        vec![
+            IntVar::new("x", vec![0, 1, 2, 3]),
+            IntVar::new("y", vec![10, 11, 12, 13]),
+        ],
+        vec![Constraint::AbsDiffLe {
+            a: VarId(0),
+            b: VarId(1),
+            bound: 0,
+        }],
+    );
+    let exact = solve_exact(&p);
+    let prop = solve_propagate(&p);
+    assert!(!is_sat(&exact) && !is_sat(&prop), "both UNSAT");
+    assert!(
+        nodes(&prop) < nodes(&exact),
+        "propagation must prune: exact={} prop={}",
+        nodes(&exact),
+        nodes(&prop)
+    );
+    assert_eq!(prop, solve_propagate(&p), "deterministic");
+}
+
+#[test]
+fn prunes_more_than_reference_on_sat_with_doomed_branch() {
+    // x ∈ {0,1}, y ∈ {1,5}, x == y. Only (1,1) works. Forward checking rejects
+    // x=0 without trying any y; the reference descends into y under x=0 first.
+    let p = OracleProblem::new(
+        "sat_doomed_branch",
+        vec![IntVar::new("x", vec![0, 1]), IntVar::new("y", vec![1, 5])],
+        vec![Constraint::AbsDiffLe {
+            a: VarId(0),
+            b: VarId(1),
+            bound: 0,
+        }],
+    );
+    let exact = solve_exact(&p);
+    let prop = solve_propagate(&p);
+    assert!(is_sat(&exact) && is_sat(&prop), "both SAT");
+    assert!(verify_witness(
+        &p,
+        match &prop {
+            Outcome::Sat { witness, .. } => witness,
+            Outcome::Unsat { .. } => unreachable!(),
+        }
+    ));
+    assert!(
+        nodes(&prop) < nodes(&exact),
+        "propagation must prune: exact={} prop={}",
+        nodes(&exact),
+        nodes(&prop)
+    );
+    assert_eq!(prop, solve_propagate(&p), "deterministic");
+}
+
+// ── overflow safety on extreme i64 (the IR advertises arbitrary i64) ──────────
+//
+// The travel-bound and band arithmetic must not overflow for extreme domain
+// values. The order matters: `solve_propagate` evaluates the travel bound in
+// forward checking *before* the partial band/other checks, so a naive
+// `(x - y).abs()` panicked here on a problem the reference resolved without ever
+// touching that subtraction. Each of these returns cleanly and agrees.
+
+#[test]
+fn no_overflow_when_reference_rejects_before_the_travel_bound() {
+    // a = i64::MIN, b = 0. A degenerate band over b rejects b in the reference's
+    // partial check *before* the AbsDiffLe(a, b, i64::MAX) term is reached; the
+    // propagator forward-checks that AbsDiffLe against the assigned a first, so
+    // `0 - i64::MIN` is computed and must not overflow.
+    let p = OracleProblem::new(
+        "overflow_order",
+        vec![IntVar::new("a", vec![i64::MIN]), IntVar::new("b", vec![0])],
+        vec![
+            Constraint::BandOverlapAtMost {
+                vars: vec![VarId(1)],
+                fixed_lo: 0,
+                fixed_hi: 0,
+                num: 0,
+                den: 1,
+            },
+            Constraint::AbsDiffLe {
+                a: VarId(0),
+                b: VarId(1),
+                bound: i64::MAX,
+            },
+        ],
+    );
+    assert!(
+        !is_sat(&solve_exact(&p)),
+        "reference resolves it (UNSAT), no panic"
+    );
+    assert_agrees(&p);
+}
+
+#[test]
+fn no_overflow_on_extreme_travel_and_band_and_class() {
+    // Extreme values across all three constraint kinds; both solvers must return
+    // an Outcome (never overflow-panic) and agree.
+    for p in [
+        OracleProblem::new(
+            "extreme_travel",
+            vec![
+                IntVar::new("x", vec![i64::MIN, 0, i64::MAX]),
+                IntVar::new("y", vec![i64::MIN, i64::MAX]),
+            ],
+            vec![Constraint::AbsDiffLe {
+                a: VarId(0),
+                b: VarId(1),
+                bound: i64::MAX,
+            }],
+        ),
+        OracleProblem::new(
+            "extreme_band",
+            vec![
+                IntVar::new("x", vec![i64::MIN, i64::MAX]),
+                IntVar::new("y", vec![i64::MIN, 0, i64::MAX]),
+            ],
+            vec![Constraint::BandOverlapAtMost {
+                vars: vec![VarId(0), VarId(1)],
+                fixed_lo: i64::MIN,
+                fixed_hi: i64::MAX,
+                num: 1,
+                den: 2,
+            }],
+        ),
+        OracleProblem::new(
+            "extreme_class",
+            vec![IntVar::new("x", vec![i64::MIN, -1, i64::MAX])],
+            vec![Constraint::ForbiddenIntervalClasses {
+                var: VarId(0),
+                fixed: i64::MAX,
+                classes: vec![0, 1, 6, 11],
+            }],
+        ),
+    ] {
+        assert_agrees(&p);
+    }
+}
+
+// ── three-variable band + travel chain (the global × forward-checking mix) ────
+
+#[test]
+fn agrees_on_three_var_band_and_travel_chain() {
+    // The interaction that matters more than another 2-var grid: a whole-band
+    // global over three members combined with a chain of travel bounds, so the
+    // band's partial prune and the new forward checking act on the same search.
+    let doms = [vec![0, 1, 2, 3], vec![0, 2], vec![1, 2, 3]];
+    for da in &doms {
+        for db in &doms {
+            for dc in &doms {
+                for &(num, den) in &[(0_i64, 1_i64), (1, 2), (1, 1)] {
+                    let p = OracleProblem::new(
+                        "band3_chain",
+                        vec![
+                            IntVar::new("x", da.clone()),
+                            IntVar::new("y", db.clone()),
+                            IntVar::new("z", dc.clone()),
+                        ],
+                        vec![
+                            Constraint::AbsDiffLe {
+                                a: VarId(0),
+                                b: VarId(1),
+                                bound: 1,
+                            },
+                            Constraint::AbsDiffLe {
+                                a: VarId(1),
+                                b: VarId(2),
+                                bound: 1,
+                            },
+                            Constraint::BandOverlapAtMost {
+                                vars: vec![VarId(0), VarId(1), VarId(2)],
+                                fixed_lo: 1,
+                                fixed_hi: 2,
+                                num,
+                                den,
+                            },
+                        ],
+                    );
+                    assert_agrees(&p);
+                }
+            }
         }
     }
 }
