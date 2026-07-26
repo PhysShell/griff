@@ -467,9 +467,23 @@ fn referenced_hits(tab_name: &str, referenced: &BTreeSet<String>) -> bool {
 /// that starts with `ver`, contains ` by `, or is all digits is stripped, so a
 /// title that legitimately ends in parentheses (e.g. `(Reprise)`) is preserved.
 fn strip_version_suffix(s: &str) -> &str {
-    // RED stub: not yet implemented — returns the input unchanged, so
-    // transcription versions do not group and the work_key test fails.
-    s
+    let trimmed = s.trim_end();
+    if !trimmed.ends_with(')') {
+        return s;
+    }
+    let Some(open) = trimmed.rfind('(') else {
+        return s;
+    };
+    let inner = trimmed[open + 1..trimmed.len() - 1].trim();
+    let lower = inner.to_lowercase();
+    let is_version = lower.starts_with("ver")
+        || lower.contains(" by ")
+        || (!inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()));
+    if is_version {
+        trimmed[..open].trim_end()
+    } else {
+        s
+    }
 }
 
 /// Normalize a source filename to a composition (Work) key: drop the extension
