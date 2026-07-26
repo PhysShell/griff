@@ -203,7 +203,10 @@ fn ir_invariants_are_validated_at_construction() {
             den: 0,
         }],
     );
-    assert!(matches!(bad_den, Err(IrError::NonPositiveDenominator { .. })));
+    assert!(matches!(
+        bad_den,
+        Err(IrError::NonPositiveDenominator { .. })
+    ));
 }
 
 // ── MiniZinc emission ─────────────────────────────────────────────────────────
@@ -392,7 +395,10 @@ fn verify_witness_checks_a_full_assignment_against_every_constraint() {
     );
     assert!(verify_witness(&p, &[0, 4]), "|0-4| <= 4 holds");
     assert!(!verify_witness(&p, &[0, 12]), "|0-12| > 4 violates");
-    assert!(!verify_witness(&p, &[0]), "partial assignment is not a witness");
+    assert!(
+        !verify_witness(&p, &[0]),
+        "partial assignment is not a witness"
+    );
     assert!(
         !verify_witness(&p, &[1, 4]),
         "a witness value outside the domain is invalid"
@@ -571,13 +577,8 @@ fn pair_spec_from_score_is_a_full_note_snapshot_of_the_canonical_model() {
         "a canonical-score snapshot and the manual spec build the same problem"
     );
 
-    let missing = PairSpec::from_score_part_a(
-        &score,
-        7,
-        vec![0],
-        vec![pitch(64)],
-        STANDARD_MAX_FRET,
-    );
+    let missing =
+        PairSpec::from_score_part_a(&score, 7, vec![0], vec![pitch(64)], STANDARD_MAX_FRET);
     assert!(matches!(missing, Err(LabError::NoSuchTrack { .. })));
 }
 

@@ -20,9 +20,11 @@ use std::process::Command;
 
 use griff_constraint_lab::emit::to_minizinc;
 use griff_constraint_lab::ir::OracleProblem;
-use griff_constraint_lab::manifest::{OutcomeRecord, RunManifest, SolverIdentity};
+use griff_constraint_lab::manifest::{
+    OutcomeRecord, RunManifest, SolverIdentity, Status, SCHEMA, SCHEMA_VERSION,
+};
 use griff_constraint_lab::problems::{bounded_travel_problem, pair_cleanliness_problem, PairSpec};
-use griff_constraint_lab::solve::{solve_exact, Outcome};
+use griff_constraint_lab::solve::{solve_exact, verify_witness, Outcome};
 use griff_core::event::{Pitch, Tuning};
 use griff_core::fretboard::STANDARD_MAX_FRET;
 
@@ -76,7 +78,7 @@ fn fixture_pair_mud() -> PairSpec {
 fn outcome_record(problem: &OracleProblem, outcome: &Outcome) -> OutcomeRecord {
     match outcome {
         Outcome::Sat { witness, nodes } => OutcomeRecord {
-            status: "sat".to_string(),
+            status: Status::Sat,
             witness: Some(
                 problem
                     .vars
@@ -88,7 +90,7 @@ fn outcome_record(problem: &OracleProblem, outcome: &Outcome) -> OutcomeRecord {
             nodes: *nodes,
         },
         Outcome::Unsat { nodes } => OutcomeRecord {
-            status: "unsat".to_string(),
+            status: Status::Unsat,
             witness: None,
             nodes: *nodes,
         },
@@ -104,14 +106,28 @@ fn minizinc_bin() -> Option<String> {
     probe.status.success().then(|| "minizinc".to_string())
 }
 
+/// Frontend + backend identity: the `MiniZinc` converter version *and* the
+/// `Chuffed` backend version, recorded separately for reproducibility.
 fn minizinc_version(bin: &str) -> String {
-    Command::new(bin)
+    let frontend = Command::new(bin)
         .arg("--version")
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.lines().next().map(str::to_string))
-        .unwrap_or_else(|| "unknown".to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let backend = Command::new(bin)
+        .arg("--solvers")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.to_ascii_lowercase().contains("chuffed"))
+                .map(|l| l.trim().to_string())
+        })
+        .unwrap_or_else(|| "chuffed version unknown".to_string());
+    format!("frontend: {frontend}; backend: {backend}")
 }
 
 /// Runs the external solver on an emitted model and parses the outcome.
@@ -123,9 +139,18 @@ fn run_minizinc(bin: &str, model_path: &Path) -> Result<OutcomeRecord, String> {
         .output()
         .map_err(|e| format!("failed to spawn {bin}: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // A failed run must never be archived as evidence — gate on exit status
+    // before interpreting any marker in the output.
+    if !output.status.success() {
+        return Err(format!(
+            "{bin} exited with {}:\n{stdout}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
     if stdout.contains("=====UNSATISFIABLE=====") {
         return Ok(OutcomeRecord {
-            status: "unsat".to_string(),
+            status: Status::Unsat,
             witness: None,
             nodes: 0,
         });
@@ -145,7 +170,7 @@ fn run_minizinc(bin: &str, model_path: &Path) -> Result<OutcomeRecord, String> {
         ));
     }
     Ok(OutcomeRecord {
-        status: "sat".to_string(),
+        status: Status::Sat,
         witness: Some(witness),
         nodes: 0,
     })
@@ -176,7 +201,7 @@ fn run_fixture(
     let reference = solve_exact(problem);
     let reference_record = outcome_record(problem, &reference);
     println!(
-        "  reference: {} ({} nodes)",
+        "  reference: {:?} ({} nodes)",
         reference_record.status, reference_record.nodes
     );
     let fingerprint_hex = format!("{:016x}", problem.fingerprint());
@@ -184,8 +209,8 @@ fn run_fixture(
         runs,
         &format!("{slug}.griff-lab-exact"),
         &RunManifest {
-            schema: "griff.constraint-lab-run".to_string(),
-            version: 1,
+            schema: SCHEMA.to_string(),
+            version: SCHEMA_VERSION,
             problem: problem.name.clone(),
             fingerprint_hex: fingerprint_hex.clone(),
             solver: SolverIdentity {
@@ -201,14 +226,35 @@ fn run_fixture(
     };
     match run_minizinc(bin, &model_path) {
         Ok(external_record) => {
-            println!("  minizinc:  {} ({version})", external_record.status);
-            let agree = external_record.status == reference_record.status;
+            println!("  minizinc:  {:?} ({version})", external_record.status);
+            // Status agreement alone would trust an unvalidated external
+            // witness; re-check it against the IR so this is a model
+            // oracle, not a status oracle.
+            let witness_valid = match &external_record.witness {
+                Some(pairs) => {
+                    let by_name: std::collections::HashMap<&str, i64> = pairs
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), *value))
+                        .collect();
+                    let ordered: Option<Vec<i64>> = problem
+                        .vars
+                        .iter()
+                        .map(|v| by_name.get(v.name.as_str()).copied())
+                        .collect();
+                    ordered.is_some_and(|w| verify_witness(problem, &w))
+                }
+                None => true, // UNSAT carries no witness to validate
+            };
+            if !witness_valid {
+                eprintln!("  external witness violates the IR on {slug}");
+            }
+            let agree = witness_valid && external_record.status == reference_record.status;
             write_manifest(
                 runs,
                 &format!("{slug}.minizinc-chuffed"),
                 &RunManifest {
-                    schema: "griff.constraint-lab-run".to_string(),
-                    version: 1,
+                    schema: SCHEMA.to_string(),
+                    version: SCHEMA_VERSION,
                     problem: problem.name.clone(),
                     fingerprint_hex,
                     solver: SolverIdentity {
@@ -260,6 +306,12 @@ fn main() {
         }
     }
     let frontier = frontier.expect("bound 24 always admits the line");
+    // A frontier at bound 0 would make the "frontier-unsat" fixture SAT
+    // under an UNSAT slug — refuse to archive a lie about the fixture line.
+    assert!(
+        frontier > 0,
+        "fixture line is SAT at bound 0; there is no UNSAT frontier to archive"
+    );
     println!(
         "Problem A frontier: bound {} UNSAT, bound {} SAT",
         frontier.saturating_sub(1),

@@ -7,6 +7,21 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The archive schema identity.
+pub const SCHEMA: &str = "griff.constraint-lab-run";
+/// The archive schema version.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// Typed SAT/UNSAT status with the lowercase wire form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    /// A satisfying assignment exists.
+    Sat,
+    /// The search space is provably empty.
+    Unsat,
+}
+
 /// Which solver produced an outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SolverIdentity {
@@ -19,8 +34,8 @@ pub struct SolverIdentity {
 /// The recorded outcome of one run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutcomeRecord {
-    /// `"sat"` or `"unsat"`.
-    pub status: String,
+    /// The typed outcome status.
+    pub status: Status,
     /// Witness as `(variable name, value)` pairs when SAT.
     pub witness: Option<Vec<(String, i64)>>,
     /// Search nodes explored (0 when the solver does not report it).

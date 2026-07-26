@@ -6,6 +6,44 @@
 //! and a stable fingerprint.
 
 use serde::Serialize;
+use thiserror::Error;
+
+/// Typed IR-invariant violations, refused at construction.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum IrError {
+    /// A constraint references a variable that does not exist.
+    #[error("constraint references dangling VarId {id} (only {vars} vars)")]
+    DanglingVarId {
+        /// The dangling index.
+        id: usize,
+        /// Number of declared variables.
+        vars: usize,
+    },
+    /// A variable's domain is empty.
+    #[error("variable \"{name}\" has an empty domain")]
+    EmptyDomain {
+        /// The offending variable name.
+        name: String,
+    },
+    /// Two variables share a name (witness keys must be unique).
+    #[error("duplicate variable name \"{name}\"")]
+    DuplicateName {
+        /// The duplicated name.
+        name: String,
+    },
+    /// A name is not `MiniZinc`-safe (`[A-Za-z_][A-Za-z0-9_]*`).
+    #[error("variable name \"{name}\" is not MiniZinc-safe")]
+    UnsafeName {
+        /// The offending name.
+        name: String,
+    },
+    /// A band threshold denominator is not positive.
+    #[error("band threshold denominator {den} is not positive")]
+    NonPositiveDenominator {
+        /// The offending denominator.
+        den: i64,
+    },
+}
 
 /// Index of a variable within its [`OracleProblem`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -88,14 +126,86 @@ pub struct OracleProblem {
 }
 
 impl OracleProblem {
-    /// Builds a problem from already-canonical parts.
+    /// Builds a problem, panicking on an IR-invariant violation.
+    ///
+    /// # Panics
+    ///
+    /// Panics with the [`IrError`] message when [`OracleProblem::try_new`]
+    /// would refuse — the infallible form for statically-known-valid
+    /// problems (tests, fixtures).
     #[must_use]
+    #[allow(clippy::panic)] // documented: the typed form is try_new
     pub fn new(name: impl Into<String>, vars: Vec<IntVar>, constraints: Vec<Constraint>) -> Self {
-        Self {
+        match Self::try_new(name, vars, constraints) {
+            Ok(problem) => problem,
+            Err(e) => panic!("invalid oracle problem: {e}"),
+        }
+    }
+
+    /// Builds a problem after validating every IR invariant, so the emitter
+    /// and solver never see malformed input.
+    ///
+    /// # Errors
+    ///
+    /// See [`IrError`] — dangling `VarId`s, empty domains, duplicate or
+    /// MiniZinc-unsafe names, non-positive band denominators.
+    pub fn try_new(
+        name: impl Into<String>,
+        vars: Vec<IntVar>,
+        constraints: Vec<Constraint>,
+    ) -> Result<Self, IrError> {
+        for var in &vars {
+            if var.domain.is_empty() {
+                return Err(IrError::EmptyDomain {
+                    name: var.name.clone(),
+                });
+            }
+            if !minizinc_safe(&var.name) {
+                return Err(IrError::UnsafeName {
+                    name: var.name.clone(),
+                });
+            }
+        }
+        for (i, var) in vars.iter().enumerate() {
+            if vars.iter().skip(i + 1).any(|other| other.name == var.name) {
+                return Err(IrError::DuplicateName {
+                    name: var.name.clone(),
+                });
+            }
+        }
+        let check_id = |id: &VarId| -> Result<(), IrError> {
+            if id.0 >= vars.len() {
+                return Err(IrError::DanglingVarId {
+                    id: id.0,
+                    vars: vars.len(),
+                });
+            }
+            Ok(())
+        };
+        for constraint in &constraints {
+            match constraint {
+                Constraint::AbsDiffLe { a, b, .. } => {
+                    check_id(a)?;
+                    check_id(b)?;
+                }
+                Constraint::ForbiddenIntervalClasses { var, .. } => check_id(var)?,
+                Constraint::BandOverlapAtMost {
+                    vars: band, den, ..
+                } => {
+                    for id in band {
+                        check_id(id)?;
+                    }
+                    if *den <= 0 {
+                        return Err(IrError::NonPositiveDenominator { den: *den });
+                    }
+                }
+            }
+        }
+        Ok(Self {
             name: name.into(),
             vars,
             constraints,
-        }
+        })
     }
 
     /// FNV-1a 64 over the canonical serialization: stable across runs,
@@ -116,4 +226,14 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     bytes
         .iter()
         .fold(OFFSET, |acc, &b| (acc ^ u64::from(b)).wrapping_mul(PRIME))
+}
+
+/// `[A-Za-z_][A-Za-z0-9_]*` — safe as a `MiniZinc` identifier.
+fn minizinc_safe(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }

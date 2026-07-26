@@ -11,6 +11,7 @@
 
 use griff_core::event::{Pitch, Tuning};
 use griff_core::fretboard::{measure_playability, FingeringWeights};
+use griff_core::score::{AtomEvent, Score};
 use thiserror::Error;
 
 use crate::ir::{Constraint, IntVar, OracleProblem, VarId};
@@ -44,6 +45,12 @@ pub enum LabError {
     /// A problem needs at least one note.
     #[error("the line is empty")]
     EmptyLine,
+    /// The requested track does not exist in the score.
+    #[error("score has no track {index}")]
+    NoSuchTrack {
+        /// The requested track index.
+        index: usize,
+    },
 }
 
 /// Problem A: assign one fret per line note so consecutive travel stays
@@ -105,6 +112,60 @@ pub struct PairSpec {
     pub max_fret: u8,
 }
 
+impl PairSpec {
+    /// Builds the spec as a snapshot of the **canonical score model**: part
+    /// A's notes are extracted onset-sorted from the score's track — the
+    /// **full** note list, because `validate_pair` counts dissonances and
+    /// builds the register band over every note; only the playability
+    /// precondition folds to the highest pitch per onset, and that folding
+    /// happens inside [`pair_cleanliness_problem`], mirroring production
+    /// `part_playability`. The track's own tuning is used. The canonical
+    /// model stays the single source of note semantics; the tuple form is
+    /// only this snapshot's carrier.
+    ///
+    /// # Errors
+    ///
+    /// [`LabError::NoSuchTrack`] when `track_index` is out of range;
+    /// [`LabError::EmptyLine`] when the track has no note atoms.
+    pub fn from_score_part_a(
+        score: &Score,
+        track_index: usize,
+        b_onsets: Vec<u32>,
+        b_domain: Vec<Pitch>,
+        max_fret: u8,
+    ) -> Result<Self, LabError> {
+        let track = score
+            .tracks
+            .get(track_index)
+            .ok_or(LabError::NoSuchTrack { index: track_index })?;
+        let mut notes: Vec<(u32, u8)> = track
+            .voices
+            .iter()
+            .flat_map(|v| &v.event_groups)
+            .flat_map(|g| &g.atoms)
+            .filter_map(|a| match a {
+                AtomEvent::Note(n) => Some((n.absolute_start.0, n.pitch.0)),
+                AtomEvent::Rest(_) => None,
+            })
+            .collect();
+        if notes.is_empty() {
+            return Err(LabError::EmptyLine);
+        }
+        notes.sort_unstable();
+        // Full snapshot: validate_pair counts dissonances and builds the
+        // register band over all notes; only playability folds, and it does
+        // so inside the problem builder.
+        let a_line: Vec<(u32, Pitch)> = notes.into_iter().map(|(o, p)| (o, Pitch(p))).collect();
+        Ok(Self {
+            a_line,
+            b_onsets,
+            b_domain,
+            tuning: track.tuning.clone(),
+            max_fret,
+        })
+    }
+}
+
 /// Problem B: is there any B pitch assignment that the production
 /// `PairValidation` laws call clean?
 ///
@@ -120,10 +181,14 @@ pub fn pair_cleanliness_problem(spec: &PairSpec) -> Result<OracleProblem, LabErr
     }
 
     // Precondition: part A itself must be playable (`is_clean` demands it of
-    // both parts; for the oracle, A is an input, not a variable).
+    // both parts; for the oracle, A is an input, not a variable). Production
+    // `part_playability` folds each onset to its highest pitch before the
+    // fingering DP — a chord participates through its top note only — so the
+    // precondition measures the folded line, never the raw note list.
     let a_pitches: Vec<Pitch> = spec.a_line.iter().map(|&(_, p)| p).collect();
+    let a_top_line = fold_top_note_line(&spec.a_line);
     let a_report = measure_playability(
-        &a_pitches,
+        &a_top_line,
         &spec.tuning,
         &FingeringWeights::v1(),
         spec.max_fret,
@@ -178,4 +243,21 @@ pub fn pair_cleanliness_problem(spec: &PairSpec) -> Result<OracleProblem, LabErr
     });
 
     Ok(OracleProblem::new("pair-cleanliness", vars, constraints))
+}
+
+/// The production `part_playability` line: highest pitch per onset over the
+/// onset-sorted note list.
+fn fold_top_note_line(line: &[(u32, Pitch)]) -> Vec<Pitch> {
+    let mut sorted: Vec<(u32, u8)> = line.iter().map(|&(o, p)| (o, p.0)).collect();
+    sorted.sort_unstable();
+    let mut folded: Vec<(u32, u8)> = Vec::new();
+    for (onset, pitch) in sorted {
+        match folded.last_mut() {
+            Some((last_onset, last_pitch)) if *last_onset == onset => {
+                *last_pitch = (*last_pitch).max(pitch);
+            }
+            _ => folded.push((onset, pitch)),
+        }
+    }
+    folded.into_iter().map(|(_, p)| Pitch(p)).collect()
 }

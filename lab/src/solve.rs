@@ -46,6 +46,20 @@ pub fn solve_exact(problem: &OracleProblem) -> Outcome {
     }
 }
 
+/// Checks a complete assignment against the problem: full length, every
+/// value inside its variable's domain, and every constraint satisfied.
+/// The check the external-solver cross-check runs on parsed witnesses.
+#[must_use]
+pub fn verify_witness(problem: &OracleProblem, witness: &[i64]) -> bool {
+    witness.len() == problem.vars.len()
+        && problem
+            .vars
+            .iter()
+            .zip(witness)
+            .all(|(var, value)| var.domain.contains(value))
+        && problem.constraints.iter().all(|c| check_full(c, witness))
+}
+
 /// Applies unary constraints (forbidden interval classes) to the domains.
 fn prefiltered_domains(problem: &OracleProblem) -> Vec<Vec<i64>> {
     let mut domains: Vec<Vec<i64>> = problem
