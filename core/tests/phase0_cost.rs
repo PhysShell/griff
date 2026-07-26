@@ -9,11 +9,14 @@
 //! cargo test --release -p griff-core --test phase0_cost -- --ignored --nocapture
 //! ```
 //!
-//! It times three tiers (proposal §5) — generation only; generation +
-//! fingerprint; generation + full metrics — at 1k/10k/100k trials, a distinct
-//! seed per trial. Absolute nanoseconds are machine-relative; the load-bearing
-//! result is the ratio between tiers (generation is cheap, the metric layer
-//! dominates). Adds no production code.
+//! It times the three tiers of proposal §5 — generation only; generation +
+//! checksum; generation + full metrics — plus per-metric component subtiers
+//! (structure / gesture / complexity / novelty) that attribute the aggregate,
+//! at 1k/10k/100k trials, a distinct seed per trial. `std::hint::black_box`
+//! barriers wrap every measured input and result, so the optimizer cannot elide
+//! a metric whose output is otherwise unused. Absolute nanoseconds are
+//! machine-relative; the load-bearing result is the ratio between tiers
+//! (generation is cheap, the metric layer dominates). Adds no production code.
 
 #![allow(
     clippy::unwrap_used,
@@ -26,6 +29,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::hint::black_box;
 use std::time::Instant;
 
 use griff_core::{
@@ -65,9 +69,12 @@ fn request(seed: u64, bars: usize, strategy: GenerationStrategy) -> RuleGenerati
     }
 }
 
-/// A stand-in for the Lab's future canonical fingerprint: a stable hash of the
-/// `(onset, duration, pitch)` signature — a lower bound on real fingerprint cost.
-fn fingerprint(score: &Score) -> u64 {
+/// A **benchmark-only checksum** over the canonical `(onset, duration, pitch)`
+/// signature — a lower bound on the cost a real fingerprint would add. Uses
+/// `DefaultHasher`, whose algorithm is **not** version-stable and is not a
+/// durable fingerprint; that is fine here (we time the traversal, not persist
+/// the value) but must not be mistaken for the Lab's future canonical hash.
+fn benchmark_checksum(score: &Score) -> u64 {
     let mut h = DefaultHasher::new();
     for track in &score.tracks {
         for voice in &track.voices {
@@ -133,19 +140,52 @@ fn phase0_cost() {
         // Pre-build the per-seed requests OUTSIDE every timer.
         let requests: Vec<RuleGenerationRequest> =
             (0..n as u64).map(|i| request(i, bars, strat)).collect();
+
+        // Generation with optimizer barriers on input and output, so the pass
+        // is never elided and its result is observed by every tier below.
+        let gen_score =
+            |r: &RuleGenerationRequest| black_box(generate(black_box(r)).unwrap().score);
+
         time_tier("gen only", &requests, |r| {
-            generate(r).unwrap().score.tracks.len() as u64
+            black_box(gen_score(r).tracks.len() as u64)
         });
-        time_tier("gen + fingerprint", &requests, |r| {
-            fingerprint(&generate(r).unwrap().score)
+        time_tier("gen + checksum", &requests, |r| {
+            black_box(benchmark_checksum(&gen_score(r)))
         });
+
+        // Per-metric marginal cost (this subtier − "gen only") attributes the
+        // aggregate to the individual measures, rather than assuming which one
+        // dominates. Each result is observed so the metric cannot be elided.
+        time_tier("gen + structure", &requests, |r| {
+            black_box(measure_structure(&gen_score(r), 0).unwrap().bar_count as u64)
+        });
+        time_tier("gen + gesture", &requests, |r| {
+            black_box(measure_gesture(&gen_score(r), 0).unwrap().note_count as u64)
+        });
+        time_tier("gen + complexity", &requests, |r| {
+            black_box(
+                measure_complexity(&gen_score(r), 0)
+                    .unwrap()
+                    .rhythmic
+                    .to_bits(),
+            )
+        });
+        time_tier("gen + novelty", &requests, |r| {
+            black_box(
+                measure_novelty(&gen_score(r), 0, black_box(&refs))
+                    .unwrap()
+                    .candidate_notes as u64,
+            )
+        });
+
         time_tier("gen + full metrics", &requests, |r| {
-            let s = generate(r).unwrap().score;
-            let st = measure_structure(&s, 0).unwrap();
-            let _g = measure_gesture(&s, 0).unwrap();
-            let _c = measure_complexity(&s, 0).unwrap();
-            let nv = measure_novelty(&s, 0, &refs).unwrap();
-            st.bar_count as u64 + nv.candidate_notes as u64
+            let s = gen_score(r);
+            let structure = measure_structure(&s, 0).unwrap();
+            let gesture = measure_gesture(&s, 0).unwrap();
+            let complexity = measure_complexity(&s, 0).unwrap();
+            let novelty = measure_novelty(&s, 0, black_box(&refs)).unwrap();
+            let measured = black_box((structure, gesture, complexity, novelty));
+            measured.0.bar_count as u64 + measured.3.candidate_notes as u64
         });
     }
 }

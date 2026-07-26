@@ -44,12 +44,15 @@ for that discussion, not a decision.
   holdout.
 - **No benchmark infrastructure exists** (no `criterion`, no `benches/`), so the
   cost benchmark was run with a zero-production-code dev-only harness in the
-  project's `nix develop` shell. **Measured** (§5): generation is ~4.5 µs/trial,
-  but full metrics cost ~140 µs/trial — **~30× generation** — so the
-  metric/evaluation layer, not the generator, is the per-trial bottleneck a
-  directed-search discussion must weigh. **All six items are now answered, so
-  Phase 0 is complete** as an evidence gate (the numbers are machine-relative;
-  the load-bearing result is the ~30× ratio, not the absolute nanoseconds).
+  project's `nix develop` shell. **Measured** (§5, with `black_box` barriers and
+  per-metric component subtiers): generation is ~4 µs/trial, but full metrics
+  cost ~150 µs/trial — **~36× generation** — and the components *measure* the
+  attribution: `novelty` dominates (~95 µs, ~65% of metric cost), `complexity`
+  second (~32 µs). So the metric/evaluation layer, not the generator, is the
+  per-trial bottleneck a directed-search discussion must weigh. **All six items
+  are now answered, so Phase 0 is complete** as an evidence gate (numbers are
+  machine-relative; the load-bearing results are the ~36× ratio and the
+  novelty-dominant attribution, not the absolute nanoseconds).
 
 ## 1. Inventory — the existing metric layer
 
@@ -349,37 +352,50 @@ are stable: generation is cheap, and the metric layer dominates.
   — the full generate + rerank + novelty pipeline (most representative; the CLI
   path).
 
-**Three tiers (proposal §5):** generation only; generation + fingerprint
-(a stable hash of the canonical `(onset, duration, pitch)` signature — the Lab's
-Phase-1 fingerprint does not exist yet, so a `DefaultHasher` over the tuples is
-a stand-in lower bound); generation + full metrics (`measure_structure` +
+**Three tiers (proposal §5):** generation only; generation + checksum
+(a **benchmark-only** hash of the canonical `(onset, duration, pitch)`
+signature — the Lab's real version-stable fingerprint does not exist yet, so a
+`DefaultHasher` over the tuples, whose algorithm is not durable, is a stand-in
+lower bound); generation + full metrics (`measure_structure` +
 `measure_gesture` + `measure_complexity` + `measure_novelty` against a small
 reference set — the last being the O(n·m·len) `longest_common_run`, the
 expensive term).
 
 Per-trial cost (ns), 4-bar 4/4 eighth-grid line, `ConstrainedRandomWalk`,
-distinct seed per trial, requests pre-built outside the timer (so no tier
-measures request construction); full-metrics tier measures against an
-8-fragment reference set:
+distinct seed per trial, requests pre-built outside the timer, and
+`std::hint::black_box` barriers on every measured input/result so no unused
+metric is optimized away; full-metrics tier measures against an 8-fragment
+reference set:
 
 | Tier | Entry points measured | 1k | 10k | 100k |
 | --- | --- | --- | --- | --- |
-| generation only | `generate` | ~3 500 | ~3 600 | **~4 500** |
-| generation + fingerprint | `generate` + signature hash | ~4 000 | ~4 000 | **~4 300** |
-| generation + full metrics | `generate` + structure/gesture/complexity/novelty | ~143 000 | ~137 000 | **~145 600** |
+| generation only | `generate` | ~3 400 | ~4 100 | **~4 100** |
+| generation + checksum | `generate` + signature hash | ~3 700 | ~6 500 | **~5 100** |
+| generation + full metrics | `generate` + structure/gesture/complexity/novelty | ~124 000 | ~159 000 | **~150 900** |
+
+Per-metric marginal cost (subtier − "generation only", 100 k), which
+**attributes** the aggregate rather than assuming which measure dominates:
+
+| Metric | marginal per-trial | share of metric cost |
+| --- | --- | --- |
+| `novelty` (`measure_novelty` vs the reference set) | **~95 µs** | ~65% |
+| `complexity` (`measure_complexity`) | ~32 µs | ~22% |
+| `structure` (`measure_structure`) | ~14 µs | ~10% |
+| `gesture` (`measure_gesture`) | ~2 µs | ~1% |
 
 **Reading (the number that gates directed search).** Generation is a few
-microseconds per trial (~4 µs; the fingerprint adds under a microsecond — within
-run-to-run noise). **Full metrics cost ~140 µs — roughly 30× generation** —
-because the metric layer, dominated by `novelty`'s O(n·m·len)
-`longest_common_run` against every reference, is the real per-trial expense. So
-at 100 k trials, generation is sub-second (~0.45 s) while full-metric evaluation
-is ~14 s. The bottleneck a future directed-search discussion must weigh is
-therefore the **metric/evaluation layer, not the generator** — directed sampling
-that saves generations buys little; caching or cheapening the metric tier is
-where the cost is. Absolute nanoseconds are machine-relative and carry ~10–20%
-run-to-run noise on a shared host; the load-bearing result is the ~30× ratio,
-not the exact figures.
+microseconds per trial (~4 µs; the checksum adds ~1 µs). **Full metrics cost
+~150 µs — roughly 36× generation** — and the component subtiers *measure* the
+attribution rather than guessing it: **`novelty` is the dominant term (~95 µs,
+~65%)**, exactly because of its O(n·m·len) `longest_common_run` against every
+reference, with `complexity` a clear second (~32 µs). So at 100 k trials,
+generation is sub-second (~0.4 s) while full-metric evaluation is ~15 s. The
+bottleneck a future directed-search discussion must weigh is therefore the
+**metric/evaluation layer, not the generator** — directed sampling that saves
+generations buys little; caching or cheapening the metric tier (novelty first,
+then complexity) is where the cost is. Absolute nanoseconds are machine-relative
+and carry ~10–20% run-to-run noise on a shared host; the load-bearing results
+are the ~36× ratio and the novelty-dominant attribution, not the exact figures.
 
 **Reproducible harness (committed, dev-only, CI-skipped).** The complete
 instrument is committed as **`core/tests/phase0_cost.rs`** — an `#[ignore]`d
