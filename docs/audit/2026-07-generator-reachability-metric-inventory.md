@@ -31,14 +31,21 @@ for that discussion, not a decision.
 - **Three different "the melodic line" extractors already exist.** Adding a
   fourth is the standing hazard the proposal warns about (§3, "No third
   slightly-different definition of the melodic line").
-- **Holdout is feasible** and enforceable *before* corpus material is compiled —
-  but source identity is **structurally dropped** the moment `CorpusMaterial` is
-  built, which is a blocker for *post-hoc leak attribution*, not for holdout.
+- **Holdout is feasible** and enforceable *before* corpus material is compiled,
+  **conditional on fail-closed handling of records that lack a content
+  identity**: `sha256` is `Option` (pre-v9), and the loader falls back to the
+  basename ("a filename is not an identity") — so holdout must reject or migrate
+  `sha256`-less records rather than trust a filename. Source identity is also
+  **structurally dropped** the moment `CorpusMaterial` is built — a blocker for
+  *post-hoc leak attribution*, not for holdout.
 - **No benchmark infrastructure exists** (no `criterion`, no `benches/`). The
   cost benchmark is specified below with a zero-production-code harness; the
   numbers are `TBD (unmeasured)` because the Rust toolchain was unavailable in
   the authoring environment — the harness is given so the measurement is a
-  mechanical follow-up.
+  mechanical follow-up. **Phase 0 is therefore not yet complete as an evidence
+  gate**: item 5 (the cost number that gates any future directed-search
+  discussion) does not exist until those trials are run and recorded. Items
+  1–4 and 6 are answered; item 5 is drafted-but-unmeasured.
 
 ## 1. Inventory — the existing metric layer
 
@@ -155,7 +162,7 @@ helper is lifted to a shared primitive; "new" means no equivalent logic exists.
 
 | Proposed fact | Best existing source | Decision | Reason (grounded) |
 | --- | --- | --- | --- |
-| Exact onset set | `syncopation::track_onsets` (`syncopation.rs:59`, private); `structure::track_notes` (`:127`) | **new** | No public onset-set projection; extractors are private and on different shapes. |
+| Exact onset set | `syncopation::track_onsets` (`syncopation.rs:59`, private `HashSet<u32>`); onsets also in `novelty::top_line` (`novelty.rs:287`) | **extend** | Consistent with the `extend` definition: `track_onsets` already computes the exact onset set privately — lift the shared line/onset primitive (canonicalising the ordering the set drops), do not author a new projection. |
 | Exact pitch on paired onsets | `novelty::top_line` (`novelty.rs:287`); also gesture / structure variants | **extend** | Reuse *one* line extractor by lifting a shared `(onset, pitch)` primitive — never add a fourth. |
 | Interval contour | interval half of `novelty::transitions` (`novelty.rs:320,330`) | **extend** | Transposition-invariant `i16` intervals already computed; extract the interval component. |
 | IOI sequence | `novelty::transitions` + `IOI_GRID_PER_QUARTER = 480` (`novelty.rs:49,320`) | **extend** | Resolution-invariant normalised-IOI already implemented in a private helper. |
@@ -174,8 +181,10 @@ metric-vocabulary drift, which the proposal's own measurement-policy contract
 
 ## 3. Holdout feasibility (proposal §5 item 3, §6 holdout discipline)
 
-**Verdict: PASS — holdout is enforceable before corpus material is compiled;
-one Phase-1 implementation caveat and one attribution blocker are recorded.**
+**Verdict: PASS, conditional on fail-closed handling of records without a
+content identity — holdout is enforceable before corpus material is compiled;
+one content-identity condition, one range caveat, and one attribution blocker
+are recorded.**
 
 Provenance carried by a chunk (`core/src/corpus.rs`, `SCHEMA_VERSION = 9`
 `:58`): `ChunkMeta { id: ChunkId, title, source: SourceRef, … }` (`:369`);
@@ -209,8 +218,21 @@ Path (verified end-to-end):
   &[Score]` (`rerank.rs:200`), and a novelty match records only a `usize` index
   into the anonymous `Vec<Score>` (`novelty.rs`), never a `ChunkId`.
 
-Two Phase-1 items follow, each named honestly rather than waved off:
+Three Phase-1 items follow, each named honestly rather than waved off:
 
+- **Condition (fail-closed content identity) — the load-bearing one.** Source
+  identity is only reliable where a record carries `sha256`. `SourceRef.sha256`
+  is `Option` (`corpus.rs:120`, added v9), and the loader keys the source on
+  `sha256.unwrap_or_else(|| filename)` (`cli/src/generation_input.rs:87-91`),
+  verifying the hash only `if let Some(expected)` (`:99-101`) — its own comment
+  states "a filename is not an identity". So a corpus containing pre-v9
+  (`sha256`-less) records **cannot reliably implement `HoldoutTargetSong` by
+  content identity**, and a naive PASS would let a leaky run wear the costume of
+  a valid holdout. The proposal's own §6 law resolves this: holdout modes **fail
+  closed** — records lacking `sha256` must be **rejected or migrated** in
+  holdout mode, never trusted by basename. Absent that, the missing content
+  identity is a Phase-1 blocker, not a footnote. (Records *with* `sha256` are
+  fully reliable — the content check runs and a mismatch is a hard failure.)
 - **Caveat (holdout correctness):** because `bar_range` is `Option`, a
   range-overlap holdout must treat `bar_range == None` (whole-source) records as
   overlapping *any* range of the same file/`sha256`; ignoring `None` would
