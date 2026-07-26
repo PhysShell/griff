@@ -1916,3 +1916,16 @@ Architectural decisions go to [`adr/`](adr/) instead.
   proposal's acceptance, to achieve a durable canonical trace of the
   survey regardless of each proposal's fate, accepting a coarse-grained
   duplication of the proposals' prior-art sections.
+
+- 2026-07-25 — In the context of the Constraint Lab oracle spike (the
+  hard-constraint-contract proposal's first increment), facing where
+  solver-facing research tooling may live without touching the production
+  dependency posture, we decided for an isolated `lab/` crate excluded
+  from the workspace exactly like `fuzz/` (ADR-0010 precedent) with
+  `griff-core` as its only path dependency and the external MiniZinc
+  binary strictly optional at runtime, and against a workspace member or
+  a CI job, to achieve real archived solver runs (MiniZinc 2.8.7/chuffed
+  cross-checked against an exact in-repo reference solver) with zero
+  production or CI impact, accepting that the lab is built and run only
+  on demand and its results live as committed fixtures, manifests, and
+  the audit report rather than as a CI gate.

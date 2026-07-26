@@ -1,0 +1,32 @@
+{
+  "schema": "griff.constraint-lab-run",
+  "version": 1,
+  "problem": "pair-cleanliness",
+  "fingerprint_hex": "9e16ec2f3325f445",
+  "solver": {
+    "name": "minizinc/chuffed",
+    "version": "MiniZinc to FlatZinc converter, version 2.8.7, build 1478320236"
+  },
+  "outcome": {
+    "status": "sat",
+    "witness": [
+      [
+        "b0",
+        76
+      ],
+      [
+        "b1",
+        76
+      ],
+      [
+        "b2",
+        76
+      ],
+      [
+        "b3",
+        64
+      ]
+    ],
+    "nodes": 0
+  }
+}

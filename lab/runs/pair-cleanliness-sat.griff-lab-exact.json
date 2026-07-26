@@ -1,0 +1,32 @@
+{
+  "schema": "griff.constraint-lab-run",
+  "version": 1,
+  "problem": "pair-cleanliness",
+  "fingerprint_hex": "9e16ec2f3325f445",
+  "solver": {
+    "name": "griff-lab-exact",
+    "version": "1"
+  },
+  "outcome": {
+    "status": "sat",
+    "witness": [
+      [
+        "b0",
+        64
+      ],
+      [
+        "b1",
+        64
+      ],
+      [
+        "b2",
+        64
+      ],
+      [
+        "b3",
+        64
+      ]
+    ],
+    "nodes": 4
+  }
+}
