@@ -618,15 +618,10 @@ fn b_playability_is_filtered_under_the_b_tuning_not_a_s() {
         pitch(45), // A2 — lowest: MIDI 40 is unreachable
     ]);
     let score = two_track_score(&[(0, 52)], &[]);
-    let err = PairSpec::from_score_part_a(
-        &score,
-        0,
-        vec![2 * QUARTER],
-        vec![pitch(40)],
-        high_b_tuning,
-    )
-    .and_then(|spec| pair_cleanliness_problem(&spec))
-    .expect_err("40 is unplayable under the B tuning");
+    let err =
+        PairSpec::from_score_part_a(&score, 0, vec![2 * QUARTER], vec![pitch(40)], high_b_tuning)
+            .and_then(|spec| pair_cleanliness_problem(&spec))
+            .expect_err("40 is unplayable under the B tuning");
     assert!(matches!(err, LabError::EmptyPlayableDomain { .. }));
 
     // The same domain under Standard E for B is fine — proving the filter

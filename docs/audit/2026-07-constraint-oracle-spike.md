@@ -21,10 +21,15 @@ dependencies added; the `lab/` crate is excluded from the workspace
   production `band_overlap` integer arithmetic (including the degenerate
   single-pitch rule);
 - **runner** — emits fixtures, solves, cross-checks an external MiniZinc,
-  archives one manifest per (fixture, solver) with solver identity.
+  archives one manifest per (fixture, solver) with frontend and backend
+  identities, and enforces the **stale-evidence rule**: an external
+  manifest may exist only when the current run produced it —
+  reference-only and failed external runs delete it, and only a run with
+  a live external solver may claim agreement.
 
-TDD: the full contract suite (17 tests) was committed red first; the
-green implementation followed; `griff-core` remained untouched and green.
+TDD: the contract suite was committed red first and the green
+implementation followed — for the initial build and again for each
+review round; `griff-core` remained untouched and green.
 
 ## Problems modelled (per the Constraint Inventory)
 
@@ -35,10 +40,15 @@ green implementation followed; `griff-core` remained untouched and green.
   travel soft by standing decision) and not the production reachability
   rule — it measures where a hypothetical hard bound would bite.
 - **Problem B — complement pair cleanliness (existing rule set).**
-  Part-A playability as a typed precondition; the B domain filtered to
-  playable pitches (per-note existence — `is_playable`'s law for a
-  monophonic line); production dissonance classes `{1, 6, 11}` on
-  coincident onsets; the exact `band_overlap > 1/2` register-mud law.
+  Inputs are opaque `PairSpec` snapshots constructible only from the
+  canonical score model; A's tuning comes from its track, B's tuning is
+  a named separate input (each part is measured under its own tuning,
+  as production does), and `STANDARD_MAX_FRET` is fixed as law. Part-A
+  playability is a typed precondition on the folded top-note line; the
+  B domain is filtered to playable pitches under B's tuning (per-note
+  existence — `is_playable`'s law for a monophonic line); production
+  dissonance classes `{1, 6, 11}` on coincident onsets; the exact
+  `band_overlap > 1/2` register-mud law; duplicate B onsets refused.
   Contract tests reconstruct SAT witnesses into two-track scores and
   assert `validate_pair(..).is_clean()` — the oracle and the production
   validator agree by construction, not by hope.

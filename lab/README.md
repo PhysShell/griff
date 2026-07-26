@@ -37,15 +37,19 @@ typed problem ──► solver-neutral IR ──► MiniZinc .mzn (emitted, arch
 
 ```sh
 cd lab
-cargo test                 # contract suite (17 tests)
+cargo test                 # the contract suite
 cargo run --bin oracle     # reference solver only
 MINIZINC_BIN=/path/to/minizinc cargo run --bin oracle   # + external cross-check
 ```
 
 The runner emits `fixtures/*.mzn`, archives `runs/*.json`, and exits
 non-zero if the external solver disagrees with the reference solver on any
-fixture. The external solver is optional; the committed manifests record
-both `griff-lab-exact` and `minizinc/chuffed` runs.
+fixture. The external solver is optional, but the archive never lies about
+it: a reference-only or failed external run deletes the corresponding
+`*.minizinc-chuffed.json` manifest and makes no agreement claim — external
+evidence on disk always belongs to the run that produced it. The committed
+manifests record both `griff-lab-exact` and `minizinc/chuffed` runs
+(frontend and backend versions separately).
 
 ## Known spike limits (deliberate)
 
