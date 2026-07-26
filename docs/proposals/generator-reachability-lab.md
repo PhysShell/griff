@@ -212,7 +212,7 @@ struct ConfigurationSummary {
 No production code. Deliverable (**complete** — see
 [`../audit/2026-07-generator-reachability-metric-inventory.md`](../audit/2026-07-generator-reachability-metric-inventory.md);
 all six items are answered, item 5's cost now **measured** (generation is cheap;
-the metric layer costs ~26× generation per trial — on the audit's release,
+the metric layer costs ~30× generation per trial — on the audit's release,
 single-threaded, warm run over the 4-bar eighth-grid workload and an
 8-fragment reference set; §5 holds the full conditions) — the draft still binds
 nothing until this proposal is accepted):

@@ -83,19 +83,25 @@ fn fingerprint(score: &Score) -> u64 {
     h.finish()
 }
 
-fn bench<F: FnMut(u64) -> u64>(label: &str, ns: &[usize], mut f: F) {
-    for &n in ns {
-        let start = Instant::now();
-        let mut sink = 0u64;
-        for i in 0..n {
-            sink = sink.wrapping_add(f(i as u64));
-        }
-        let elapsed = start.elapsed();
-        let per = elapsed.as_nanos() as f64 / n as f64;
-        eprintln!(
-            "{label:<24} N={n:>7}  total={elapsed:>12?}  per-trial={per:>9.1} ns  (sink={sink})"
-        );
+/// Times one tier over **pre-built** requests, so request construction (the
+/// `Vec` allocations in `request`) is never inside the measured window — the
+/// tiers measure generation and metrics only.
+fn time_tier<F: FnMut(&RuleGenerationRequest) -> u64>(
+    label: &str,
+    requests: &[RuleGenerationRequest],
+    mut f: F,
+) {
+    let start = Instant::now();
+    let mut sink = 0u64;
+    for r in requests {
+        sink = sink.wrapping_add(f(r));
     }
+    let elapsed = start.elapsed();
+    let per = elapsed.as_nanos() as f64 / requests.len() as f64;
+    eprintln!(
+        "{label:<24} N={:>7}  total={elapsed:>12?}  per-trial={per:>9.1} ns  (sink={sink})",
+        requests.len()
+    );
 }
 
 #[test]
@@ -115,23 +121,31 @@ fn phase0_cost() {
         .collect();
     assert!(!refs.is_empty()); // the harness produced material to measure
 
-    eprintln!("\n== Phase-0 cost: {bars}-bar 4/4 eighth grid, {strat:?}, release ==");
-    bench("gen only", &ns, |seed| {
-        generate(&request(seed, bars, strat))
-            .unwrap()
-            .score
-            .tracks
-            .len() as u64
-    });
-    bench("gen + fingerprint", &ns, |seed| {
-        fingerprint(&generate(&request(seed, bars, strat)).unwrap().score)
-    });
-    bench("gen + full metrics", &ns, |seed| {
-        let s = generate(&request(seed, bars, strat)).unwrap().score;
-        let st = measure_structure(&s, 0).unwrap();
-        let _g = measure_gesture(&s, 0).unwrap();
-        let _c = measure_complexity(&s, 0).unwrap();
-        let nv = measure_novelty(&s, 0, &refs).unwrap();
-        st.bar_count as u64 + nv.candidate_notes as u64
-    });
+    // Report the profile actually built, so a debug run is not read as release.
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    eprintln!("\n== Phase-0 cost: {bars}-bar 4/4 eighth grid, {strat:?}, {profile} ==");
+
+    for &n in &ns {
+        // Pre-build the per-seed requests OUTSIDE every timer.
+        let requests: Vec<RuleGenerationRequest> =
+            (0..n as u64).map(|i| request(i, bars, strat)).collect();
+        time_tier("gen only", &requests, |r| {
+            generate(r).unwrap().score.tracks.len() as u64
+        });
+        time_tier("gen + fingerprint", &requests, |r| {
+            fingerprint(&generate(r).unwrap().score)
+        });
+        time_tier("gen + full metrics", &requests, |r| {
+            let s = generate(r).unwrap().score;
+            let st = measure_structure(&s, 0).unwrap();
+            let _g = measure_gesture(&s, 0).unwrap();
+            let _c = measure_complexity(&s, 0).unwrap();
+            let nv = measure_novelty(&s, 0, &refs).unwrap();
+            st.bar_count as u64 + nv.candidate_notes as u64
+        });
+    }
 }
