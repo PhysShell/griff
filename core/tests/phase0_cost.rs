@@ -155,27 +155,25 @@ fn phase0_cost() {
 
         // Per-metric marginal cost (this subtier − "gen only") attributes the
         // aggregate to the individual measures, rather than assuming which one
-        // dominates. Each result is observed so the metric cannot be elided.
+        // dominates. The **whole** metric result passes through black_box before
+        // a field is read — boxing one field would let ThinLTO specialise the
+        // metric to that field alone (e.g. novelty's cheap `candidate_notes`,
+        // eliding the O(n·m·len) `longest_common_run` the other fields need).
         time_tier("gen + structure", &requests, |r| {
-            black_box(measure_structure(&gen_score(r), 0).unwrap().bar_count as u64)
+            let m = black_box(measure_structure(&gen_score(r), 0).unwrap());
+            black_box(m.bar_count as u64)
         });
         time_tier("gen + gesture", &requests, |r| {
-            black_box(measure_gesture(&gen_score(r), 0).unwrap().note_count as u64)
+            let m = black_box(measure_gesture(&gen_score(r), 0).unwrap());
+            black_box(m.note_count as u64)
         });
         time_tier("gen + complexity", &requests, |r| {
-            black_box(
-                measure_complexity(&gen_score(r), 0)
-                    .unwrap()
-                    .rhythmic
-                    .to_bits(),
-            )
+            let m = black_box(measure_complexity(&gen_score(r), 0).unwrap());
+            black_box(m.rhythmic.to_bits())
         });
         time_tier("gen + novelty", &requests, |r| {
-            black_box(
-                measure_novelty(&gen_score(r), 0, black_box(&refs))
-                    .unwrap()
-                    .candidate_notes as u64,
-            )
+            let m = black_box(measure_novelty(&gen_score(r), 0, black_box(&refs)).unwrap());
+            black_box(m.candidate_notes as u64)
         });
 
         time_tier("gen + full metrics", &requests, |r| {
