@@ -42,14 +42,14 @@ for that discussion, not a decision.
   prerequisite (§3). Source identity is also **structurally dropped** the moment
   `CorpusMaterial` is built — a blocker for *post-hoc leak attribution*, not for
   holdout.
-- **No benchmark infrastructure exists** (no `criterion`, no `benches/`). The
-  cost benchmark is specified below with a zero-production-code harness; the
-  numbers are `TBD (unmeasured)` because the Rust toolchain was unavailable in
-  the authoring environment — the harness is given so the measurement is a
-  mechanical follow-up. **Phase 0 is therefore not yet complete as an evidence
-  gate**: item 5 (the cost number that gates any future directed-search
-  discussion) does not exist until those trials are run and recorded. Items
-  1–4 and 6 are answered; item 5 is drafted-but-unmeasured.
+- **No benchmark infrastructure exists** (no `criterion`, no `benches/`), so the
+  cost benchmark was run with a zero-production-code dev-only harness in the
+  project's `nix develop` shell. **Measured** (§5): generation is ~4.5 µs/trial,
+  but full metrics cost ~117 µs/trial — **~26× generation** — so the
+  metric/evaluation layer, not the generator, is the per-trial bottleneck a
+  directed-search discussion must weigh. **All six items are now answered, so
+  Phase 0 is complete** as an evidence gate (the numbers are machine-relative;
+  the load-bearing result is the ~26× ratio, not the absolute nanoseconds).
 
 ## 1. Inventory — the existing metric layer
 
@@ -330,12 +330,13 @@ mirroring the constraint-lab's "input precondition" discipline.
 The proposal wants measured generation cost at 1k / 10k / 100k trials across
 three tiers — the number that gates any future directed-search discussion.
 
-**Status: protocol specified, numbers `TBD (unmeasured)`.** No benchmark
-infrastructure exists — no `criterion` in any `Cargo.toml` dev-deps or in
-`Cargo.lock`, no `benches/` directory, no `[[bench]]` target (verified). The
-Rust toolchain was unavailable in the environment that authored this audit, so
-the numbers below are placeholders; the harness makes measuring them a
-mechanical follow-up requiring **no production code**.
+**Status: measured.** No benchmark *infrastructure* exists — no `criterion` in
+any `Cargo.toml` dev-deps or in `Cargo.lock`, no `benches/` directory, no
+`[[bench]]` target (verified) — so the numbers below were taken by running the
+dev-only harness in the project's `nix develop` shell (release build,
+single-threaded, warm), adding **no production code**. Absolute nanoseconds are
+machine-relative; the gate is the **scale and the ratio between tiers**, which
+are stable: generation is cheap, and the metric layer dominates.
 
 **Entry points a benchmark calls (cheapest → most representative):**
 
@@ -356,11 +357,26 @@ a stand-in lower bound); generation + full metrics (`measure_structure` +
 reference set — the last being the O(n·m·len) `longest_common_run`, the
 expensive term).
 
+Per-trial cost (ns), 4-bar 4/4 eighth-grid line, `ConstrainedRandomWalk`,
+distinct seed per trial; full-metrics tier measures against an 8-fragment
+reference set:
+
 | Tier | Entry points measured | 1k | 10k | 100k |
 | --- | --- | --- | --- | --- |
-| generation only | `generate` | TBD | TBD | TBD |
-| generation + fingerprint | `generate` + signature hash | TBD | TBD | TBD |
-| generation + full metrics | `generate` + structure/gesture/complexity/novelty | TBD | TBD | TBD |
+| generation only | `generate` | ~9 200 | ~6 300 | **~4 500** |
+| generation + fingerprint | `generate` + signature hash | ~5 400 | ~5 100 | **~5 000** |
+| generation + full metrics | `generate` + structure/gesture/complexity/novelty | ~116 600 | ~115 600 | **~117 000** |
+
+**Reading (the number that gates directed search).** Generation is ~4.5 µs per
+trial at scale (fingerprint adds well under a microsecond). **Full metrics cost
+~117 µs — roughly 26× generation** — because the metric layer, dominated by
+`novelty`'s O(n·m·len) `longest_common_run` against every reference, is the real
+per-trial expense. So at 100 k trials, generation is sub-second (~0.45 s) while
+full-metric evaluation is ~12 s. The bottleneck a future directed-search
+discussion must weigh is therefore the **metric/evaluation layer, not the
+generator** — directed sampling that saves generations buys little; caching or
+cheapening the metric tier is where the cost is. (The 1 k rows run warm/cold
+noise; the 100 k column is the steady-state figure.)
 
 **Reproducible harness (dev-only, adds no production code).** A throwaway
 integration test under `core/tests/` — never shipped, `eprintln!` allowed by the
@@ -446,9 +462,10 @@ decision states ("no stage number is assigned or invented now").
 
 ## 7. What this audit deliberately does not do
 
-It measures no numbers (§5 is a protocol, not a result — toolchain unavailable);
-it extracts no helpers and changes no `core` code (Phase 0 is no-production-code);
-it does not decide the roadmap placement (a human call, §6); and it does not
-re-litigate the proposal's architecture (§2–§4 there), only verifies that the
-existing layer supports it. Each `extend` row in §2 is a *candidate* extraction,
-not a committed one — Phase 1 owns those red→green slices.
+It extracts no helpers and changes no `core` code (Phase 0 is
+no-production-code — the §5 cost numbers came from a dev-only throwaway harness
+that is not committed); it does not decide the roadmap placement (a human call,
+§6); and it does not re-litigate the proposal's architecture (§2–§4 there), only
+verifies that the existing layer supports it. Each `extend` row in §2 is a
+*candidate* extraction, not a committed one — Phase 1 owns those red→green
+slices.

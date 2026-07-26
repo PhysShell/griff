@@ -209,11 +209,11 @@ struct ConfigurationSummary {
 
 ## 5. Phase 0 — metric and expressivity audit
 
-No production code. Deliverable (**drafted, not yet complete** — see
+No production code. Deliverable (**complete** — see
 [`../audit/2026-07-generator-reachability-metric-inventory.md`](../audit/2026-07-generator-reachability-metric-inventory.md);
-items 1–4 and 6 are answered, but **item 5's measured cost is still pending**,
-so Phase 0 is not satisfied as an evidence gate — and the draft binds nothing
-until this proposal is accepted):
+all six items are answered, item 5's cost now **measured** (generation is cheap;
+the metric layer costs ~26× generation per trial) — the draft still binds
+nothing until this proposal is accepted):
 `docs/audit/2026-07-generator-reachability-metric-inventory.md`, answering:
 
 1. **Inventory** of `scoring.rs`, `similarity.rs`, `novelty.rs`,
