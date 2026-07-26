@@ -40,6 +40,12 @@ live contract.
   — the staged, benchmark-gated order in which ML enters Griff: preference
   evidence, retrieval-only embeddings, a human similarity benchmark, then a
   bounded linear reranker. Feeds S9. Status: for discussion.
+- [`human-similarity-benchmark.md`](human-similarity-benchmark.md) — the
+  evidence contract, sampling protocol, session procedure, and
+  metric-to-gate mapping for the four separate benchmark tasks (similarity /
+  variation / complementarity / copy-detection), each gated against a named
+  handcrafted baseline. Companion artifact to the
+  preference-and-similarity-learning proposal. Status: for discussion.
 - [`transactional-editing-and-candidate-terrain.md`](transactional-editing-and-candidate-terrain.md)
   — technique modules, a deterministic symbolic candidate terrain, and a
   transactional agent-editing contract for the cockpit. Status: for

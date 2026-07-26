@@ -1943,3 +1943,24 @@ Architectural decisions go to [`adr/`](adr/) instead.
   that the reference solver is leaf-checked (no propagation) and that
   external-solver availability is environment-dependent — both recorded
   in the audit report.
+
+- 2026-07-26 — In the context of designing the Human Similarity Benchmark
+  (`docs/proposals/human-similarity-benchmark.md`, the companion spec for
+  Stage 2 of the preference-and-similarity-learning proposal), facing the
+  prior-art-first rule's requirement that a survey be recorded in a
+  canonical decision record rather than only inside a transient proposal,
+  we decided for logging the benchmark-methodology sources here —
+  timbremetrics / timbre-dissimilarity-metrics (triplet forced-choice
+  agreement, top-k agreement, the Mantel test, and confound-controlled
+  datasets — the methodology transposed to symbolic riffs); the
+  pairwise-aggregation literature (Bradley–Terry / TrueSkill-style) noted
+  only as a possible later aggregator of *derived* pairwise labels, no
+  model adopted; and standard listening-test hygiene (bounded
+  comparison counts, randomized presentation order, repeated/catch trials
+  for per-listener reliability) — with per-source adopt/idea-only detail
+  kept in the proposal, and against deferring the record until the
+  proposal's acceptance, to achieve a durable canonical trace of the
+  survey regardless of the proposal's fate, accepting a coarse-grained
+  duplication of the proposal's §2.9 prior-art section (the same trade-off
+  the 2026-07-25 four-proposals survey entry accepted). Idea reuse only;
+  GPL sources never contribute code to this MIT workspace.
