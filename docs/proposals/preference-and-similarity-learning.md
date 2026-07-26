@@ -4,8 +4,9 @@ The order in which ML is allowed into Griff: evidence first, retrieval-only
 embeddings second, a bounded linear reranker third — each gated by a human
 benchmark, none with authority over legality.
 
-Status: proposal for discussion (v1 — distilled from the 2026-07 research
-memos on generation, optimization and ML)
+Status: proposal for discussion (v1.1 — v1 relabelled its internal sequence
+`Stage N` → `Step N` per the PR #153 arbiter review, to stop it reading as a
+canonical roadmap stage; the substance is unchanged)
 Scope: docs-only until accepted; binds nothing. Feeds S9 (feedback layer)
 and complements the Generator Reachability Lab proposal. `rerank.rs` and
 every frozen strategy stay untouched until an explicit acceptance contract.
@@ -15,6 +16,10 @@ this proposal is accepted**. Acceptance explicitly *revises* S9 Phase 1
 (the pairwise learner replaces or extends the EMA baseline by decision, and
 the stage doc is amended accordingly); this proposal never sits beside S9
 as a second, competing adoption queue.
+Sequence labels: `Step 0…3` below are **proposal-local sequence labels**,
+deliberately not roadmap stage numbers (glossary §0). They introduce no
+canonical `SN` stage; the only roadmap stage this proposal touches is S9,
+named as such.
 
 ## 1. Architecture position
 
@@ -44,10 +49,10 @@ different question; they are not competitors:
 | delayed-reward sequential decisions | MDP/RL (much later) |
 | coordinating autonomous parts | MARL (much, much later) |
 
-## 2. Stage 0 — preference evidence (no ML)
+## 2. Step 0 — preference evidence (no ML)
 
 S8 already emits the raw material: favorite / reject / history with full
-candidate provenance (Swang Playground Slice 3, PR #126). Stage 0 is a data
+candidate provenance (Swang Playground Slice 3, PR #126). Step 0 is a data
 contract, not a model — and existing favorite/reject events are *not*
 automatically pairwise labels: today's session history is not a controlled
 comparison protocol. Each judgement is persisted with enough context to
@@ -61,12 +66,12 @@ generation-set identity, provenance, session identity
 ```
 
 The absence of a favorite is not a loss against every neighbour, and Skip
-is not dislike (S9 already states this; Stage 0 preserves it). The scarce
+is not dislike (S9 already states this; Step 0 preserves it). The scarce
 resource in this project is human listening, not CPU (reachability-lab
 Phase 0 premise) — evidence collection must therefore be designed before
 any learner exists.
 
-## 3. Stage 1 — symbolic SSL embeddings, retrieval-only
+## 3. Step 1 — symbolic SSL embeddings, retrieval-only
 
 Self-supervised tasks over the corpus (no manual labels): masked-event
 prediction, temporal-order prediction, transposition consistency,
@@ -82,7 +87,7 @@ split by **source identity** (song), never by chunk — otherwise the
 benchmark measures recognition of the neighbouring bar, not musical
 understanding.
 
-## 4. Stage 2 — Human Similarity Benchmark (the gate)
+## 4. Step 2 — Human Similarity Benchmark (the gate)
 
 Adopted from timbremetrics methodology, transposed to symbolic riffs.
 Anchor A, candidates B/C — but the questions are **separate benchmark
@@ -107,7 +112,7 @@ task's benchmark.** A metric that wins on motif similarity earns no licence
 to rank complementary-guitar candidates. Cosine distance is not human
 perception until proven so.
 
-## 5. Stage 3 — linear pairwise reranker, bounded correction
+## 5. Step 3 — linear pairwise reranker, bounded correction
 
 First learner: standardized features (harmonic fit, rhythmic fit, pitch/fret
 movement, density, repetition, novelty, playability, register, technique
@@ -148,7 +153,7 @@ splits (clean/heavy/transition), seed stability. If loss improves and the
 music gets worse, the objective/labels/data are wrong — the optimizer just
 got there faster.
 
-## 6. Later stages (ordered, all evidence-gated)
+## 6. Later steps (ordered, all evidence-gated)
 
 1. **MES / Bayesian optimization** for 8–20 interpretable generator
    parameters once favorite/reject history is dense enough — human ratings
