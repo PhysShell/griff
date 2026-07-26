@@ -1981,3 +1981,20 @@ Architectural decisions go to [`adr/`](adr/) instead.
   resampling must be reimplemented natively (no stats crate added; lean
   dependency posture) and that the non-inferiority margin `δ` is a spec-time
   decision. Idea reuse only.
+
+- 2026-07-26 — In the context of proposing a canonical song identity for the
+  corpus (ADR-0031, to unblock the fail-closed song-level holdout the
+  reachability-lab Phase 0 audit named as a Phase-1 prerequisite), facing the
+  prior-art-first rule for the identity model, we surveyed the
+  library/MIR modelling of musical works: **FRBR**
+  (Work → Expression → Manifestation → Item) and **MusicBrainz** (Work ↔
+  Recording ↔ Release/Track, with **ISWC** as a standard work code), both of
+  which separate the abstract *work* from its concrete *manifestations*. We
+  decided for a single curator-assigned `SongId` at the **Work** level (griff
+  already has the Manifestation level as `SourceRef.sha256` and the span level
+  as `EnsembleRef`), and against a content-derived or metric-based grouping and
+  against a full multi-level FRBR ontology, to achieve leakage-safe holdout /
+  source-identity splits with the least new structure, accepting that grouping
+  is human curation labour that content cannot backfill and that `SongId`
+  carries no cover-detection or musical-equivalence claim. Idea reuse only; no
+  external identifier scheme (ISWC/MBID) is adopted as the stored value.

@@ -205,7 +205,9 @@ belong together" is answerable only at file granularity today:
   editions) have different `sha256`, and one would remain in the corpus while
   the other is held out — a source-*file* holdout mislabelled as a *song*
   holdout. This mode needs a canonical `song_id` (or a versioned manifest
-  mapping several source files to one song) as a **Phase-1 prerequisite**.
+  mapping several source files to one song) as a **Phase-1 prerequisite** —
+  proposed as schema v10 in
+  [`../adr/0031-canonical-song-identity.md`](../adr/0031-canonical-song-identity.md).
 
 One range caveat and one attribution blocker are also recorded below.
 
