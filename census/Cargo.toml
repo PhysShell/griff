@@ -1,0 +1,29 @@
+# Isolated read-only corpus census (real-corpus grounding, ADR-0010 isolation
+# precedent like `lab/` and `fuzz/`). Deliberately NOT a workspace member: it is
+# ops/analysis tooling that reads a corpus + its source tabs and emits a health
+# report. Production builds, clippy, and CI never touch it; its only path
+# dependency is `griff-core`, read-only. It changes no corpus data.
+
+[package]
+name         = "griff-corpus-census"
+version      = "0.0.0"
+publish      = false
+edition      = "2021"
+rust-version = "1.92"
+
+[[bin]]
+name = "census"
+path = "src/main.rs"
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.griff-core]
+path = "../core"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
