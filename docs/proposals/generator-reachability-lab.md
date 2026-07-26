@@ -209,8 +209,10 @@ struct ConfigurationSummary {
 
 ## 5. Phase 0 — metric and expressivity audit
 
-No production code. Deliverable:
-`docs/audit/YYYY-MM-generator-reachability-metric-inventory.md`, answering:
+No production code. Deliverable (**delivered** — see
+[`../audit/2026-07-generator-reachability-metric-inventory.md`](../audit/2026-07-generator-reachability-metric-inventory.md);
+a docs-only draft that binds nothing until this proposal is accepted):
+`docs/audit/2026-07-generator-reachability-metric-inventory.md`, answering:
 
 1. **Inventory** of `scoring.rs`, `similarity.rs`, `novelty.rs`,
    `syncopation.rs`, `feature.rs`, `rerank.rs`, and the relevant
