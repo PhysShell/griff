@@ -378,55 +378,21 @@ generator** — directed sampling that saves generations buys little; caching or
 cheapening the metric tier is where the cost is. (The 1 k rows run warm/cold
 noise; the 100 k column is the steady-state figure.)
 
-**Reproducible harness (dev-only, adds no production code).** A throwaway
-integration test under `core/tests/` — never shipped, `eprintln!` allowed by the
-workspace lint (`print_stderr = "allow"`) — reusing the fixture pattern already
-present at `core/tests/rule_generator.rs:49`. Sketch:
+**Reproducible harness (committed, dev-only, CI-skipped).** The complete
+instrument is committed as **`core/tests/phase0_cost.rs`** — an `#[ignore]`d
+integration test, so `cargo test --workspace` *compiles* it (guarding it against
+API drift) but skips the ~14 s timing run, and it adds no production code
+(`core/src` is untouched). It times all three tiers over the fixed workload
+above, a distinct seed per trial. Reproduce the numbers with:
 
-```rust
-// core/tests/phase0_cost.rs  (dev-only; not part of Phase 0's committed output)
-use std::time::Instant;
-use griff_core::{generate::*, event::*, /* structure/gesture/novelty measures */};
-
-fn request(seed: u64, bars: usize, strategy: GenerationStrategy) -> RuleGenerationRequest {
-    RuleGenerationRequest {
-        seed: GenerationSeed(seed),
-        pitch_material: PitchMaterial { root: Pitch(40), intervals: vec![0, 3, 5, 7, 10] },
-        constraints: GenerationConstraints {
-            bar_count: bars,
-            time_signature: TimeSignature { numerator: 4, denominator: 4 },
-            tempo: Tempo::from_bpm_integer(120).unwrap(),
-            ticks_per_quarter: Ticks(480),
-            pitch_lo: Pitch(36), pitch_hi: Pitch(72),
-        },
-        explicit_rhythms: None,
-        source_rhythms: vec![RhythmTemplate::from_durations(&[Ticks(240); 8])],
-        strategy,
-    }
-}
-
-#[test]
-fn phase0_cost() {
-    let (bars, strat) = (4, GenerationStrategy::ConstrainedRandomWalk);
-    for &n in &[1_000usize, 10_000, 100_000] {
-        let t = Instant::now();
-        let mut sink = 0u64;
-        for i in 0..n {
-            let s = generate(&request(i as u64, bars, strat)).unwrap().score; // vary seed
-            sink += s.tracks.len() as u64;
-        }
-        eprintln!("gen only  N={n}  per-trial={} ns  (sink={sink})",
-                  t.elapsed().as_nanos() as f64 / n as f64);
-    }
-    // repeat with a fingerprint hash, and with structure/gesture/complexity/novelty.
-}
+```text
+cargo test --release -p griff-core --test phase0_cost -- --ignored --nocapture
 ```
 
-Run: `cargo test --release -p griff-core --test phase0_cost -- --nocapture`.
-Vary `seed` per iteration (real seed sweeps, defeats memoization). This test is
-**not** committed as part of Phase 0 (which adds no production code); it is the
-measurement instrument, run and its numbers folded back into the table above
-before any directed-search discussion opens.
+Committing it (rather than leaving a throwaway) is deliberate: the numbers
+declare item 5 complete, so the gate must be re-runnable after any metric change
+— a doc sketch alone could not be re-executed or caught by the compiler when the
+measured code drifts.
 
 ## 6. Roadmap placement recommendation (proposal §5 item 6)
 
@@ -463,8 +429,9 @@ decision states ("no stage number is assigned or invented now").
 ## 7. What this audit deliberately does not do
 
 It extracts no helpers and changes no `core` code (Phase 0 is
-no-production-code — the §5 cost numbers came from a dev-only throwaway harness
-that is not committed); it does not decide the roadmap placement (a human call,
+no-production-code — the §5 cost numbers come from `core/tests/phase0_cost.rs`,
+an `#[ignore]`d dev-only test that touches no `core/src`); it does not decide
+the roadmap placement (a human call,
 §6); and it does not re-litigate the proposal's architecture (§2–§4 there), only
 verifies that the existing layer supports it. Each `extend` row in §2 is a
 *candidate* extraction, not a committed one — Phase 1 owns those red→green
