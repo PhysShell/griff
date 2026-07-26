@@ -254,8 +254,8 @@ fn solver_finds_a_witness_that_satisfies_every_constraint() {
         Outcome::Sat { witness, .. } => {
             assert_eq!(witness.len(), 2);
             assert!((witness[0] - witness[1]).abs() <= 4, "witness {witness:?}");
-            assert!(p.vars[0].domain.contains(&witness[0]));
-            assert!(p.vars[1].domain.contains(&witness[1]));
+            assert!(p.vars()[0].domain.contains(&witness[0]));
+            assert!(p.vars()[1].domain.contains(&witness[1]));
         }
         Outcome::Unsat { .. } => panic!("problem is satisfiable"),
     }
@@ -413,9 +413,9 @@ fn fret_domains_come_from_tuning_candidates() {
     // pitch 45 (A2) as string 5 open or string 6 fret 5.
     let p = bounded_travel_problem(&[pitch(40), pitch(45)], &std_e(), STANDARD_MAX_FRET, 12)
         .expect("both pitches are playable");
-    assert_eq!(p.vars.len(), 2);
-    assert_eq!(p.vars[0].domain, vec![0]);
-    assert_eq!(p.vars[1].domain, vec![0, 5]);
+    assert_eq!(p.vars().len(), 2);
+    assert_eq!(p.vars()[0].domain, vec![0]);
+    assert_eq!(p.vars()[1].domain, vec![0, 5]);
 }
 
 #[test]
@@ -462,13 +462,15 @@ fn travel_bound_sweep_finds_the_exact_frontier() {
 
 #[test]
 fn dissonant_only_domain_is_unsat_and_agrees_with_validate_pair() {
-    let spec = PairSpec {
-        a_line: vec![(0, pitch(52))],
-        b_onsets: vec![0],
-        b_domain: vec![pitch(53), pitch(58), pitch(63)], // classes 1, 6, 11
-        tuning: std_e(),
-        max_fret: STANDARD_MAX_FRET,
-    };
+    let score = two_track_score(&[(0, 52)], &[]);
+    let spec = PairSpec::from_score_part_a(
+        &score,
+        0,
+        vec![0],
+        vec![pitch(53), pitch(58), pitch(63)], // classes 1, 6, 11
+        std_e(),
+    )
+    .expect("spec builds");
     let p = pair_cleanliness_problem(&spec).expect("problem builds");
     assert!(matches!(solve_exact(&p), Outcome::Unsat { .. }));
 
@@ -484,21 +486,23 @@ fn dissonant_only_domain_is_unsat_and_agrees_with_validate_pair() {
 fn sat_witness_reconstructs_a_clean_pair_under_validate_pair() {
     // A occupies [52, 55]; the B domain sits an octave-ish above, is consonant
     // against both coincident A notes, and is playable in Standard E.
-    let spec = PairSpec {
-        a_line: vec![(0, pitch(52)), (QUARTER, pitch(55))],
-        b_onsets: vec![0, QUARTER],
-        b_domain: vec![pitch(64), pitch(67), pitch(71)],
-        tuning: std_e(),
-        max_fret: STANDARD_MAX_FRET,
-    };
+    let a_score = two_track_score(&[(0, 52), (QUARTER, 55)], &[]);
+    let b_onsets = vec![0, QUARTER];
+    let spec = PairSpec::from_score_part_a(
+        &a_score,
+        0,
+        b_onsets.clone(),
+        vec![pitch(64), pitch(67), pitch(71)],
+        std_e(),
+    )
+    .expect("spec builds");
     let p = pair_cleanliness_problem(&spec).expect("problem builds");
     let witness = match solve_exact(&p) {
         Outcome::Sat { witness, .. } => witness,
         Outcome::Unsat { .. } => panic!("a clean assignment exists"),
     };
 
-    let b_notes: Vec<(u32, u8)> = spec
-        .b_onsets
+    let b_notes: Vec<(u32, u8)> = b_onsets
         .iter()
         .zip(&witness)
         .map(|(&onset, &p)| (onset, u8::try_from(p).expect("midi pitch")))
@@ -515,13 +519,15 @@ fn sat_witness_reconstructs_a_clean_pair_under_validate_pair() {
 fn register_mud_alone_makes_the_pair_problem_unsat() {
     // No coincident onsets (so no dissonance constraints), but the only
     // available B band sits inside A's: overlap 1.0 > 0.5 → mud → UNSAT.
-    let spec = PairSpec {
-        a_line: vec![(0, pitch(45)), (QUARTER, pitch(57))],
-        b_onsets: vec![2 * QUARTER, 3 * QUARTER],
-        b_domain: vec![pitch(50), pitch(52)],
-        tuning: std_e(),
-        max_fret: STANDARD_MAX_FRET,
-    };
+    let score = two_track_score(&[(0, 45), (QUARTER, 57)], &[]);
+    let spec = PairSpec::from_score_part_a(
+        &score,
+        0,
+        vec![2 * QUARTER, 3 * QUARTER],
+        vec![pitch(50), pitch(52)],
+        std_e(),
+    )
+    .expect("spec builds");
     let p = pair_cleanliness_problem(&spec).expect("problem builds");
     assert!(matches!(solve_exact(&p), Outcome::Unsat { .. }));
 
@@ -554,32 +560,80 @@ fn pair_spec_from_score_is_a_full_note_snapshot_of_the_canonical_model() {
         0,
         vec![0, QUARTER],
         vec![pitch(64), pitch(67), pitch(71)],
-        STANDARD_MAX_FRET,
+        std_e(),
     )
     .expect("extraction succeeds");
     assert_eq!(
-        from_score.a_line,
-        vec![(0, pitch(45)), (0, pitch(52)), (QUARTER, pitch(55))]
+        from_score.a_line(),
+        &[(0, pitch(45)), (0, pitch(52)), (QUARTER, pitch(55))]
     );
 
-    let manual = PairSpec {
-        a_line: vec![(0, pitch(45)), (0, pitch(52)), (QUARTER, pitch(55))],
-        b_onsets: vec![0, QUARTER],
-        b_domain: vec![pitch(64), pitch(67), pitch(71)],
-        tuning: std_e(),
-        max_fret: STANDARD_MAX_FRET,
-    };
+    // Same score, same inputs → same problem: the constructor is
+    // deterministic and the canonical model is the only entry path.
+    let again = PairSpec::from_score_part_a(
+        &score,
+        0,
+        vec![0, QUARTER],
+        vec![pitch(64), pitch(67), pitch(71)],
+        std_e(),
+    )
+    .expect("extraction succeeds");
     let a = pair_cleanliness_problem(&from_score).expect("builds");
-    let b = pair_cleanliness_problem(&manual).expect("builds");
-    assert_eq!(
-        a.fingerprint(),
-        b.fingerprint(),
-        "a canonical-score snapshot and the manual spec build the same problem"
-    );
+    let b = pair_cleanliness_problem(&again).expect("builds");
+    assert_eq!(a.fingerprint(), b.fingerprint());
 
-    let missing =
-        PairSpec::from_score_part_a(&score, 7, vec![0], vec![pitch(64)], STANDARD_MAX_FRET);
+    let missing = PairSpec::from_score_part_a(&score, 7, vec![0], vec![pitch(64)], std_e());
     assert!(matches!(missing, Err(LabError::NoSuchTrack { .. })));
+}
+
+#[test]
+fn duplicate_b_onsets_are_a_typed_refusal() {
+    // Problem B promises one pitch variable per onset; a duplicated onset
+    // would silently turn B into a chord, and the per-note domain filter is
+    // no longer production's top-note folding there.
+    let score = two_track_score(&[(0, 52)], &[]);
+    let dup = PairSpec::from_score_part_a(
+        &score,
+        0,
+        vec![0, QUARTER, QUARTER],
+        vec![pitch(64)],
+        std_e(),
+    );
+    assert!(matches!(
+        dup,
+        Err(LabError::DuplicateBOnset { onset }) if onset == QUARTER
+    ));
+}
+
+#[test]
+fn b_playability_is_filtered_under_the_b_tuning_not_a_s() {
+    // MIDI 40 is playable in A's Standard E (open low string) but not under
+    // a five-string tuning whose lowest open pitch is 45: production filters
+    // B under B's own tuning, so the oracle must too.
+    let high_b_tuning = Tuning::new(vec![
+        pitch(64), // E4
+        pitch(59), // B3
+        pitch(55), // G3
+        pitch(50), // D3
+        pitch(45), // A2 — lowest: MIDI 40 is unreachable
+    ]);
+    let score = two_track_score(&[(0, 52)], &[]);
+    let err = PairSpec::from_score_part_a(
+        &score,
+        0,
+        vec![2 * QUARTER],
+        vec![pitch(40)],
+        high_b_tuning,
+    )
+    .and_then(|spec| pair_cleanliness_problem(&spec))
+    .expect_err("40 is unplayable under the B tuning");
+    assert!(matches!(err, LabError::EmptyPlayableDomain { .. }));
+
+    // The same domain under Standard E for B is fine — proving the filter
+    // reads the B tuning, not A's.
+    let ok = PairSpec::from_score_part_a(&score, 0, vec![2 * QUARTER], vec![pitch(40)], std_e())
+        .and_then(|spec| pair_cleanliness_problem(&spec));
+    assert!(ok.is_ok(), "40 is playable under Standard E: {ok:?}");
 }
 
 #[test]
@@ -587,13 +641,9 @@ fn chordal_a_playability_folds_to_the_top_note_like_production() {
     // Production part_playability folds each onset to its highest pitch
     // before the fingering DP: MIDI 30 under a playable 64 must not refuse
     // the problem, because validate_pair never measures the 30.
-    let spec = PairSpec {
-        a_line: vec![(0, pitch(30)), (0, pitch(64))],
-        b_onsets: vec![2 * QUARTER],
-        b_domain: vec![pitch(76)],
-        tuning: std_e(),
-        max_fret: STANDARD_MAX_FRET,
-    };
+    let score = two_track_score(&[(0, 30), (0, 64)], &[]);
+    let spec = PairSpec::from_score_part_a(&score, 0, vec![2 * QUARTER], vec![pitch(76)], std_e())
+        .expect("spec builds");
     let p = pair_cleanliness_problem(&spec)
         .expect("the folded line (64) is playable, so the problem must build");
     assert!(matches!(solve_exact(&p), Outcome::Sat { .. }));
@@ -609,13 +659,9 @@ fn chordal_a_playability_folds_to_the_top_note_like_production() {
 
 #[test]
 fn unplayable_a_line_is_a_typed_precondition_failure() {
-    let spec = PairSpec {
-        a_line: vec![(0, pitch(30))], // below Standard E
-        b_onsets: vec![0],
-        b_domain: vec![pitch(64)],
-        tuning: std_e(),
-        max_fret: STANDARD_MAX_FRET,
-    };
+    let score = two_track_score(&[(0, 30)], &[]); // below Standard E
+    let spec = PairSpec::from_score_part_a(&score, 0, vec![0], vec![pitch(64)], std_e())
+        .expect("spec builds");
     let err = pair_cleanliness_problem(&spec).expect_err("A must be playable first");
     assert!(matches!(err, LabError::PartAUnplayable { .. }));
 }
@@ -623,13 +669,9 @@ fn unplayable_a_line_is_a_typed_precondition_failure() {
 #[test]
 fn unplayable_b_domain_pitches_are_filtered_out_not_ignored() {
     // 100 is beyond fret 24 on string 1 (64 + 24 = 88): not playable.
-    let spec = PairSpec {
-        a_line: vec![(0, pitch(52))],
-        b_onsets: vec![0],
-        b_domain: vec![pitch(100)],
-        tuning: std_e(),
-        max_fret: STANDARD_MAX_FRET,
-    };
+    let score = two_track_score(&[(0, 52)], &[]);
+    let spec = PairSpec::from_score_part_a(&score, 0, vec![0], vec![pitch(100)], std_e())
+        .expect("spec builds");
     let err = pair_cleanliness_problem(&spec).expect_err("empty playable domain");
     assert!(matches!(err, LabError::EmptyPlayableDomain { .. }));
 }
