@@ -67,9 +67,11 @@ fn main() -> ExitCode {
 
 #[derive(Serialize)]
 struct Health {
-    /// Ties the report to an exact corpus version: SHA-256 over the sorted
-    /// per-file content hashes. Deterministic re-runs on the same files match.
-    corpus_digest: String,
+    /// Ties the report to an exact input set: SHA-256 over the sorted,
+    /// domain-tagged `<kind>:<relpath>:<sha256>` lines for every chunk file,
+    /// manifest, and tab. Any content change, rename, or path swap changes it;
+    /// traversal order does not. Deterministic re-runs on the same inputs match.
+    input_digest: String,
     manifests: Vec<ManifestSummary>,
     counts: Counts,
     manifest_reconciliation: ManifestReconciliation,
@@ -170,7 +172,10 @@ fn census(corpus_dir: &Path, tabs_dir: &Path) -> Result<Health, String> {
     // 1. Population: every individual *.chunk.json, parsed with the production type.
     let mut chunks: Vec<ChunkMeta> = Vec::new();
     let mut parse_errors = 0usize;
-    let mut file_hashes: Vec<String> = Vec::new();
+    // Every input the report depends on, domain-tagged with its relative path and
+    // content hash, so the digest binds the *whole* set (chunks, manifests, tabs)
+    // — a manifest edit, a tab rename, or a path swap all change it.
+    let mut inputs: Vec<String> = Vec::new();
     let mut chunk_files = 0usize;
     for path in walk(corpus_dir)? {
         if !path.to_string_lossy().ends_with(".chunk.json") {
@@ -178,14 +183,16 @@ fn census(corpus_dir: &Path, tabs_dir: &Path) -> Result<Health, String> {
         }
         chunk_files += 1;
         let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        file_hashes.push(source_sha256(&bytes));
+        inputs.push(format!(
+            "chunk:{}:{}",
+            rel(corpus_dir, &path),
+            source_sha256(&bytes)
+        ));
         match serde_json::from_slice::<ChunkMeta>(&bytes) {
             Ok(c) => chunks.push(c),
             Err(_) => parse_errors += 1,
         }
     }
-    file_hashes.sort();
-    let corpus_digest = source_sha256(file_hashes.join("\n").as_bytes());
 
     // 2. Manifests: schema version, group defs, and the ids they enumerate.
     let mut manifests: Vec<ManifestSummary> = Vec::new();
@@ -197,6 +204,11 @@ fn census(corpus_dir: &Path, tabs_dir: &Path) -> Result<Health, String> {
             continue;
         }
         let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        inputs.push(format!(
+            "manifest:{}:{}",
+            rel(corpus_dir, &path),
+            source_sha256(&bytes)
+        ));
         let m: CorpusManifest =
             serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {e}", path.display()))?;
         manifest_chunk_records += m.chunks.len();
@@ -235,12 +247,12 @@ fn census(corpus_dir: &Path, tabs_dir: &Path) -> Result<Health, String> {
             .or_default()
             .push(relpath.clone());
         let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        hash_to_paths
-            .entry(source_sha256(&bytes))
-            .or_default()
-            .insert(relpath);
+        let sha = source_sha256(&bytes);
+        inputs.push(format!("tab:{relpath}:{sha}"));
+        hash_to_paths.entry(sha).or_default().insert(relpath);
     }
     let tab_files = tab_paths.len();
+    let input_digest = input_digest_of(inputs);
 
     // 4. Walk the population.
     let total = chunks.len();
@@ -283,22 +295,36 @@ fn census(corpus_dir: &Path, tabs_dir: &Path) -> Result<Health, String> {
 
     // 6. Source ↔ tab reconciliation (over physical tab paths).
     let (mut matched, mut missing, mut ambiguous) = (0usize, Vec::new(), Vec::new());
+    let mut referenced_paths: BTreeSet<String> = BTreeSet::new();
     for f in &referenced {
         match resolve(f, &by_basename, &by_stem) {
-            1 => matched += 1,
-            0 => missing.push(f.clone()),
-            _ => ambiguous.push(f.clone()),
+            Resolution::Unique(p) => {
+                matched += 1;
+                referenced_paths.insert(p);
+            }
+            Resolution::Missing => missing.push(f.clone()),
+            Resolution::Ambiguous(paths) => {
+                ambiguous.push(f.clone());
+                referenced_paths.extend(paths);
+            }
         }
     }
+    // Physical partition: every tab file is matched/ambiguous (in referenced_paths)
+    // or unreferenced — a set difference over concrete paths, not a name heuristic.
     let mut unreferenced_tabs: Vec<String> = tab_paths
         .iter()
-        .filter(|p| !referenced_hits(&basename(Path::new(p)), &referenced))
+        .filter(|p| !referenced_paths.contains(*p))
         .cloned()
         .collect();
     unreferenced_tabs.sort();
     unreferenced_tabs.dedup();
     missing.sort();
     ambiguous.sort();
+    debug_assert_eq!(
+        referenced_paths.len() + unreferenced_tabs.len(),
+        tab_paths.iter().collect::<BTreeSet<_>>().len(),
+        "physical tabs must partition into referenced ∪ unreferenced"
+    );
 
     // 7. Works — normalized composition key (strips the `(ver N by X)` suffix).
     let mut works: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -346,7 +372,7 @@ fn census(corpus_dir: &Path, tabs_dir: &Path) -> Result<Health, String> {
     content_dupes.sort();
 
     Ok(Health {
-        corpus_digest,
+        input_digest,
         manifests,
         counts: Counts {
             chunk_files,
@@ -447,19 +473,34 @@ fn stem(name: &str) -> String {
         .map_or_else(|| name.to_owned(), |(s, _)| s.to_owned())
 }
 
+/// How a referenced source filename resolves against the physical tabs — the
+/// concrete path(s), not just a count, so the caller can partition the tabs.
+#[derive(Debug, PartialEq, Eq)]
+enum Resolution {
+    Unique(String),
+    Missing,
+    Ambiguous(Vec<String>),
+}
+
+/// Resolve `name` to physical tab path(s): exact basename first, else stem.
 fn resolve(
     name: &str,
     by_basename: &BTreeMap<String, Vec<String>>,
     by_stem: &BTreeMap<String, Vec<String>>,
-) -> usize {
-    if let Some(v) = by_basename.get(name) {
-        return v.len();
-    }
-    by_stem.get(&stem(name)).map_or(0, Vec::len)
+) -> Resolution {
+    // RED stub: unimplemented resolution — every source reads as Missing, so the
+    // resolve and partition tests fail.
+    let _ = (name, by_basename, by_stem);
+    Resolution::Missing
 }
 
-fn referenced_hits(tab_name: &str, referenced: &BTreeSet<String>) -> bool {
-    referenced.contains(tab_name) || referenced.iter().any(|r| stem(r) == stem(tab_name))
+/// SHA-256 over the sorted domain-tagged input lines. Sorting makes it
+/// order-independent; every distinct input line changes it.
+fn input_digest_of(mut inputs: Vec<String>) -> String {
+    // RED stub: does not yet bind the inputs — returns a constant, so the digest
+    // change-sensitivity test fails.
+    let _ = inputs;
+    String::new()
 }
 
 /// Strip a trailing parenthesized transcriber/version suffix — the real corpus
@@ -531,8 +572,9 @@ fn render_markdown(h: &Health) -> String {
          synthetic data.\n\n",
     );
     s.push_str(&format!(
-        "Corpus digest (SHA-256 over sorted per-file hashes): `{}`\n\n",
-        h.corpus_digest
+        "Input digest (SHA-256 over sorted `<kind>:<relpath>:<sha256>` lines for \
+         every chunk, manifest, and tab): `{}`\n\n",
+        h.input_digest
     ));
 
     s.push_str("## Layers of the corpus\n\n");
@@ -757,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_counts_exact_then_stem() {
+    fn resolve_returns_concrete_paths_exact_then_stem() {
         let mut by_basename: BTreeMap<String, Vec<String>> = BTreeMap::new();
         by_basename.insert("x.gp5".to_owned(), vec!["a/x.gp5".to_owned()]);
         let mut by_stem: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -765,9 +807,97 @@ mod tests {
             "y".to_owned(),
             vec!["a/y.gpx".to_owned(), "b/y.gp5".to_owned()],
         );
-        assert_eq!(resolve("x.gp5", &by_basename, &by_stem), 1); // exact basename
-        assert_eq!(resolve("y.gp5", &by_basename, &by_stem), 2); // ambiguous via stem
-        assert_eq!(resolve("missing.gp5", &by_basename, &by_stem), 0);
+        assert_eq!(
+            resolve("x.gp5", &by_basename, &by_stem),
+            Resolution::Unique("a/x.gp5".to_owned())
+        );
+        assert_eq!(
+            resolve("y.gp5", &by_basename, &by_stem),
+            Resolution::Ambiguous(vec!["a/y.gpx".to_owned(), "b/y.gp5".to_owned()])
+        );
+        assert_eq!(
+            resolve("missing.gp5", &by_basename, &by_stem),
+            Resolution::Missing
+        );
+    }
+
+    #[test]
+    fn tabs_partition_referenced_and_unreferenced_by_path() {
+        // The regression the arbiter named: referenced song.gp5, tabs {song.gp5,
+        // song.gpx} — exact resolution picks .gp5; .gpx is unreferenced (a
+        // name/stem heuristic would wrongly mark both referenced).
+        let mut by_basename: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        by_basename.insert("song.gp5".to_owned(), vec!["song.gp5".to_owned()]);
+        by_basename.insert("song.gpx".to_owned(), vec!["song.gpx".to_owned()]);
+        let mut by_stem: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        by_stem.insert(
+            "song".to_owned(),
+            vec!["song.gp5".to_owned(), "song.gpx".to_owned()],
+        );
+        let tabs = ["song.gp5".to_owned(), "song.gpx".to_owned()];
+
+        let mut referenced_paths: BTreeSet<String> = BTreeSet::new();
+        match resolve("song.gp5", &by_basename, &by_stem) {
+            Resolution::Unique(p) => {
+                referenced_paths.insert(p);
+            }
+            other => panic!("expected Unique, got {other:?}"),
+        }
+        let unreferenced: Vec<&String> = tabs
+            .iter()
+            .filter(|p| !referenced_paths.contains(*p))
+            .collect();
+        assert_eq!(
+            referenced_paths.iter().collect::<Vec<_>>(),
+            vec!["song.gp5"]
+        );
+        assert_eq!(unreferenced, vec!["song.gpx"]);
+        assert_eq!(referenced_paths.len() + unreferenced.len(), tabs.len()); // partition
+    }
+
+    #[test]
+    fn input_digest_is_order_independent_and_change_sensitive() {
+        let a = input_digest_of(vec![
+            "chunk:a.chunk.json:11".to_owned(),
+            "manifest:manifest.json:22".to_owned(),
+            "tab:x.gp5:33".to_owned(),
+        ]);
+        // Permuted order → same digest.
+        let b = input_digest_of(vec![
+            "tab:x.gp5:33".to_owned(),
+            "chunk:a.chunk.json:11".to_owned(),
+            "manifest:manifest.json:22".to_owned(),
+        ]);
+        assert_eq!(a, b, "sorting makes the digest order-independent");
+        // A manifest content change (different sha) → different digest.
+        let manifest_changed = input_digest_of(vec![
+            "chunk:a.chunk.json:11".to_owned(),
+            "manifest:manifest.json:99".to_owned(),
+            "tab:x.gp5:33".to_owned(),
+        ]);
+        assert_ne!(
+            a, manifest_changed,
+            "a manifest change must change the digest"
+        );
+        // A tab rename (same sha, different path) → different digest.
+        let tab_renamed = input_digest_of(vec![
+            "chunk:a.chunk.json:11".to_owned(),
+            "manifest:manifest.json:22".to_owned(),
+            "tab:y.gp5:33".to_owned(),
+        ]);
+        assert_ne!(a, tab_renamed, "a tab rename must change the digest");
+        // Adding a tab → different digest.
+        let mut plus = vec![
+            "chunk:a.chunk.json:11".to_owned(),
+            "manifest:manifest.json:22".to_owned(),
+            "tab:x.gp5:33".to_owned(),
+        ];
+        plus.push("tab:z.gp5:44".to_owned());
+        assert_ne!(
+            a,
+            input_digest_of(plus),
+            "adding a tab must change the digest"
+        );
     }
 
     #[test]
