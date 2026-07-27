@@ -488,19 +488,21 @@ fn resolve(
     by_basename: &BTreeMap<String, Vec<String>>,
     by_stem: &BTreeMap<String, Vec<String>>,
 ) -> Resolution {
-    // RED stub: unimplemented resolution — every source reads as Missing, so the
-    // resolve and partition tests fail.
-    let _ = (name, by_basename, by_stem);
-    Resolution::Missing
+    let paths = by_basename.get(name).or_else(|| by_stem.get(&stem(name)));
+    match paths {
+        None => Resolution::Missing,
+        Some(v) if v.is_empty() => Resolution::Missing,
+        Some(v) if v.len() == 1 => Resolution::Unique(v[0].clone()),
+        Some(v) => Resolution::Ambiguous(v.clone()),
+    }
 }
 
 /// SHA-256 over the sorted domain-tagged input lines. Sorting makes it
 /// order-independent; every distinct input line changes it.
 fn input_digest_of(mut inputs: Vec<String>) -> String {
-    // RED stub: does not yet bind the inputs — returns a constant, so the digest
-    // change-sensitivity test fails.
-    let _ = inputs;
-    String::new()
+    inputs.sort();
+    inputs.dedup();
+    source_sha256(inputs.join("\n").as_bytes())
 }
 
 /// Strip a trailing parenthesized transcriber/version suffix — the real corpus
