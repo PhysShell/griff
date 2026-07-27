@@ -205,7 +205,9 @@ belong together" is answerable only at file granularity today:
   editions) have different `sha256`, and one would remain in the corpus while
   the other is held out — a source-*file* holdout mislabelled as a *song*
   holdout. This mode needs a canonical `song_id` (or a versioned manifest
-  mapping several source files to one song) as a **Phase-1 prerequisite**.
+  mapping several source files to one song) as a **Phase-1 prerequisite** —
+  proposed as schema v10 in
+  [`../adr/0031-canonical-song-identity.md`](../adr/0031-canonical-song-identity.md).
 
 One range caveat and one attribution blocker are also recorded below.
 
@@ -314,16 +316,20 @@ identifiers, so the record must carry each explicitly rather than a vague
 
 ```text
 source_sha256      // REQUIRED for HoldoutTargetSourceFile and HoldoutTargetFragment
-canonical_song_id  // REQUIRED for HoldoutTargetSong; Option — unavailable today
+song_id            // REQUIRED for HoldoutTargetSong; Option — unavailable today
 bar_range          // Option; None = whole-source (fragment-mode overlap rule, §3)
 track_index        // Option
 projection         // top-line monophonic (§4)
 eligibility        // Eligible monophonic | typed Ineligible: polyphonic / technique-bearing / empty
 ```
 
-`source_sha256` and `canonical_song_id` are the load-bearing additions: the DTO
-keeps `canonical_song_id` optional (the model has none today), but
-`HoldoutTargetSong` **typed-refuses** a target lacking it, and the file/fragment
+`source_sha256` and `song_id` are the load-bearing additions (one name
+throughout: `song_id` is copied verbatim from `SourceRef.song_id`, the
+authoritative field proposed in
+[`../adr/0031-canonical-song-identity.md`](../adr/0031-canonical-song-identity.md)).
+The DTO keeps `song_id` optional (the model has none today), but
+`HoldoutTargetSong` **typed-refuses** a run when any participating source lacks
+it (per ADR-0031's strict-refusal coverage contract), and the file/fragment
 modes typed-refuse a target lacking `source_sha256` — fail-closed, never a
 basename fallback. The eligibility verdict is a *fact about the projection*,
 mirroring the constraint-lab's "input precondition" discipline.
