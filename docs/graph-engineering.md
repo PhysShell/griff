@@ -7,15 +7,13 @@ Verified: 2026-07-27 against `main` at `e094d9ab4b7633f4a1939b73c9fa06e24bab6dd0
 
 “Loop engineering is dead; enter graph engineering” is a memorable label for a
 real change of scale, but not a literal replacement. Loops still perform bounded
-work. A graph makes explicit how those loops and deterministic stages compose:
-which node produces which typed value, which edges carry provenance, where
+work. A graph makes explicit how loops and deterministic stages compose: which
+node produces which typed value, what provenance crosses each edge, where
 failure stops the pipeline, and which component has authority to choose.
 
-For griff, the important conclusion is slightly unfashionable: the useful graph
-is primarily a **deterministic musical dataflow and optimization graph**, not a
-team of conversational agents.
-
-The current repository already contains the core pieces:
+For griff, the useful graph is primarily a **deterministic musical dataflow and
+optimization graph**, not a team of conversational agents. The current tree
+already contains:
 
 - one pure corpus-to-generation compiler shared by CLI, cockpit, and experiments;
 - deterministic strategy × seed fan-out;
@@ -28,46 +26,38 @@ The current repository already contains the core pieces:
   feedback loop.
 
 Graph engineering here means preserving those contracts and making future
-feedback/evaluation paths explicit. It does not mean replacing rhythm, harmony,
-ranking, or dynamic programming with agents that send each other paragraphs.
+feedback and evaluation paths explicit. It does not mean replacing rhythm,
+harmony, ranking, or dynamic programming with agents that exchange prose.
 
-## Terminology
+## Loop and graph engineering
 
-### Loop engineering
-
-A loop repeatedly performs bounded work:
+Loop engineering designs one bounded cycle:
 
 ```text
 produce -> inspect -> adjust -> produce again
 ```
 
-In griff, the most natural loops are:
+In griff, natural loops include human audition/regeneration, offline evaluation,
+future preference learning, and deliberately bounded widening of candidate
+search.
 
-- human audition and regeneration;
-- offline evaluation and policy calibration;
-- future preference learning from explicit feedback;
-- bounded search that deliberately changes candidate width or constraints.
-
-### Graph engineering
-
-A graph composes stages and loops through typed edges:
+Graph engineering composes those loops with deterministic stages:
 
 ```text
-input --contract--> transform --contract--> selection --contract--> output
+input --typed contract--> transform --typed contract--> selection --> output
 ```
 
-Its questions are:
+Its questions are relational:
 
 - What exact musical object crosses the edge?
 - Is the node generative, analytical, filtering, ranking, or selecting?
-- Which facts are retained as provenance?
-- What is deterministic under a fixed seed or policy?
-- What mismatches cause refusal rather than silent normalization?
+- Which facts survive as provenance?
+- What remains deterministic under a fixed seed or policy?
+- What mismatch causes refusal rather than silent normalization?
 - Where may learned or agentic judgment enter without becoming the source of
   truth for the canonical musical model?
 
-A graph may contain loops. The phrase therefore names composition, not the death
-of iteration.
+A graph may contain loops. The graph is the composition boundary around them.
 
 ## The current griff graph
 
@@ -118,176 +108,131 @@ The main generation path in the current tree is:
                 cockpit / CLI / audition history
 ```
 
-A second authoring path, Swang, eventually rejoins the same canonical `Score`
-and playback surface, but it has a deliberately different rhythm contract. The
-current README states that a Swang program declaring a corpus is refused until
-native corpus resolution exists; the implementation must not fake that edge by
-quietly borrowing Generate-panel behavior.
+Swang is a second authoring path that eventually rejoins the same canonical
+`Score` and playback surface, but it has a deliberately different rhythm
+contract. The current README states that a Swang program declaring a corpus is
+refused until native corpus resolution exists; the implementation must not fake
+that missing edge by borrowing Generate-panel behavior.
 
 ## Node inventory
 
 | Node | Current implementation | Input | Output / authority |
 |---|---|---|---|
-| Corpus loading boundary | caller-specific filesystem or OPFS code | files/records | parsed `ChunkMeta` and `Score`; I/O remains outside the pure compiler |
-| Chunk preparation | `generation_input::prepare_chunk` | metadata + source score | provenance-respecting sliced score and exact sounding track, or reported skip |
-| Corpus compiler | `generation_input::corpus_material` | prepared chunks | `CorpusMaterial`: deduped rhythms, novelty references, gesture, skips |
-| Request compiler | `generation_input::ranked_candidates` | source score, optional corpus material, ask, optional rhythm override | one reproducible base request and the material actually used |
-| Candidate fan-out | `rerank::generate_candidate_set` | deterministic set request | candidates over every strategy × variant seed |
-| Rule generator | `generate::generate` | one `RuleGenerationRequest` | canonical `Score` plus strategy/seed provenance, or typed refusal |
-| Gesture compiler | `gesture::generate_gestured` | rule request + gesture control | carved candidate under the same seed identity |
+| Corpus loading boundary | caller-specific filesystem or OPFS code | files/records | parsed `ChunkMeta` and `Score`; I/O stays outside the pure compiler |
+| Chunk preparation | `generation_input::prepare_chunk` | metadata + source score | provenance-respecting slice and exact sounding track, or reported skip |
+| Corpus compiler | `generation_input::corpus_material` | prepared chunks | `CorpusMaterial`: rhythms, references, gesture, skips |
+| Request compiler | `generation_input::ranked_candidates` | source score, optional corpus, ask, optional rhythm override | reproducible request and material actually used |
+| Candidate fan-out | `rerank::generate_candidate_set` | deterministic set request | every applicable strategy × variant seed |
+| Rule generator | `generate::generate` | `RuleGenerationRequest` | canonical `Score` with strategy/seed provenance, or typed refusal |
+| Gesture compiler | `gesture::generate_gestured` | rule request + gesture | carved candidate under the same seed identity |
 | Musical measurement | closure and novelty modules | candidate + pitch/reference material | named axes, never only an opaque scalar |
-| Reranker | `rerank::rerank_candidates` | candidates, axes, versioned `WeightPolicy` | deterministic rank order in `Scored` envelopes |
-| Layered optimizer | `layered_path::solve` | local/transition axes over ordered layers | exact minimum-cost path with deterministic tie-break and retained rationale |
-| Candidate-chain client | `candidate_chain` | already-ranked compatible candidates | assembled multi-bar `Score` selecting one source candidate per bar |
-| Human surface | cockpit history/A-B/keep flow | generated scores and provenance | audition decisions; current marks are session-local and do not yet steer generation |
+| Reranker | `rerank::rerank_candidates` | candidates, axes, `WeightPolicy` | deterministic rank order in `Scored` envelopes |
+| Layered optimizer | `layered_path::solve` | local/transition axes over layers | exact path with deterministic tie-break and retained rationale |
+| Candidate-chain client | `candidate_chain` | compatible ranked candidates | multi-bar `Score`, one supplying candidate per bar |
+| Human surface | cockpit history/A-B/keep | scores and provenance | audition decisions; marks are currently session-local and non-steering |
 
-This separation is already stronger than a generic “generator agent” abstraction.
-Each node has a narrow mathematical or musical contract, and the canonical
-`Score` remains the shared internal model.
+This is already stronger than a generic “generator agent.” Each node has a
+narrow mathematical or musical contract, and `Score` remains the shared
+internal model.
 
-## The graph has two different meanings
+## Two graph meanings
 
-### 1. Execution and dataflow graph
-
-This graph says which transformation consumes which value:
+### Execution and dataflow graph
 
 ```text
 CorpusMaterial -> RuleGenerationRequest -> SetCandidate -> Scored candidate -> Score
 ```
 
-It is about ownership, provenance, and reproducibility.
+This graph is about ownership, provenance, and reproducibility.
 
-### 2. Optimization graph
+### Optimization graph
 
-`layered_path` models an actual layered DAG:
+`layered_path` models an actual layered DAG. The solver chooses one state per
+layer using local and transition axes. `candidate_chain` interprets a layer as
+an output bar and a state as “bar `b` supplied by ranked candidate `c`.”
 
-```text
-layer 0        layer 1        layer 2        layer 3
-  s0  -------->  s0  -------->  s0  -------->  s0
-  s1  -------->  s1  -------->  s1  -------->  s1
-  s2  -------->  s2  -------->  s2  -------->  s2
-```
+The pipeline graph orchestrates computation. The layered graph is the musical
+search problem. They may share vocabulary, but not contracts.
 
-The solver chooses one state per layer using local and transition axes. The
-candidate-chain client interprets a layer as an output bar and a state as “bar
-`b` supplied by ranked candidate `c`.”
-
-These two meanings should not be blurred. The pipeline graph orchestrates
-computation. The layered graph is the musical search problem being solved.
-Using one fashionable word for both is tolerable only while the contracts stay
-explicit.
-
-## Edge contracts in the current code
+## Current edge contracts
 
 ### Corpus records to prepared material
 
 The edge carries source provenance, including exact `track_index` and optional
 `bar_range`. A named track that is absent or silent is not replaced by another
-sounding track. That refusal prevents a quiet wrong-part substitution.
-
-`CorpusMaterial.skipped` reports unreadable, absent, or silent records. Missing
-material does not simply vanish from the explanation of a run.
+sounding track. `CorpusMaterial.skipped` reports missing, unreadable, or silent
+records rather than deleting them from the run's explanation.
 
 ### Corpus material to generation request
 
-The rhythm authority is frozen:
+Rhythm authority is frozen:
 
 ```text
 explicit rhythm palette > corpus rhythms > source first bar
 ```
 
 An explicit palette is preserved verbatim, including silent templates, and uses
-a separate scheduler with no quarter-note fallback. Corpus-derived templates
-are deduplicated in first-seen order and unusable templates may fall back to the
-source path according to the documented contract.
-
-Novelty references and gesture remain corpus-based even when an explicit rhythm
-palette wins. One edge does not silently seize authority over unrelated inputs.
+a separate scheduler with no quarter-note fallback. Novelty references and
+gesture remain corpus-based even when an explicit rhythm palette wins; one edge
+does not silently seize authority over unrelated inputs.
 
 ### Request to candidate set
 
-The fan-out axis is fixed by the declaration order of the five generation
-strategies and `variants_per_strategy`. Variant seeds derive deterministically
-from `(base seed, strategy index, variant index)` using a SplitMix64 finalizer.
-Gesture on/off does not change those identities, allowing paired comparisons.
+Fan-out follows the declaration order of the five strategies and
+`variants_per_strategy`. Variant seeds derive deterministically from
+`(base seed, strategy index, variant index)` with a SplitMix64 finalizer. Gesture
+on/off does not change those identities, enabling paired comparisons.
 
-`RhythmCopyPitchSubstitute` is skipped only when its required template does not
-exist. Other strategies do not fail merely because that one branch is
-inapplicable.
+`RhythmCopyPitchSubstitute` is skipped only when its required template is absent.
+Other branches do not fail because that one strategy is inapplicable.
 
-### Candidate to reranked candidate
+### Candidate to ranked candidate
 
-A `SetCandidate` retains:
-
-- canonical `Score`;
-- strategy;
-- derived seed;
-- optional gesture control.
-
-Reranking adds six named axes, rationale, aggregate, and versioned policy
-provenance. The scalar is derived convenience, not the only surviving fact. A
-future learned policy may change weights, but it should consume the same named
-facts rather than turning the graph into an uninspectable score oracle.
+A `SetCandidate` retains its canonical `Score`, strategy, derived seed, and
+optional gesture control. Reranking adds six named axes, rationale, aggregate,
+and versioned policy provenance. The scalar is derived convenience, not the only
+surviving fact.
 
 ### Ranked set to candidate chain
 
 The chain consumes an already-ranked set. It does not regenerate, reseed, or
-rerank. Every selected bar can still answer which candidate, strategy, variant
-seed, and original rank supplied it.
+rerank. Each selected bar can still name its candidate, strategy, variant seed,
+and original rank.
 
-Before optimization, the client rejects incompatible candidates:
-
-- bar-count or PPQ mismatch;
-- master-timeline mismatch;
-- track/voice metadata mismatch;
-- source metadata or loss-report mismatch;
-- cross-bar material;
-- empty groups or material outside the timeline;
-- missing material after validation.
-
-Refusal is preferable to assembling a plausible score under false metadata.
+Before optimization it rejects incompatible candidates: bar-count, PPQ,
+master-timeline, track/voice metadata, source metadata, loss report, cross-bar
+material, empty groups, outside-timeline material, and missing material. Refusal
+is preferable to assembling a plausible score under false metadata.
 
 ### Layered problem to path solution
 
-The domain-free engine validates every layer and transition shape. It rejects
-empty layers, malformed transition tables, non-finite local/edge facts, and
-non-finite accumulation.
+The domain-free engine rejects empty layers, malformed transition dimensions,
+non-finite local or edge facts, and non-finite accumulation. Selection is exact
+dynamic programming, not greedy or beam search. Exact ties resolve to the
+lexicographically smallest state-ordinal vector.
 
-Selection is exact dynamic programming, not greedy search or beam search. Exact
-ties resolve to the lexicographically smallest state-ordinal vector. Float
-addition order is itself normative: search, reported total, and client baseline
+Float addition order is normative: search, reported total, and client baseline
 use the same right-associated recurrence. A differently folded scalar would
-explain a path the engine did not actually choose.
+explain a path the engine did not choose.
 
 ## Determinism laws to preserve
 
-Graph extensions must not weaken the existing SPEC-level guarantee that a fixed
-input and seed produce the same result.
-
-1. **Stable input order.** Corpus first-seen order affects rhythm-palette order;
-   callers must provide deterministic record order.
-2. **Stable fan-out order.** Strategy declaration order and variant indices are
-   part of candidate identity.
-3. **Stable seed derivation.** Adding a feature must not casually reseed all
-   existing candidates.
-4. **Stable precedence.** Explicit pattern, corpus, and source fallback are
-   different authorities, not interchangeable suggestions.
+1. **Stable input order.** Corpus first-seen order affects rhythm-palette order.
+2. **Stable fan-out order.** Strategy order and variant index are candidate identity.
+3. **Stable seed derivation.** New features must not casually reseed old candidates.
+4. **Stable precedence.** Explicit, corpus, and source rhythm are distinct authorities.
 5. **Stable scoring vocabulary.** Axes and policy versions travel with results.
 6. **Stable tie-breaking.** Equivalent optima still require one canonical winner.
-7. **Stable arithmetic association.** Floating-point grouping is part of the
-   algorithm's semantics.
-8. **No silent repair.** Invalid dimensions, timelines, or non-finite facts cause
-   typed refusal.
-9. **Canonical model at every join.** MIDI and UI representations remain
-   boundaries; graph branches rejoin through `Score`, not frontend-specific
-   structures.
+7. **Stable arithmetic association.** Floating-point grouping is algorithm semantics.
+8. **No silent repair.** Invalid dimensions, timelines, or facts cause typed refusal.
+9. **Canonical model at joins.** MIDI and UI are boundaries; branches rejoin as `Score`.
 
 ## Where loops should enter
 
 ### Human audition and feedback
 
-The cockpit already records audition history and favorite/rejected marks during
-a session. S9 can turn that into a measured loop:
+The cockpit already records audition history and favorite/rejected marks. S9 can
+turn that into a measured loop:
 
 ```text
 candidate set -> audition -> explicit feedback -> versioned policy update
@@ -296,119 +241,73 @@ candidate set -> audition -> explicit feedback -> versioned policy update
 ```
 
 The feedback edge needs candidate identity, strategy/seed, policy version,
-corpus/source identity, and the exact user action. “The user liked something
-roughly like this” is not a training record.
+corpus/source identity, and exact user action. A vague statement that the user
+liked “something similar” is not a training record.
 
 ### Offline evaluation and policy calibration
 
-Policy changes should replay fixed, leakage-safe evaluation sets and compare:
-
-- preference agreement;
-- musical constraint violations;
-- diversity and novelty;
-- deterministic reproducibility;
-- cost/latency of wider search;
-- and regressions by source/song identity.
-
-Evaluation runs outside the production generation path and gates changes to
-weights or learned components.
+Policy changes should replay fixed, leakage-safe evaluation sets and compare
+preference agreement, constraint violations, diversity, novelty, reproducibility,
+search cost, and regressions by source/song identity. Evaluation stays outside
+the production path and gates changes to learned or hand-tuned policies.
 
 ### Bounded candidate search
 
-The existing graph already supports a controlled search-width parameter through
-`variants_per_strategy`. Future adaptive widening may be a loop, but its budget
-and stop condition must remain external to the model or learned scorer:
+`variants_per_strategy` is already an explicit search-width control. Future
+adaptive widening may loop, but budget and stop conditions remain outside the
+learned scorer:
 
 ```text
 width N -> evaluate coverage/confidence -> widen or stop
 ```
 
-A widening pass must retain all candidate identities and explain why another
-round was required.
+Every pass must retain candidate identities and explain why another round ran.
 
-### Reachability and holdout work
+### Reachability and holdout
 
-The current generator-reachability audit and ADR-0031's canonical `song_id`
-create another explicit graph:
+Generator reachability and ADR-0031's `song_id` imply another graph:
 
 ```text
-curated source identities -> holdout preflight -> material construction -> generation -> evaluation
+identity preflight -> held-out material -> generation -> evaluation
 ```
 
-A song-level holdout cannot proceed when identity coverage is incomplete. The
-preflight refusal is a graph gate, not missing-data inconvenience to be patched
-with title similarity.
+Song-level holdout refuses incomplete identity coverage. It must not patch the
+edge with title similarity and call that fail-closed.
 
-## Why a multi-agent musical pipeline is the wrong default
+## Why multi-agent music generation is the wrong default
 
-A tempting redesign is:
+A tempting topology is:
 
 ```text
 rhythm agent -> harmony agent -> technique agent -> critic agent
 ```
 
-That would be worse than the current code unless one of those stages genuinely
-requires open-ended judgment.
+It would usually be worse than the current code.
 
-### It weakens determinism
+- **Determinism weakens.** Seed is no longer sufficient; prompt, model version,
+  sampling, provider behavior, and context become undeclared inputs.
+- **Authority blurs.** Rhythm precedence, pitch constraints, timeline, and axes
+  currently have explicit owners; prose negotiation hides which law won.
+- **Failure types disappear.** `GenerationError`, `SetError`, `PathError`, and
+  `ChainError` name exact invalid facts. “The agent could not do it” does not.
+- **Deterministic work becomes expensive.** Placement, scale selection,
+  measurement, compatibility checks, and DP are ordinary algorithms.
 
-Conversational output makes the same seed insufficient to reproduce the result.
-Prompt, model version, sampling settings, hidden provider changes, and context
-all become additional undeclared inputs.
-
-### It obscures authority
-
-The current rhythm precedence, pitch constraints, timeline, and scoring axes
-have explicit owners. Agents negotiating these in prose make it unclear which
-rule won and why.
-
-### It destroys useful failure types
-
-`GenerationError`, `SetError`, `PathError`, and `ChainError` name exact invalid
-facts. An agent saying “I could not make this work” is a severe downgrade in
-observability.
-
-### It spends tokens on deterministic work
-
-Rhythm placement, scale-ladder selection, closure/novelty measurement, DP, and
-compatibility checking are ordinary algorithms. Replacing them with model calls
-would be slower, more expensive, and less reliable, a rare architectural
-hat-trick.
-
-### The right boundary
-
-Use a model where the task is genuinely interpretive:
-
-- translating a user's musical description into typed constraints;
-- proposing candidate edits or a Swang program;
-- explaining retained scoring rationale in user-facing language;
-- suggesting new axes from failure clusters;
-- or assisting curation while leaving the final provenance assertion explicit.
-
-The model proposes typed inputs. The Rust core validates, generates, scores, and
-records the result.
+Use a model where work is genuinely interpretive: translating a musical request
+into typed constraints, proposing a Swang program, explaining retained rationale,
+suggesting axes from failure clusters, or assisting curation. The model proposes
+typed input; Rust validates, generates, scores, and records.
 
 ## Useful graph-engineering increments
 
-### 1. Candidate lineage record
+### Candidate lineage record
 
-Define a serializable lineage envelope covering:
+Define one serializable envelope for source/corpus snapshot, generation ask,
+rhythm authority and fingerprints, strategy/seed, gesture, scoring axes/policy,
+chain selections, final score digest, and export loss report. Most facts already
+exist; the useful work is making their end-to-end edge durable.
 
-- source/corpus snapshot identity;
-- generation ask;
-- rhythm authority and fingerprints;
-- strategy and derived seed;
-- gesture control;
-- scoring axes and policy version;
-- chain state/edge selections when used;
-- final score digest and export loss report.
-
-The code carries most of these facts already. The work is to make the end-to-end
-edge durable rather than inventing another scoring system.
-
-### 2. Evaluation graph
-
-Make the evaluation path explicit and leakage-safe:
+### Evaluation graph
 
 ```text
 identity preflight
@@ -418,90 +317,77 @@ identity preflight
     -> versioned comparison report
 ```
 
-No learned reranker or generator change should promote itself using the same
-examples it trained on.
+No learned component should promote itself on its training examples.
 
-### 3. Feedback graph
+### Feedback graph
 
-When S9 persists feedback, separate:
+Persist immutable audition event, user verdict, feature snapshot, training
+example, trained policy artifact, and acceptance evaluation as separate stages.
+Relabeling a later stage must not rewrite what the user originally did.
 
-- immutable audition event;
-- user verdict;
-- feature snapshot;
-- policy-training example;
-- trained policy artifact;
-- acceptance evaluation.
+### Reachability graph
 
-Deleting or relabeling one stage must not rewrite what the user originally did.
+Map each UI control to the generation input, strategy, metric, and rendered
+output it actually reaches. A UI-only control must not be described as steering
+generation; a generator field with no caller edge is unreachable functionality.
 
-### 4. Reachability graph
+### Shared frontend graph
 
-Use the Phase-0 inventory to map which UI control reaches which generation input,
-strategy, metric, and rendered output. A control that changes only UI state must
-not be described as steering generation. A generator field with no caller edge
-is unreachable functionality, not a hidden advanced feature.
+Keep CLI, native cockpit, and web cockpit on the same pure `generation_input`
+compiler and renderer-agnostic `ui-core`. Frontends own I/O and presentation,
+not separate musical semantics.
 
-### 5. Shared frontend graph
+### Agentic proposal boundary
 
-Continue routing CLI, native cockpit, and web cockpit through the same pure
-`generation_input` compiler and renderer-agnostic `ui-core`. Frontends may own
-I/O and presentation, but not fork musical semantics.
-
-### 6. Agentic proposal boundary
-
-If an LLM-assisted composer is added, make it emit a versioned, typed object such
-as constraints or a Swang program. Record the model/prompt provenance, then run
-the normal deterministic graph. Do not let the model return an opaque MIDI blob
-that bypasses the canonical model and loss accounting.
+An LLM-assisted composer should emit a versioned typed object, such as
+constraints or a Swang program. Record model/prompt provenance, then run the
+normal deterministic graph. Do not accept an opaque MIDI blob that bypasses the
+canonical model and loss accounting.
 
 ## Comparison with 007
-
-The same vocabulary applies to both repositories, but the graphs solve different
-problems.
 
 | Concern | 007 | griff |
 |---|---|---|
 | Primary graph | execution, trust, evidence, control | musical dataflow, fan-out, scoring, optimization |
 | Canonical edge values | events, observations, attestations, verifier evidence, ledger records | `Score`, corpus material, requests, candidates, axes, ranked sets, paths |
-| Main authority question | who may execute, verify, persist, and decide a verdict | which source supplies rhythm/pitch/gesture, which policy scores, which solver selects |
-| Failure posture | blocked/error/refusal must never become green | incompatible or unmeasurable musical facts must never be silently normalized |
-| Determinism mechanism | versioned protocols, digest chains, pure reducer/replay | fixed seeds/order/precedence, versioned weights, exact DP and tie-breaks |
-| Natural loops | retry/recovery/verification under hard budgets | audition/feedback, evaluation/calibration, bounded search widening |
-| Agent role | untrusted worker or reviewer behind external gates | optional interpreter/proposer ahead of deterministic musical core |
-| Immediate risk | orchestration outrunning trust and evidence wiring | fashionable agents replacing transparent algorithms |
+| Authority question | who may execute, verify, persist, and decide | which source supplies material, which policy scores, which solver selects |
+| Failure posture | blocked/error/refusal never becomes green | incompatible or unmeasurable facts are never silently normalized |
+| Determinism | protocols, digest chains, pure reducer/replay | fixed seeds/order/precedence, versioned weights, exact DP |
+| Natural loops | retry, recovery, verification under hard budgets | audition, feedback, evaluation, bounded search |
+| Agent role | untrusted worker/reviewer behind external gates | optional interpreter/proposer before deterministic core |
+| Immediate risk | orchestration outrunning evidence wiring | fashionable agents replacing transparent algorithms |
 
-The shared lesson is not “everything is a graph.” It is that every boundary
-should name its data, authority, provenance, failure semantics, and replay story.
+The shared lesson is not merely that everything can be drawn as a graph. Every
+boundary must name its data, authority, provenance, failure semantics, and
+reproduction story.
 
-## Review checklist for graph changes
+## Review checklist
 
 Before adding a node or edge, answer:
 
-- Which present requirement or run proves it is needed?
-- Is this a pipeline edge, an optimization edge, or a human-feedback edge?
+- Which current requirement or run proves it is needed?
+- Is it a pipeline, optimization, or feedback edge?
 - What canonical type crosses it?
-- What exact source, corpus, seed, strategy, policy, and schema identities travel
-  with the value?
-- Is the node pure? If not, what side effect does it own?
+- Which source, corpus, seed, strategy, policy, and schema identities travel?
+- Is the node pure? If not, which side effect does it own?
 - What is the deterministic tie-break?
 - What invalid input causes typed refusal?
 - Does any branch silently drop a candidate or corpus record?
 - Can a frontend bypass the shared compiler?
-- Can a learned component change the facts used to evaluate itself?
-- Does a model propose typed input, or has it become an unversioned source of
-  musical truth?
+- Can a learned component alter the facts used to evaluate itself?
+- Does a model propose typed input, or become an unversioned source of truth?
 - Can the final score explain where every selected part came from?
 
-If the answer to the last question is “the agents discussed it,” the graph has
-lost information the current Rust code already knows how to preserve.
+If the last answer is “the agents discussed it,” the graph has lost information
+the current Rust code already knows how to preserve.
 
 ## Sources and nearby project documents
 
-- [`hardness1020/awesome-agent-architecture`](https://github.com/hardness1020/awesome-agent-architecture) — useful vocabulary for harness loops, tasks, protocols, observability, and verification; not a reason to agentize deterministic music code.
-- [`docs/SPEC.md`](SPEC.md) — hard project constraints, including canonical model and determinism.
+- [`hardness1020/awesome-agent-architecture`](https://github.com/hardness1020/awesome-agent-architecture) — harness vocabulary, not a reason to agentize deterministic music code.
+- [`docs/SPEC.md`](SPEC.md) — canonical model and determinism constraints.
 - [`docs/glossary.md`](glossary.md) — authoritative terminology.
-- [`docs/adr/0013-layered-dp-generation.md`](adr/0013-layered-dp-generation.md) and [`docs/adr/0030-reduced-state-layered-dp-clients.md`](adr/0030-reduced-state-layered-dp-clients.md) — layered optimization decisions.
-- [`docs/adr/0017-explainable-scoring.md`](adr/0017-explainable-scoring.md) — named axes, policy provenance, and the anti-scalar rule.
-- [`docs/adr/0029-swang-authoring-and-verified-lifting.md`](adr/0029-swang-authoring-and-verified-lifting.md) — explicit rhythm precedence and verified authoring boundary.
-- [`docs/adr/0031-canonical-song-identity.md`](adr/0031-canonical-song-identity.md) — Work-level identity required for leakage-safe song holdout.
-- `core/src/generation_input.rs`, `generate.rs`, `rerank.rs`, `layered_path.rs`, and `candidate_chain.rs` — the current implementation mapped by this note.
+- [`docs/adr/0013-dp-viterbi-traversal.md`](adr/0013-dp-viterbi-traversal.md) and [`docs/adr/0030-reduced-state-layered-dp-clients.md`](adr/0030-reduced-state-layered-dp-clients.md) — layered optimization decisions.
+- [`docs/adr/0017-explainable-scoring-contract.md`](adr/0017-explainable-scoring-contract.md) — axes, policy provenance, and the anti-scalar rule.
+- [`docs/adr/0029-swang-authoring-and-verified-lifting.md`](adr/0029-swang-authoring-and-verified-lifting.md) — rhythm precedence and verified authoring.
+- [`docs/adr/0031-canonical-song-identity.md`](adr/0031-canonical-song-identity.md) — identity for leakage-safe song holdout.
+- `core/src/generation_input.rs`, `generate.rs`, `rerank.rs`, `layered_path.rs`, and `candidate_chain.rs` — current implementation mapped here.
