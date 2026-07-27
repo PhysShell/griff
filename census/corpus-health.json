@@ -1,5 +1,5 @@
 {
-  "corpus_digest": "d87c530c8efc5c2c0ba1d6c0dc2fb8c5cd894e9920341675f35f32797df1a891",
+  "input_digest": "6955b33bdfa27e712ae64b12be8b3b0b4c509a496377c523331ea769e73e9c4e",
   "manifests": [
     {
       "path": "ingest/manifest.json",
@@ -438,6 +438,7 @@
       "tabs/Dance Gavin Dance - Head Hunter.gp",
       "tabs/Dance Gavin Dance - One In A Million.gp",
       "tabs/Dance Gavin Dance - The Robot With Human Hair Part 4 (ver 2 by MagentaMalice).gp5",
+      "tabs/Hail The Sun - Chunker.gpx",
       "tabs/Underoath - Anyone Can Dig A Hole But It Takes A Real Man To Call It Home.gpx",
       "tabs/Underoath - Reversal.gp5",
       "tabs/Wolf & Bear - Quick Sip 84.gp",
