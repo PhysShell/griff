@@ -1,7 +1,7 @@
 # ADR 0031: Add a curator-assigned canonical song identity to the corpus
 
 Date: 2026-07-26
-Status: Proposed
+Status: Accepted
 
 ## Context
 
