@@ -64,6 +64,22 @@ cargo run --manifest-path migrate/Cargo.toml -- <corpus_dir> <tabs_dir> <out_dir
 `<tabs_dir>` is walked for the source tabs; migrated copies are written under
 `<out_dir>` with the input's relative layout preserved.
 
+## Verifying a run
+
+[`verify-v9-backfill.py`](verify-v9-backfill.py) is a committed, deterministic,
+read-only checker that reproduces every claim of a migration run:
+
+```sh
+python3 migrate/verify-v9-backfill.py <before_corpus> <after_corpus> <tabs>
+```
+
+It re-derives sha256 coverage, per-record digest correctness, the structural diff
+(only `sha256` added), both record-tree digests, and the file-level holdout
+partition, and exits non-zero if any invariant fails. Its docstring fixes the
+exact algorithms so the verdict is reproducible. See
+[`docs/audit/2026-07-v9-corpus-backfill.md`](../docs/audit/2026-07-v9-corpus-backfill.md)
+for a full run.
+
 ## Running it for real (follow-up)
 
 This crate is the migration **contract + tool**. Executing it against the real

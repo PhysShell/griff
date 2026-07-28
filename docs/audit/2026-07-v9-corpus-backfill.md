@@ -21,9 +21,32 @@ directory — never in place.
 | standalone `*.chunk.json` | 9907 | v8 |
 | `corpus/manifest.json` (curated) | 220 chunks | v8 |
 | `corpus/ingest/manifest.json` (ingest) | 9687 chunks | v8 |
-| source tabs under `tabs/` | 410 | — |
+| source tabs | 410 | — |
 
 220 + 9687 = 9907 manifest chunk records, matching the 9907 standalone files.
+
+### Directory layout (load-bearing for reproduction)
+
+The tabs root is `<copy>/tabs`, but the 410 tab files sit one level down, in
+`<copy>/tabs/tabs/`:
+
+```text
+<copy>/corpus/                      # corpus root passed to migrate-v9 / census
+  *.chunk.json                      # 9907 standalone records
+  manifest.json                     # curated (220)
+  ingest/manifest.json              # ingest (9687)
+  <20 source tabs + _inventory/>    # ignored: not *.chunk.json / manifest.json
+<copy>/tabs/                        # tabs root passed to migrate-v9 / census
+  tabs/*.gp3|gp4|gp5|gpx|gp         # the 410 source tabs, nested one level
+```
+
+Because the tabs root is `<copy>/tabs` and the files are nested, census records
+each tab identity relative to that root — i.e. with a `tabs/` path component
+(`tabs/A Lot Like Birds - Atoms In Evening.gp5`). This is what the committed
+`input_digest` (below) is computed over, and re-running the census command with
+this exact root reproduces it byte-for-byte. Census sees exactly the 410 tabs
+under `tabs/` — the 20 look-alike tabs at the `corpus/` root are never in the
+tabs index.
 
 ## Command
 
@@ -69,11 +92,14 @@ Per-record semantic diff over all 9909 records: stripping the newly-added
   stripping the added keys — i.e. the **only** manifest change is
   `schema_version 8 → 9` plus the per-chunk `sha256`.
 
-Record-only tree digests (9909 `*.chunk.json` + `manifest.json` files, sorted):
+Record-only tree digests over the 9909 record files (`*.chunk.json` +
+`manifest.json`), computed by the committed verifier — see its docstring for the
+exact formula (POSIX relpath relative to the corpus root, sorted as UTF-8
+strings, each line `"<sha256>  <relpath>\n"`, then sha256 of the concatenation):
 
-```
-before: c004d5225b51563137d538495f076e6e4f1086f407a1de2c8372fbcd3d186194
-after : 810421840463560b78233ebe79e89d05101b3ca14a0ee29a7774dc500cafd790
+```text
+before: 875b89f8891c3eb15b19e5e5151732bc36cb7c82860654193b8ecd23a1b61927
+after : 352511fcc38da87e49d7ed520c41b4eb897bcee571efc97c256461f2a0bbfe62
 ```
 
 The migrator emits **records only** (9909 files). Non-record files — the 20
@@ -119,11 +145,11 @@ by chunk) holds.
 
 ### Incidental finding
 
-400 referenced filenames resolve to **399** distinct digests: two differently
--spelled Underoath filenames (`… Ive Got Ten Friends …` / `… I Got 10 Friends …`)
-are **byte-identical**. The migrator's "duplicate bytes are not ambiguous" rule
-assigned both the same digest without a conflict. This is also a latent
-same-recording signal for the eventual `song_id` / holdout-by-song work.
+400 referenced filenames resolve to **399** distinct digests: two
+differently-spelled Underoath filenames (`… Ive Got Ten Friends …` / `… I Got 10
+Friends …`) are **byte-identical**. The migrator's "duplicate bytes are not
+ambiguous" rule assigned both the same digest without a conflict. This is also a
+latent same-recording signal for the eventual `song_id` / holdout-by-song work.
 
 ## What this does *not* do
 
@@ -134,13 +160,36 @@ same-recording signal for the eventual `song_id` / holdout-by-song work.
 
 ## Reproduce
 
+Every number in this report is produced by the committed, deterministic,
+read-only verifier [`migrate/verify-v9-backfill.py`](../../migrate/verify-v9-backfill.py)
+— coverage, per-record digest correctness, the structural diff, both record-tree
+digests, and the holdout partition. Its docstring fixes the exact algorithms
+(tab resolution, tree-digest formula, holdout bucket) so the verdict is
+reproducible, not just the migration.
+
 ```sh
-# on a copy of ~/griff_data (never in place):
+# 1. on a fresh copy of ~/griff_data (never in place). Note the layout above:
+#    the tabs root is <copy>/tabs, with the 410 tab files nested in <copy>/tabs/tabs/.
 cargo build --release --manifest-path migrate/Cargo.toml
 migrate/target/release/migrate-v9  <copy>/corpus  <copy>/tabs  <out>
 
-# census before/after:
+# 2. reproduce and check every independent claim (exit 0 == all pass):
+python3 migrate/verify-v9-backfill.py  <copy>/corpus  <out>  <copy>/tabs
+
+# 3. census before/after (reproduces the committed input_digest e2b72750…;
+#    the <copy>/tabs root and its nested tabs/ layout are load-bearing for it):
 cargo build --release --manifest-path census/Cargo.toml
 census/target/release/census  <copy>/corpus  <copy>/tabs  before.json  before.md
 census/target/release/census  <out>          <copy>/tabs  after.json   after.md
+```
+
+Expected verifier output (this run):
+
+```text
+after  sha256 coverage : 9907/9907      track_index set : 0
+sha256 correct vs tab  : 9907/9907      structural-identical : 9907/9907
+record-tree before : 875b89f8891c3eb15b19e5e5151732bc36cb7c82860654193b8ecd23a1b61927
+record-tree after  : 352511fcc38da87e49d7ed520c41b4eb897bcee571efc97c256461f2a0bbfe62
+holdout : 77 sources -> 1792 chunks    train : 322 sources -> 8115 chunks    leakage : 0
+ALL CHECKS PASS
 ```
