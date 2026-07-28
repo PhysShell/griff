@@ -31,12 +31,24 @@ follow-up work.
 
 ## Contract (enforced by the tests in `src/main.rs`)
 
+The pure planning helpers (`resolve_source`, `build_plan`, `apply_plan`) and the
+whole-tool `run()` are both covered — the end-to-end tests build temporary
+`corpus/` + `tabs/` trees and drive `run()` against them.
+
 - **Unambiguous join** — a source resolves to exactly one tab (by basename, then
   by extension-insensitive stem). Byte-identical duplicate tabs are **not**
   ambiguous; their digest is determined.
 - **Fail closed, no partial write** — if *any* chunk is unresolved (missing or
   ambiguous) or conflicts with a digest already recorded, the whole run refuses
-  and writes nothing. Verified: a refused run creates no output directory.
+  and writes nothing. An end-to-end test asserts a refused run creates no output.
+- **Never in place** — before any input is read, a preflight canonicalizes all
+  three roots (resolving symlink aliases) and refuses when the output already
+  exists, equals an input root, or nests with either input root in either
+  direction. Every such refusal leaves the inputs byte-identical.
+- **Pinned target** — the migrator writes exactly schema **v9**
+  (`TARGET_SCHEMA_VERSION`), never the floating `griff_core` `SCHEMA_VERSION`, so
+  a recompile after v10 cannot silently forge a v10 stamp. Inputs newer than the
+  target are refused, not downgraded.
 - **Idempotent** — re-running over already-backfilled records is a no-op.
 - **Consistent** — two chunks naming the same source receive the same digest.
 - **Verifiable** — the recorded digest equals what the loader recomputes

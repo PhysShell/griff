@@ -32,10 +32,17 @@
 //! - **Consistent.** Two chunks naming the same source file receive the same
 //!   digest.
 
-use griff_core::corpus::{source_sha256, ChunkMeta, CorpusManifest, SCHEMA_VERSION};
+use griff_core::corpus::{source_sha256, ChunkMeta, CorpusManifest};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+/// The schema version this migrator produces. Pinned deliberately: it must not
+/// float with `griff_core::corpus::SCHEMA_VERSION`. A v9 migrator recompiled
+/// after v10 lands would otherwise stamp its output as v10 without populating or
+/// validating v10's contract — a time-delayed schema forgery. Inputs newer than
+/// this target are refused rather than downgraded.
+const TARGET_SCHEMA_VERSION: u32 = 9;
 
 // ── tab index ─────────────────────────────────────────────────────────────────
 
@@ -246,6 +253,65 @@ fn render_errors(errors: &[MigrateError]) -> String {
 
 // ── I/O orchestration ─────────────────────────────────────────────────────────
 
+/// Enforce the "never in place" promise before any input is walked or any byte
+/// is written.
+///
+/// Canonicalizing resolves symlink aliases, so a textually distinct output that
+/// really lands inside an input tree is still caught. The output must not
+/// already exist (no silent reuse or overwrite), and neither input root may
+/// equal, contain, or be contained by the resolved output root.
+fn preflight_output(corpus_dir: &Path, tabs_dir: &Path, out_dir: &Path) -> Result<(), String> {
+    let corpus = corpus_dir
+        .canonicalize()
+        .map_err(|e| format!("corpus dir {}: {e}", corpus_dir.display()))?;
+    let tabs = tabs_dir
+        .canonicalize()
+        .map_err(|e| format!("tabs dir {}: {e}", tabs_dir.display()))?;
+    if out_dir.exists() {
+        return Err(format!(
+            "output {} already exists; refusing to reuse or overwrite it",
+            out_dir.display()
+        ));
+    }
+    // The output does not exist yet, so resolve its parent and rejoin the final
+    // component to obtain the real path it would occupy.
+    let parent = match out_dir.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let parent = parent
+        .canonicalize()
+        .map_err(|e| format!("output parent {}: {e}", parent.display()))?;
+    let name = out_dir
+        .file_name()
+        .ok_or_else(|| format!("output {} has no final path component", out_dir.display()))?;
+    let out = parent.join(name);
+
+    for (root, label) in [(&corpus, "corpus"), (&tabs, "tabs")] {
+        if &out == root {
+            return Err(format!(
+                "output resolves to the {label} root {}; refusing in-place migration",
+                root.display()
+            ));
+        }
+        if out.starts_with(root) {
+            return Err(format!(
+                "output {} resolves inside the {label} root {}; refusing",
+                out.display(),
+                root.display()
+            ));
+        }
+        if root.starts_with(&out) {
+            return Err(format!(
+                "{label} root {} resolves inside the output {}; refusing",
+                root.display(),
+                out.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Recursively collect every file under `dir`, hard-failing on an unreadable
 /// directory rather than silently skipping it.
 fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -282,15 +348,10 @@ fn write_text(out_dir: &Path, rel: &str, contents: &str) -> Result<(), String> {
     std::fs::write(&dest, contents).map_err(|e| format!("write {}: {e}", dest.display()))
 }
 
-fn run(corpus_dir: &Path, tabs_dir: &Path, out_dir: &Path) -> Result<(), String> {
-    // 1. Index every tab by basename and stem, hashing its bytes once.
-    let mut index = TabIndex::default();
-    for path in walk(tabs_dir)? {
-        let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        index.insert(relpath(tabs_dir, &path), source_sha256(&bytes));
-    }
-
-    // 2. Load the corpus: standalone chunk records and manifests.
+/// Load every `*.chunk.json` record and `manifest.json` under `corpus_dir`,
+/// each paired with its path relative to that root.
+type Corpus = (Vec<(String, ChunkMeta)>, Vec<(String, CorpusManifest)>);
+fn load_corpus(corpus_dir: &Path) -> Result<Corpus, String> {
     let mut chunk_files: Vec<(String, ChunkMeta)> = Vec::new();
     let mut manifests: Vec<(String, CorpusManifest)> = Vec::new();
     for path in walk(corpus_dir)? {
@@ -309,6 +370,46 @@ fn run(corpus_dir: &Path, tabs_dir: &Path, out_dir: &Path) -> Result<(), String>
             manifests.push((rel, manifest));
         }
     }
+    Ok((chunk_files, manifests))
+}
+
+/// Refuse any manifest whose schema is newer than the pinned target — the
+/// migrator downgrades nothing and stamps nothing it did not populate.
+fn guard_schema(manifests: &[(String, CorpusManifest)]) -> Result<(), String> {
+    let newer: Vec<String> = manifests
+        .iter()
+        .filter(|(_, m)| m.schema_version > TARGET_SCHEMA_VERSION)
+        .map(|(rel, m)| {
+            format!(
+                "  {rel}: input schema v{} is newer than the migration target v{TARGET_SCHEMA_VERSION}",
+                m.schema_version
+            )
+        })
+        .collect();
+    if newer.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to migrate: {} manifest(s) newer than target v{TARGET_SCHEMA_VERSION}\n{}",
+        newer.len(),
+        newer.join("\n")
+    ))
+}
+
+fn run(corpus_dir: &Path, tabs_dir: &Path, out_dir: &Path) -> Result<(), String> {
+    // 0. Refuse dangerous output roots before touching any input.
+    preflight_output(corpus_dir, tabs_dir, out_dir)?;
+
+    // 1. Index every tab by basename and stem, hashing its bytes once.
+    let mut index = TabIndex::default();
+    for path in walk(tabs_dir)? {
+        let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        index.insert(relpath(tabs_dir, &path), source_sha256(&bytes));
+    }
+
+    // 2. Load the corpus, then refuse any input newer than the pinned target.
+    let (chunk_files, manifests) = load_corpus(corpus_dir)?;
+    guard_schema(&manifests)?;
 
     // 3. Validate everything before writing anything (fail closed).
     let mut errors: Vec<MigrateError> = Vec::new();
@@ -335,8 +436,8 @@ fn run(corpus_dir: &Path, tabs_dir: &Path, out_dir: &Path) -> Result<(), String>
         return Err(render_errors(&errors));
     }
 
-    // 4. Apply and write. Chunk files keep their format; manifests also advance
-    //    `schema_version` to the current v9.
+    // 5. Apply and write. Chunk files keep their format; manifests also advance
+    //    `schema_version` to the pinned v9 target.
     apply_plan(&mut chunk_metas, &chunk_plan);
     for ((rel, _), meta) in chunk_files.iter().zip(&chunk_metas) {
         let json =
@@ -346,7 +447,7 @@ fn run(corpus_dir: &Path, tabs_dir: &Path, out_dir: &Path) -> Result<(), String>
     for ((rel, manifest), plan) in manifests.iter().zip(&manifest_plans) {
         let mut migrated = manifest.clone();
         apply_plan(&mut migrated.chunks, plan);
-        migrated.schema_version = SCHEMA_VERSION;
+        migrated.schema_version = TARGET_SCHEMA_VERSION;
         let json =
             serde_json::to_string_pretty(&migrated).map_err(|e| format!("serialize {rel}: {e}"))?;
         write_text(out_dir, rel, &json)?;
@@ -652,11 +753,23 @@ mod tests {
 
     /// Build a `corpus/` (one chunk file + one manifest) and a `tabs/` tree under
     /// `tree`, and return the corpus/tabs paths plus the tab's true digest.
-    fn seed(tree: &TmpTree, schema_version: u32, filename: &str, tab_bytes: &str) -> (PathBuf, PathBuf, String) {
+    fn seed(
+        tree: &TmpTree,
+        schema_version: u32,
+        filename: &str,
+        tab_bytes: &str,
+    ) -> (PathBuf, PathBuf, String) {
         tree.write("corpus/e2e_001.p0.chunk.json", &chunk_json(filename));
-        tree.write("corpus/manifest.json", &manifest_json(schema_version, filename));
+        tree.write(
+            "corpus/manifest.json",
+            &manifest_json(schema_version, filename),
+        );
         tree.write(&format!("tabs/{filename}"), tab_bytes);
-        (tree.path("corpus"), tree.path("tabs"), source_sha256(tab_bytes.as_bytes()))
+        (
+            tree.path("corpus"),
+            tree.path("tabs"),
+            source_sha256(tab_bytes.as_bytes()),
+        )
     }
 
     fn out_chunk_sha(out: &Path) -> Option<String> {
@@ -677,13 +790,24 @@ mod tests {
             &std::fs::read_to_string(out.join("e2e_001.p0.chunk.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(chunk.source.track_index, None, "track_index must stay absent");
-        let manifest: CorpusManifest = serde_json::from_str(
-            &std::fs::read_to_string(out.join("manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manifest.schema_version, 9, "manifest must become exactly v9");
-        assert_eq!(manifest.chunks.first().and_then(|c| c.source.sha256.as_deref()), Some(sha.as_str()));
+        assert_eq!(
+            chunk.source.track_index, None,
+            "track_index must stay absent"
+        );
+        let manifest: CorpusManifest =
+            serde_json::from_str(&std::fs::read_to_string(out.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest.schema_version, 9,
+            "manifest must become exactly v9"
+        );
+        assert_eq!(
+            manifest
+                .chunks
+                .first()
+                .and_then(|c| c.source.sha256.as_deref()),
+            Some(sha.as_str())
+        );
     }
 
     #[test]
@@ -743,7 +867,10 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         std::fs::write(out.join("sentinel"), "keep").unwrap();
         run(&corpus, &tabs, &out).expect_err("existing output must refuse");
-        assert!(out.join("sentinel").exists(), "existing output left untouched");
+        assert!(
+            out.join("sentinel").exists(),
+            "existing output left untouched"
+        );
     }
 
     #[test]
@@ -757,7 +884,10 @@ mod tests {
         std::os::unix::fs::symlink(&corpus, &alias).unwrap();
         let out = alias.join("nested_out");
         run(&corpus, &tabs, &out).expect_err("symlink alias into corpus must refuse");
-        assert!(!corpus.join("nested_out").exists(), "nothing written into corpus");
+        assert!(
+            !corpus.join("nested_out").exists(),
+            "nothing written into corpus"
+        );
     }
 
     #[test]
