@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Read-only verifier for the v9 sha256 backfill (PR C evidence).
 
-    verify-v9-backfill.py <before_corpus> <after_corpus> <tabs>
+    verify-v9-backfill.py <before_corpus> <after_corpus> <tabs> [census_before.json census_after.json]
 
 Reproduces and checks every load-bearing claim in
-`docs/audit/2026-07-v9-corpus-backfill.md`. Deterministic: no RNG, no seed, no
-wall-clock; the same three directories always yield the same numbers and the
-same exit code. It reads only; it writes nothing.
+`docs/audit/2026-07-v9-corpus-backfill.md`, and binds them to the exact corpus
+snapshot documented there (see the fingerprint constants below). Deterministic:
+no RNG, no seed, no wall-clock; the same inputs always yield the same numbers and
+the same exit code. It reads only; it writes nothing.
+
+If the two optional census JSON paths are given, the verifier also asserts they
+are byte-identical to the committed census artifacts — so the "byte-identical to
+fresh output" claim is machine-checked, not eyeballed.
 
 `<before_corpus>` is the untouched v8 copy, `<after_corpus>` is the migrate-v9
 output, `<tabs>` is the tabs root passed to migrate-v9 (identities are taken
@@ -38,6 +43,26 @@ from pathlib import Path
 TOTAL_CHUNKS = 9907
 CURATED = ("manifest.json", 220)
 INGEST = ("ingest/manifest.json", 9687)
+
+# ── snapshot fingerprint ─────────────────────────────────────────────────────
+# These bind the verifier to the exact corpus snapshot documented in
+# docs/audit/2026-07-v9-corpus-backfill.md — not merely to "some correctly
+# migrated 9907-record corpus". A different corpus, even one this same tool
+# migrated correctly, is EXPECTED to fail these checks: this is an evidence
+# verifier, and the evidence is a specific snapshot. If the corpus legitimately
+# changes, regenerate the report and update these constants together.
+EXPECTED_BEFORE_TREE = "875b89f8891c3eb15b19e5e5151732bc36cb7c82860654193b8ecd23a1b61927"
+EXPECTED_AFTER_TREE = "352511fcc38da87e49d7ed520c41b4eb897bcee571efc97c256461f2a0bbfe62"
+EXPECTED_SOURCES = 399
+EXPECTED_HOLDOUT_SOURCES = 77
+EXPECTED_HOLDOUT_CHUNKS = 1792
+EXPECTED_TRAIN_SOURCES = 322
+EXPECTED_TRAIN_CHUNKS = 8115
+
+# Committed census artifacts, relative to this script (repo-root/migrate/…).
+_REPO = Path(__file__).resolve().parent.parent
+COMMITTED_CENSUS_BEFORE = _REPO / "census" / "corpus-health.json"
+COMMITTED_CENSUS_AFTER = _REPO / "docs" / "audit" / "2026-07-v9-corpus-health.json"
 
 
 def sha_hex(b: bytes) -> str:
@@ -183,6 +208,8 @@ def main() -> int:
     print(f"  before : {tdb}")
     print(f"  after  : {tda}")
     require(tdb != tda, "record-tree digests identical (migration changed nothing?)")
+    require(tdb == EXPECTED_BEFORE_TREE, f"before tree digest != snapshot fingerprint ({tdb})")
+    require(tda == EXPECTED_AFTER_TREE, f"after tree digest != snapshot fingerprint ({tda})")
 
     # ── file-level holdout ───────────────────────────────────────────────────
     print("== file-level holdout (HoldoutTargetSourceFile) ==")
@@ -201,6 +228,24 @@ def main() -> int:
     require(leakage == 0, "source file present on both holdout sides")
     require(hold_ch + train_ch == TOTAL_CHUNKS, "chunks unassigned by holdout")
     require(len(hold_src) > 0 and len(train_src) > 0, "degenerate holdout split")
+    # bind to the documented snapshot counts, not just the invariants
+    require(len(sources) == EXPECTED_SOURCES, f"distinct sources {len(sources)} != {EXPECTED_SOURCES}")
+    require(len(hold_src) == EXPECTED_HOLDOUT_SOURCES, f"holdout sources {len(hold_src)} != {EXPECTED_HOLDOUT_SOURCES}")
+    require(hold_ch == EXPECTED_HOLDOUT_CHUNKS, f"holdout chunks {hold_ch} != {EXPECTED_HOLDOUT_CHUNKS}")
+    require(len(train_src) == EXPECTED_TRAIN_SOURCES, f"train sources {len(train_src)} != {EXPECTED_TRAIN_SOURCES}")
+    require(train_ch == EXPECTED_TRAIN_CHUNKS, f"train chunks {train_ch} != {EXPECTED_TRAIN_CHUNKS}")
+
+    # ── census artifacts (optional args): bind fresh output to committed ──────
+    if len(sys.argv) >= 6:
+        census_before, census_after = Path(sys.argv[4]), Path(sys.argv[5])
+        print("== census artifacts vs committed ==")
+        for fresh, committed in ((census_before, COMMITTED_CENSUS_BEFORE),
+                                 (census_after, COMMITTED_CENSUS_AFTER)):
+            same = fresh.read_bytes() == committed.read_bytes()
+            print(f"  {fresh.name:16} == {committed.relative_to(_REPO)} : {'IDENTICAL' if same else 'DIFFERS'}")
+            require(same, f"{fresh} != committed {committed}")
+    else:
+        print("== census artifacts: not checked (pass before.json after.json to bind) ==")
 
     print()
     if fails:

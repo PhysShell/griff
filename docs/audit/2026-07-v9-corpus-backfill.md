@@ -160,12 +160,16 @@ latent same-recording signal for the eventual `song_id` / holdout-by-song work.
 
 ## Reproduce
 
-Every number in this report is produced by the committed, deterministic,
-read-only verifier [`migrate/verify-v9-backfill.py`](../../migrate/verify-v9-backfill.py)
-— coverage, per-record digest correctness, the structural diff, both record-tree
-digests, and the holdout partition. Its docstring fixes the exact algorithms
-(tab resolution, tree-digest formula, holdout bucket) so the verdict is
-reproducible, not just the migration.
+Every number in this report is produced and **checked** by the committed,
+deterministic, read-only verifier
+[`migrate/verify-v9-backfill.py`](../../migrate/verify-v9-backfill.py) — coverage,
+per-record digest correctness, the structural diff, both record-tree digests, and
+the holdout partition. Its docstring fixes the exact algorithms (tab resolution,
+tree-digest formula, holdout bucket), and it **binds them to this snapshot**: the
+tree digests, the 399 source count, and the 77/1792 · 322/8115 holdout split are
+`require`d against fingerprint constants, so a *different* correctly-migrated
+corpus fails rather than printing `ALL CHECKS PASS`. Given the two census JSON
+outputs, it also asserts they are byte-identical to the committed artifacts.
 
 ```sh
 # 1. on a fresh copy of ~/griff_data (never in place). Note the layout above:
@@ -173,14 +177,16 @@ reproducible, not just the migration.
 cargo build --release --manifest-path migrate/Cargo.toml
 migrate/target/release/migrate-v9  <copy>/corpus  <copy>/tabs  <out>
 
-# 2. reproduce and check every independent claim (exit 0 == all pass):
-python3 migrate/verify-v9-backfill.py  <copy>/corpus  <out>  <copy>/tabs
-
-# 3. census before/after (reproduces the committed input_digest e2b72750…;
+# 2. census before/after (reproduces the committed input_digest e2b72750…;
 #    the <copy>/tabs root and its nested tabs/ layout are load-bearing for it):
 cargo build --release --manifest-path census/Cargo.toml
 census/target/release/census  <copy>/corpus  <copy>/tabs  before.json  before.md
 census/target/release/census  <out>          <copy>/tabs  after.json   after.md
+
+# 3. reproduce, bind to this snapshot, and cross-check the census artifacts
+#    (exit 0 == every value matches; passing the two JSONs also byte-compares
+#    them to census/corpus-health.json and docs/audit/2026-07-v9-corpus-health.json):
+python3 migrate/verify-v9-backfill.py  <copy>/corpus  <out>  <copy>/tabs  before.json  after.json
 ```
 
 Expected verifier output (this run):
@@ -191,5 +197,7 @@ sha256 correct vs tab  : 9907/9907      structural-identical : 9907/9907
 record-tree before : 875b89f8891c3eb15b19e5e5151732bc36cb7c82860654193b8ecd23a1b61927
 record-tree after  : 352511fcc38da87e49d7ed520c41b4eb897bcee571efc97c256461f2a0bbfe62
 holdout : 77 sources -> 1792 chunks    train : 322 sources -> 8115 chunks    leakage : 0
+census before.json == census/corpus-health.json                : IDENTICAL
+census after.json  == docs/audit/2026-07-v9-corpus-health.json : IDENTICAL
 ALL CHECKS PASS
 ```
