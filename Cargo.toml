@@ -7,7 +7,7 @@ members  = ["core", "pattern", "swang", "ui-core", "cockpit", "cli", "plugin", "
 # the hard-constraint-contract proposal); excluded for the same reason —
 # production builds, clippy, and CI never touch it, and its solver
 # dependencies never enter the workspace tree.
-exclude  = ["fuzz", "lab", "migrate"]
+exclude  = ["fuzz", "lab", "census", "migrate"]
 resolver = "2"
 
 [workspace.package]

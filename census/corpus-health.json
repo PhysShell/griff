@@ -1,0 +1,1198 @@
+{
+  "input_digest": "6955b33bdfa27e712ae64b12be8b3b0b4c509a496377c523331ea769e73e9c4e",
+  "manifests": [
+    {
+      "path": "ingest/manifest.json",
+      "schema_version": 8,
+      "chunks": 9687,
+      "groups": 400
+    },
+    {
+      "path": "manifest.json",
+      "schema_version": 8,
+      "chunks": 220,
+      "groups": 5
+    }
+  ],
+  "counts": {
+    "chunk_files": 9907,
+    "chunk_parse_errors": 0,
+    "manifest_chunk_records": 9907,
+    "unique_referenced_filenames": 400,
+    "tab_files": 410
+  },
+  "manifest_reconciliation": {
+    "files_covered_by_a_manifest": 9907,
+    "files_not_in_any_manifest": 0,
+    "manifest_ids_without_a_file": 0
+  },
+  "source_reconciliation": {
+    "matched_sources": 400,
+    "referenced_sources": [
+      "A Lot Like Birds - A Satire Of A Satire Is Tiring.gpx",
+      "A Lot Like Birds - Always Burning Always Dark.gp5",
+      "A Lot Like Birds - Connector (ver 2 by LPFzCS_LMS).gp5",
+      "A Lot Like Birds - Connector.gp5",
+      "A Lot Like Birds - Divisi.gp5",
+      "A Lot Like Birds - For Shelley Unheard.gp5",
+      "A Lot Like Birds - From Moon To Son.gp5",
+      "A Lot Like Birds - Further Below.gp5",
+      "A Lot Like Birds - Good Soil Bad Seeds.gp5",
+      "A Lot Like Birds - Hand Over Mouth Over And Over.gp5",
+      "A Lot Like Birds - Infinite Chances.gp5",
+      "A Lot Like Birds - Kuroi Ledge (ver 2 by LPFzCS_LMS).gp5",
+      "A Lot Like Birds - Kuroi Ledge.gp5",
+      "A Lot Like Birds - Myth Of Lasting Sympathy.gp5",
+      "A Lot Like Birds - Next To Ungodliness (ver 2 by edwinal0504).gpx",
+      "A Lot Like Birds - Next To Ungodliness (ver 3 by LPFzCS_LMS).gp5",
+      "A Lot Like Birds - Next To Ungodliness.gp5",
+      "A Lot Like Birds - No Attention For Solved Puzzles.gp5",
+      "A Lot Like Birds - No Nature.gp5",
+      "A Lot Like Birds - No Nurture.gp5",
+      "A Lot Like Birds - Orange Time Machines Care.gpx",
+      "A Lot Like Birds - Recluse.gp5",
+      "A Lot Like Birds - Sesame Street Is No Place For Me.gp5",
+      "A Lot Like Birds - Shaking Of The Frame.gp5",
+      "A Lot Like Birds - The Smoother The Stone.gp5",
+      "A Lot Like Birds - The Sound Of Us.gp5",
+      "A Lot Like Birds - Think Dirty Out Loud.gpx",
+      "A Lot Like Birds - Trace The Lines.gp5",
+      "Dance Gavin Dance - 12 Hours 630 Miles (ver 2 by patman1416).gp5",
+      "Dance Gavin Dance - 12 Hours 630 Miles.gp5",
+      "Dance Gavin Dance - Alex English (ver 2 by CrashAshes43).gpx",
+      "Dance Gavin Dance - Alex English (ver 3 by funkyrocker24).gp5",
+      "Dance Gavin Dance - And I Told Them I Invented Times New Roman.gp5",
+      "Dance Gavin Dance - Antlion.gp5",
+      "Dance Gavin Dance - Attack Of The Dashing Young And Bold.gp5",
+      "Dance Gavin Dance - Awkward.gp5",
+      "Dance Gavin Dance - Back On Deck.gp5",
+      "Dance Gavin Dance - Betrayed By The Game (ver 2 by mikoyeahyeah).gpx",
+      "Dance Gavin Dance - Betrayed By The Game.gp5",
+      "Dance Gavin Dance - Blood Wolf (ver 2 by Mage_Gage).gp",
+      "Dance Gavin Dance - Blood Wolf.gp5",
+      "Dance Gavin Dance - Bloodsucker (ver 2 by RiseAgainst34).gp",
+      "Dance Gavin Dance - Bloodsucker (ver 3 by ed.garnett28).gp",
+      "Dance Gavin Dance - Bloodsucker.gp5",
+      "Dance Gavin Dance - Blue Dream (ver 2 by Lem0nz).gp5",
+      "Dance Gavin Dance - Blue Dream.gp5",
+      "Dance Gavin Dance - Born To Fail (ver 2 by president100).gp5",
+      "Dance Gavin Dance - Born To Fail.gp",
+      "Dance Gavin Dance - Buffalo (ver 2 by jakebohn81).gpx",
+      "Dance Gavin Dance - Buffalo.gpx",
+      "Dance Gavin Dance - Burning Down The Nicotine Armoire.gp5",
+      "Dance Gavin Dance - Calentamiento Global.gp5",
+      "Dance Gavin Dance - Care (ver 2 by president100).gp5",
+      "Dance Gavin Dance - Care (ver 3 by TheLoEnd).gp",
+      "Dance Gavin Dance - Care.gp",
+      "Dance Gavin Dance - Carl Barker (ver 2 by rudy_rubber).gp",
+      "Dance Gavin Dance - Carl Barker.gp4",
+      "Dance Gavin Dance - Carve.gpx",
+      "Dance Gavin Dance - Caviar (ver 2 by ed.garnett28).gp",
+      "Dance Gavin Dance - Caviar.gp5",
+      "Dance Gavin Dance - Chocolate Jackalope.gp",
+      "Dance Gavin Dance - Chucky Vs The Giant Tortoise (ver 2 by mikoyeahyeah).gpx",
+      "Dance Gavin Dance - Chucky Vs The Giant Tortoise (ver 3 by lacesup).gp",
+      "Dance Gavin Dance - Chucky Vs The Giant Tortoise (ver 4 by juskiwmatt).gp5",
+      "Dance Gavin Dance - Chucky Vs The Giant Tortoise (ver 5 by president100).gp5",
+      "Dance Gavin Dance - Chucky Vs The Giant Tortoise.gpx",
+      "Dance Gavin Dance - Count Bassy.gp5",
+      "Dance Gavin Dance - Cream Of The Crop.gp5",
+      "Dance Gavin Dance - Current Events.gp5",
+      "Dance Gavin Dance - Death Of A Strawberry.gp",
+      "Dance Gavin Dance - Deception (ver 2 by lilgstryker).gp5",
+      "Dance Gavin Dance - Deception.gpx",
+      "Dance Gavin Dance - Die Another Day.gp5",
+      "Dance Gavin Dance - Doom And Gloom.gp",
+      "Dance Gavin Dance - Eagle Vs Crows (ver 2 by ed.garnett28).gp",
+      "Dance Gavin Dance - Eagle Vs Crows.gp5",
+      "Dance Gavin Dance - Elder Goose.gp5",
+      "Dance Gavin Dance - Ember.gp5",
+      "Dance Gavin Dance - Evaporate (ver 2 by president100).gp5",
+      "Dance Gavin Dance - Evaporate (ver 3 by RiseAgainst34).gp",
+      "Dance Gavin Dance - Evaporate.gpx",
+      "Dance Gavin Dance - Exposed.gpx",
+      "Dance Gavin Dance - Feels Bad Man.gp5",
+      "Dance Gavin Dance - Flash (ver 2 by RiseAgainst34).gp",
+      "Dance Gavin Dance - Flash.gp5",
+      "Dance Gavin Dance - Flossie Dickey Bounce.gp5",
+      "Dance Gavin Dance - For The Jeers.gp5",
+      "Dance Gavin Dance - Frozen One.gp5",
+      "Dance Gavin Dance - Gospel Burnout.gp5",
+      "Dance Gavin Dance - Hair Song.gp5",
+      "Dance Gavin Dance - Happiness (ver 2 by dylanure2005).gp5",
+      "Dance Gavin Dance - Happiness.gpx",
+      "Dance Gavin Dance - Have A Great Life.gp5",
+      "Dance Gavin Dance - Head Hunter (ver 2 by ed.garnett28).gp",
+      "Dance Gavin Dance - Heat Seeking Ghost Of Sex (ver 2 by kingshaunicus).gp5",
+      "Dance Gavin Dance - Heat Seeking Ghost Of Sex.gp5",
+      "Dance Gavin Dance - Here Comes The Winner.gp5",
+      "Dance Gavin Dance - Holy Ghost Spirit.gp5",
+      "Dance Gavin Dance - Honey Revenge.gp5",
+      "Dance Gavin Dance - Hot Water On Wool (ver 2 by jakebohn81).gpx",
+      "Dance Gavin Dance - Hot Water On Wool.gp4",
+      "Dance Gavin Dance - Inspire The Liars.gp",
+      "Dance Gavin Dance - Into The Sunset.gp5",
+      "Dance Gavin Dance - Its Safe To Say You Dig The Backseat (ver 2).gp5",
+      "Dance Gavin Dance - Its Safe To Say You Dig The Backseat.gp5",
+      "Dance Gavin Dance - Jesus H Macy.gp4",
+      "Dance Gavin Dance - Legend.gp5",
+      "Dance Gavin Dance - Lemon Meringue Tie (ver 2 by kucharz89).gp5",
+      "Dance Gavin Dance - Lemon Meringue Tie (ver 3 by GonchDog).gp5",
+      "Dance Gavin Dance - Lemon Meringue Tie (ver 4 by ed.garnett28).gp",
+      "Dance Gavin Dance - Lemon Meringue Tie (ver 5 by mando2793).gpx",
+      "Dance Gavin Dance - Lemon Meringue Tie.gp5",
+      "Dance Gavin Dance - Long Nights In Jail (ver 2 by raviolimaster).gp5",
+      "Dance Gavin Dance - Long Nights In Jail.gp5",
+      "Dance Gavin Dance - Lost.gpx",
+      "Dance Gavin Dance - Lyrics Lie (ver 2 by president100).gp5",
+      "Dance Gavin Dance - Lyrics Lie.gp5",
+      "Dance Gavin Dance - Man Of The Year.gpx",
+      "Dance Gavin Dance - Me And Zoloft Get Along Just Fine (ver 2 by kucharz89).gp5",
+      "Dance Gavin Dance - Me And Zoloft Get Along Just Fine (ver 3 by 93dric).gp5",
+      "Dance Gavin Dance - Me And Zoloft Get Along Just Fine.gp5",
+      "Dance Gavin Dance - Midnight Crusade (ver 2).gp5",
+      "Dance Gavin Dance - Midnight Crusade (ver 3 by Dudealy).gpx",
+      "Dance Gavin Dance - Midnight Crusade (ver 4 by president100).gp5",
+      "Dance Gavin Dance - Midnight Crusade (ver 5 by TheLoEnd).gp",
+      "Dance Gavin Dance - Midnight Crusade.gpx",
+      "Dance Gavin Dance - Nasa (ver 2 by lacesup).gpx",
+      "Dance Gavin Dance - Nasa (ver 3 by jakebohn81).gpx",
+      "Dance Gavin Dance - Nasa.gp4",
+      "Dance Gavin Dance - Need Money.gp5",
+      "Dance Gavin Dance - Night Sway.gp5",
+      "Dance Gavin Dance - Nothing Shameful (ver 2 by president100).gp5",
+      "Dance Gavin Dance - Nothing Shameful.gpx",
+      "Dance Gavin Dance - On The Run.gpx",
+      "Dance Gavin Dance - One In A Million (ver 2 by Igor0400).gp",
+      "Dance Gavin Dance - One In A Million (ver 3 by president100).gp5",
+      "Dance Gavin Dance - One Mans Cringe.gp5",
+      "Dance Gavin Dance - Open Your Eyes And Look North (ver 2 by TalkingToAngels).gp5",
+      "Dance Gavin Dance - Open Your Eyes And Look North (ver 2).gp5",
+      "Dance Gavin Dance - Open Your Eyes And Look North (ver 3).gp5",
+      "Dance Gavin Dance - Open Your Eyes And Look North (ver 4 by oreopimp44).gp5",
+      "Dance Gavin Dance - Open Your Eyes And Look North (ver 5 by mgttg47).gp5",
+      "Dance Gavin Dance - Open Your Eyes And Look North.gp5",
+      "Dance Gavin Dance - Parallels.gp5",
+      "Dance Gavin Dance - Parody Catharsis (ver 2 by lt22).gp",
+      "Dance Gavin Dance - Parody Catharsis (ver 3 by setsy).gp",
+      "Dance Gavin Dance - Parody Catharsis (ver 4 by president100).gp5",
+      "Dance Gavin Dance - Parody Catharsis.gp5",
+      "Dance Gavin Dance - People You Know.gp5",
+      "Dance Gavin Dance - Perfect.gpx",
+      "Dance Gavin Dance - Philosopher King (ver 2 by ed.garnett28).gp",
+      "Dance Gavin Dance - Philosopher King.gp",
+      "Dance Gavin Dance - Polka Dot Dobbins (ver 2 by raviolimaster).gp5",
+      "Dance Gavin Dance - Polka Dot Dobbins.gp5",
+      "Dance Gavin Dance - Pop Off.gp",
+      "Dance Gavin Dance - Pounce Bounce.gp5",
+      "Dance Gavin Dance - Powder To The People.gp5",
+      "Dance Gavin Dance - Pray To God For Your Mother.gp5",
+      "Dance Gavin Dance - Prisoner (ver 2 by Medeses).gp",
+      "Dance Gavin Dance - Prisoner (ver 3 by president100).gp5",
+      "Dance Gavin Dance - Prisoner.gp",
+      "Dance Gavin Dance - Privilously Poncheezied (ver 2 by edwinal0504).gpx",
+      "Dance Gavin Dance - Privilously Poncheezied.gp5",
+      "Dance Gavin Dance - Purple Reign.gp5",
+      "Dance Gavin Dance - Rock Solid.gp5",
+      "Dance Gavin Dance - Say Hi.gp5",
+      "Dance Gavin Dance - Self-Trepanation.gpx",
+      "Dance Gavin Dance - Semi-Charmed Life.gp5",
+      "Dance Gavin Dance - Shark Dad.gp",
+      "Dance Gavin Dance - Shark Dad.gpx",
+      "Dance Gavin Dance - Shelf Life (ver 2 by president100).gp5",
+      "Dance Gavin Dance - Shelf Life.gpx",
+      "Dance Gavin Dance - Skyhook (ver 2 by maxtricano).gp",
+      "Dance Gavin Dance - Skyhook.gp",
+      "Dance Gavin Dance - Slouch.gp5",
+      "Dance Gavin Dance - Son Of Robot (ver 2 by president100).gp5",
+      "Dance Gavin Dance - Son Of Robot.gp5",
+      "Dance Gavin Dance - Speed Demon.gp5",
+      "Dance Gavin Dance - Spooks.gp5",
+      "Dance Gavin Dance - Story Of My Bros.gp5",
+      "Dance Gavin Dance - Straight From The Heart.gp5",
+      "Dance Gavin Dance - Strawberry Andre (ver 2 by GonchDog).gp5",
+      "Dance Gavin Dance - Strawberry Andre.gp5",
+      "Dance Gavin Dance - Strawberry Swisher Pt 2 (ver 2 by HectorDaniel).gpx",
+      "Dance Gavin Dance - Strawberry Swisher Pt 2 (ver 3 by gjikolp).gp",
+      "Dance Gavin Dance - Strawberry Swisher Pt 2.gp5",
+      "Dance Gavin Dance - Strawberry Swisher Pt 3 (ver 2 by marcellus97).gpx",
+      "Dance Gavin Dance - Strawberry Swisher Pt 3 (ver 3 by senorkatana11).gp",
+      "Dance Gavin Dance - Strawberry Swisher Pt 3.gpx",
+      "Dance Gavin Dance - Strawberrys Wake (ver 2 by lriax).gp5",
+      "Dance Gavin Dance - Strawberrys Wake (ver 3 by president100).gp5",
+      "Dance Gavin Dance - Strawberrys Wake.gp",
+      "Dance Gavin Dance - Stroke God Millionaire (ver 2 by ed.garnett28).gp",
+      "Dance Gavin Dance - Stroke God Millionaire.gp5",
+      "Dance Gavin Dance - Summertime Gladness.gpx",
+      "Dance Gavin Dance - Surprise Im From Cuba Everyone Else Has One Brain.gp",
+      "Dance Gavin Dance - Surprise Im From Cuba Everyone Has One Brain (ver 2 by GonchDog).gp5",
+      "Dance Gavin Dance - Surprise Im From Cuba Everyone Has One Brain.gp5",
+      "Dance Gavin Dance - Suspended In This Disaster (ver 2 by president100).gp5",
+      "Dance Gavin Dance - Suspended In This Disaster.gpx",
+      "Dance Gavin Dance - Swallowed By Eternity.gp5",
+      "Dance Gavin Dance - Swan Soup.gp5",
+      "Dance Gavin Dance - Synergy (ver 2 by lucascocker5).gp5",
+      "Dance Gavin Dance - Synergy (ver 3 by senorkatana11).gp",
+      "Dance Gavin Dance - Synergy.gp5",
+      "Dance Gavin Dance - Thats What I Like.gpx",
+      "Dance Gavin Dance - The Backwards Pumpkin Song (ver 2 by TheClincher).gp5",
+      "Dance Gavin Dance - The Backwards Pumpkin Song (ver 3 by MagentaMalice).gp5",
+      "Dance Gavin Dance - The Backwards Pumpkin Song.gp5",
+      "Dance Gavin Dance - The Cuddler.gpx",
+      "Dance Gavin Dance - The Ghost Of Billy Royalton (ver 2 by m.najera.ve).gp5",
+      "Dance Gavin Dance - The Ghost Of Billy Royalton.gp5",
+      "Dance Gavin Dance - The Importance Of Cocaine.gp5",
+      "Dance Gavin Dance - The Jiggler.gp5",
+      "Dance Gavin Dance - The Rattler.gp5",
+      "Dance Gavin Dance - The Robot Vs Heroin Battle Of Vietnam.gp5",
+      "Dance Gavin Dance - The Robot With Human Hair Part 1.gp",
+      "Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",
+      "Dance Gavin Dance - The Robot With Human Hair Part 2.gp3",
+      "Dance Gavin Dance - The Robot With Human Hair Part 2.gp5",
+      "Dance Gavin Dance - The Robot With Human Hair Part 3 (ver 2 by tar pit trap).gp4",
+      "Dance Gavin Dance - The Robot With Human Hair Part 3 (ver 3 by m.najera.ve).gp5",
+      "Dance Gavin Dance - The Robot With Human Hair Part 3.gp5",
+      "Dance Gavin Dance - The Robot With Human Hair Part 4.gpx",
+      "Dance Gavin Dance - Three Wishes.gp5",
+      "Dance Gavin Dance - Thug City.gp5",
+      "Dance Gavin Dance - Tidal Waves Breakfast Lunch Dinner.gp5",
+      "Dance Gavin Dance - Tree Village (ver 2 by ed.garnett28).gp",
+      "Dance Gavin Dance - Tree Village.gp5",
+      "Dance Gavin Dance - Turn Off The Lights Im Watching Back To The Future Pt Ii.gp",
+      "Dance Gavin Dance - Turn Off The Lights Im Watching Back To The Future.gp5",
+      "Dance Gavin Dance - Two Secret Weapons.gp5",
+      "Dance Gavin Dance - Uneasy Hearts Weigh The Most (ver 2).gp",
+      "Dance Gavin Dance - Uneasy Hearts Weigh The Most.gp5",
+      "Dance Gavin Dance - Untitled.gp5",
+      "Dance Gavin Dance - Variation (ver 2 by Dio10101).gpx",
+      "Dance Gavin Dance - Variation.gpx",
+      "Dance Gavin Dance - War Machine.gp",
+      "Dance Gavin Dance - We Own The Night (ver 2 by mstumpfig).gpx",
+      "Dance Gavin Dance - We Own The Night.gp5",
+      "Dance Gavin Dance - Young Robot (ver 2 by josh-josh-josh).gpx",
+      "Dance Gavin Dance - Young Robot (ver 3 by president100).gp5",
+      "Dance Gavin Dance - Young Robot.gpx",
+      "Ghost - Kaisarion.gp",
+      "Hail The Sun - 1109.gp5",
+      "Hail The Sun - Anti-Eulogy I Hope You Stay Dead.gp",
+      "Hail The Sun - Anti-Eulogy.gp5",
+      "Hail The Sun - Black Serotonin (ver 2 by thursday21987).gp",
+      "Hail The Sun - Black Serotonin.gp5",
+      "Hail The Sun - Bound.gp",
+      "Hail The Sun - Chunker (ver 2 by ry.schenck).gp",
+      "Hail The Sun - Chunker.gp",
+      "Hail The Sun - Cosmic Narcissism (ver 2 by thursday21987).gp",
+      "Hail The Sun - Cosmic Narcissism.gp",
+      "Hail The Sun - Cosmic Narcissism.gp5",
+      "Hail The Sun - Dead Messages.gp",
+      "Hail The Sun - Disappearing Syndrome (ver 2 by thursday21987).gp",
+      "Hail The Sun - Disappearing Syndrome.gp",
+      "Hail The Sun - Domino.gp",
+      "Hail The Sun - Eight-Ball Coroners Pocket.gpx",
+      "Hail The Sun - Entertainment Lies.gp5",
+      "Hail The Sun - Falling On Deaf Ears.gp",
+      "Hail The Sun - Glass Half Empty.gpx",
+      "Hail The Sun - Hanging Revelation.gp",
+      "Hail The Sun - Human Target Practice (ver 2 by thursday21987).gp",
+      "Hail The Sun - Human Target Practice.gp",
+      "Hail The Sun - Jane Doe.gp",
+      "Hail The Sun - Mental Knife.gpx",
+      "Hail The Sun - Misfire.gp5",
+      "Hail The Sun - Missed Injections (ver 2 by thursday21987).gp",
+      "Hail The Sun - Missed Injections.gp",
+      "Hail The Sun - Mourning Sickness (ver 2 by thursday21987).gp",
+      "Hail The Sun - Mourning Sickness.gp",
+      "Hail The Sun - Never Kill A Mouse Let It Kill Itself (ver 2).gp5",
+      "Hail The Sun - Never Kill A Mouse Let It Kill Itself.gp4",
+      "Hail The Sun - Parasitic Cleanse.gp",
+      "Hail The Sun - Ready Or Not There I Go.gp5",
+      "Hail The Sun - Relax Divide (ver 2 by dayamira).gp",
+      "Hail The Sun - Relax Divide (ver 3 by thursday21987).gp",
+      "Hail The Sun - Relax Divide.gp",
+      "Hail The Sun - Relax Divide.gp5",
+      "Hail The Sun - Rolling Out The Red Carpet (ver 2 by thursday21987).gp",
+      "Hail The Sun - Rolling Out The Red Carpet.gpx",
+      "Hail The Sun - Spite.gpx",
+      "Hail The Sun - Theres Plenty Of Fish In The Sea Too Bad Youre Not A Fish.gpx",
+      "Hail The Sun - Will They Blame Me If You Go Disappearing (ver 2 by Wicked Strum).gp5",
+      "Hail The Sun - Will They Blame Me If You Go Disappearing.gp5",
+      "Hail The Sun - Words Of Gratitude.gp5",
+      "Sianvar - 1100 Days.gpx",
+      "Sianvar - Chest Pressure.gp5",
+      "Sianvar - Omniphobia.gp",
+      "Sianvar - Virtual Vain.gp5",
+      "Underoath - A Boy Brushed Red Living In Black And White (ver 2 by kiefermatot).gp4",
+      "Underoath - A Boy Brushed Red Living In Black And White (ver 3 by pnkr0cker).gp5",
+      "Underoath - A Boy Brushed Red Living In Black And White.gp4",
+      "Underoath - A Divine Eradication.gp5",
+      "Underoath - A Fault Line A Fault Of Mine.gp5",
+      "Underoath - A Message For Adrienne (ver 2).gp5",
+      "Underoath - A Message For Adrienne.gp4",
+      "Underoath - A Moment Suspended In Time.gp5",
+      "Underoath - Act Of Depression.gp5",
+      "Underoath - All The Love Is Gone.gp5",
+      "Underoath - Alone In December (ver 2 by Gil310).gp5",
+      "Underoath - Alone In December (ver 3 by Lil-gzlz96).gpx",
+      "Underoath - Alone In December.gp5",
+      "Underoath - And I Dreamt Of You.gp5",
+      "Underoath - Angel Below.gp4",
+      "Underoath - Angels Below.gp5",
+      "Underoath - Breathing In A New Mentality (ver 2 by zachemtak).gp5",
+      "Underoath - Breathing In A New Mentality.gp5",
+      "Underoath - Casting Such A Thin Shadow (ver 2 by bloodlustx36).gp5",
+      "Underoath - Casting Such A Thin Shadow (ver 3 by js021).gp",
+      "Underoath - Casting Such A Thin Shadow.gp5",
+      "Underoath - Catch Myself Catching Myself.gp5",
+      "Underoath - Cries Of The Past.gp5",
+      "Underoath - Desolate Earth The End Is Here.gp5",
+      "Underoath - Desperate Times Desperate Measures (ver 2 by bloodlustx36).gp5",
+      "Underoath - Desperate Times Desperate Measures.gp5",
+      "Underoath - Down Set Go (ver 2 by LookIntotheAir).gp5",
+      "Underoath - Down Set Go.gp5",
+      "Underoath - Driftwood.gp5",
+      "Underoath - Everyone Looks So Good From Here (ver 2 by seanwatson18).gp5",
+      "Underoath - Everyone Looks So Good From Here.gp4",
+      "Underoath - Heart Of Stone.gp4",
+      "Underoath - Hold Your Breath.gpx",
+      "Underoath - I Dont Feel Very Receptive Today.gp4",
+      "Underoath - I Gave Up.gpx",
+      "Underoath - I Got 10 Friends And A Crowbar That Says You Aint Gonna Do Jack.gp4",
+      "Underoath - I Got Ten Friends And A Crowbar That Says You Aint Gonna Do Jack.gp",
+      "Underoath - Illuminator (ver 2 by swandive).gpx",
+      "Underoath - Illuminator (ver 3 by desoulate).gp5",
+      "Underoath - Illuminator.gp5",
+      "Underoath - Im Content With Losing (ver 2 by kikiu).gp5",
+      "Underoath - Im Content With Losing.gp4",
+      "Underoath - In Completion.gp5",
+      "Underoath - In Division.gp5",
+      "Underoath - In Motion.gpx",
+      "Underoath - In Regards To Myself (ver 2 by re_man182).gp5",
+      "Underoath - In Regards To Myself (ver 3 by LookIntotheAir).gp5",
+      "Underoath - In Regards To Myself (ver 4 by grizzlyfs92).gp",
+      "Underoath - In Regards To Myself.gp4",
+      "Underoath - In Regards To Myself.gp5",
+      "Underoath - Innocence Stolen.gp4",
+      "Underoath - Its Dangerous Business Walking Out Your Front Door.gp4",
+      "Underoath - Its Dangerous Business Walking Out Your Front Door.gp5",
+      "Underoath - Ive Got Ten Friends And A Crowbar That Says You Aint Gonna Do Jack (ver 2 by LookIntotheAir).gp5",
+      "Underoath - Ive Got Ten Friends And A Crowbar That Says You Aint Gonna Do Jack.gp4",
+      "Underoath - Last (ver 2 by catalan123).gp5",
+      "Underoath - Last.gp5",
+      "Underoath - Letting Go Of Tonight.gp5",
+      "Underoath - Moving For The Sake Of Motion.gp5",
+      "Underoath - My Deteriorating Incline.gp5",
+      "Underoath - Never Meant To Break Your Heart (ver 2 by @xel).gp5",
+      "Underoath - Never Meant To Break Your Heart.gp4",
+      "Underoath - No Frame.gpx",
+      "Underoath - On My Teeth (ver 2 by JackCadenhead).gpx",
+      "Underoath - On My Teeth (ver 3 by desoulate).gp5",
+      "Underoath - On My Teeth.gpx",
+      "Underoath - Paper Lung.gp5",
+      "Underoath - Rapture.gpx",
+      "Underoath - Reinventing Your Exit (ver 2 by alexisonfire21).gp4",
+      "Underoath - Reinventing Your Exit (ver 3 by _Doggy_).gp5",
+      "Underoath - Reinventing Your Exit.gp4",
+      "Underoath - Returning Empty Handed.gp5",
+      "Underoath - Short Of Daybreak (ver 2 by callums_revenge).gp5",
+      "Underoath - Short Of Daybreak (ver 3 by gerald.gonzalezvazquez).gpx",
+      "Underoath - Short Of Daybreak.gp5",
+      "Underoath - Some Will Seek Forgiveness Others Escape (ver 2 by Jcrutch86).gp5",
+      "Underoath - Some Will Seek Forgiveness Others Escape.gp5",
+      "Underoath - Some Will Seek Forgiveness Others Escape.gpx",
+      "Underoath - The Impact Of Reason.gp",
+      "Underoath - The Only Survivor Was Miraculously Unharmed.gp4",
+      "Underoath - There Could Be Nothing After This.gp5",
+      "Underoath - Those Who Reach An Endless Trail.gp",
+      "Underoath - To Whom It May Concern (ver 2 by n.schulz29).gpx",
+      "Underoath - To Whom It May Concern.gp5",
+      "Underoath - Too Bright To See Too Loud To Hear (ver 2 by jayman5671).gp5",
+      "Underoath - Too Bright To See Too Loud To Hear.gp5",
+      "Underoath - Unsound.gp5",
+      "Underoath - Vacant Mouth.gp5",
+      "Underoath - Watch Me Die.gp4",
+      "Underoath - When The Sun Sleeps (ver 2 by under218).gp5",
+      "Underoath - When The Sun Sleeps (ver 3 by LookIntotheAir).gp4",
+      "Underoath - When The Sun Sleeps (ver 4 by sk8ter4life).gp5",
+      "Underoath - When The Sun Sleeps (ver 5 by js021).gp",
+      "Underoath - When The Sun Sleeps.gp4",
+      "Underoath - Who Will Guard The Guardians.gp5",
+      "Underoath - Writing On The Walls (ver 2).gp5",
+      "Underoath - Writing On The Walls (ver 3 by re_man182).gp5",
+      "Underoath - Writing On The Walls (ver 4 by decasta).gp5",
+      "Underoath - Writing On The Walls.gp4",
+      "Underoath - Young And Aspiring (ver 2 by _Doggy_).gp5",
+      "Underoath - Young And Aspiring.gp4",
+      "Underoath - Youre Ever So Inviting (ver 2 by josh-josh-josh).gpx",
+      "Underoath - Youre Ever So Inviting.gp5",
+      "Wolf & Bear - Deleto.gp5",
+      "Wolf & Bear - Sight (ver 2 by ezekiela1996).gp5",
+      "Wolf & Bear - Street Rat.gp",
+      "Wolf & Bear - Theres No Dust In The City.gp",
+      "Wolf & Bear - Twisted Tongues.gpx"
+    ],
+    "missing_sources": [],
+    "ambiguous_sources": [],
+    "unreferenced_tabs": [
+      "tabs/A Lot Like Birds - Atoms In Evening.gp5",
+      "tabs/Dance Gavin Dance - Alex English.gp5",
+      "tabs/Dance Gavin Dance - Head Hunter.gp",
+      "tabs/Dance Gavin Dance - One In A Million.gp",
+      "tabs/Dance Gavin Dance - The Robot With Human Hair Part 4 (ver 2 by MagentaMalice).gp5",
+      "tabs/Hail The Sun - Chunker.gpx",
+      "tabs/Underoath - Anyone Can Dig A Hole But It Takes A Real Man To Call It Home.gpx",
+      "tabs/Underoath - Reversal.gp5",
+      "tabs/Wolf & Bear - Quick Sip 84.gp",
+      "tabs/Wolf & Bear - Sight.gp5"
+    ]
+  },
+  "v9_coverage": {
+    "sha256_present": 0,
+    "track_index_present": 0,
+    "total_chunks": 9907
+  },
+  "v10_readiness": {
+    "song_id_field_in_schema": false,
+    "distinct_works_estimated": 257,
+    "multi_transcription_works": [
+      {
+        "work": "dance gavin dance - open your eyes and look north",
+        "files": [
+          "Dance Gavin Dance - Open Your Eyes And Look North (ver 2 by TalkingToAngels).gp5",
+          "Dance Gavin Dance - Open Your Eyes And Look North (ver 2).gp5",
+          "Dance Gavin Dance - Open Your Eyes And Look North (ver 3).gp5",
+          "Dance Gavin Dance - Open Your Eyes And Look North (ver 4 by oreopimp44).gp5",
+          "Dance Gavin Dance - Open Your Eyes And Look North (ver 5 by mgttg47).gp5",
+          "Dance Gavin Dance - Open Your Eyes And Look North.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - chucky vs the giant tortoise",
+        "files": [
+          "Dance Gavin Dance - Chucky Vs The Giant Tortoise (ver 2 by mikoyeahyeah).gpx",
+          "Dance Gavin Dance - Chucky Vs The Giant Tortoise (ver 3 by lacesup).gp",
+          "Dance Gavin Dance - Chucky Vs The Giant Tortoise (ver 4 by juskiwmatt).gp5",
+          "Dance Gavin Dance - Chucky Vs The Giant Tortoise (ver 5 by president100).gp5",
+          "Dance Gavin Dance - Chucky Vs The Giant Tortoise.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - lemon meringue tie",
+        "files": [
+          "Dance Gavin Dance - Lemon Meringue Tie (ver 2 by kucharz89).gp5",
+          "Dance Gavin Dance - Lemon Meringue Tie (ver 3 by GonchDog).gp5",
+          "Dance Gavin Dance - Lemon Meringue Tie (ver 4 by ed.garnett28).gp",
+          "Dance Gavin Dance - Lemon Meringue Tie (ver 5 by mando2793).gpx",
+          "Dance Gavin Dance - Lemon Meringue Tie.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - midnight crusade",
+        "files": [
+          "Dance Gavin Dance - Midnight Crusade (ver 2).gp5",
+          "Dance Gavin Dance - Midnight Crusade (ver 3 by Dudealy).gpx",
+          "Dance Gavin Dance - Midnight Crusade (ver 4 by president100).gp5",
+          "Dance Gavin Dance - Midnight Crusade (ver 5 by TheLoEnd).gp",
+          "Dance Gavin Dance - Midnight Crusade.gpx"
+        ]
+      },
+      {
+        "work": "underoath - in regards to myself",
+        "files": [
+          "Underoath - In Regards To Myself (ver 2 by re_man182).gp5",
+          "Underoath - In Regards To Myself (ver 3 by LookIntotheAir).gp5",
+          "Underoath - In Regards To Myself (ver 4 by grizzlyfs92).gp",
+          "Underoath - In Regards To Myself.gp4",
+          "Underoath - In Regards To Myself.gp5"
+        ]
+      },
+      {
+        "work": "underoath - when the sun sleeps",
+        "files": [
+          "Underoath - When The Sun Sleeps (ver 2 by under218).gp5",
+          "Underoath - When The Sun Sleeps (ver 3 by LookIntotheAir).gp4",
+          "Underoath - When The Sun Sleeps (ver 4 by sk8ter4life).gp5",
+          "Underoath - When The Sun Sleeps (ver 5 by js021).gp",
+          "Underoath - When The Sun Sleeps.gp4"
+        ]
+      },
+      {
+        "work": "dance gavin dance - parody catharsis",
+        "files": [
+          "Dance Gavin Dance - Parody Catharsis (ver 2 by lt22).gp",
+          "Dance Gavin Dance - Parody Catharsis (ver 3 by setsy).gp",
+          "Dance Gavin Dance - Parody Catharsis (ver 4 by president100).gp5",
+          "Dance Gavin Dance - Parody Catharsis.gp5"
+        ]
+      },
+      {
+        "work": "hail the sun - relax divide",
+        "files": [
+          "Hail The Sun - Relax Divide (ver 2 by dayamira).gp",
+          "Hail The Sun - Relax Divide (ver 3 by thursday21987).gp",
+          "Hail The Sun - Relax Divide.gp",
+          "Hail The Sun - Relax Divide.gp5"
+        ]
+      },
+      {
+        "work": "underoath - writing on the walls",
+        "files": [
+          "Underoath - Writing On The Walls (ver 2).gp5",
+          "Underoath - Writing On The Walls (ver 3 by re_man182).gp5",
+          "Underoath - Writing On The Walls (ver 4 by decasta).gp5",
+          "Underoath - Writing On The Walls.gp4"
+        ]
+      },
+      {
+        "work": "a lot like birds - next to ungodliness",
+        "files": [
+          "A Lot Like Birds - Next To Ungodliness (ver 2 by edwinal0504).gpx",
+          "A Lot Like Birds - Next To Ungodliness (ver 3 by LPFzCS_LMS).gp5",
+          "A Lot Like Birds - Next To Ungodliness.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - bloodsucker",
+        "files": [
+          "Dance Gavin Dance - Bloodsucker (ver 2 by RiseAgainst34).gp",
+          "Dance Gavin Dance - Bloodsucker (ver 3 by ed.garnett28).gp",
+          "Dance Gavin Dance - Bloodsucker.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - care",
+        "files": [
+          "Dance Gavin Dance - Care (ver 2 by president100).gp5",
+          "Dance Gavin Dance - Care (ver 3 by TheLoEnd).gp",
+          "Dance Gavin Dance - Care.gp"
+        ]
+      },
+      {
+        "work": "dance gavin dance - evaporate",
+        "files": [
+          "Dance Gavin Dance - Evaporate (ver 2 by president100).gp5",
+          "Dance Gavin Dance - Evaporate (ver 3 by RiseAgainst34).gp",
+          "Dance Gavin Dance - Evaporate.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - me and zoloft get along just fine",
+        "files": [
+          "Dance Gavin Dance - Me And Zoloft Get Along Just Fine (ver 2 by kucharz89).gp5",
+          "Dance Gavin Dance - Me And Zoloft Get Along Just Fine (ver 3 by 93dric).gp5",
+          "Dance Gavin Dance - Me And Zoloft Get Along Just Fine.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - nasa",
+        "files": [
+          "Dance Gavin Dance - Nasa (ver 2 by lacesup).gpx",
+          "Dance Gavin Dance - Nasa (ver 3 by jakebohn81).gpx",
+          "Dance Gavin Dance - Nasa.gp4"
+        ]
+      },
+      {
+        "work": "dance gavin dance - prisoner",
+        "files": [
+          "Dance Gavin Dance - Prisoner (ver 2 by Medeses).gp",
+          "Dance Gavin Dance - Prisoner (ver 3 by president100).gp5",
+          "Dance Gavin Dance - Prisoner.gp"
+        ]
+      },
+      {
+        "work": "dance gavin dance - strawberry swisher pt 2",
+        "files": [
+          "Dance Gavin Dance - Strawberry Swisher Pt 2 (ver 2 by HectorDaniel).gpx",
+          "Dance Gavin Dance - Strawberry Swisher Pt 2 (ver 3 by gjikolp).gp",
+          "Dance Gavin Dance - Strawberry Swisher Pt 2.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - strawberry swisher pt 3",
+        "files": [
+          "Dance Gavin Dance - Strawberry Swisher Pt 3 (ver 2 by marcellus97).gpx",
+          "Dance Gavin Dance - Strawberry Swisher Pt 3 (ver 3 by senorkatana11).gp",
+          "Dance Gavin Dance - Strawberry Swisher Pt 3.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - strawberrys wake",
+        "files": [
+          "Dance Gavin Dance - Strawberrys Wake (ver 2 by lriax).gp5",
+          "Dance Gavin Dance - Strawberrys Wake (ver 3 by president100).gp5",
+          "Dance Gavin Dance - Strawberrys Wake.gp"
+        ]
+      },
+      {
+        "work": "dance gavin dance - synergy",
+        "files": [
+          "Dance Gavin Dance - Synergy (ver 2 by lucascocker5).gp5",
+          "Dance Gavin Dance - Synergy (ver 3 by senorkatana11).gp",
+          "Dance Gavin Dance - Synergy.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - the backwards pumpkin song",
+        "files": [
+          "Dance Gavin Dance - The Backwards Pumpkin Song (ver 2 by TheClincher).gp5",
+          "Dance Gavin Dance - The Backwards Pumpkin Song (ver 3 by MagentaMalice).gp5",
+          "Dance Gavin Dance - The Backwards Pumpkin Song.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - the robot with human hair part 2",
+        "files": [
+          "Dance Gavin Dance - The Robot With Human Hair Part 2 (ver 2 by Thomasoman).gp5",
+          "Dance Gavin Dance - The Robot With Human Hair Part 2.gp3",
+          "Dance Gavin Dance - The Robot With Human Hair Part 2.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - the robot with human hair part 3",
+        "files": [
+          "Dance Gavin Dance - The Robot With Human Hair Part 3 (ver 2 by tar pit trap).gp4",
+          "Dance Gavin Dance - The Robot With Human Hair Part 3 (ver 3 by m.najera.ve).gp5",
+          "Dance Gavin Dance - The Robot With Human Hair Part 3.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - young robot",
+        "files": [
+          "Dance Gavin Dance - Young Robot (ver 2 by josh-josh-josh).gpx",
+          "Dance Gavin Dance - Young Robot (ver 3 by president100).gp5",
+          "Dance Gavin Dance - Young Robot.gpx"
+        ]
+      },
+      {
+        "work": "hail the sun - cosmic narcissism",
+        "files": [
+          "Hail The Sun - Cosmic Narcissism (ver 2 by thursday21987).gp",
+          "Hail The Sun - Cosmic Narcissism.gp",
+          "Hail The Sun - Cosmic Narcissism.gp5"
+        ]
+      },
+      {
+        "work": "underoath - a boy brushed red living in black and white",
+        "files": [
+          "Underoath - A Boy Brushed Red Living In Black And White (ver 2 by kiefermatot).gp4",
+          "Underoath - A Boy Brushed Red Living In Black And White (ver 3 by pnkr0cker).gp5",
+          "Underoath - A Boy Brushed Red Living In Black And White.gp4"
+        ]
+      },
+      {
+        "work": "underoath - alone in december",
+        "files": [
+          "Underoath - Alone In December (ver 2 by Gil310).gp5",
+          "Underoath - Alone In December (ver 3 by Lil-gzlz96).gpx",
+          "Underoath - Alone In December.gp5"
+        ]
+      },
+      {
+        "work": "underoath - casting such a thin shadow",
+        "files": [
+          "Underoath - Casting Such A Thin Shadow (ver 2 by bloodlustx36).gp5",
+          "Underoath - Casting Such A Thin Shadow (ver 3 by js021).gp",
+          "Underoath - Casting Such A Thin Shadow.gp5"
+        ]
+      },
+      {
+        "work": "underoath - illuminator",
+        "files": [
+          "Underoath - Illuminator (ver 2 by swandive).gpx",
+          "Underoath - Illuminator (ver 3 by desoulate).gp5",
+          "Underoath - Illuminator.gp5"
+        ]
+      },
+      {
+        "work": "underoath - on my teeth",
+        "files": [
+          "Underoath - On My Teeth (ver 2 by JackCadenhead).gpx",
+          "Underoath - On My Teeth (ver 3 by desoulate).gp5",
+          "Underoath - On My Teeth.gpx"
+        ]
+      },
+      {
+        "work": "underoath - reinventing your exit",
+        "files": [
+          "Underoath - Reinventing Your Exit (ver 2 by alexisonfire21).gp4",
+          "Underoath - Reinventing Your Exit (ver 3 by _Doggy_).gp5",
+          "Underoath - Reinventing Your Exit.gp4"
+        ]
+      },
+      {
+        "work": "underoath - short of daybreak",
+        "files": [
+          "Underoath - Short Of Daybreak (ver 2 by callums_revenge).gp5",
+          "Underoath - Short Of Daybreak (ver 3 by gerald.gonzalezvazquez).gpx",
+          "Underoath - Short Of Daybreak.gp5"
+        ]
+      },
+      {
+        "work": "underoath - some will seek forgiveness others escape",
+        "files": [
+          "Underoath - Some Will Seek Forgiveness Others Escape (ver 2 by Jcrutch86).gp5",
+          "Underoath - Some Will Seek Forgiveness Others Escape.gp5",
+          "Underoath - Some Will Seek Forgiveness Others Escape.gpx"
+        ]
+      },
+      {
+        "work": "a lot like birds - connector",
+        "files": [
+          "A Lot Like Birds - Connector (ver 2 by LPFzCS_LMS).gp5",
+          "A Lot Like Birds - Connector.gp5"
+        ]
+      },
+      {
+        "work": "a lot like birds - kuroi ledge",
+        "files": [
+          "A Lot Like Birds - Kuroi Ledge (ver 2 by LPFzCS_LMS).gp5",
+          "A Lot Like Birds - Kuroi Ledge.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - 12 hours 630 miles",
+        "files": [
+          "Dance Gavin Dance - 12 Hours 630 Miles (ver 2 by patman1416).gp5",
+          "Dance Gavin Dance - 12 Hours 630 Miles.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - alex english",
+        "files": [
+          "Dance Gavin Dance - Alex English (ver 2 by CrashAshes43).gpx",
+          "Dance Gavin Dance - Alex English (ver 3 by funkyrocker24).gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - betrayed by the game",
+        "files": [
+          "Dance Gavin Dance - Betrayed By The Game (ver 2 by mikoyeahyeah).gpx",
+          "Dance Gavin Dance - Betrayed By The Game.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - blood wolf",
+        "files": [
+          "Dance Gavin Dance - Blood Wolf (ver 2 by Mage_Gage).gp",
+          "Dance Gavin Dance - Blood Wolf.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - blue dream",
+        "files": [
+          "Dance Gavin Dance - Blue Dream (ver 2 by Lem0nz).gp5",
+          "Dance Gavin Dance - Blue Dream.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - born to fail",
+        "files": [
+          "Dance Gavin Dance - Born To Fail (ver 2 by president100).gp5",
+          "Dance Gavin Dance - Born To Fail.gp"
+        ]
+      },
+      {
+        "work": "dance gavin dance - buffalo",
+        "files": [
+          "Dance Gavin Dance - Buffalo (ver 2 by jakebohn81).gpx",
+          "Dance Gavin Dance - Buffalo.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - carl barker",
+        "files": [
+          "Dance Gavin Dance - Carl Barker (ver 2 by rudy_rubber).gp",
+          "Dance Gavin Dance - Carl Barker.gp4"
+        ]
+      },
+      {
+        "work": "dance gavin dance - caviar",
+        "files": [
+          "Dance Gavin Dance - Caviar (ver 2 by ed.garnett28).gp",
+          "Dance Gavin Dance - Caviar.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - deception",
+        "files": [
+          "Dance Gavin Dance - Deception (ver 2 by lilgstryker).gp5",
+          "Dance Gavin Dance - Deception.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - eagle vs crows",
+        "files": [
+          "Dance Gavin Dance - Eagle Vs Crows (ver 2 by ed.garnett28).gp",
+          "Dance Gavin Dance - Eagle Vs Crows.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - flash",
+        "files": [
+          "Dance Gavin Dance - Flash (ver 2 by RiseAgainst34).gp",
+          "Dance Gavin Dance - Flash.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - happiness",
+        "files": [
+          "Dance Gavin Dance - Happiness (ver 2 by dylanure2005).gp5",
+          "Dance Gavin Dance - Happiness.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - heat seeking ghost of sex",
+        "files": [
+          "Dance Gavin Dance - Heat Seeking Ghost Of Sex (ver 2 by kingshaunicus).gp5",
+          "Dance Gavin Dance - Heat Seeking Ghost Of Sex.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - hot water on wool",
+        "files": [
+          "Dance Gavin Dance - Hot Water On Wool (ver 2 by jakebohn81).gpx",
+          "Dance Gavin Dance - Hot Water On Wool.gp4"
+        ]
+      },
+      {
+        "work": "dance gavin dance - its safe to say you dig the backseat",
+        "files": [
+          "Dance Gavin Dance - Its Safe To Say You Dig The Backseat (ver 2).gp5",
+          "Dance Gavin Dance - Its Safe To Say You Dig The Backseat.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - long nights in jail",
+        "files": [
+          "Dance Gavin Dance - Long Nights In Jail (ver 2 by raviolimaster).gp5",
+          "Dance Gavin Dance - Long Nights In Jail.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - lyrics lie",
+        "files": [
+          "Dance Gavin Dance - Lyrics Lie (ver 2 by president100).gp5",
+          "Dance Gavin Dance - Lyrics Lie.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - nothing shameful",
+        "files": [
+          "Dance Gavin Dance - Nothing Shameful (ver 2 by president100).gp5",
+          "Dance Gavin Dance - Nothing Shameful.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - one in a million",
+        "files": [
+          "Dance Gavin Dance - One In A Million (ver 2 by Igor0400).gp",
+          "Dance Gavin Dance - One In A Million (ver 3 by president100).gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - philosopher king",
+        "files": [
+          "Dance Gavin Dance - Philosopher King (ver 2 by ed.garnett28).gp",
+          "Dance Gavin Dance - Philosopher King.gp"
+        ]
+      },
+      {
+        "work": "dance gavin dance - polka dot dobbins",
+        "files": [
+          "Dance Gavin Dance - Polka Dot Dobbins (ver 2 by raviolimaster).gp5",
+          "Dance Gavin Dance - Polka Dot Dobbins.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - privilously poncheezied",
+        "files": [
+          "Dance Gavin Dance - Privilously Poncheezied (ver 2 by edwinal0504).gpx",
+          "Dance Gavin Dance - Privilously Poncheezied.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - shark dad",
+        "files": [
+          "Dance Gavin Dance - Shark Dad.gp",
+          "Dance Gavin Dance - Shark Dad.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - shelf life",
+        "files": [
+          "Dance Gavin Dance - Shelf Life (ver 2 by president100).gp5",
+          "Dance Gavin Dance - Shelf Life.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - skyhook",
+        "files": [
+          "Dance Gavin Dance - Skyhook (ver 2 by maxtricano).gp",
+          "Dance Gavin Dance - Skyhook.gp"
+        ]
+      },
+      {
+        "work": "dance gavin dance - son of robot",
+        "files": [
+          "Dance Gavin Dance - Son Of Robot (ver 2 by president100).gp5",
+          "Dance Gavin Dance - Son Of Robot.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - strawberry andre",
+        "files": [
+          "Dance Gavin Dance - Strawberry Andre (ver 2 by GonchDog).gp5",
+          "Dance Gavin Dance - Strawberry Andre.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - stroke god millionaire",
+        "files": [
+          "Dance Gavin Dance - Stroke God Millionaire (ver 2 by ed.garnett28).gp",
+          "Dance Gavin Dance - Stroke God Millionaire.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - surprise im from cuba everyone has one brain",
+        "files": [
+          "Dance Gavin Dance - Surprise Im From Cuba Everyone Has One Brain (ver 2 by GonchDog).gp5",
+          "Dance Gavin Dance - Surprise Im From Cuba Everyone Has One Brain.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - suspended in this disaster",
+        "files": [
+          "Dance Gavin Dance - Suspended In This Disaster (ver 2 by president100).gp5",
+          "Dance Gavin Dance - Suspended In This Disaster.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - the ghost of billy royalton",
+        "files": [
+          "Dance Gavin Dance - The Ghost Of Billy Royalton (ver 2 by m.najera.ve).gp5",
+          "Dance Gavin Dance - The Ghost Of Billy Royalton.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - tree village",
+        "files": [
+          "Dance Gavin Dance - Tree Village (ver 2 by ed.garnett28).gp",
+          "Dance Gavin Dance - Tree Village.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - uneasy hearts weigh the most",
+        "files": [
+          "Dance Gavin Dance - Uneasy Hearts Weigh The Most (ver 2).gp",
+          "Dance Gavin Dance - Uneasy Hearts Weigh The Most.gp5"
+        ]
+      },
+      {
+        "work": "dance gavin dance - variation",
+        "files": [
+          "Dance Gavin Dance - Variation (ver 2 by Dio10101).gpx",
+          "Dance Gavin Dance - Variation.gpx"
+        ]
+      },
+      {
+        "work": "dance gavin dance - we own the night",
+        "files": [
+          "Dance Gavin Dance - We Own The Night (ver 2 by mstumpfig).gpx",
+          "Dance Gavin Dance - We Own The Night.gp5"
+        ]
+      },
+      {
+        "work": "hail the sun - black serotonin",
+        "files": [
+          "Hail The Sun - Black Serotonin (ver 2 by thursday21987).gp",
+          "Hail The Sun - Black Serotonin.gp5"
+        ]
+      },
+      {
+        "work": "hail the sun - chunker",
+        "files": [
+          "Hail The Sun - Chunker (ver 2 by ry.schenck).gp",
+          "Hail The Sun - Chunker.gp"
+        ]
+      },
+      {
+        "work": "hail the sun - disappearing syndrome",
+        "files": [
+          "Hail The Sun - Disappearing Syndrome (ver 2 by thursday21987).gp",
+          "Hail The Sun - Disappearing Syndrome.gp"
+        ]
+      },
+      {
+        "work": "hail the sun - human target practice",
+        "files": [
+          "Hail The Sun - Human Target Practice (ver 2 by thursday21987).gp",
+          "Hail The Sun - Human Target Practice.gp"
+        ]
+      },
+      {
+        "work": "hail the sun - missed injections",
+        "files": [
+          "Hail The Sun - Missed Injections (ver 2 by thursday21987).gp",
+          "Hail The Sun - Missed Injections.gp"
+        ]
+      },
+      {
+        "work": "hail the sun - mourning sickness",
+        "files": [
+          "Hail The Sun - Mourning Sickness (ver 2 by thursday21987).gp",
+          "Hail The Sun - Mourning Sickness.gp"
+        ]
+      },
+      {
+        "work": "hail the sun - never kill a mouse let it kill itself",
+        "files": [
+          "Hail The Sun - Never Kill A Mouse Let It Kill Itself (ver 2).gp5",
+          "Hail The Sun - Never Kill A Mouse Let It Kill Itself.gp4"
+        ]
+      },
+      {
+        "work": "hail the sun - rolling out the red carpet",
+        "files": [
+          "Hail The Sun - Rolling Out The Red Carpet (ver 2 by thursday21987).gp",
+          "Hail The Sun - Rolling Out The Red Carpet.gpx"
+        ]
+      },
+      {
+        "work": "hail the sun - will they blame me if you go disappearing",
+        "files": [
+          "Hail The Sun - Will They Blame Me If You Go Disappearing (ver 2 by Wicked Strum).gp5",
+          "Hail The Sun - Will They Blame Me If You Go Disappearing.gp5"
+        ]
+      },
+      {
+        "work": "underoath - a message for adrienne",
+        "files": [
+          "Underoath - A Message For Adrienne (ver 2).gp5",
+          "Underoath - A Message For Adrienne.gp4"
+        ]
+      },
+      {
+        "work": "underoath - breathing in a new mentality",
+        "files": [
+          "Underoath - Breathing In A New Mentality (ver 2 by zachemtak).gp5",
+          "Underoath - Breathing In A New Mentality.gp5"
+        ]
+      },
+      {
+        "work": "underoath - desperate times desperate measures",
+        "files": [
+          "Underoath - Desperate Times Desperate Measures (ver 2 by bloodlustx36).gp5",
+          "Underoath - Desperate Times Desperate Measures.gp5"
+        ]
+      },
+      {
+        "work": "underoath - down set go",
+        "files": [
+          "Underoath - Down Set Go (ver 2 by LookIntotheAir).gp5",
+          "Underoath - Down Set Go.gp5"
+        ]
+      },
+      {
+        "work": "underoath - everyone looks so good from here",
+        "files": [
+          "Underoath - Everyone Looks So Good From Here (ver 2 by seanwatson18).gp5",
+          "Underoath - Everyone Looks So Good From Here.gp4"
+        ]
+      },
+      {
+        "work": "underoath - im content with losing",
+        "files": [
+          "Underoath - Im Content With Losing (ver 2 by kikiu).gp5",
+          "Underoath - Im Content With Losing.gp4"
+        ]
+      },
+      {
+        "work": "underoath - its dangerous business walking out your front door",
+        "files": [
+          "Underoath - Its Dangerous Business Walking Out Your Front Door.gp4",
+          "Underoath - Its Dangerous Business Walking Out Your Front Door.gp5"
+        ]
+      },
+      {
+        "work": "underoath - ive got ten friends and a crowbar that says you aint gonna do jack",
+        "files": [
+          "Underoath - Ive Got Ten Friends And A Crowbar That Says You Aint Gonna Do Jack (ver 2 by LookIntotheAir).gp5",
+          "Underoath - Ive Got Ten Friends And A Crowbar That Says You Aint Gonna Do Jack.gp4"
+        ]
+      },
+      {
+        "work": "underoath - last",
+        "files": [
+          "Underoath - Last (ver 2 by catalan123).gp5",
+          "Underoath - Last.gp5"
+        ]
+      },
+      {
+        "work": "underoath - never meant to break your heart",
+        "files": [
+          "Underoath - Never Meant To Break Your Heart (ver 2 by @xel).gp5",
+          "Underoath - Never Meant To Break Your Heart.gp4"
+        ]
+      },
+      {
+        "work": "underoath - to whom it may concern",
+        "files": [
+          "Underoath - To Whom It May Concern (ver 2 by n.schulz29).gpx",
+          "Underoath - To Whom It May Concern.gp5"
+        ]
+      },
+      {
+        "work": "underoath - too bright to see too loud to hear",
+        "files": [
+          "Underoath - Too Bright To See Too Loud To Hear (ver 2 by jayman5671).gp5",
+          "Underoath - Too Bright To See Too Loud To Hear.gp5"
+        ]
+      },
+      {
+        "work": "underoath - young and aspiring",
+        "files": [
+          "Underoath - Young And Aspiring (ver 2 by _Doggy_).gp5",
+          "Underoath - Young And Aspiring.gp4"
+        ]
+      },
+      {
+        "work": "underoath - youre ever so inviting",
+        "files": [
+          "Underoath - Youre Ever So Inviting (ver 2 by josh-josh-josh).gpx",
+          "Underoath - Youre Ever So Inviting.gp5"
+        ]
+      }
+    ]
+  },
+  "annotation_coverage": {
+    "structure": 9907,
+    "gesture": 9907,
+    "complexity": 9907,
+    "rights": 9907,
+    "style_cohort": 9907,
+    "duplicate": 2537,
+    "ensemble": 9717,
+    "total_chunks": 9907
+  },
+  "ensemble_integrity": {
+    "manifest_groups": 405,
+    "group_member_ids": 9717,
+    "chunks_with_ensemble_ref": 9717,
+    "broken_member_refs": [],
+    "orphan_ensemble_refs": []
+  },
+  "duplicates": {
+    "content_duplicate_tabs": [
+      [
+        "tabs/Underoath - I Got 10 Friends And A Crowbar That Says You Aint Gonna Do Jack.gp4",
+        "tabs/Underoath - Ive Got Ten Friends And A Crowbar That Says You Aint Gonna Do Jack.gp4"
+      ]
+    ]
+  },
+  "format_distribution": {
+    "gp": 2105,
+    "gp3": 18,
+    "gp4": 748,
+    "gp5": 5632,
+    "gpx": 1404
+  }
+}
