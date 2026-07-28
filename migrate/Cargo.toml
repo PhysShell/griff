@@ -1,0 +1,34 @@
+# Isolated offline v8→v9 corpus migration tool (SHA-256 backfill). Deliberately
+# NOT a member of the parent workspace: like `lab/` and the corpus census, it is
+# operational tooling that rewrites a *copy* of the corpus and must never enter
+# the production build, CI, or `--workspace` clippy. Mirrors the `fuzz/`
+# isolation precedent (ADR-0010).
+#
+# Scope: backfill `SourceRef.sha256` only — the mechanical half of schema v9
+# that unblocks source-file / fragment holdout. It does NOT set `track_index`
+# (that needs a replay-based classification and is a separate migration); the
+# field is left `None`, never guessed as 0.
+
+[package]
+name         = "griff-corpus-migrate"
+version      = "0.0.0"
+publish      = false
+edition      = "2021"
+rust-version = "1.92"
+
+[[bin]]
+name = "migrate-v9"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[dependencies.griff-core]
+path = "../core"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all      = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
