@@ -592,4 +592,180 @@ mod tests {
         let plan = build_plan(&chunks, &idx).expect("resolvable");
         assert_eq!(plan.first().map(|b| b.sha256.as_str()), Some(sha.as_str()));
     }
+
+    // ── end-to-end `run()` over real filesystem trees ──────────────────────────
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A self-cleaning temporary directory tree for exercising `run()`.
+    struct TmpTree {
+        root: PathBuf,
+    }
+
+    impl TmpTree {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir()
+                .join(format!("griff-migrate-{tag}-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&root).expect("create tmp root");
+            Self { root }
+        }
+
+        fn path(&self, rel: &str) -> PathBuf {
+            self.root.join(rel)
+        }
+
+        fn write(&self, rel: &str, contents: &str) {
+            let dest = self.root.join(rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).expect("create parent");
+            }
+            std::fs::write(&dest, contents).expect("write fixture");
+        }
+    }
+
+    impl Drop for TmpTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn manifest_json(schema_version: u32, filename: &str) -> String {
+        format!(
+            r#"{{ "schema_version": {schema_version}, "chunks": [
+                {{ "id": "e2e_001_p0", "title": "E2E", "source": {{ "filename": {filename:?}, "format": "gp5", "bar_range": null }},
+                   "tempo_bpm": 120.0, "ticks_per_quarter": 960, "time_signature": [4, 4], "tuning": "standard_e",
+                   "tags": [], "boundaries": [], "techniques": [], "quality_flags": [],
+                   "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z" }} ] }}"#
+        )
+    }
+
+    fn chunk_json(filename: &str) -> String {
+        format!(
+            r#"{{ "id": "e2e_001_p0", "title": "E2E", "source": {{ "filename": {filename:?}, "format": "gp5", "bar_range": null }},
+                "tempo_bpm": 120.0, "ticks_per_quarter": 960, "time_signature": [4, 4], "tuning": "standard_e",
+                "tags": [], "boundaries": [], "techniques": [], "quality_flags": [],
+                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z" }}"#
+        )
+    }
+
+    /// Build a `corpus/` (one chunk file + one manifest) and a `tabs/` tree under
+    /// `tree`, and return the corpus/tabs paths plus the tab's true digest.
+    fn seed(tree: &TmpTree, schema_version: u32, filename: &str, tab_bytes: &str) -> (PathBuf, PathBuf, String) {
+        tree.write("corpus/e2e_001.p0.chunk.json", &chunk_json(filename));
+        tree.write("corpus/manifest.json", &manifest_json(schema_version, filename));
+        tree.write(&format!("tabs/{filename}"), tab_bytes);
+        (tree.path("corpus"), tree.path("tabs"), source_sha256(tab_bytes.as_bytes()))
+    }
+
+    fn out_chunk_sha(out: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(out.join("e2e_001.p0.chunk.json")).ok()?;
+        let chunk: ChunkMeta = serde_json::from_str(&text).ok()?;
+        chunk.source.sha256
+    }
+
+    #[test]
+    fn e2e_success_backfills_and_advances_schema() {
+        let tree = TmpTree::new("success");
+        let (corpus, tabs, sha) = seed(&tree, 8, "Song.gp5", "abc bytes");
+        let out = tree.path("out");
+        run(&corpus, &tabs, &out).expect("migration succeeds");
+
+        assert_eq!(out_chunk_sha(&out).as_deref(), Some(sha.as_str()));
+        let chunk: ChunkMeta = serde_json::from_str(
+            &std::fs::read_to_string(out.join("e2e_001.p0.chunk.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(chunk.source.track_index, None, "track_index must stay absent");
+        let manifest: CorpusManifest = serde_json::from_str(
+            &std::fs::read_to_string(out.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.schema_version, 9, "manifest must become exactly v9");
+        assert_eq!(manifest.chunks.first().and_then(|c| c.source.sha256.as_deref()), Some(sha.as_str()));
+    }
+
+    #[test]
+    fn e2e_idempotent_from_migrated_output() {
+        let tree = TmpTree::new("idem");
+        let (corpus, tabs, sha) = seed(&tree, 8, "Song.gp5", "abc bytes");
+        let out = tree.path("out");
+        run(&corpus, &tabs, &out).expect("first migration");
+        let out2 = tree.path("out2");
+        run(&out, &tabs, &out2).expect("re-migration from output");
+        assert_eq!(out_chunk_sha(&out2).as_deref(), Some(sha.as_str()));
+    }
+
+    #[test]
+    fn e2e_missing_source_writes_no_output() {
+        let tree = TmpTree::new("missing");
+        let (corpus, tabs, _) = seed(&tree, 8, "Song.gp5", "abc");
+        std::fs::remove_file(tabs.join("Song.gp5")).unwrap();
+        let out = tree.path("out");
+        run(&corpus, &tabs, &out).expect_err("missing source must refuse");
+        assert!(!out.exists(), "no output directory on refusal");
+    }
+
+    #[test]
+    fn e2e_refuses_output_equal_to_corpus() {
+        let tree = TmpTree::new("eq");
+        let (corpus, tabs, _) = seed(&tree, 8, "Song.gp5", "abc");
+        let before = std::fs::read_to_string(corpus.join("e2e_001.p0.chunk.json")).unwrap();
+        run(&corpus, &tabs, &corpus).expect_err("output == corpus must refuse");
+        let after = std::fs::read_to_string(corpus.join("e2e_001.p0.chunk.json")).unwrap();
+        assert_eq!(before, after, "corpus must be byte-identical after refusal");
+    }
+
+    #[test]
+    fn e2e_refuses_output_inside_corpus() {
+        let tree = TmpTree::new("incorpus");
+        let (corpus, tabs, _) = seed(&tree, 8, "Song.gp5", "abc");
+        let out = corpus.join("nested_out");
+        run(&corpus, &tabs, &out).expect_err("output inside corpus must refuse");
+        assert!(!out.exists(), "no output on refusal");
+    }
+
+    #[test]
+    fn e2e_refuses_output_inside_tabs() {
+        let tree = TmpTree::new("intabs");
+        let (corpus, tabs, _) = seed(&tree, 8, "Song.gp5", "abc");
+        let out = tabs.join("nested_out");
+        run(&corpus, &tabs, &out).expect_err("output inside tabs must refuse");
+        assert!(!out.exists(), "no output on refusal");
+    }
+
+    #[test]
+    fn e2e_refuses_existing_output() {
+        let tree = TmpTree::new("existing");
+        let (corpus, tabs, _) = seed(&tree, 8, "Song.gp5", "abc");
+        let out = tree.path("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("sentinel"), "keep").unwrap();
+        run(&corpus, &tabs, &out).expect_err("existing output must refuse");
+        assert!(out.join("sentinel").exists(), "existing output left untouched");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn e2e_refuses_symlink_alias_of_corpus() {
+        let tree = TmpTree::new("symlink");
+        let (corpus, tabs, _) = seed(&tree, 8, "Song.gp5", "abc");
+        // `alias` resolves to `corpus`; output nested under it lands inside the
+        // corpus once symlinks are followed.
+        let alias = tree.path("alias");
+        std::os::unix::fs::symlink(&corpus, &alias).unwrap();
+        let out = alias.join("nested_out");
+        run(&corpus, &tabs, &out).expect_err("symlink alias into corpus must refuse");
+        assert!(!corpus.join("nested_out").exists(), "nothing written into corpus");
+    }
+
+    #[test]
+    fn e2e_refuses_input_schema_newer_than_target() {
+        let tree = TmpTree::new("v10");
+        let (corpus, tabs, _) = seed(&tree, 10, "Song.gp5", "abc");
+        let out = tree.path("out");
+        run(&corpus, &tabs, &out).expect_err("schema newer than v9 target must refuse");
+        assert!(!out.exists(), "no output on refusal");
+    }
 }
