@@ -36,7 +36,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0028](0028-shared-theme-tokens-in-the-ui-core.md) | Shared theme tokens in the UI core — one palette, two renderers, asserted contrast | Proposed |
 | [0029](0029-swang-authoring-and-verified-lifting.md) | Adopt Swang as a deterministic authoring and verified lifting language | Accepted (Phases 0–3 frozen) |
 | [0030](0030-reduced-state-layered-dp-clients.md) | Reduced-state layered DP clients (amends ADR-0013) | Accepted |
-| [0031](0031-canonical-song-identity.md) | Add a curator-assigned canonical song identity to the corpus (schema v10) | Proposed |
+| [0031](0031-canonical-song-identity.md) | Add a curator-assigned canonical song identity to the corpus (schema v10) | Accepted |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
