@@ -37,7 +37,7 @@ workflow, owned by a standalone isolated tool. Binding decisions:
 
 3. **Human authority; suggestions have none.** Suggestions are deterministic,
    metadata-only (v1), evidence-bearing, and never write `song_id`. No default
-   action means acceptance; no unattended run converts suggestions into
+   action counts as acceptance; no unattended run converts suggestions into
    decisions. `SongId` is never derived from similarity (ADR-0031).
 
 4. **Append-only batched decisions ledger** (one versioned JSON document, per
@@ -55,11 +55,14 @@ workflow, owned by a standalone isolated tool. Binding decisions:
    asserted.
 
 6. **Transactional application chain.** Apply writes all-or-nothing to a fresh
-   output directory (never in place; `migrate-v9` output preflight), is
-   idempotent, and publishes an application report plus an append-only
-   **application index** record transactionally. Incremental curation composes as
-   batch → report → next batch, chained by report digest and matching
-   input/output fingerprints; the index makes "already applied" provable.
+   output directory (never in place; `migrate-v9` output preflight), and publishes
+   an application report plus an append-only **application index** record
+   transactionally. It treats already-correct assignments as unchanged and
+   produces deterministic output; **reuse of the same `batch_id` is not an
+   idempotent re-application — it typed-refuses through the application index.**
+   Incremental curation composes as batch → report → next batch, chained by report
+   digest and matching input/output fingerprints; the index makes "already
+   applied" provable.
 
 7. **Deterministic identity and digests.** `SongId` is opaque, ledger-issued
    (`song-<monotonic counter>`), single-writer, issued once and never recomputed.
@@ -84,9 +87,12 @@ workflow, owned by a standalone isolated tool. Binding decisions:
 
 10. **Staged, gated implementation.** Four separate RED→GREEN slices —
     decision/validation core → transactional apply → suggestion generator →
-    controlled pilot. **Corpus labeling is prohibited** until the implementation
-    and the controlled pilot are independently accepted; the pilot runs on a
-    small copied subset with every assignment human-confirmed.
+    controlled pilot — each requiring **separate independent acceptance**.
+    Acceptance of this ADR authorizes **slice 1 only**. The controlled pilot is
+    authorized only **after slices 1–3 are accepted**; it may write
+    human-confirmed `song_id` assignments **only to its small copied subset**.
+    **Production / real-corpus / full-corpus labeling remains prohibited until the
+    controlled pilot is independently accepted.**
 
 ## Consequences
 
@@ -114,7 +120,10 @@ workflow, owned by a standalone isolated tool. Binding decisions:
   pilot gate; no track-index recovery; no arrangement identity; no change to
   ADR-0031 or ADR-0032.
 
-Acceptance of this ADR authorizes the staged implementation to begin from slice
-1; it does **not** authorize corpus labeling, which remains gated on the
-controlled pilot (Decision 10). The proposal is retained as the detailed
-specification and historical context.
+Acceptance of this ADR authorizes **slice 1 only**; each later slice needs
+separate independent acceptance (Decision 10). It does **not** authorize
+production / real-corpus / full-corpus labeling — the controlled pilot (after
+slices 1–3 are accepted) may write human-confirmed assignments **only to its
+small copied subset**, and full-corpus labeling stays prohibited until the pilot
+is independently accepted. The proposal is retained as the detailed specification
+and historical context.
