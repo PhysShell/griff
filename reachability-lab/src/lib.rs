@@ -10,8 +10,11 @@
 //! over a single-authority [`LoadedCorpus`]. File and fragment modes, and any
 //! measurement axes, are separate later slices.
 
-use griff_core::corpus::{song_holdout_preflight, ChunkId, CorpusManifest, SongHoldoutRefusal, SongId};
+use griff_core::corpus::{
+    song_holdout_preflight, ChunkId, ChunkMeta, CorpusManifest, SongHoldoutRefusal, SongId,
+};
 use griff_core::generation_input::{corpus_material, CorpusMaterial, LoadedChunk};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A corpus bound into one authority: the manifest (the `song_id` facts the
 /// preflight trusts, plus the optional `songs` map) and the loaded records the
@@ -80,12 +83,78 @@ pub enum BindingRefusal {
 /// loaded records to the manifest (single authority), run
 /// `song_holdout_preflight` over the whole manifest, require a target `song_id`,
 /// exclude every `LoadedChunk` carrying it, and only then compile the rest.
+///
+/// # Errors
+///
+/// [`HoldoutError`] when `HoldoutTargetSong` cannot proceed fail-closed: a
+/// single-authority binding violation ([`HoldoutError::CorpusBinding`]), a
+/// preflight refusal ([`HoldoutError::Preflight`]), or a missing target
+/// ([`HoldoutError::MissingTargetSongId`]). `NoCorpus` and `LeakyDiagnostic`
+/// never refuse.
 pub fn prepare_corpus_for_mode(
     corpus: LoadedCorpus,
     mode: CorpusMode,
     target: &TargetIdentity,
 ) -> Result<Option<CorpusMaterial>, HoldoutError> {
-    todo!("prepare_corpus_for_mode")
+    match mode {
+        // A genuinely corpus-free run — no rhythms, references, or gesture.
+        CorpusMode::NoCorpus => Ok(None),
+        // A corpus deliberately supplied unfiltered; never a holdout.
+        CorpusMode::LeakyDiagnostic => Ok(Some(corpus_material(corpus.loaded, corpus.skipped))),
+        CorpusMode::HoldoutTargetSong => {
+            // Single authority first: the records the filter acts on must be the
+            // corpus the preflight validated.
+            check_binding(&corpus)?;
+            // Fail-closed over the whole manifest (coverage + identity + songs map).
+            song_holdout_preflight(&corpus.manifest).map_err(HoldoutError::Preflight)?;
+            let target_song = target
+                .song_id
+                .as_ref()
+                .ok_or(HoldoutError::MissingTargetSongId)?;
+            // Exclude every source representation carrying the target song_id,
+            // then compile only the survivors — provenance exclusion is primary
+            // and happens before material construction.
+            let kept: Vec<LoadedChunk> = corpus
+                .loaded
+                .into_iter()
+                .filter(|chunk| chunk.meta.source.song_id.as_ref() != Some(target_song))
+                .collect();
+            Ok(Some(corpus_material(kept, corpus.skipped)))
+        }
+    }
+}
+
+/// Enforce the ADR-0032 single-authority invariant: every loaded record maps by
+/// `ChunkId` to exactly one manifest chunk whose identity facts (`song_id` /
+/// `sha256`) agree with it, and no `ChunkId` is loaded twice. Otherwise the
+/// preflight could validate one dataset while the filter executes another.
+fn check_binding(corpus: &LoadedCorpus) -> Result<(), HoldoutError> {
+    let by_id: BTreeMap<&ChunkId, &ChunkMeta> =
+        corpus.manifest.chunks.iter().map(|c| (&c.id, c)).collect();
+    let mut seen: BTreeSet<&ChunkId> = BTreeSet::new();
+    let mut refusals = Vec::new();
+    for chunk in &corpus.loaded {
+        let id = &chunk.meta.id;
+        if !seen.insert(id) {
+            refusals.push(BindingRefusal::DuplicateLoaded(id.clone()));
+            continue;
+        }
+        match by_id.get(id) {
+            None => refusals.push(BindingRefusal::LoadedNotInManifest(id.clone())),
+            Some(manifest_chunk) => {
+                if manifest_chunk.source.song_id != chunk.meta.source.song_id
+                    || manifest_chunk.source.sha256 != chunk.meta.source.sha256
+                {
+                    refusals.push(BindingRefusal::ProvenanceMismatch(id.clone()));
+                }
+            }
+        }
+    }
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(HoldoutError::CorpusBinding(refusals))
+    }
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -98,11 +167,11 @@ mod tests {
         ChunkMeta, CorpusManifest, QualityFlag, SongId, SourceFormat, SourceRef, SCHEMA_VERSION,
     };
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
-    use griff_core::gesture::GestureStats;
     use griff_core::generation_input::corpus_material;
+    use griff_core::gesture::GestureStats;
     use griff_core::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
-        Track, Voice,
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, Track, Voice,
     };
     use griff_core::slice::TickRange;
     use std::collections::BTreeMap;
@@ -126,7 +195,10 @@ mod tests {
             master_bars: vec![MasterBar {
                 index: 0,
                 tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered"),
-                time_signature: TimeSignature { numerator: 4, denominator: 4 },
+                time_signature: TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                },
                 tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
                 repeat: RepeatMarker::default(),
             }],
@@ -184,7 +256,11 @@ mod tests {
             quality_flags: vec![QualityFlag::Clean],
             reviewer: None,
             structure: None,
-            gesture: if gesture { Some(sample_gesture()) } else { None },
+            gesture: if gesture {
+                Some(sample_gesture())
+            } else {
+                None
+            },
             complexity: None,
             duplicate: None,
             style_cohort: None,
@@ -196,7 +272,14 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn loaded(id: &str, sha: &str, song: &str, onset: u32, pitch: u8, gesture: bool) -> LoadedChunk {
+    fn loaded(
+        id: &str,
+        sha: &str,
+        song: &str,
+        onset: u32,
+        pitch: u8,
+        gesture: bool,
+    ) -> LoadedChunk {
         LoadedChunk {
             meta: meta(id, Some(sha), Some(song), gesture),
             sliced: one_bar_score(onset, pitch),
@@ -214,7 +297,9 @@ mod tests {
     }
 
     fn song_target(song: &str) -> TargetIdentity {
-        TargetIdentity { song_id: Some(SongId(song.to_owned())) }
+        TargetIdentity {
+            song_id: Some(SongId(song.to_owned())),
+        }
     }
 
     // ── mode distinctions ──────────────────────────────────────────────────
@@ -245,11 +330,16 @@ mod tests {
             ],
             skipped: Vec::new(),
         };
-        let out = prepare_corpus_for_mode(corpus, CorpusMode::LeakyDiagnostic, &song_target("song1"))
-            .expect("leaky never refuses")
-            .expect("leaky is corpus-backed");
+        let out =
+            prepare_corpus_for_mode(corpus, CorpusMode::LeakyDiagnostic, &song_target("song1"))
+                .expect("leaky never refuses")
+                .expect("leaky is corpus-backed");
         // Unfiltered: both records' sources contribute references.
-        assert_eq!(out.references.len(), 2, "LeakyDiagnostic keeps every record");
+        assert_eq!(
+            out.references.len(),
+            2,
+            "LeakyDiagnostic keeps every record"
+        );
     }
 
     #[test]
@@ -259,10 +349,15 @@ mod tests {
             loaded: vec![loaded("a", "shaA", "song1", 0, 60, false)],
             skipped: Vec::new(),
         };
-        let none = prepare_corpus_for_mode(build(), CorpusMode::NoCorpus, &TargetIdentity::default())
-            .expect("ok");
-        let leaky = prepare_corpus_for_mode(build(), CorpusMode::LeakyDiagnostic, &TargetIdentity::default())
-            .expect("ok");
+        let none =
+            prepare_corpus_for_mode(build(), CorpusMode::NoCorpus, &TargetIdentity::default())
+                .expect("ok");
+        let leaky = prepare_corpus_for_mode(
+            build(),
+            CorpusMode::LeakyDiagnostic,
+            &TargetIdentity::default(),
+        )
+        .expect("ok");
         assert!(none.is_none() && leaky.is_some(), "different experiments");
     }
 
@@ -279,12 +374,17 @@ mod tests {
             manifest: manifest_of(metas),
             loaded: vec![
                 loaded("a", "shaA", "song1", 0, 60, false),
-                LoadedChunk { meta: meta("b", Some("shaB"), None, false), sliced: one_bar_score(240, 62), track: 0 },
+                LoadedChunk {
+                    meta: meta("b", Some("shaB"), None, false),
+                    sliced: one_bar_score(240, 62),
+                    track: 0,
+                },
             ],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("uncurated corpus must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("uncurated corpus must refuse");
         assert!(matches!(err, HoldoutError::Preflight(ref rs)
             if rs.iter().any(|r| matches!(r, SongHoldoutRefusal::UncuratedSource { sha256, .. } if sha256 == "shaB"))));
     }
@@ -295,11 +395,16 @@ mod tests {
         let metas = vec![meta("a", None, Some("song1"), false)];
         let corpus = LoadedCorpus {
             manifest: manifest_of(metas),
-            loaded: vec![LoadedChunk { meta: meta("a", None, Some("song1"), false), sliced: one_bar_score(0, 60), track: 0 }],
+            loaded: vec![LoadedChunk {
+                meta: meta("a", None, Some("song1"), false),
+                sliced: one_bar_score(0, 60),
+                track: 0,
+            }],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("unidentified source must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("unidentified source must refuse");
         assert!(matches!(err, HoldoutError::Preflight(ref rs)
             if rs.iter().any(|r| matches!(r, SongHoldoutRefusal::UnidentifiedSource { .. }))));
     }
@@ -313,8 +418,12 @@ mod tests {
             loaded: vec![loaded("a", "shaA", "song1", 0, 60, false)],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &TargetIdentity::default())
-            .expect_err("no target must refuse");
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSong,
+            &TargetIdentity::default(),
+        )
+        .expect_err("no target must refuse");
         assert_eq!(err, HoldoutError::MissingTargetSongId);
     }
 
@@ -334,8 +443,9 @@ mod tests {
             loaded: vec![loaded("a", "shaA", "song1", 0, 60, false)],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("manifest disagreement must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("manifest disagreement must refuse");
         assert!(matches!(err, HoldoutError::Preflight(ref rs)
             if rs.iter().any(|r| matches!(r, SongHoldoutRefusal::ManifestLabelMissing { .. }))));
     }
@@ -355,8 +465,9 @@ mod tests {
             ],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("inconsistent source must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("inconsistent source must refuse");
         assert!(matches!(err, HoldoutError::Preflight(ref rs)
             if rs.iter().any(|r| matches!(r, SongHoldoutRefusal::InconsistentSource { .. }))));
     }
@@ -374,8 +485,9 @@ mod tests {
             loaded: vec![loaded("a", "shaA", "song2", 0, 60, false)],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("stale manifest must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("stale manifest must refuse");
         assert!(matches!(err, HoldoutError::CorpusBinding(ref rs)
             if rs.iter().any(|r| matches!(r, BindingRefusal::ProvenanceMismatch(id) if id.0 == "a"))));
     }
@@ -388,8 +500,9 @@ mod tests {
             loaded: vec![loaded("ghost", "shaG", "song1", 0, 60, false)],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("record not in manifest must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("record not in manifest must refuse");
         assert!(matches!(err, HoldoutError::CorpusBinding(ref rs)
             if rs.iter().any(|r| matches!(r, BindingRefusal::LoadedNotInManifest(id) if id.0 == "ghost"))));
     }
@@ -405,8 +518,9 @@ mod tests {
             ],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("duplicate loaded id must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("duplicate loaded id must refuse");
         assert!(matches!(err, HoldoutError::CorpusBinding(ref rs)
             if rs.iter().any(|r| matches!(r, BindingRefusal::DuplicateLoaded(id) if id.0 == "a"))));
     }
@@ -433,27 +547,60 @@ mod tests {
 
     #[test]
     fn song_mode_excludes_every_representation_with_zero_leakage() {
-        let held = prepare_corpus_for_mode(curated_corpus(), CorpusMode::HoldoutTargetSong, &song_target("work_x"))
-            .expect("curated corpus passes preflight")
-            .expect("corpus-backed");
+        let held = prepare_corpus_for_mode(
+            curated_corpus(),
+            CorpusMode::HoldoutTargetSong,
+            &song_target("work_x"),
+        )
+        .expect("curated corpus passes preflight")
+        .expect("corpus-backed");
 
         // The material is exactly what the keeper alone would produce — so both
         // work_x representations contribute zero to every channel.
-        let keeper_only = corpus_material(vec![loaded("c", "shaC", "work_y", 480, 64, false)], Vec::new());
-        assert_eq!(held.references, keeper_only.references, "no held-out references leak");
-        assert_eq!(held.rhythms, keeper_only.rhythms, "no held-out rhythm templates leak");
-        assert_eq!(held.gesture, keeper_only.gesture, "no held-out gesture stats leak");
-        assert_eq!(held.references.len(), 1, "both work_x source files excluded, keeper remains");
+        let keeper_only = corpus_material(
+            vec![loaded("c", "shaC", "work_y", 480, 64, false)],
+            Vec::new(),
+        );
+        assert_eq!(
+            held.references, keeper_only.references,
+            "no held-out references leak"
+        );
+        assert_eq!(
+            held.rhythms, keeper_only.rhythms,
+            "no held-out rhythm templates leak"
+        );
+        assert_eq!(
+            held.gesture, keeper_only.gesture,
+            "no held-out gesture stats leak"
+        );
+        assert_eq!(
+            held.references.len(),
+            1,
+            "both work_x source files excluded, keeper remains"
+        );
         // The keeper carries no gesture; work_x's gesture must not survive.
-        assert!(held.gesture.is_none(), "excluded song's gesture did not leak");
+        assert!(
+            held.gesture.is_none(),
+            "excluded song's gesture did not leak"
+        );
     }
 
     #[test]
     fn song_mode_is_deterministic() {
-        let a = prepare_corpus_for_mode(curated_corpus(), CorpusMode::HoldoutTargetSong, &song_target("work_x"))
-            .expect("ok").expect("some");
-        let b = prepare_corpus_for_mode(curated_corpus(), CorpusMode::HoldoutTargetSong, &song_target("work_x"))
-            .expect("ok").expect("some");
+        let a = prepare_corpus_for_mode(
+            curated_corpus(),
+            CorpusMode::HoldoutTargetSong,
+            &song_target("work_x"),
+        )
+        .expect("ok")
+        .expect("some");
+        let b = prepare_corpus_for_mode(
+            curated_corpus(),
+            CorpusMode::HoldoutTargetSong,
+            &song_target("work_x"),
+        )
+        .expect("ok")
+        .expect("some");
         assert_eq!(a.references, b.references);
         assert_eq!(a.rhythms, b.rhythms);
         assert_eq!(a.gesture, b.gesture);
