@@ -1,7 +1,7 @@
 # ADR 0032: Filter holdout over LoadedChunk before corpus material, owned by the offline Reachability Lab
 
 Date: 2026-07-29
-Status: Proposed
+Status: Accepted
 
 ## Context
 
