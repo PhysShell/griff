@@ -1596,4 +1596,156 @@ mod tests {
             "projection must not run on a structurally invalid ledger"
         );
     }
+
+    // ── strict parsing of the whole artifact graph (re-review #1) ───────────
+
+    fn good_ledger() -> DecisionsLedger {
+        let m = uncurated();
+        let b = batch_for(
+            &m,
+            "batch1",
+            vec![event("ev0", 0, accept("g", &["shaA"], "song-1"))],
+        );
+        ledger_of(vec![b])
+    }
+
+    /// Insert a foreign key into a JSON object reached by object-key / array-index
+    /// steps, so each test can plant a rogue field at one precise depth.
+    fn plant_rogue(root: &mut Value, path: &[&str]) {
+        let mut cursor = root;
+        for step in path {
+            cursor = match step.parse::<usize>() {
+                Ok(i) => cursor.get_mut(i).expect("array index exists"),
+                Err(_) => cursor.get_mut(*step).expect("object key exists"),
+            };
+        }
+        cursor
+            .as_object_mut()
+            .expect("target is a JSON object")
+            .insert("rogue_field".to_owned(), json!("smuggled"));
+    }
+
+    #[test]
+    fn ledger_rejects_unknown_field_at_root() {
+        let mut v = serde_json::to_value(good_ledger()).expect("to value");
+        plant_rogue(&mut v, &[]);
+        assert!(serde_json::from_value::<DecisionsLedger>(v).is_err());
+    }
+
+    #[test]
+    fn ledger_rejects_unknown_field_in_batch() {
+        let mut v = serde_json::to_value(good_ledger()).expect("to value");
+        plant_rogue(&mut v, &["batches", "0"]);
+        assert!(serde_json::from_value::<DecisionsLedger>(v).is_err());
+    }
+
+    #[test]
+    fn ledger_rejects_unknown_field_in_event() {
+        let mut v = serde_json::to_value(good_ledger()).expect("to value");
+        plant_rogue(&mut v, &["batches", "0", "events", "0"]);
+        assert!(serde_json::from_value::<DecisionsLedger>(v).is_err());
+    }
+
+    #[test]
+    fn ledger_rejects_unknown_field_in_action_payload() {
+        // Action is internally tagged; this proves the *actual serde version*
+        // denies a rogue field inside a variant payload (not just the attribute).
+        let mut v = serde_json::to_value(good_ledger()).expect("to value");
+        plant_rogue(&mut v, &["batches", "0", "events", "0", "action"]);
+        assert!(serde_json::from_value::<DecisionsLedger>(v).is_err());
+    }
+
+    #[test]
+    fn ledger_rejects_unknown_field_in_split_target() {
+        let m = uncurated();
+        let split = Action::Split {
+            from_song_id: "song-old".to_owned(),
+            into: vec![SplitTarget {
+                assign_song_id: "song-1".to_owned(),
+                source_sha256s: vec!["shaA".to_owned()],
+            }],
+            supersedes_song_ids: vec!["song-old".to_owned()],
+        };
+        let b = batch_for(&m, "batch1", vec![event("ev0", 0, split)]);
+        let mut v = serde_json::to_value(ledger_of(vec![b])).expect("to value");
+        plant_rogue(&mut v, &["batches", "0", "events", "0", "action", "into", "0"]);
+        assert!(serde_json::from_value::<DecisionsLedger>(v).is_err());
+    }
+
+    #[test]
+    fn plan_rejects_unknown_field_in_embedded_batch() {
+        let (_m, plan) = good_plan();
+        let mut v = serde_json::to_value(&plan).expect("to value");
+        plant_rogue(&mut v, &["decision_batch"]);
+        assert!(serde_json::from_value::<DryRunPlan>(v).is_err());
+    }
+
+    #[test]
+    fn plan_rejects_unknown_field_in_assignment() {
+        let (_m, plan) = good_plan();
+        let mut v = serde_json::to_value(&plan).expect("to value");
+        plant_rogue(&mut v, &["assignments", "0"]);
+        assert!(serde_json::from_value::<DryRunPlan>(v).is_err());
+    }
+
+    // ── verify_plan short-circuits an invalid batch (re-review #2) ───────────
+
+    #[test]
+    fn verify_plan_short_circuits_on_invalid_batch() {
+        // The embedded batch has a structural fault (bad ordinal) *and* a
+        // projection fault (unknown source) *and* corrupted digests. A correct
+        // short-circuit returns only the structural refusal — never the digest,
+        // projection, or replay errors, proving they were not reached.
+        let (m, mut plan) = good_plan();
+        plan.decision_batch.events[0].ordinal = 9;
+        plan.decision_batch.events[0].action = accept("g", &["shaZ"], "song-1");
+        plan.decisions_digest = "corrupt".to_owned();
+        plan.plan_digest = "corrupt".to_owned();
+        let errs = verify_plan(&plan, &m).expect_err("invalid batch must refuse");
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, CurationError::InvalidDecisionBatchOrder { .. })));
+        for forbidden in [
+            errs
+                .iter()
+                .any(|e| matches!(e, CurationError::UnknownDecisionSource { .. })),
+            errs
+                .iter()
+                .any(|e| matches!(e, CurationError::PlanDigestMismatch { .. })),
+            errs
+                .iter()
+                .any(|e| matches!(e, CurationError::DecisionDigestMismatch { .. })),
+            errs
+                .iter()
+                .any(|e| matches!(e, CurationError::DecisionProjectionMismatch { .. })),
+        ] {
+            assert!(
+                !forbidden,
+                "digest, projection, and replay must not run on an invalid batch"
+            );
+        }
+    }
+
+    // ── one refusal per actual duplicate (re-review #3) ─────────────────────
+
+    #[test]
+    fn intra_batch_duplicate_event_id_emitted_once() {
+        let m = uncurated();
+        let b = batch_for(
+            &m,
+            "batch1",
+            vec![
+                event("dup", 0, accept("g", &["shaA"], "song-1")),
+                event("dup", 1, accept("h", &["shaB"], "song-2")),
+            ],
+        );
+        let errs = validate_ledger(&ledger_of(vec![b])).expect_err("duplicate event id");
+        let n = errs
+            .iter()
+            .filter(
+                |e| matches!(e, CurationError::DuplicateDecisionEventId { event_id } if event_id == "dup"),
+            )
+            .count();
+        assert_eq!(n, 1, "an intra-batch duplicate must be emitted exactly once");
+    }
 }
