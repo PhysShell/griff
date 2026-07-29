@@ -94,6 +94,29 @@ workflow, owned by a standalone isolated tool. Binding decisions:
     **Production / real-corpus / full-corpus labeling remains prohibited until the
     controlled pilot is independently accepted.**
 
+## Prior art considered
+
+Per the prior-art-first rule (AGENTS.md), we surveyed existing approaches before
+designing the `ledger → plan → apply → report → application-index` pipeline. The
+*identity ontology* prior art (FRBR, MusicBrainz Work/Recording/ISWC) is already
+recorded in ADR-0031; that answers "what is a Work", not "how to curate it
+transactionally", so this survey covers the **workflow** instead.
+
+| Approach | What we reuse | What we reject | Decision for Griff |
+|---|---|---|---|
+| **Human-confirmed reconciliation** (OpenRefine clustering; MusicBrainz human-reviewed edits) | Deterministic *suggestion → explicit human confirm*; clustering as non-authoritative evidence; append-only edit history | In-place GUI mutation; online community voting; no content-hash provenance; not source-level identity | Reuse suggest-then-confirm and non-authoritative suggestions; implement offline/deterministic. |
+| **Append-only event sourcing** (Fowler event logs; git commit DAG; the repo's own `CurationStoreV1`) | Immutable, ordered, append-only events; replay to derive state; per-event metadata | Distributed consensus; external event store | Reuse event-sourcing invariants natively via a `CurationStoreV1`-style ledger. |
+| **Plan-before-apply with drift detection** (Terraform plan/apply; Kubernetes server-side dry-run) | A reviewable plan artifact; separate apply; fingerprint/drift **refusal** | The plan is *trusted*; external providers/state backends | Reuse plan/apply + drift-refuse, and go further: Apply **replays and re-derives** the projection rather than trusting the plan. |
+| **Versioned, applied-once migrations** (Flyway / Alembic / Diesel migrations table) | Ordered, applied-**once** application recorded in a registry (≈ the application index); refuse re-apply | Forward-only DDL; no content fingerprint | Reuse the applied-registry + applied-once semantics; content-fingerprint the corpus, not a schema version. |
+| **Content-addressed dataset versioning** (DVC, lakeFS, Delta Lake) | Content-hash fingerprints; transactional all-or-nothing commits; lineage/chain | Heavy external services/dependencies; unfriendly to an isolated Rust tool, MSRV, and a single-file corpus | Reuse the content-fingerprint + transactional-commit + chain invariants; implement natively. |
+
+**Conclusion.** Reuse the established *patterns and invariants* above, and
+implement them **natively** in the isolated Rust tool: no existing system fits
+Griff's source-level `SongId`, its corpus fingerprint over `song_id` + manifest
+membership, its dependency/MSRV posture, or its fail-closed typed-refusal
+requirement. The novelty is only the *composition* (proof-carrying replay-derived
+Apply over these known parts), not a new class of system.
+
 ## Consequences
 
 **Good / possible.**
