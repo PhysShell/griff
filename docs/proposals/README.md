@@ -51,3 +51,9 @@ live contract.
   — technique modules, a deterministic symbolic candidate terrain, and a
   transactional agent-editing contract for the cockpit. Status: for
   discussion.
+- [`song-id-curation-workflow.md`](song-id-curation-workflow.md) — an offline,
+  human-confirmed workflow (inventory → suggest → confirm → plan → apply →
+  manifest → validate) for assigning `SongId` (ADR-0031) to corpus sources by
+  `sha256`, with suggestions held strictly non-authoritative and a typed
+  refusal taxonomy; recommends a standalone `song-curation/` tool and a
+  four-slice implementation gated behind a new ADR. Status: for discussion.
