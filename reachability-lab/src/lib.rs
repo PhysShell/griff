@@ -1079,4 +1079,293 @@ mod tests {
         assert_eq!(a.rhythms, b.rhythms);
         assert_eq!(a.gesture, b.gesture);
     }
+
+    // ── fragment mode (HoldoutTargetFragment) ───────────────────────────────
+
+    fn fragment_target(sha: &str, range: Option<(u32, u32)>) -> TargetIdentity {
+        TargetIdentity {
+            source_sha256: Some(sha.to_owned()),
+            bar_range: range,
+            track_index: None,
+            song_id: None,
+        }
+    }
+
+    /// A hash-identified, song-uncurated chunk at `range` on `track`; its manifest
+    /// twin is identical so binding holds.
+    fn frag_tracked(
+        id: &str,
+        sha: &str,
+        range: Option<(u32, u32)>,
+        track: Option<u32>,
+        gesture: bool,
+    ) -> (ChunkMeta, LoadedChunk) {
+        let mut m = meta(id, Some(sha), None, gesture);
+        m.source.bar_range = range;
+        m.source.track_index = track;
+        let onset = range.map_or(0, |(first, _)| first.saturating_mul(120) % 1920);
+        let lc = LoadedChunk { meta: m.clone(), sliced: one_bar_score(onset, 60), track: 0 };
+        (m, lc)
+    }
+
+    fn frag(id: &str, sha: &str, range: Option<(u32, u32)>) -> (ChunkMeta, LoadedChunk) {
+        frag_tracked(id, sha, range, None, false)
+    }
+
+    /// Build a corpus whose manifest exactly mirrors the loaded records, plus
+    /// optional manifest-only chunks (curated but unloaded) and skipped names.
+    fn frag_corpus(
+        loaded: Vec<(ChunkMeta, LoadedChunk)>,
+        manifest_only: Vec<ChunkMeta>,
+        skipped: &[&str],
+    ) -> LoadedCorpus {
+        let mut manifest_chunks: Vec<ChunkMeta> = loaded.iter().map(|(m, _)| m.clone()).collect();
+        manifest_chunks.extend(manifest_only);
+        LoadedCorpus {
+            manifest: manifest_of(manifest_chunks),
+            loaded: loaded.into_iter().map(|(_, l)| l).collect(),
+            skipped: skipped.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn ranges_overlap_predicate_is_inclusive_with_none_whole_source() {
+        assert!(ranges_overlap(None, Some((10, 12))), "target None overlaps all");
+        assert!(ranges_overlap(Some((10, 12)), None), "chunk None overlaps all");
+        assert!(ranges_overlap(Some((0, 3)), Some((3, 5))), "endpoint touch overlaps");
+        assert!(ranges_overlap(Some((0, 3)), Some((1, 2))), "contained overlaps");
+        assert!(ranges_overlap(Some((1, 2)), Some((0, 5))), "containing overlaps");
+        assert!(ranges_overlap(Some((0, 3)), Some((2, 5))), "partial overlaps");
+        assert!(!ranges_overlap(Some((0, 2)), Some((3, 5))), "disjoint does not overlap");
+    }
+
+    #[test]
+    fn fragment_mode_refuses_missing_target_sha256() {
+        let corpus = frag_corpus(vec![frag("a", "shaA", Some((0, 1)))], Vec::new(), &[]);
+        let target = TargetIdentity { bar_range: Some((0, 1)), ..TargetIdentity::default() };
+        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &target)
+            .expect_err("no target sha must refuse");
+        assert_eq!(err, HoldoutError::MissingTargetSourceSha256);
+    }
+
+    #[test]
+    fn fragment_mode_refuses_unidentified_manifest_chunk() {
+        let (m, lc) = frag("a", "shaA", Some((0, 1)));
+        let mut unhashed_m = meta("u", None, None, false);
+        unhashed_m.source.bar_range = Some((0, 1));
+        let corpus = frag_corpus(vec![(m, lc)], vec![unhashed_m], &["u.gp5"]);
+        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaA", None))
+            .expect_err("sha256-less chunk must refuse");
+        assert!(matches!(err, HoldoutError::SourcePreflight(_)));
+    }
+
+    #[test]
+    fn fragment_mode_refuses_inverted_target_range() {
+        let corpus = frag_corpus(vec![frag("a", "shaA", Some((0, 3)))], Vec::new(), &[]);
+        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaA", Some((5, 2))))
+            .expect_err("inverted target range must refuse");
+        assert_eq!(err, HoldoutError::InvalidTargetBarRange { first_bar: 5, last_bar: 2 });
+    }
+
+    #[test]
+    fn fragment_mode_refuses_inverted_manifest_range_on_target_source() {
+        // A target-source manifest chunk with first > last, caught before filtering.
+        let (mut m, _) = frag("a", "shaA", Some((5, 2)));
+        m.source.bar_range = Some((5, 2));
+        let lc = LoadedChunk { meta: m.clone(), sliced: one_bar_score(0, 60), track: 0 };
+        let corpus = frag_corpus(vec![(m, lc)], Vec::new(), &[]);
+        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaA", Some((0, 3))))
+            .expect_err("inverted manifest range must refuse");
+        assert!(matches!(err, HoldoutError::FragmentPreflight(ref rs)
+            if rs.iter().any(|r| matches!(r, FragmentHoldoutRefusal::InvalidBarRange { chunk_id, first_bar, last_bar }
+                if chunk_id.0 == "a" && *first_bar == 5 && *last_bar == 2))));
+    }
+
+    #[test]
+    fn fragment_target_none_excludes_every_chunk_of_target_hash() {
+        let corpus = frag_corpus(
+            vec![
+                frag("a", "shaX", Some((0, 1))),
+                frag("b", "shaX", Some((5, 6))),
+                frag("c", "shaY", Some((0, 1))),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", None))
+            .expect("ok").expect("some");
+        assert_eq!(held.references.len(), 1, "target None is whole-source: both shaX chunks excluded");
+    }
+
+    #[test]
+    fn fragment_chunk_none_overlaps_every_target_range() {
+        let corpus = frag_corpus(
+            vec![
+                frag("a", "shaX", None),
+                frag("c", "shaY", Some((0, 1))),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((10, 12))))
+            .expect("ok").expect("some");
+        assert_eq!(held.references.len(), 1, "whole-source chunk overlaps any target range");
+    }
+
+    #[test]
+    fn fragment_excludes_exact_contained_containing_partial_and_touching() {
+        let corpus = frag_corpus(
+            vec![
+                frag("exact", "shaX", Some((0, 3))),
+                frag("contained", "shaX", Some((1, 2))),
+                frag("containing", "shaX", Some((0, 9))),
+                frag("partial", "shaX", Some((2, 5))),
+                frag("touching", "shaX", Some((3, 6))),
+                frag("keeper", "shaY", Some((0, 3))),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
+            .expect("ok").expect("some");
+        assert_eq!(held.references.len(), 1, "every overlapping shaX chunk excluded; only the other source remains");
+    }
+
+    #[test]
+    fn fragment_keeps_disjoint_same_source_range() {
+        let corpus = frag_corpus(
+            vec![
+                frag("target", "shaX", Some((0, 2))),
+                frag("disjoint", "shaX", Some((3, 5))),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 2))))
+            .expect("ok").expect("some");
+        assert_eq!(held.references.len(), 1, "disjoint same-source fragment survives");
+    }
+
+    #[test]
+    fn fragment_keeps_overlapping_range_from_other_source() {
+        let corpus = frag_corpus(
+            vec![
+                frag("target", "shaX", Some((0, 3))),
+                frag("other", "shaY", Some((0, 3))),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
+            .expect("ok").expect("some");
+        assert_eq!(held.references.len(), 1, "different source hash never overlaps for holdout");
+    }
+
+    #[test]
+    fn fragment_excludes_overlap_across_tracks() {
+        let corpus = frag_corpus(
+            vec![
+                frag_tracked("t0", "shaX", Some((0, 3)), Some(0), false),
+                frag_tracked("t1", "shaX", Some((0, 3)), Some(1), false),
+                frag("keeper", "shaY", Some((0, 3))),
+            ],
+            Vec::new(),
+            &[],
+        );
+        // target names track 0, but track must not narrow exclusion.
+        let target = TargetIdentity {
+            source_sha256: Some("shaX".to_owned()),
+            bar_range: Some((0, 3)),
+            track_index: Some(0),
+            song_id: None,
+        };
+        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &target)
+            .expect("ok").expect("some");
+        assert_eq!(held.references.len(), 1, "both tracks' overlapping chunks excluded");
+    }
+
+    #[test]
+    fn fragment_refuses_when_nothing_overlaps() {
+        let corpus = frag_corpus(vec![frag("a", "shaX", Some((5, 7)))], Vec::new(), &[]);
+        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 2))))
+            .expect_err("no overlap must refuse");
+        assert_eq!(err, HoldoutError::TargetFragmentAbsent { source_sha256: "shaX".to_owned(), bar_range: Some((0, 2)) });
+    }
+
+    #[test]
+    fn fragment_refuses_target_present_only_in_skipped() {
+        let (m, lc) = frag("keeper", "shaY", Some((0, 3)));
+        let mut mz = meta("z", Some("shaX"), None, false);
+        mz.source.bar_range = Some((0, 3));
+        let corpus = frag_corpus(vec![(m, lc)], vec![mz], &["z.gp5"]);
+        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
+            .expect_err("target only in skipped must refuse");
+        assert_eq!(err, HoldoutError::TargetFragmentAbsent { source_sha256: "shaX".to_owned(), bar_range: Some((0, 3)) });
+    }
+
+    #[test]
+    fn fragment_succeeds_on_song_uncurated_corpus() {
+        let corpus = frag_corpus(
+            vec![
+                frag("a", "shaX", Some((0, 3))),
+                frag("c", "shaY", Some((0, 3))),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
+            .expect("uncurated songs are fine for fragment mode")
+            .expect("corpus-backed");
+        assert_eq!(held.references.len(), 1);
+    }
+
+    #[test]
+    fn fragment_zero_leakage_including_skipped() {
+        let (mx, lx) = frag_tracked("x", "shaX", Some((0, 3)), None, true);
+        let (my, ly) = frag("y", "shaY", Some((5, 7)));
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![mx, my]),
+            loaded: vec![lx, ly],
+            skipped: vec!["gone.gp5".to_owned()],
+        };
+        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
+            .expect("ok").expect("some");
+        let keeper_only = corpus_material(vec![frag("y", "shaY", Some((5, 7))).1], vec!["gone.gp5".to_owned()]);
+        assert_eq!(held.references, keeper_only.references);
+        assert_eq!(held.rhythms, keeper_only.rhythms);
+        assert_eq!(held.gesture, keeper_only.gesture);
+        assert_eq!(held.skipped, keeper_only.skipped);
+        assert!(held.gesture.is_none(), "excluded fragment's gesture did not leak");
+    }
+
+    #[test]
+    fn fragment_binding_runs_before_preflight() {
+        let manifest_meta = meta("a", Some("shaA"), None, false);
+        let mut loaded_meta = meta("a", Some("shaA"), None, false);
+        loaded_meta.source.track_index = Some(7);
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![manifest_meta]),
+            loaded: vec![LoadedChunk { meta: loaded_meta, sliced: one_bar_score(0, 60), track: 0 }],
+            skipped: Vec::new(),
+        };
+        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaA", Some((0, 0))))
+            .expect_err("binding refuses first");
+        assert!(matches!(err, HoldoutError::CorpusBinding(_)));
+    }
+
+    #[test]
+    fn fragment_mode_is_deterministic() {
+        let build = || frag_corpus(
+            vec![frag("a", "shaX", Some((0, 3))), frag("c", "shaY", Some((0, 3)))],
+            Vec::new(),
+            &[],
+        );
+        let a = prepare_corpus_for_mode(build(), CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
+            .expect("ok").expect("some");
+        let b = prepare_corpus_for_mode(build(), CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
+            .expect("ok").expect("some");
+        assert_eq!(a.references, b.references);
+        assert_eq!(a.rhythms, b.rhythms);
+        assert_eq!(a.gesture, b.gesture);
+    }
 }
