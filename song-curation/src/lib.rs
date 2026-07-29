@@ -140,6 +140,7 @@ pub struct SplitTarget {
 /// One planned source-level assignment made by the batch, and the chunks it
 /// touches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Assignment {
     pub source_sha256: String,
     pub song_id: String,
@@ -152,6 +153,7 @@ pub struct Assignment {
 /// post-plan** songs map (existing labels overlaid with the batch), and the
 /// digests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DryRunPlan {
     pub schema: String,
     pub policy_id: String,
@@ -167,6 +169,8 @@ pub struct DryRunPlan {
 const PLAN_SCHEMA: &str = "song-curation.plan.v1";
 const POLICY_ID: &str = "decision-core";
 const POLICY_VERSION: &str = "1";
+/// The one decisions-ledger schema this slice reads; anything else is refused.
+const DECISIONS_SCHEMA: &str = "song-curation.decisions.v1";
 
 /// Per-source batch state after replay: `Some(song)` = the batch assigns this
 /// label; `None` = the batch reviewed the source without assigning (a `reject`
@@ -461,22 +465,41 @@ pub fn validate_batch(batch: &DecisionBatch) -> Result<(), Vec<CurationError>> {
     }
 }
 
-/// Validate the whole ledger: every batch's ordering, and `event_id` uniqueness
+/// Validate the whole ledger's identity and structure: the ledger `schema` is
+/// the one this slice reads, `batch_id`s are unique (so batch selection is
+/// unambiguous), every batch's ordering holds, and `event_id`s are unique
 /// **across all batches** (not merely within each).
+///
+/// `next_song_seq` is not validated here: song-id *issuance* is deferred to a
+/// later slice, so this slice reads the counter but does not enforce its
+/// semantics.
 ///
 /// # Errors
 ///
-/// [`CurationError::InvalidDecisionBatchOrder`] and
+/// [`CurationError::UnsupportedDecisionsLedgerSchema`],
+/// [`CurationError::DuplicateDecisionBatchId`],
+/// [`CurationError::InvalidDecisionBatchOrder`], and
 /// [`CurationError::DuplicateDecisionEventId`] (ledger-wide).
 pub fn validate_ledger(ledger: &DecisionsLedger) -> Result<(), Vec<CurationError>> {
     let mut errors = Vec::new();
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    if ledger.schema != DECISIONS_SCHEMA {
+        errors.push(CurationError::UnsupportedDecisionsLedgerSchema {
+            schema: ledger.schema.clone(),
+        });
+    }
+    let mut seen_events: BTreeSet<&str> = BTreeSet::new();
+    let mut seen_batches: BTreeSet<&str> = BTreeSet::new();
     for batch in &ledger.batches {
+        if !seen_batches.insert(batch.batch_id.as_str()) {
+            errors.push(CurationError::DuplicateDecisionBatchId {
+                batch_id: batch.batch_id.clone(),
+            });
+        }
         if let Err(mut e) = validate_batch(batch) {
             errors.append(&mut e);
         }
         for event in &batch.events {
-            if !seen.insert(event.event_id.as_str()) {
+            if !seen_events.insert(event.event_id.as_str()) {
                 errors.push(CurationError::DuplicateDecisionEventId {
                     event_id: event.event_id.clone(),
                 });
@@ -584,34 +607,22 @@ struct PlanBody {
     generated_songs_map: BTreeMap<String, Vec<String>>,
 }
 
-/// Inventory + validate one batch + replay it, then derive the assignments and
-/// the complete post-plan songs map. Shared by [`build_plan`] and [`verify_plan`]
-/// so both derive identically.
+/// Inventory + replay one batch, then derive the assignments and the complete
+/// post-plan songs map. Shared by [`build_plan`] and [`verify_plan`] so both
+/// derive identically.
+///
+/// Precondition: `batch` has already passed [`validate_batch`] — via
+/// [`validate_ledger`] in `build_plan`, or a direct `validate_batch` in
+/// `verify_plan`. This function performs **no** ordering re-validation (that
+/// would double-emit the same refusal); it only projects. It still validates
+/// projection-level facts through [`replay`] (unknown sources, a source
+/// assigned two labels in one event).
 fn derive(
     manifest: &CorpusManifest,
     batch: &DecisionBatch,
 ) -> Result<PlanBody, Vec<CurationError>> {
-    let mut errors = Vec::new();
-    if let Err(mut e) = validate_batch(batch) {
-        errors.append(&mut e);
-    }
-    let inventory = match inventory(manifest) {
-        Ok(inv) => inv,
-        Err(mut e) => {
-            errors.append(&mut e);
-            return Err(errors);
-        }
-    };
-    let state = match replay(&inventory, batch) {
-        Ok(s) => s,
-        Err(mut e) => {
-            errors.append(&mut e);
-            return Err(errors);
-        }
-    };
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    let inventory = inventory(manifest)?;
+    let state = replay(&inventory, batch)?;
 
     let by_sha: BTreeMap<&str, &SourceRecord> = inventory
         .sources
@@ -664,7 +675,9 @@ fn derive(
 ///
 /// # Errors
 ///
-/// Whole-ledger validation refusals, [`CurationError::BatchNotInLedger`],
+/// Whole-ledger validation refusals (schema, duplicate `batch_id`, ordering,
+/// duplicate `event_id`) — reported **before** batch selection or projection;
+/// then [`CurationError::BatchNotInLedger`],
 /// [`CurationError::DecisionBatchFingerprintMismatch`], any inventory refusal, or
 /// a replay refusal ([`CurationError::UnknownDecisionSource`] /
 /// [`CurationError::SourceAssignedToMultipleSongs`]).
@@ -673,16 +686,21 @@ pub fn build_plan(
     ledger: &DecisionsLedger,
     batch_id: &str,
 ) -> Result<DryRunPlan, Vec<CurationError>> {
-    let mut errors = Vec::new();
-    if let Err(mut e) = validate_ledger(ledger) {
-        errors.append(&mut e);
-    }
+    // Whole-ledger identity/structure first. A structurally invalid ledger
+    // refuses here — before any batch is selected or projected — so ordering /
+    // duplicate-id / schema faults never reach fingerprinting or replay, and
+    // each is emitted exactly once (derive no longer re-validates).
+    validate_ledger(ledger)?;
+
+    // The ledger is valid, so `batch_id` is unique by construction: `find`
+    // returns the one batch, never an ambiguous first-of-many.
     let Some(batch) = ledger.batches.iter().find(|b| b.batch_id == batch_id) else {
-        errors.push(CurationError::BatchNotInLedger {
+        return Err(vec![CurationError::BatchNotInLedger {
             batch_id: batch_id.to_owned(),
-        });
-        return Err(errors);
+        }]);
     };
+
+    let mut errors = Vec::new();
     let fingerprint = corpus_fingerprint(manifest);
     if batch.input_corpus_fingerprint != fingerprint {
         errors.push(CurationError::DecisionBatchFingerprintMismatch {
@@ -749,14 +767,20 @@ pub fn verify_plan(plan: &DryRunPlan, manifest: &CorpusManifest) -> Result<(), V
         errors.append(&mut e);
     }
 
-    // The top-level corpus binding must match the corpus and the embedded batch.
+    // Both the top-level corpus binding and the embedded batch's binding must
+    // match the corpus — checked separately so each refusal is attributed to
+    // the field that disagreed and reports *that* field's own rejected value.
     let fingerprint = corpus_fingerprint(manifest);
-    if plan.input_corpus_fingerprint != fingerprint
-        || plan.decision_batch.input_corpus_fingerprint != fingerprint
-    {
+    if plan.input_corpus_fingerprint != fingerprint {
+        errors.push(CurationError::PlanCorpusFingerprintMismatch {
+            expected: fingerprint.clone(),
+            actual: plan.input_corpus_fingerprint.clone(),
+        });
+    }
+    if plan.decision_batch.input_corpus_fingerprint != fingerprint {
         errors.push(CurationError::DecisionBatchFingerprintMismatch {
             expected: fingerprint,
-            actual: plan.input_corpus_fingerprint.clone(),
+            actual: plan.decision_batch.input_corpus_fingerprint.clone(),
         });
     }
     // Schema / policy must be the ones this tool produces.
