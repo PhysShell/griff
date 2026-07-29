@@ -139,7 +139,7 @@ pub struct SplitTarget {
 
 /// One planned source-level assignment made by the batch, and the chunks it
 /// touches.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assignment {
     pub source_sha256: String,
     pub song_id: String,
@@ -151,7 +151,7 @@ pub struct Assignment {
 /// verifier can replay it, plus the batch's assignments and the **complete
 /// post-plan** songs map (existing labels overlaid with the batch), and the
 /// digests.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DryRunPlan {
     pub schema: String,
     pub policy_id: String,
@@ -201,9 +201,23 @@ pub enum CurationError {
     DuplicateDecisionEventId {
         event_id: String,
     },
+    DuplicateDecisionBatchId {
+        batch_id: String,
+    },
+    UnsupportedDecisionsLedgerSchema {
+        schema: String,
+    },
     BatchNotInLedger {
         batch_id: String,
     },
+    /// The plan's **top-level** `input_corpus_fingerprint` disagrees with the
+    /// corpus; `actual` carries the plan's own (rejected) value.
+    PlanCorpusFingerprintMismatch {
+        expected: String,
+        actual: String,
+    },
+    /// The plan's **embedded batch** `input_corpus_fingerprint` disagrees with
+    /// the corpus; `actual` carries the embedded batch's own (rejected) value.
     DecisionBatchFingerprintMismatch {
         expected: String,
         actual: String,
@@ -1322,15 +1336,240 @@ mod tests {
     }
 
     #[test]
-    fn verify_plan_refuses_forged_top_level_fingerprint() {
+    fn verify_plan_reports_top_level_fingerprint_real_value() {
         // The embedded batch still replays correctly, but the plan's top-level
-        // corpus binding is forged — the verifier must catch the contradiction.
+        // corpus binding is forged — the verifier must catch the contradiction,
+        // attribute it to the top-level field, and report the *forged* value it
+        // rejected (not the batch's, and not the expected one).
         let (m, mut plan) = good_plan();
-        plan.input_corpus_fingerprint = "forged".to_owned();
+        plan.input_corpus_fingerprint = "forged-top".to_owned();
         plan.plan_digest = plan_digest(&plan);
         let errs = verify_plan(&plan, &m).expect_err("forged top-level fingerprint");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                CurationError::PlanCorpusFingerprintMismatch { actual, .. } if actual == "forged-top"
+            )),
+            "top-level mismatch must report its own forged value"
+        );
+        assert!(
+            !errs
+                .iter()
+                .any(|e| matches!(e, CurationError::DecisionBatchFingerprintMismatch { .. })),
+            "the embedded batch fingerprint is fine — no batch-level mismatch"
+        );
+    }
+
+    #[test]
+    fn verify_plan_reports_embedded_fingerprint_real_value() {
+        // Only the embedded batch's fingerprint is forged. The refusal must be
+        // attributed to the batch and must report the batch's *own* forged value
+        // — the historical bug reported the (correct) top-level value instead.
+        let (m, mut plan) = good_plan();
+        plan.decision_batch.input_corpus_fingerprint = "forged-embedded".to_owned();
+        plan.decisions_digest = decisions_digest(&plan.decision_batch);
+        plan.plan_digest = plan_digest(&plan);
+        let errs = verify_plan(&plan, &m).expect_err("forged embedded fingerprint");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                CurationError::DecisionBatchFingerprintMismatch { actual, .. }
+                    if actual == "forged-embedded"
+            )),
+            "embedded mismatch must report the batch's own forged value"
+        );
+        assert!(
+            !errs
+                .iter()
+                .any(|e| matches!(e, CurationError::PlanCorpusFingerprintMismatch { .. })),
+            "the top-level fingerprint is fine — no top-level mismatch"
+        );
+    }
+
+    #[test]
+    fn verify_plan_reports_both_fingerprints_forged_differently() {
+        // Both fields forged to *distinct* values: two independent refusals,
+        // each carrying the value that actually disagreed.
+        let (m, mut plan) = good_plan();
+        plan.input_corpus_fingerprint = "forged-top".to_owned();
+        plan.decision_batch.input_corpus_fingerprint = "forged-embedded".to_owned();
+        plan.decisions_digest = decisions_digest(&plan.decision_batch);
+        plan.plan_digest = plan_digest(&plan);
+        let errs = verify_plan(&plan, &m).expect_err("both fingerprints forged");
+        assert!(errs.iter().any(|e| matches!(
+            e,
+            CurationError::PlanCorpusFingerprintMismatch { actual, .. } if actual == "forged-top"
+        )));
+        assert!(errs.iter().any(|e| matches!(
+            e,
+            CurationError::DecisionBatchFingerprintMismatch { actual, .. }
+                if actual == "forged-embedded"
+        )));
+    }
+
+    // ── artifact boundary: the plan must survive JSON (finding P1a) ─────────
+
+    #[test]
+    fn plan_survives_json_round_trip() {
+        // ADR-0033's plan is an *immutable serialized artifact*. Verifying a
+        // live Rust struct is not enough: build → serialize → deserialize →
+        // verify the parsed artifact must hold.
+        let (m, plan) = good_plan();
+        let json = serde_json::to_string(&plan).expect("serialize");
+        let parsed: DryRunPlan = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, plan, "round-trip must be faithful");
+        assert_eq!(
+            verify_plan(&parsed, &m),
+            Ok(()),
+            "a deserialized faithful plan verifies"
+        );
+    }
+
+    #[test]
+    fn deserialized_tampered_assignments_refuse_projection() {
+        // Tamper the assignments, recompute the plan_digest so the artifact is
+        // internally self-consistent, then cross the real JSON boundary. The
+        // verifier must still refuse by re-derivation.
+        let (m, mut plan) = good_plan();
+        plan.assignments[0].song_id = "song-forged".to_owned();
+        plan.plan_digest = plan_digest(&plan);
+        let json = serde_json::to_string(&plan).expect("serialize");
+        let parsed: DryRunPlan = serde_json::from_str(&json).expect("deserialize");
+        let errs = verify_plan(&parsed, &m).expect_err("tampered assignment after round-trip");
         assert!(errs
             .iter()
-            .any(|e| matches!(e, CurationError::DecisionBatchFingerprintMismatch { .. })));
+            .any(|e| matches!(e, CurationError::DecisionProjectionMismatch { .. })));
+    }
+
+    #[test]
+    fn deserialized_forged_fingerprint_refuses() {
+        let (m, mut plan) = good_plan();
+        plan.input_corpus_fingerprint = "forged-top".to_owned();
+        plan.plan_digest = plan_digest(&plan);
+        let json = serde_json::to_string(&plan).expect("serialize");
+        let parsed: DryRunPlan = serde_json::from_str(&json).expect("deserialize");
+        let errs = verify_plan(&parsed, &m).expect_err("forged fingerprint after round-trip");
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, CurationError::PlanCorpusFingerprintMismatch { .. })));
+    }
+
+    #[test]
+    fn plan_rejects_unknown_fields() {
+        // A versioned artifact must not silently absorb foreign fields.
+        let (_m, plan) = good_plan();
+        let mut value = serde_json::to_value(&plan).expect("to value");
+        value
+            .as_object_mut()
+            .expect("plan is a JSON object")
+            .insert("rogue_field".to_owned(), json!("smuggled"));
+        let json = value.to_string();
+        let parsed: Result<DryRunPlan, _> = serde_json::from_str(&json);
+        assert!(
+            parsed.is_err(),
+            "unknown top-level fields must be rejected (deny_unknown_fields)"
+        );
+    }
+
+    // ── ledger identity (finding P1b) ───────────────────────────────────────
+
+    #[test]
+    fn ledger_refuses_unsupported_schema() {
+        let m = uncurated();
+        let b = batch_for(
+            &m,
+            "batch1",
+            vec![event("ev0", 0, accept("g", &["shaA"], "song-1"))],
+        );
+        let mut ledger = ledger_of(vec![b]);
+        ledger.schema = "song-curation.decisions.v99".to_owned();
+        let errs = build_plan(&m, &ledger, "batch1").expect_err("unsupported ledger schema");
+        assert!(errs.iter().any(|e| matches!(
+            e,
+            CurationError::UnsupportedDecisionsLedgerSchema { schema } if schema == "song-curation.decisions.v99"
+        )));
+    }
+
+    #[test]
+    fn ledger_refuses_duplicate_batch_id() {
+        // Two distinct batches sharing a batch_id: the selector would otherwise
+        // silently pick whichever appears first, so the application identity is
+        // ambiguous. This must refuse before any selection or projection.
+        let m = uncurated();
+        let b1 = batch_for(
+            &m,
+            "dup",
+            vec![event("ev0", 0, accept("g", &["shaA"], "song-1"))],
+        );
+        let b2 = batch_for(
+            &m,
+            "dup",
+            vec![event("ev1", 0, accept("h", &["shaB"], "song-2"))],
+        );
+        let errs = build_plan(&m, &ledger_of(vec![b1, b2]), "dup").expect_err("duplicate batch id");
+        assert!(errs.iter().any(|e| matches!(
+            e,
+            CurationError::DuplicateDecisionBatchId { batch_id } if batch_id == "dup"
+        )));
+    }
+
+    // ── single-emit + short-circuit (finding P2a) ───────────────────────────
+
+    #[test]
+    fn build_plan_emits_one_ordering_error() {
+        // The batch is validated once (by validate_ledger), not again in derive.
+        let m = uncurated();
+        let mut b = batch_for(
+            &m,
+            "batch1",
+            vec![event("ev0", 0, accept("g", &["shaA"], "song-1"))],
+        );
+        b.events[0].ordinal = 7;
+        let errs = build_plan(&m, &ledger_of(vec![b]), "batch1").expect_err("bad ordinal");
+        let n = errs
+            .iter()
+            .filter(|e| matches!(e, CurationError::InvalidDecisionBatchOrder { .. }))
+            .count();
+        assert_eq!(n, 1, "the ordering refusal must be emitted exactly once");
+    }
+
+    #[test]
+    fn verify_plan_emits_one_ordering_error() {
+        let (m, mut plan) = good_plan();
+        plan.decision_batch.events[0].ordinal = 4;
+        plan.decisions_digest = decisions_digest(&plan.decision_batch);
+        plan.plan_digest = plan_digest(&plan);
+        let errs = verify_plan(&plan, &m).expect_err("bad ordinal in embedded batch");
+        let n = errs
+            .iter()
+            .filter(|e| matches!(e, CurationError::InvalidDecisionBatchOrder { .. }))
+            .count();
+        assert_eq!(n, 1, "the ordering refusal must be emitted exactly once");
+    }
+
+    #[test]
+    fn invalid_ledger_short_circuits_before_projection() {
+        // A structurally invalid ledger (bad ordinal) that also references an
+        // unknown source: refusal must come from ledger validation and stop
+        // before projection, so the projection-level error never appears.
+        let m = uncurated();
+        let mut b = batch_for(
+            &m,
+            "batch1",
+            vec![event("ev0", 0, accept("g", &["shaZ"], "song-1"))],
+        );
+        b.events[0].ordinal = 9;
+        let errs = build_plan(&m, &ledger_of(vec![b]), "batch1").expect_err("invalid ledger");
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, CurationError::InvalidDecisionBatchOrder { .. })),
+            "structural refusal is reported"
+        );
+        assert!(
+            !errs
+                .iter()
+                .any(|e| matches!(e, CurationError::UnknownDecisionSource { .. })),
+            "projection must not run on a structurally invalid ledger"
+        );
     }
 }
