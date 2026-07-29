@@ -165,24 +165,28 @@ batch do not all share that fingerprint.
 ### 5.5 Apply (transactional, chain-verified)
 
 Apply consumes the **plan** (which embeds its decision batch — the sole source of
-the *decisions* it applies) and, for a **non-initial** batch, the **preceding
-application report** (for **chain verification only**, never for decisions).
+the *decisions* it applies) and the **application index** (§8.5) — the append-only
+registry of already-applied batches that makes the chain and already-applied
+checks *provable* from a declared input, not inferred from corpus side-effects.
 Before writing, Apply:
 
 1. recomputes `plan_digest` over the plan (`PlanDigestMismatch` on mismatch);
-2. recomputes the embedded batch's `decisions_digest` from its ordered events;
+2. recomputes the embedded batch's `decisions_digest` and checks it equals the
+   plan's `decisions_digest` field (`DecisionDigestMismatch`);
 3. verifies the batch `input_corpus_fingerprint` equals the **current** corpus
    fingerprint (`PlanCorpusFingerprintMismatch`);
-4. verifies the application chain — the batch's
-   `previous_application_report_digest` equals the digest of the supplied
-   preceding report, and that report's `output_corpus_fingerprint` equals this
-   batch's `input_corpus_fingerprint` (`ApplicationChainMismatch`); refuses a
-   batch already recorded as applied (`DecisionBatchAlreadyApplied`);
+4. verifies the application chain against the index: the batch's `batch_id` is
+   **absent** from the index (`DecisionBatchAlreadyApplied`); and — for a
+   non-initial batch — the batch's `previous_application_report_digest` equals the
+   index's last `report_digest`, whose `output_corpus_fingerprint` equals this
+   batch's `input_corpus_fingerprint` (`ApplicationChainMismatch`);
 5. **replays the embedded events itself**, derives assignments +
    `generated_songs_map`, and compares them to the plan's — any divergence is
    `DecisionProjectionMismatch` (the plan cannot assert an assignment the
    decisions do not produce);
-6. checks every `expected_existing_song_id` against the on-disk label.
+6. checks every `expected_existing_song_id` against the on-disk label, and that
+   each label change is covered by the acting event's authorized supersession set
+   (§8.2).
 
 Only then does it write:
 
@@ -194,11 +198,15 @@ Only then does it write:
   changes);
 - **deterministic** file order and JSON rendering; **idempotent** for
   already-correct labels;
-- **never** clearing a non-`None` label unless a `correct` event authorizes it
+- **never** clearing a non-`None` label unless the acting event's supersession
+  set authorizes it — `correct`, `merge`, or `split` (§8.2)
   (`ExistingLabelReplacementNotAuthorized`; the plan's `expected_existing_song_id`
   is the check).
 
-A **correction is a new curator decision**, not heuristic reconciliation.
+On success Apply publishes the application report **and** appends a matching
+record to the application index **transactionally** — both land or neither does,
+so the registry never lies about what was applied. A **correction / merge / split
+is a new curator decision**, not heuristic reconciliation.
 
 ### 5.6 Generate manifest (deterministic) — hard distinct-path guard
 
@@ -255,10 +263,15 @@ question the flat-replay model could not:
 - every event in one batch binds to the **same** `input_corpus_fingerprint`;
 - **one plan embeds exactly one unapplied batch**;
 - **historical batches are audit history and are never replayed**;
-- the next batch's `input_corpus_fingerprint` must equal the preceding accepted
-  report's `output_corpus_fingerprint` (`ApplicationChainMismatch` otherwise);
-- reuse of an already-applied batch typed-refuses
-  (`DecisionBatchAlreadyApplied`).
+- the **application index** (§8.5) is the append-only registry of applied
+  batches; the next batch's `input_corpus_fingerprint` must equal the index's
+  last `output_corpus_fingerprint`, and its `previous_application_report_digest`
+  the index's last `report_digest` (`ApplicationChainMismatch` otherwise);
+- reuse of a batch whose `batch_id` is already in the index typed-refuses
+  (`DecisionBatchAlreadyApplied`) — the registry makes this **provable** rather
+  than inferred from corpus side-effects, so it also catches a rejection-only or
+  otherwise fingerprint-neutral batch, and re-applying an initial batch to a
+  fresh copy of the same snapshot.
 
 Partial output is `holdout_ready: false`, is **not** a valid song-holdout corpus,
 leaves uncurated sources `song_id: None`, never invents an "unknown" shared
@@ -361,12 +374,28 @@ binds all its events to a single `input_corpus_fingerprint`:
   - `manual_define { source_sha256s, assign_song_id }`
   - `split { from_song_id, into: [ { assign_song_id, source_sha256s } … ], supersedes_song_ids: [from_song_id] }`
   - `merge { from_song_ids, into_song_id, source_sha256s, supersedes_song_ids: from_song_ids }`
-  - `correct { source_sha256s, new_song_id, supersedes_song_ids }` — the only
-    variant permitted to change a non-`None` label.
+  - `correct { source_sha256s, new_song_id, supersedes_song_ids }`.
+- **Authorized replacement (three actions, not one).** Changing a non-`None`
+  existing label is permitted by exactly the action whose supersession set covers
+  it:
+  - `correct` — may replace exactly the labels named in its `supersedes_song_ids`;
+  - `merge` — may replace labels from `from_song_ids` with `into_song_id`;
+  - `split` — may replace `from_song_id` with the explicitly enumerated target
+    assignments.
+
+  `ExistingLabelReplacementNotAuthorized` fires when the actual on-disk label is
+  **not** in the authorized supersession set of the acting event
+  (`accept_suggestion` / `manual_define` carry an empty set, so they may only
+  label `None`; `reject_suggestion` assigns nothing). All six actions are
+  first-class.
+- **Ordering — one source of truth.** The `events` **array order is the
+  authoritative append order**; `ordinal` MUST equal the zero-based array
+  position; ordinals MUST be contiguous and unique; `event_id` MUST be unique
+  within the ledger. Any violation typed-refuses (`InvalidDecisionBatchOrder` /
+  `DuplicateDecisionEventId`) **before** any digest or replay. Within one batch,
+  the **latest event (highest ordinal) for a `sha256` wins**.
 - **No invisible rewrites:** events (and applied batches) are immutable and
-  append-only. Within one batch, `ordinal` is semantic (**latest event for a
-  `sha256` wins**); a change from a non-`None` label requires a `correct`.
-  Historical batches are audit history and are **never** replayed.
+  append-only; historical batches are audit history and are **never** replayed.
 
 ### 8.3 Plan artifact — embeds one unapplied batch (Apply's decision source)
 
@@ -420,24 +449,53 @@ authorizes any label change.
 }
 ```
 
-`report_digest` (over the report with that field omitted) is what the **next**
-batch's `previous_application_report_digest` references, closing the chain. The
-report is **evidence and a chain link**, never a second authority for `song_id`.
+`report_digest` (the report canonicalized per §9 with that field omitted) is what
+the **next** batch's `previous_application_report_digest` references, closing the
+chain. The report is **evidence and a chain link**, never a second authority for
+`song_id`.
 
-## 9. Determinism — three distinct canonicalizations
+### 8.5 Application index — the append-only applied-batch registry
+
+The registry that makes `DecisionBatchAlreadyApplied` and the chain checks
+**provable from a declared Apply input**, rather than inferred from corpus
+side-effects (which a rejection-only or fingerprint-neutral batch would evade):
+
+```json
+{
+  "schema": "song-curation.applications.v1",
+  "applications": [
+    {
+      "batch_id": "batch-000004",
+      "report_digest": "<hex>",
+      "input_corpus_fingerprint": "<hex>",
+      "output_corpus_fingerprint": "<hex>"
+    }
+  ]
+}
+```
+
+Plan creation and Apply check the batch's `batch_id` is **absent** here; Apply
+appends the new record **transactionally with report publication** (both land or
+neither). The last record is the chain head (§5.5 step 4).
+
+## 9. Determinism — one canonical encoding, four ordering contracts
 
 The core already has `corpus_fingerprint()` (`core/src/curation_store.rs:228`),
 but it hashes each chunk's **material** identity and excludes mutable curation
 fields, so it cannot detect a `song_id` or manifest-membership change — exactly
-what a curation plan must be invalidated by. This workflow defines **three
-separate** canonicalizations; they are **not** "the same scheme", because event
-order is semantic while the corpus snapshot is set-like.
+what a curation plan must be invalidated by. This workflow therefore defines its
+own digests.
 
-**`corpus_fingerprint` — order-insensitive (set-like).** Build one **compact
-UTF-8 JSON array** record per item (JSON escaping is injective — `ChunkId` /
-`SongId` are unrestricted `String` and may contain tabs/newlines an ad-hoc
-separator could not survive), **sort the record bytes**, join with `\n`, and
-`source_sha256` the result:
+**Shared canonical JSON encoding.** All four contracts below serialize to
+**compact UTF-8 JSON with object keys sorted lexicographically** and no
+insignificant whitespace, then SHA-256. Fixed key ordering plus JSON escaping
+(injective — `ChunkId` / `SongId` are unrestricted `String` and may contain
+tabs/newlines an ad-hoc separator could not survive) makes the byte encoding
+deterministic across implementations. What differs per contract is **which arrays
+are sorted and which preserve semantic order**:
+
+**1. `corpus_fingerprint` — order-insensitive (set-like).** One record per item;
+**sort the record bytes**; join with `\n`:
 
 ```json
 ["manifest_songs", "absent"]            // CorpusManifest.songs == None
@@ -450,17 +508,21 @@ The `manifest_songs` record distinguishes **absent** (`None`, skips the
 cross-check) from **present-empty** (`Some({})`, must account for every labelled
 source) — a distinction core makes deliberately.
 
-**`decisions_digest` — order-*sensitive*.** Canonicalize the decision **batch**
-with its events in **exact append order** (each event's `ordinal` included), **no
-sorting of the event sequence**; SHA-256 the compact UTF-8 JSON. Two ledgers with
-the same events in different order produce different assignments ("latest wins"),
-so their digests **must** differ.
+**2. `decisions_digest` — order-*sensitive*.** Canonicalize the decision **batch**
+with its `events` array in **append order** (never sorted; `ordinal` equals the
+array position, §8.2). Two ledgers with the same events in different order produce
+different assignments ("latest wins"), so their digests **must** differ.
 
-**`plan_digest` — order-aware where it matters.** Canonicalize the complete plan
-with the `plan_digest` field omitted; the embedded `decision_batch` keeps its
-events in append order (per `decisions_digest`); `assignments` are sorted by
-`source_sha256`, each `affected_chunk_ids` sorted, and `generated_songs_map` keys
-and value lists sorted; SHA-256 the result.
+**3. `plan_digest` — order-aware.** Canonicalize the complete plan with the
+`plan_digest` field omitted; the embedded `decision_batch` keeps its `events` in
+append order (per contract 2); `assignments` sorted by `source_sha256`, each
+`affected_chunk_ids` sorted, `generated_songs_map` keys and value lists sorted.
+
+**4. `report_digest` — order-aware.** Canonicalize the complete application report
+with the `report_digest` field omitted; `applied_event_ids` preserved in **batch
+order**; `refusals` sorted by the fixed tuple `(kind, source_sha256)`. This
+contract is load-bearing because the next batch's
+`previous_application_report_digest` references it (§8.4, §8.5).
 
 ## 10. Refusal taxonomy (typed, defined before implementation)
 
@@ -468,18 +530,26 @@ and value lists sorted; SHA-256 the result.
 - `ConflictingExistingSongIds` — one `sha256` carries more than one `song_id`.
 - `UnknownDecisionSource` — a decision names a `sha256` absent from the corpus.
 - `SourceAssignedToMultipleSongs` — one `sha256` assigned to two `SongId`s.
+- `InvalidDecisionBatchOrder` — a batch's `ordinal`s are not contiguous, unique,
+  and equal to the array position (§8.2).
+- `DuplicateDecisionEventId` — an `event_id` repeats within the ledger.
 - `DecisionBatchFingerprintMismatch` — a batch's `input_corpus_fingerprint` does
   not match the corpus it is planned/applied against (or its events disagree on
   it).
 - `PlanCorpusFingerprintMismatch` — the corpus changed between plan and apply.
-- `PlanDigestMismatch` — the plan bytes do not match `plan_digest`.
-- `DecisionProjectionMismatch` — replaying the embedded batch does not reproduce
-  the plan's `assignments` / `generated_songs_map`.
-- `DecisionBatchAlreadyApplied` — the batch is already recorded as applied.
+- `PlanDigestMismatch` — the canonical plan bytes do not match `plan_digest`.
+- `DecisionDigestMismatch` — the embedded batch does not match the plan's
+  `decisions_digest` field (distinct from the two above).
+- `DecisionProjectionMismatch` — the batch is valid, but replaying it does not
+  reproduce the plan's `assignments` / `generated_songs_map`.
+- `DecisionBatchAlreadyApplied` — the batch's `batch_id` is already in the
+  application index (§8.5).
 - `ApplicationChainMismatch` — the batch's `previous_application_report_digest`
-  or `input_corpus_fingerprint` does not chain to the preceding accepted report.
-- `ExistingLabelReplacementNotAuthorized` — a non-`None` label would change
-  without a `correct` (checked via `expected_existing_song_id`).
+  or `input_corpus_fingerprint` does not chain to the index's last record.
+- `ExistingLabelReplacementNotAuthorized` — a non-`None` label would change, but
+  the actual on-disk label is **not** in the acting event's authorized
+  supersession set (`correct` / `merge` / `split`, §8.2; checked via
+  `expected_existing_song_id`).
 - `ManifestDisagreement` — `CorpusManifest.songs` disagrees with the per-source
   labels (propagated from the core preflight where applicable).
 - `IncompleteCoverage` — not every participating source is labelled.
@@ -535,19 +605,22 @@ Every choice below is **selected for v1**, not left open:
   events, following `CurationStoreV1` (§8.2) — not JSONL. Each batch binds its
   events to one `input_corpus_fingerprint` and is the unit of one application.
 - **Action model:** a tagged `action` union (accept / reject / manual_define /
-  split / merge / correct), each with exact hashes and `supersedes_song_ids`.
+  split / merge / correct), all six first-class; `correct`, `merge`, and `split`
+  are the **authorized replacement** actions, each replacing exactly the labels in
+  its supersession set (§8.2).
 - **Plan:** a serialized plan that **embeds exactly one unapplied batch**; Apply
   replays it, re-derives assignments, and compares (§8.3, §5.5) — the plan is the
-  sole source of the *decisions*; a non-initial batch also consumes the preceding
-  application report for **chain** verification only.
-- **Application chain:** batch → report → next batch, linked by
-  `previous_application_report_digest` and matching input/output fingerprints
-  (§6, §8.4).
+  sole source of the *decisions*.
+- **Application chain + index:** batch → report → next batch, linked by
+  `previous_application_report_digest` and matching input/output fingerprints,
+  with an append-only **application index** (§8.5) as the provable already-applied
+  registry (an Apply input, written transactionally with the report).
 - **`SongId` encoding:** opaque ledger-issued `song-<monotonic counter>`,
   single-writer; concurrent issuance out of scope for v1 (§7).
-- **Digests:** **three** distinct canonicalizations — order-insensitive
-  `corpus_fingerprint`, order-**sensitive** `decisions_digest`, and order-aware
-  `plan_digest` (§9).
+- **Digests:** one **shared canonical JSON encoding** (sorted object keys, compact
+  UTF-8) under **four** ordering contracts (§9): order-insensitive
+  `corpus_fingerprint`; order-**sensitive** `decisions_digest`; order-aware
+  `plan_digest`; order-aware `report_digest`.
 - **Manifest guard:** distinct curated path; refuse ordinary
   `<corpus>/manifest.json`; strategy 2 later (§5.6).
 - **Suggestion normalization:** reuse the census `strip_version_suffix` rule
