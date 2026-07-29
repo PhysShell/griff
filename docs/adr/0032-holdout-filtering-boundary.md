@@ -14,13 +14,16 @@ folding the chunks into anonymous rhythm templates, novelty references, gesture
 stats, and skipped names. The CLI loader does exactly this with no decision in
 between: it pushes each prepared chunk onto `loaded`
 (`cli/src/generation_input.rs:64`) and calls `corpus_material(loaded, skipped)`
-(`cli/src/generation_input.rs:68`).
+(`cli/src/generation_input.rs:68`). It scans standalone `*.chunk.json` records
+and compiles the successful ones — it **never reads a `CorpusManifest`**.
 
 There is therefore **no point at which a holdout decision can be made**: once
 material is compiled, `song_id` / `sha256` / `bar_range` are gone. ADR-0031
 (Accepted) added `song_id` and `song_holdout_preflight`
 (`core/src/corpus.rs`), making song-level holdout *implementable* fail-closed —
-but nothing calls it in a generation path, so the capability is inert.
+but nothing calls it in a generation path, so the capability is inert. Note the
+preflight takes a complete `CorpusManifest` (every manifest chunk, plus the
+optional `songs` map), which the current CLI path does not even load.
 
 The reachability proposal is non-binding discussion material; its Phase-0 audit
 ([`../audit/2026-07-generator-reachability-metric-inventory.md`](../audit/2026-07-generator-reachability-metric-inventory.md)
@@ -33,33 +36,66 @@ refusal), never degrade into conveniently-shrunk "diagnostics".
 
 ## Decision
 
-We fix the holdout **execution boundary** and its ownership. We bind no
-measurement axes and change no generation behaviour.
+We fix the holdout **execution boundary**, its authoritative input, and its
+ownership. We bind no measurement axes and change no generation behaviour.
 
-1. **Ownership.** The offline Reachability Lab owns `CorpusMode` and all holdout
-   run artifacts. It is an isolated, lab-style instrument (the `fuzz`/`lab`
-   isolation precedent, ADR-0010), not a production generation feature. **No
-   roadmap stage number is assigned here** — the audit defers placement.
+1. **Ownership and placement.** `CorpusMode`, `TargetIdentity`, `HoldoutError`,
+   and the boundary orchestration live in the **offline Reachability Lab** — an
+   isolated, lab-style instrument (the `fuzz` / `lab` isolation precedent,
+   ADR-0010). Production CLI and cockpit paths acquire **no** holdout policy;
+   core production generation and reranking are unchanged; ordinary generation
+   bypasses this seam entirely. Any loader addition exists solely to hand the lab
+   one authoritative corpus, not to duplicate policy across frontends. **No
+   roadmap stage number is assigned** — the audit defers placement.
 
-2. **Boundary.** Holdout filtering occurs over `Vec<LoadedChunk>`, **before**
-   `corpus_material` and before any rhythm / reference / gesture compilation —
-   the only point where full provenance is still present. The smallest pure
-   seam:
+2. **Authoritative input — one source of truth.** The boundary consumes a single
+   bound corpus, conceptually:
+
+   ```rust
+   struct LoadedCorpus {
+       manifest: CorpusManifest,   // authoritative song_id facts + optional songs map
+       loaded: Vec<LoadedChunk>,   // records prepared for material
+       skipped: Vec<String>,       // names that could not be loaded
+   }
+   ```
+
+   The manifest and the loaded records **must describe the same corpus**: each
+   `LoadedChunk.meta` originates from — or exactly matches, by `ChunkId` — one
+   `manifest.chunks` entry, and a duplicate, missing, or provenance-mismatched
+   record is a **typed refusal**. (Equivalently, the lab may build `loaded`
+   directly from `manifest.chunks`, which satisfies the invariant by
+   construction.) This closes the stale-manifest leak: preflight and filtering
+   must read the **same** `song_id` facts, so a manifest asserting
+   `shaA → song1` can never validate a run that a separately-read record would
+   filter as `shaA → song2`.
+
+3. **Boundary — absence-capable result.** The smallest pure seam:
 
    ```rust
    fn prepare_corpus_for_mode(
-       loaded: Vec<LoadedChunk>,
-       skipped: Vec<String>,
+       corpus: LoadedCorpus,
        mode: CorpusMode,
        target: &TargetIdentity,
-   ) -> Result<CorpusMaterial, HoldoutError>
+   ) -> Result<Option<CorpusMaterial>, HoldoutError>
    ```
 
-   A `NoCorpus` / no-holdout mode passes straight through to `corpus_material`
-   unchanged, so ordinary generation is byte-for-byte as today.
+   `Ok(None)` is a genuinely corpus-free run — the generation API already models
+   this as `material: None`, disabling corpus rhythms, references, and gesture.
+   `Ok(Some(_))` is a corpus-backed run. The modes are **distinct experiments**:
 
-3. **`HoldoutTargetSong` contract.** For the song mode, in order:
-   1. run `song_holdout_preflight` over the **entire participating corpus**;
+   - **`NoCorpus`** → `Ok(None)` — no corpus at all.
+   - **`LeakyDiagnostic`** → `Ok(Some(corpus_material(all_loaded, skipped)))` — a
+     corpus is deliberately supplied **unfiltered**, named so it can never be
+     mistaken for a holdout.
+   - **`HoldoutTargetSong`** → preflight → filter →
+     `Ok(Some(corpus_material(filtered, skipped)))`.
+
+   `NoCorpus` (no corpus) and `LeakyDiagnostic` (an unfiltered corpus) are
+   **not** the same experiment, and neither is a "no-holdout" alias.
+
+4. **`HoldoutTargetSong` contract.** In order:
+   1. run `song_holdout_preflight` over the **entire participating corpus**
+      (`corpus.manifest`, including its optional `songs` map);
    2. typed-refuse on any coverage or identity inconsistency — the existing
       `SongHoldoutRefusal` set (unidentified / uncurated / inconsistent-`sha256`
       / manifest disagreement) propagates unchanged;
@@ -68,51 +104,51 @@ measurement axes and change no generation behaviour.
       (all representations of that work — MIDI, GP editions, covers);
    5. only then compile the remaining chunks into `CorpusMaterial`.
 
-4. **Target identity carries explicit per-mode provenance**, not a vague source
+5. **Target identity carries explicit per-mode provenance**, not a vague source
    string: `source_sha256`, `song_id`, `bar_range`, `track_index`, `projection`,
-   and `eligibility` (the audit §4 fields), so the file, fragment, and song
-   modes each select on the correct identity level.
+   and `eligibility` (the audit §4 fields), so the file, fragment, and song modes
+   each select on the correct identity level.
 
-5. **Non-goals (bound).** No production generation-behaviour change; no
+6. **Non-goals (bound).** No production generation-behaviour change; no
    scoring / rerank change; no curation or automatic song grouping; **no
    post-hoc relabelling of a failed or absent holdout as a valid one**; filtering
    is deterministic and does not mutate metadata.
 
-6. **First implementation slice.** Song mode plus the minimal `CorpusMode` /
-   `TargetIdentity` / `HoldoutError` scaffolding. File and fragment modes follow
-   as **separate slices** — their overlap semantics, notably `bar_range == None`
-   meaning whole-source overlap, deserve their own tests rather than riding along
-   as bonus complexity.
+7. **First implementation slice.** Song mode plus the minimal `CorpusMode` /
+   `TargetIdentity` / `HoldoutError` / `LoadedCorpus` scaffolding. File and
+   fragment modes follow as **separate slices** — their overlap semantics,
+   notably `bar_range == None` meaning whole-source overlap, deserve their own
+   tests rather than riding along as bonus complexity.
 
 The implementation is a separate red→green slice once this ADR is accepted:
-synthetic-fixture characterization first (the current uncurated corpus refuses
-before material construction; a curated fixture excludes every representation of
-the target song with zero leakage into rhythms, references, and gesture; a
-missing target `song_id` and any unidentified / uncurated / inconsistent source
-typed-refuse; unrelated songs remain; filtering is deterministic and leaves
-metadata untouched; `NoCorpus` and any explicitly-named leaky diagnostic stay
-distinct), then the boundary function. This ADR binds nothing until accepted.
+synthetic-fixture characterization first, then the boundary function. This ADR
+binds nothing until accepted.
 
 ## Consequences
 
-**Good / possible.**
+**Good / possible (after the implementation slice lands).**
 
-- Song-level holdout becomes executable end-to-end: the current uncurated corpus
-  correctly **refuses** before material construction, and a curated corpus
-  excludes every representation of the target work with **zero leakage** into any
-  material channel (rhythm templates, novelty references, gesture stats).
-- The boundary is a single pure function, testable with synthetic fixtures and
-  independent of any curation data — the executable consumer and refusal path
-  land before labeling begins.
-- The provenance-primary, fail-closed doctrine is enforced in code, not merely
-  documented.
+- Song-level holdout becomes executable end-to-end: an uncurated corpus will
+  **typed-refuse before material construction**, and a fully curated (synthetic)
+  corpus will exclude every representation of the target work **before any
+  material channel** (rhythm templates, novelty references, gesture stats) is
+  compiled — with the single-authority invariant preventing a stale-manifest
+  leak.
+- The boundary will be a single pure function over `LoadedCorpus`, testable with
+  synthetic fixtures and independent of any curation data — the executable
+  consumer and refusal path will land before labeling begins.
+- The provenance-primary, fail-closed doctrine will be enforced in code, not
+  merely documented, and `NoCorpus` / `LeakyDiagnostic` / `HoldoutTargetSong`
+  will be distinguishable experiments rather than one overloaded "no-holdout"
+  path.
 
 **Bad / cost.**
 
-- One more seam between load and material, and the lab owns a mode enum and an
-  error type.
-- Until curation exists, a song holdout **refuses on the real corpus**. This is
-  correct (fail-closed over an uncurated population) but means the executable
+- One more seam between load and material, an authoritative `LoadedCorpus` the
+  lab must assemble (manifest bound to loaded records), and a lab-owned mode enum
+  and error type.
+- Until curation exists, a song holdout will **refuse on the real corpus**. This
+  is correct (fail-closed over an uncurated population) but means the executable
   path deliberately precedes any real run — the consumer and refusal exist before
   the data.
 
@@ -120,7 +156,8 @@ distinct), then the boundary function. This ADR binds nothing until accepted.
 
 - No file or fragment mode here (separate slices); no eligibility / projection
   axis *implementation* (the boundary only references them); no curation,
-  production cutover, or `track_index` recovery; no generation or scoring change.
+  production cutover, or `track_index` recovery; no generation or scoring change;
+  no holdout policy in the production CLI or cockpit.
 
 Sequence this enables (each a later, separately-contracted step): the holdout
 wiring slice → a `song_id` curation tool and policy (suggestion-only, human
