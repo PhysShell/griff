@@ -54,6 +54,7 @@ pub struct Inventory {
 /// A versioned JSON ledger (not JSONL): a monotonic issuance counter and an
 /// ordered list of immutable batches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionsLedger {
     pub schema: String,
     pub next_song_seq: u64,
@@ -62,6 +63,7 @@ pub struct DecisionsLedger {
 
 /// One application unit: events all made against a single `input_corpus_fingerprint`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionBatch {
     pub batch_id: String,
     pub input_corpus_fingerprint: String,
@@ -73,6 +75,7 @@ pub struct DecisionBatch {
 /// One immutable curator decision. The `events` array order is authoritative;
 /// `ordinal` must equal the zero-based array position (checked).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionEvent {
     pub event_id: String,
     pub ordinal: u64,
@@ -88,7 +91,7 @@ pub struct DecisionEvent {
 /// still replayed (it validates its sources and can supersede an earlier pending
 /// assignment within the batch).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     AcceptSuggestion {
         candidate_id: String,
@@ -130,6 +133,7 @@ pub enum Action {
 
 /// One target group of a `split`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SplitTarget {
     pub assign_song_id: String,
     pub source_sha256s: Vec<String>,
@@ -431,16 +435,13 @@ pub fn plan_digest(plan: &DryRunPlan) -> String {
 
 // ── validation + projection ─────────────────────────────────────────────────────
 
-/// Validate one batch's ordering invariants: array order is authoritative,
-/// `ordinal` == position, and `event_id`s are unique **within the batch**.
-///
-/// # Errors
-///
-/// [`CurationError::InvalidDecisionBatchOrder`] and
-/// [`CurationError::DuplicateDecisionEventId`].
-pub fn validate_batch(batch: &DecisionBatch) -> Result<(), Vec<CurationError>> {
+/// One batch's **positional** invariant only: array order is authoritative and
+/// `ordinal` must equal the zero-based position. Uniqueness is a separate
+/// concern (see [`validate_batch`] for a standalone batch, or [`validate_ledger`]
+/// for the single ledger-wide `event_id` pass) so a duplicate is never counted
+/// twice.
+fn batch_order_errors(batch: &DecisionBatch) -> Vec<CurationError> {
     let mut errors = Vec::new();
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
     for (index, event) in batch.events.iter().enumerate() {
         let position = u64::try_from(index).unwrap_or(u64::MAX);
         if event.ordinal != position {
@@ -452,6 +453,26 @@ pub fn validate_batch(batch: &DecisionBatch) -> Result<(), Vec<CurationError>> {
                 ),
             });
         }
+    }
+    errors
+}
+
+/// Validate one **standalone** batch: positional ordering, and `event_id`s
+/// unique **within the batch**.
+///
+/// [`validate_ledger`] does **not** call this — it runs [`batch_order_errors`]
+/// per batch and a single ledger-wide uniqueness pass, so an intra-batch
+/// duplicate is reported exactly once rather than by both this helper and the
+/// ledger pass.
+///
+/// # Errors
+///
+/// [`CurationError::InvalidDecisionBatchOrder`] and
+/// [`CurationError::DuplicateDecisionEventId`].
+pub fn validate_batch(batch: &DecisionBatch) -> Result<(), Vec<CurationError>> {
+    let mut errors = batch_order_errors(batch);
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for event in &batch.events {
         if !seen.insert(event.event_id.as_str()) {
             errors.push(CurationError::DuplicateDecisionEventId {
                 event_id: event.event_id.clone(),
@@ -495,9 +516,10 @@ pub fn validate_ledger(ledger: &DecisionsLedger) -> Result<(), Vec<CurationError
                 batch_id: batch.batch_id.clone(),
             });
         }
-        if let Err(mut e) = validate_batch(batch) {
-            errors.append(&mut e);
-        }
+        // Positional ordering per batch; uniqueness is the single ledger-wide
+        // pass below, so an intra-batch duplicate is emitted exactly once (and a
+        // cross-batch duplicate likewise).
+        errors.append(&mut batch_order_errors(batch));
         for event in &batch.events {
             if !seen_events.insert(event.event_id.as_str()) {
                 errors.push(CurationError::DuplicateDecisionEventId {
@@ -734,19 +756,30 @@ pub fn build_plan(
     Ok(plan)
 }
 
-/// Verify a dry-run plan by re-deriving its **whole contract**: recompute both
-/// digests; re-derive the fingerprint, schema/policy, assignments, and complete
-/// songs map from the embedded batch + corpus; and refuse
+/// Verify a dry-run plan by re-deriving its **whole contract**. The embedded
+/// batch is validated **first**, so a structurally invalid batch refuses before
+/// any digest, fingerprint, or replay work. Otherwise: recompute both digests;
+/// re-derive the top-level and batch fingerprints (each refusal reports the
+/// field that disagreed), schema/policy, assignments, and complete songs map
+/// from the embedded batch + corpus; and refuse
 /// [`CurationError::DecisionProjectionMismatch`] on any divergence — so a plan
 /// cannot rubber-stamp itself even with self-consistent digests.
 ///
 /// # Errors
 ///
-/// [`CurationError::PlanDigestMismatch`], [`CurationError::DecisionDigestMismatch`],
-/// a batch-ordering refusal, [`CurationError::DecisionBatchFingerprintMismatch`],
-/// or [`CurationError::DecisionProjectionMismatch`] (plus any refusal from
+/// A batch-ordering / duplicate-`event_id` refusal (returned alone, before the
+/// rest), otherwise [`CurationError::PlanDigestMismatch`],
+/// [`CurationError::DecisionDigestMismatch`],
+/// [`CurationError::PlanCorpusFingerprintMismatch`],
+/// [`CurationError::DecisionBatchFingerprintMismatch`], or
+/// [`CurationError::DecisionProjectionMismatch`] (plus any refusal from
 /// re-deriving the plan body).
 pub fn verify_plan(plan: &DryRunPlan, manifest: &CorpusManifest) -> Result<(), Vec<CurationError>> {
+    // Structural validity of the embedded batch first: an invalid ordinal or a
+    // duplicate event_id refuses here — before any digest, fingerprint, or
+    // replay work — so those checks never run against a malformed batch.
+    validate_batch(&plan.decision_batch)?;
+
     let mut errors = Vec::new();
 
     let recomputed_plan = plan_digest(plan);
@@ -762,9 +795,6 @@ pub fn verify_plan(plan: &DryRunPlan, manifest: &CorpusManifest) -> Result<(), V
             expected: recomputed_decisions,
             actual: plan.decisions_digest.clone(),
         });
-    }
-    if let Err(mut e) = validate_batch(&plan.decision_batch) {
-        errors.append(&mut e);
     }
 
     // Both the top-level corpus binding and the embedded batch's binding must
@@ -1668,7 +1698,10 @@ mod tests {
         };
         let b = batch_for(&m, "batch1", vec![event("ev0", 0, split)]);
         let mut v = serde_json::to_value(ledger_of(vec![b])).expect("to value");
-        plant_rogue(&mut v, &["batches", "0", "events", "0", "action", "into", "0"]);
+        plant_rogue(
+            &mut v,
+            &["batches", "0", "events", "0", "action", "into", "0"],
+        );
         assert!(serde_json::from_value::<DecisionsLedger>(v).is_err());
     }
 
@@ -1706,17 +1739,13 @@ mod tests {
             .iter()
             .any(|e| matches!(e, CurationError::InvalidDecisionBatchOrder { .. })));
         for forbidden in [
-            errs
-                .iter()
+            errs.iter()
                 .any(|e| matches!(e, CurationError::UnknownDecisionSource { .. })),
-            errs
-                .iter()
+            errs.iter()
                 .any(|e| matches!(e, CurationError::PlanDigestMismatch { .. })),
-            errs
-                .iter()
+            errs.iter()
                 .any(|e| matches!(e, CurationError::DecisionDigestMismatch { .. })),
-            errs
-                .iter()
+            errs.iter()
                 .any(|e| matches!(e, CurationError::DecisionProjectionMismatch { .. })),
         ] {
             assert!(
@@ -1746,6 +1775,9 @@ mod tests {
                 |e| matches!(e, CurationError::DuplicateDecisionEventId { event_id } if event_id == "dup"),
             )
             .count();
-        assert_eq!(n, 1, "an intra-batch duplicate must be emitted exactly once");
+        assert_eq!(
+            n, 1,
+            "an intra-batch duplicate must be emitted exactly once"
+        );
     }
 }
