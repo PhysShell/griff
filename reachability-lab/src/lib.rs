@@ -6,10 +6,12 @@
 //! mode/target/error vocabulary; production CLI, cockpit, generation, and
 //! reranking acquire no holdout policy.
 //!
-//! Implemented so far (ADR-0032), fail-closed over a single-authority
-//! [`LoadedCorpus`]: **song mode** (`HoldoutTargetSong`) and **source-file
-//! mode** (`HoldoutTargetSourceFile`, exact `sha256`, independent of song
-//! curation). Fragment mode and any measurement axes are separate later slices.
+//! Implemented (ADR-0032), fail-closed over a single-authority [`LoadedCorpus`]:
+//! **song mode** (`HoldoutTargetSong`), **source-file mode**
+//! (`HoldoutTargetSourceFile`, exact `sha256`), and **fragment mode**
+//! (`HoldoutTargetFragment`, same source with inclusive `bar_range` overlap).
+//! The two hash-based modes are independent of song curation. Any measurement
+//! axes are separate later slices.
 
 use griff_core::corpus::{
     song_holdout_preflight, ChunkId, ChunkMeta, CorpusManifest, SongHoldoutRefusal, SongId,
@@ -45,17 +47,28 @@ pub enum CorpusMode {
     /// Exclude every chunk cut from the target source file (by exact `sha256`),
     /// fail-closed. Independent of song curation.
     HoldoutTargetSourceFile,
+    /// Exclude every chunk from the target source (`sha256`) whose inclusive
+    /// `bar_range` overlaps or contains the target range, fail-closed.
+    /// Independent of song curation and of track.
+    HoldoutTargetFragment,
 }
 
 /// The identity a holdout targets, with the field per mode kept explicit. Song
-/// mode uses `song_id`; source-file mode uses `source_sha256`. The remaining
-/// fragment / measurement fields (`bar_range`, `track_index`, `projection`,
-/// `eligibility`) join with their own later slices.
+/// mode uses `song_id`; source-file mode uses `source_sha256`; fragment mode uses
+/// `source_sha256` + `bar_range`. `track_index` is provenance only. Measurement
+/// fields (`projection`, `eligibility`) join with their own later slices.
 #[derive(Debug, Clone, Default)]
 pub struct TargetIdentity {
     /// The source file to hold out, by content hash (required by
-    /// `HoldoutTargetSourceFile`).
+    /// `HoldoutTargetSourceFile` and `HoldoutTargetFragment`).
     pub source_sha256: Option<String>,
+    /// The inclusive `(first, last)` fragment range within the source
+    /// (`HoldoutTargetFragment`). `None` means the **whole source** — not a
+    /// missing field.
+    pub bar_range: Option<(u32, u32)>,
+    /// Provenance only in fragment mode — it never narrows exclusion, since an
+    /// overlapping chunk from another track can still leak the target.
+    pub track_index: Option<u32>,
     /// The composition to hold out (required by `HoldoutTargetSong`).
     pub song_id: Option<SongId>,
 }
@@ -82,6 +95,18 @@ pub enum HoldoutError {
     /// The target `sha256` is carried by no *loaded* chunk, so no holdout would
     /// actually happen (e.g. the target file failed to load).
     TargetSourceAbsent(String),
+    /// The target fragment range is malformed (`first_bar > last_bar`). Never
+    /// silently swapped, treated as disjoint, or degraded to `TargetFragmentAbsent`.
+    InvalidTargetBarRange { first_bar: u32, last_bar: u32 },
+    /// The fragment preflight refused the corpus (a target-source manifest chunk
+    /// carried a malformed range).
+    FragmentPreflight(Vec<FragmentHoldoutRefusal>),
+    /// No *loaded* chunk of the target source overlaps the target range, so no
+    /// holdout would actually happen. `bar_range` `None` means whole-source.
+    TargetFragmentAbsent {
+        source_sha256: String,
+        bar_range: Option<(u32, u32)>,
+    },
 }
 
 /// A reason the source-file preflight refuses a corpus (ADR-0032): source-file
@@ -92,6 +117,18 @@ pub enum SourceHoldoutRefusal {
     /// A participating manifest chunk carries no `sha256`, so its source file
     /// cannot be identified by content.
     UnidentifiedSource(ChunkId),
+}
+
+/// A reason the fragment preflight refuses a corpus (ADR-0032).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FragmentHoldoutRefusal {
+    /// A target-source manifest chunk carries a malformed range
+    /// (`first_bar > last_bar`).
+    InvalidBarRange {
+        chunk_id: ChunkId,
+        first_bar: u32,
+        last_bar: u32,
+    },
 }
 
 /// A single-authority violation between the manifest and the loaded records.
@@ -113,19 +150,40 @@ pub enum BindingRefusal {
 /// Prepare a loaded corpus for a run mode, fail-closed (ADR-0032).
 ///
 /// Returns `Ok(None)` for a genuinely corpus-free run (`NoCorpus`) and
-/// `Ok(Some(_))` for a corpus-backed one. For `HoldoutTargetSong`: bind the
-/// loaded records to the manifest (single authority), run
-/// `song_holdout_preflight` over the whole manifest, require a target `song_id`,
-/// exclude every `LoadedChunk` carrying it, and only then compile the rest.
+/// `Ok(Some(_))` for a corpus-backed one. `LeakyDiagnostic` compiles the corpus
+/// unfiltered. Each holdout mode binds the loaded records to the manifest (single
+/// authority), runs its mode preflight, requires its target identity, excludes
+/// the matching `LoadedChunk`s, and only then compiles the survivors — refusing
+/// if nothing was excluded:
+///
+/// - `HoldoutTargetSong` — `song_holdout_preflight`; target `song_id`; exclude
+///   every representation of the song.
+/// - `HoldoutTargetSourceFile` — source-file preflight (complete `sha256`);
+///   target `source_sha256`; exclude every chunk of that file.
+/// - `HoldoutTargetFragment` — source-file + fragment preflight; target
+///   `source_sha256` + `bar_range`; exclude every same-source chunk whose
+///   inclusive range overlaps the target (`None` on either side = whole source;
+///   `track_index` never narrows it).
+///
+/// The two hash-based modes do not run the song preflight and do not require
+/// `song_id`.
 ///
 /// # Errors
 ///
-/// [`HoldoutError`] when `HoldoutTargetSong` cannot proceed fail-closed: a
-/// single-authority binding violation ([`HoldoutError::CorpusBinding`]), a
-/// preflight refusal ([`HoldoutError::Preflight`]), a missing target
-/// ([`HoldoutError::MissingTargetSongId`]), or a target carried by no loaded
-/// chunk ([`HoldoutError::TargetSongAbsent`]). `NoCorpus` and `LeakyDiagnostic`
-/// never refuse.
+/// [`HoldoutError`], fail-closed, when a holdout mode cannot proceed:
+/// - any mode: a single-authority binding violation
+///   ([`HoldoutError::CorpusBinding`]);
+/// - song: [`HoldoutError::Preflight`], [`HoldoutError::MissingTargetSongId`],
+///   [`HoldoutError::TargetSongAbsent`];
+/// - source-file: [`HoldoutError::SourcePreflight`],
+///   [`HoldoutError::MissingTargetSourceSha256`],
+///   [`HoldoutError::TargetSourceAbsent`];
+/// - fragment: [`HoldoutError::SourcePreflight`],
+///   [`HoldoutError::MissingTargetSourceSha256`],
+///   [`HoldoutError::InvalidTargetBarRange`], [`HoldoutError::FragmentPreflight`],
+///   [`HoldoutError::TargetFragmentAbsent`].
+///
+/// `NoCorpus` and `LeakyDiagnostic` never refuse.
 pub fn prepare_corpus_for_mode(
     corpus: LoadedCorpus,
     mode: CorpusMode,
@@ -179,6 +237,80 @@ pub fn prepare_corpus_for_mode(
             }
             Ok(Some(corpus_material(kept, corpus.skipped)))
         }
+        CorpusMode::HoldoutTargetFragment => {
+            check_binding(&corpus)?;
+            source_file_preflight(&corpus.manifest).map_err(HoldoutError::SourcePreflight)?;
+            let target_sha = target
+                .source_sha256
+                .as_ref()
+                .ok_or(HoldoutError::MissingTargetSourceSha256)?;
+            // A malformed target range is a typed refusal — never swapped,
+            // treated as disjoint, or degraded to TargetFragmentAbsent.
+            if let Some((first, last)) = target.bar_range {
+                if first > last {
+                    return Err(HoldoutError::InvalidTargetBarRange {
+                        first_bar: first,
+                        last_bar: last,
+                    });
+                }
+            }
+            fragment_preflight(&corpus.manifest, target_sha)
+                .map_err(HoldoutError::FragmentPreflight)?;
+            // Exclude by exact sha256 AND inclusive range overlap; track_index is
+            // provenance only and never narrows the exclusion.
+            let (excluded, kept): (Vec<LoadedChunk>, Vec<LoadedChunk>) =
+                corpus.loaded.into_iter().partition(|chunk| {
+                    chunk.meta.source.sha256.as_ref() == Some(target_sha)
+                        && ranges_overlap(target.bar_range, chunk.meta.source.bar_range)
+                });
+            if excluded.is_empty() {
+                return Err(HoldoutError::TargetFragmentAbsent {
+                    source_sha256: target_sha.clone(),
+                    bar_range: target.bar_range,
+                });
+            }
+            Ok(Some(corpus_material(kept, corpus.skipped)))
+        }
+    }
+}
+
+/// Inclusive range-overlap for holdout, applied **only after** exact `sha256`
+/// equality. Either side being `None` means the whole source and overlaps any
+/// range from that source; different source hashes never reach here.
+fn ranges_overlap(target: Option<(u32, u32)>, chunk: Option<(u32, u32)>) -> bool {
+    match (target, chunk) {
+        (None, _) | (_, None) => true,
+        (Some((target_first, target_last)), Some((chunk_first, chunk_last))) => {
+            target_first <= chunk_last && chunk_first <= target_last
+        }
+    }
+}
+
+/// Fail-closed fragment preflight: a manifest chunk of the target source whose
+/// range is malformed (`first > last`) is refused before any range filtering, so
+/// a bad range can never silently exclude nothing. `bar_range` `None` is valid
+/// (whole-source) and never refused.
+fn fragment_preflight(
+    manifest: &CorpusManifest,
+    target_sha: &str,
+) -> Result<(), Vec<FragmentHoldoutRefusal>> {
+    let refusals: Vec<FragmentHoldoutRefusal> = manifest
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.source.sha256.as_deref() == Some(target_sha))
+        .filter_map(|chunk| match chunk.source.bar_range {
+            Some((first, last)) if first > last => Some(FragmentHoldoutRefusal::InvalidBarRange {
+                chunk_id: chunk.id.clone(),
+                first_bar: first,
+                last_bar: last,
+            }),
+            _ => None,
+        })
+        .collect();
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals)
     }
 }
 
@@ -379,8 +511,8 @@ mod tests {
 
     fn song_target(song: &str) -> TargetIdentity {
         TargetIdentity {
-            source_sha256: None,
             song_id: Some(SongId(song.to_owned())),
+            ..TargetIdentity::default()
         }
     }
 
@@ -820,7 +952,7 @@ mod tests {
     fn file_target(sha: &str) -> TargetIdentity {
         TargetIdentity {
             source_sha256: Some(sha.to_owned()),
-            song_id: None,
+            ..TargetIdentity::default()
         }
     }
 
@@ -1104,7 +1236,11 @@ mod tests {
         m.source.bar_range = range;
         m.source.track_index = track;
         let onset = range.map_or(0, |(first, _)| first.saturating_mul(120) % 1920);
-        let lc = LoadedChunk { meta: m.clone(), sliced: one_bar_score(onset, 60), track: 0 };
+        let lc = LoadedChunk {
+            meta: m.clone(),
+            sliced: one_bar_score(onset, 60),
+            track: 0,
+        };
         (m, lc)
     }
 
@@ -1130,19 +1266,43 @@ mod tests {
 
     #[test]
     fn ranges_overlap_predicate_is_inclusive_with_none_whole_source() {
-        assert!(ranges_overlap(None, Some((10, 12))), "target None overlaps all");
-        assert!(ranges_overlap(Some((10, 12)), None), "chunk None overlaps all");
-        assert!(ranges_overlap(Some((0, 3)), Some((3, 5))), "endpoint touch overlaps");
-        assert!(ranges_overlap(Some((0, 3)), Some((1, 2))), "contained overlaps");
-        assert!(ranges_overlap(Some((1, 2)), Some((0, 5))), "containing overlaps");
-        assert!(ranges_overlap(Some((0, 3)), Some((2, 5))), "partial overlaps");
-        assert!(!ranges_overlap(Some((0, 2)), Some((3, 5))), "disjoint does not overlap");
+        assert!(
+            ranges_overlap(None, Some((10, 12))),
+            "target None overlaps all"
+        );
+        assert!(
+            ranges_overlap(Some((10, 12)), None),
+            "chunk None overlaps all"
+        );
+        assert!(
+            ranges_overlap(Some((0, 3)), Some((3, 5))),
+            "endpoint touch overlaps"
+        );
+        assert!(
+            ranges_overlap(Some((0, 3)), Some((1, 2))),
+            "contained overlaps"
+        );
+        assert!(
+            ranges_overlap(Some((1, 2)), Some((0, 5))),
+            "containing overlaps"
+        );
+        assert!(
+            ranges_overlap(Some((0, 3)), Some((2, 5))),
+            "partial overlaps"
+        );
+        assert!(
+            !ranges_overlap(Some((0, 2)), Some((3, 5))),
+            "disjoint does not overlap"
+        );
     }
 
     #[test]
     fn fragment_mode_refuses_missing_target_sha256() {
         let corpus = frag_corpus(vec![frag("a", "shaA", Some((0, 1)))], Vec::new(), &[]);
-        let target = TargetIdentity { bar_range: Some((0, 1)), ..TargetIdentity::default() };
+        let target = TargetIdentity {
+            bar_range: Some((0, 1)),
+            ..TargetIdentity::default()
+        };
         let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &target)
             .expect_err("no target sha must refuse");
         assert_eq!(err, HoldoutError::MissingTargetSourceSha256);
@@ -1154,17 +1314,31 @@ mod tests {
         let mut unhashed_m = meta("u", None, None, false);
         unhashed_m.source.bar_range = Some((0, 1));
         let corpus = frag_corpus(vec![(m, lc)], vec![unhashed_m], &["u.gp5"]);
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaA", None))
-            .expect_err("sha256-less chunk must refuse");
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaA", None),
+        )
+        .expect_err("sha256-less chunk must refuse");
         assert!(matches!(err, HoldoutError::SourcePreflight(_)));
     }
 
     #[test]
     fn fragment_mode_refuses_inverted_target_range() {
         let corpus = frag_corpus(vec![frag("a", "shaA", Some((0, 3)))], Vec::new(), &[]);
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaA", Some((5, 2))))
-            .expect_err("inverted target range must refuse");
-        assert_eq!(err, HoldoutError::InvalidTargetBarRange { first_bar: 5, last_bar: 2 });
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaA", Some((5, 2))),
+        )
+        .expect_err("inverted target range must refuse");
+        assert_eq!(
+            err,
+            HoldoutError::InvalidTargetBarRange {
+                first_bar: 5,
+                last_bar: 2
+            }
+        );
     }
 
     #[test]
@@ -1172,10 +1346,18 @@ mod tests {
         // A target-source manifest chunk with first > last, caught before filtering.
         let (mut m, _) = frag("a", "shaA", Some((5, 2)));
         m.source.bar_range = Some((5, 2));
-        let lc = LoadedChunk { meta: m.clone(), sliced: one_bar_score(0, 60), track: 0 };
+        let lc = LoadedChunk {
+            meta: m.clone(),
+            sliced: one_bar_score(0, 60),
+            track: 0,
+        };
         let corpus = frag_corpus(vec![(m, lc)], Vec::new(), &[]);
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaA", Some((0, 3))))
-            .expect_err("inverted manifest range must refuse");
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaA", Some((0, 3))),
+        )
+        .expect_err("inverted manifest range must refuse");
         assert!(matches!(err, HoldoutError::FragmentPreflight(ref rs)
             if rs.iter().any(|r| matches!(r, FragmentHoldoutRefusal::InvalidBarRange { chunk_id, first_bar, last_bar }
                 if chunk_id.0 == "a" && *first_bar == 5 && *last_bar == 2))));
@@ -1192,24 +1374,39 @@ mod tests {
             Vec::new(),
             &[],
         );
-        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", None))
-            .expect("ok").expect("some");
-        assert_eq!(held.references.len(), 1, "target None is whole-source: both shaX chunks excluded");
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", None),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(
+            held.references.len(),
+            1,
+            "target None is whole-source: both shaX chunks excluded"
+        );
     }
 
     #[test]
     fn fragment_chunk_none_overlaps_every_target_range() {
         let corpus = frag_corpus(
-            vec![
-                frag("a", "shaX", None),
-                frag("c", "shaY", Some((0, 1))),
-            ],
+            vec![frag("a", "shaX", None), frag("c", "shaY", Some((0, 1)))],
             Vec::new(),
             &[],
         );
-        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((10, 12))))
-            .expect("ok").expect("some");
-        assert_eq!(held.references.len(), 1, "whole-source chunk overlaps any target range");
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((10, 12))),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(
+            held.references.len(),
+            1,
+            "whole-source chunk overlaps any target range"
+        );
     }
 
     #[test]
@@ -1226,9 +1423,18 @@ mod tests {
             Vec::new(),
             &[],
         );
-        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
-            .expect("ok").expect("some");
-        assert_eq!(held.references.len(), 1, "every overlapping shaX chunk excluded; only the other source remains");
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 3))),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(
+            held.references.len(),
+            1,
+            "every overlapping shaX chunk excluded; only the other source remains"
+        );
     }
 
     #[test]
@@ -1241,9 +1447,18 @@ mod tests {
             Vec::new(),
             &[],
         );
-        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 2))))
-            .expect("ok").expect("some");
-        assert_eq!(held.references.len(), 1, "disjoint same-source fragment survives");
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 2))),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(
+            held.references.len(),
+            1,
+            "disjoint same-source fragment survives"
+        );
     }
 
     #[test]
@@ -1256,9 +1471,18 @@ mod tests {
             Vec::new(),
             &[],
         );
-        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
-            .expect("ok").expect("some");
-        assert_eq!(held.references.len(), 1, "different source hash never overlaps for holdout");
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 3))),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(
+            held.references.len(),
+            1,
+            "different source hash never overlaps for holdout"
+        );
     }
 
     #[test]
@@ -1280,16 +1504,31 @@ mod tests {
             song_id: None,
         };
         let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &target)
-            .expect("ok").expect("some");
-        assert_eq!(held.references.len(), 1, "both tracks' overlapping chunks excluded");
+            .expect("ok")
+            .expect("some");
+        assert_eq!(
+            held.references.len(),
+            1,
+            "both tracks' overlapping chunks excluded"
+        );
     }
 
     #[test]
     fn fragment_refuses_when_nothing_overlaps() {
         let corpus = frag_corpus(vec![frag("a", "shaX", Some((5, 7)))], Vec::new(), &[]);
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 2))))
-            .expect_err("no overlap must refuse");
-        assert_eq!(err, HoldoutError::TargetFragmentAbsent { source_sha256: "shaX".to_owned(), bar_range: Some((0, 2)) });
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 2))),
+        )
+        .expect_err("no overlap must refuse");
+        assert_eq!(
+            err,
+            HoldoutError::TargetFragmentAbsent {
+                source_sha256: "shaX".to_owned(),
+                bar_range: Some((0, 2))
+            }
+        );
     }
 
     #[test]
@@ -1298,9 +1537,19 @@ mod tests {
         let mut mz = meta("z", Some("shaX"), None, false);
         mz.source.bar_range = Some((0, 3));
         let corpus = frag_corpus(vec![(m, lc)], vec![mz], &["z.gp5"]);
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
-            .expect_err("target only in skipped must refuse");
-        assert_eq!(err, HoldoutError::TargetFragmentAbsent { source_sha256: "shaX".to_owned(), bar_range: Some((0, 3)) });
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 3))),
+        )
+        .expect_err("target only in skipped must refuse");
+        assert_eq!(
+            err,
+            HoldoutError::TargetFragmentAbsent {
+                source_sha256: "shaX".to_owned(),
+                bar_range: Some((0, 3))
+            }
+        );
     }
 
     #[test]
@@ -1313,9 +1562,13 @@ mod tests {
             Vec::new(),
             &[],
         );
-        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
-            .expect("uncurated songs are fine for fragment mode")
-            .expect("corpus-backed");
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 3))),
+        )
+        .expect("uncurated songs are fine for fragment mode")
+        .expect("corpus-backed");
         assert_eq!(held.references.len(), 1);
     }
 
@@ -1328,14 +1581,25 @@ mod tests {
             loaded: vec![lx, ly],
             skipped: vec!["gone.gp5".to_owned()],
         };
-        let held = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
-            .expect("ok").expect("some");
-        let keeper_only = corpus_material(vec![frag("y", "shaY", Some((5, 7))).1], vec!["gone.gp5".to_owned()]);
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 3))),
+        )
+        .expect("ok")
+        .expect("some");
+        let keeper_only = corpus_material(
+            vec![frag("y", "shaY", Some((5, 7))).1],
+            vec!["gone.gp5".to_owned()],
+        );
         assert_eq!(held.references, keeper_only.references);
         assert_eq!(held.rhythms, keeper_only.rhythms);
         assert_eq!(held.gesture, keeper_only.gesture);
         assert_eq!(held.skipped, keeper_only.skipped);
-        assert!(held.gesture.is_none(), "excluded fragment's gesture did not leak");
+        assert!(
+            held.gesture.is_none(),
+            "excluded fragment's gesture did not leak"
+        );
     }
 
     #[test]
@@ -1345,25 +1609,48 @@ mod tests {
         loaded_meta.source.track_index = Some(7);
         let corpus = LoadedCorpus {
             manifest: manifest_of(vec![manifest_meta]),
-            loaded: vec![LoadedChunk { meta: loaded_meta, sliced: one_bar_score(0, 60), track: 0 }],
+            loaded: vec![LoadedChunk {
+                meta: loaded_meta,
+                sliced: one_bar_score(0, 60),
+                track: 0,
+            }],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetFragment, &fragment_target("shaA", Some((0, 0))))
-            .expect_err("binding refuses first");
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaA", Some((0, 0))),
+        )
+        .expect_err("binding refuses first");
         assert!(matches!(err, HoldoutError::CorpusBinding(_)));
     }
 
     #[test]
     fn fragment_mode_is_deterministic() {
-        let build = || frag_corpus(
-            vec![frag("a", "shaX", Some((0, 3))), frag("c", "shaY", Some((0, 3)))],
-            Vec::new(),
-            &[],
-        );
-        let a = prepare_corpus_for_mode(build(), CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
-            .expect("ok").expect("some");
-        let b = prepare_corpus_for_mode(build(), CorpusMode::HoldoutTargetFragment, &fragment_target("shaX", Some((0, 3))))
-            .expect("ok").expect("some");
+        let build = || {
+            frag_corpus(
+                vec![
+                    frag("a", "shaX", Some((0, 3))),
+                    frag("c", "shaY", Some((0, 3))),
+                ],
+                Vec::new(),
+                &[],
+            )
+        };
+        let a = prepare_corpus_for_mode(
+            build(),
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 3))),
+        )
+        .expect("ok")
+        .expect("some");
+        let b = prepare_corpus_for_mode(
+            build(),
+            CorpusMode::HoldoutTargetFragment,
+            &fragment_target("shaX", Some((0, 3))),
+        )
+        .expect("ok")
+        .expect("some");
         assert_eq!(a.references, b.references);
         assert_eq!(a.rhythms, b.rhythms);
         assert_eq!(a.gesture, b.gesture);

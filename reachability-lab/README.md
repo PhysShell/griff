@@ -13,9 +13,9 @@ The generator loads `Vec<LoadedChunk>` — each carrying full `ChunkMeta`
 novelty references, and gesture stats. So a holdout decision can only be made
 **over `Vec<LoadedChunk>`, before `corpus_material`**. This crate is that seam.
 
-## Scope (ADR-0032 first slice)
+## Scope
 
-**Song and source-file modes**, fail-closed, over a single-authority
+Song, source-file, and fragment holdout, fail-closed, over a single-authority
 `LoadedCorpus`:
 
 ```rust
@@ -35,6 +35,13 @@ prepare_corpus_for_mode(corpus: LoadedCorpus, mode: CorpusMode, target: &TargetI
   and does **not** require `song_id`, so a hash-identified but song-uncurated
   corpus is a valid file-mode experiment. Its preflight rejects any participating
   chunk without `sha256` (no basename fallback).
+- **`HoldoutTargetFragment`** → bind → source-file + fragment preflight → require
+  target `source_sha256` + `bar_range` → exclude every same-source chunk whose
+  **inclusive** range overlaps or contains the target → compile the survivors.
+  Ranges are inclusive; either side being `None` means **whole-source** overlap
+  (a valid target, not a missing field); `track_index` is provenance and never
+  narrows the exclusion; a malformed range (`first > last`), on the target or a
+  target-source manifest chunk, typed-refuses. Independent of song curation.
 
 `LoadedCorpus { manifest, loaded, skipped }` is **one authority**: every loaded
 record maps by `ChunkId` to exactly one manifest chunk whose **full** `ChunkMeta`
@@ -55,11 +62,9 @@ templates, and gesture.
 
 ## Not in this crate
 
-- Fragment mode (its range-overlap semantics — including the dangerous rule that
-  `bar_range == None` overlaps every range in the same source — get their own
-  slice, built over this source-file identity path).
 - Any measurement / eligibility / projection axis.
-- Curation, production wiring, generation or scoring changes.
+- `song_id` curation and tooling.
+- Production wiring (CLI / cockpit), generation, scoring, or track-index recovery.
 
 ## Run
 
