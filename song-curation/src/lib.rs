@@ -15,9 +15,10 @@
 //! generation, and any CLI/cockpit integration. This crate is isolated
 //! (ADR-0010) and not built by workspace CI.
 
-use griff_core::corpus::CorpusManifest;
+use griff_core::corpus::{source_sha256, CorpusManifest, SourceFormat};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 
 // ── inventory ─────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,13 @@ pub struct SourceRecord {
     pub existing_manifest_membership: Vec<String>,
 }
 
+impl SourceRecord {
+    /// The single existing label, or `None` when uncurated. A source with more
+    /// than one is rejected by [`inventory`], so `first` is authoritative here.
+    fn existing_label(&self) -> Option<String> {
+        self.existing_song_ids.first().cloned()
+    }
+}
 
 /// The read-only inventory: sources sorted by `sha256`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +164,14 @@ pub struct DryRunPlan {
     pub generated_songs_map: BTreeMap<String, Vec<String>>,
 }
 
+const PLAN_SCHEMA: &str = "song-curation.plan.v1";
+const POLICY_ID: &str = "decision-core";
+const POLICY_VERSION: &str = "1";
+
+/// Per-source batch state after replay: `Some(song)` = the batch assigns this
+/// label; `None` = the batch reviewed the source without assigning (a `reject`
+/// that supersedes any earlier pending assignment).
+type BatchState = BTreeMap<String, Option<String>>;
 
 // ── typed refusals (Slice-1 subset) ─────────────────────────────────────────────
 
@@ -205,61 +221,559 @@ pub enum CurationError {
     },
 }
 
-// ── public API (bodies land in GREEN) ───────────────────────────────────────────
+// ── canonical JSON + digests ────────────────────────────────────────────────────
 
-#[allow(clippy::missing_errors_doc)]
-pub fn inventory(manifest: &CorpusManifest) -> Result<Inventory, Vec<CurationError>> {
-    let _ = manifest;
-    todo!("inventory")
+/// Emit `value` as compact UTF-8 JSON with object keys sorted lexicographically
+/// and array order preserved — the shared canonical encoding for every digest.
+fn canonical_json(value: &Value) -> String {
+    let mut out = String::new();
+    write_canonical(value, &mut out);
+    out
 }
 
+fn write_canonical(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            out.push('{');
+            for (i, (key, val)) in entries.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&scalar(&Value::String((*key).clone())));
+                out.push(':');
+                write_canonical(val, out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        scalar_value => out.push_str(&scalar(scalar_value)),
+    }
+}
+
+/// Serialize a scalar `Value` to its JSON literal; scalars never fail.
+fn scalar(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned())
+}
+
+fn opt_str(value: Option<&String>) -> Value {
+    value.map_or(Value::Null, |s| Value::String(s.clone()))
+}
+
+fn format_label(format: SourceFormat) -> String {
+    match format {
+        SourceFormat::Midi => "midi",
+        SourceFormat::Gp3 => "gp3",
+        SourceFormat::Gp4 => "gp4",
+        SourceFormat::Gp5 => "gp5",
+        SourceFormat::Gpx => "gpx",
+        SourceFormat::Gp => "gp",
+    }
+    .to_owned()
+}
+
+// ── inventory ─────────────────────────────────────────────────────────────────
+
+/// Collapse a corpus snapshot's chunks by exact `sha256` into a deterministic,
+/// read-only inventory.
+///
+/// # Errors
+///
+/// [`CurationError::UnidentifiedSource`] for a chunk with no `sha256`, and
+/// [`CurationError::ConflictingExistingSongIds`] for a `sha256` carrying more
+/// than one existing `song_id`.
+pub fn inventory(manifest: &CorpusManifest) -> Result<Inventory, Vec<CurationError>> {
+    #[derive(Default)]
+    struct Accum {
+        filenames: BTreeSet<String>,
+        titles: BTreeSet<String>,
+        formats: BTreeSet<String>,
+        chunk_ids: BTreeSet<String>,
+        song_ids: BTreeSet<String>,
+    }
+
+    let mut errors = Vec::new();
+    let mut groups: BTreeMap<String, Accum> = BTreeMap::new();
+    for chunk in &manifest.chunks {
+        let Some(sha) = &chunk.source.sha256 else {
+            errors.push(CurationError::UnidentifiedSource {
+                chunk_id: chunk.id.0.clone(),
+            });
+            continue;
+        };
+        let group = groups.entry(sha.clone()).or_default();
+        group.filenames.insert(chunk.source.filename.clone());
+        group.titles.insert(chunk.title.clone());
+        group.formats.insert(format_label(chunk.source.format));
+        group.chunk_ids.insert(chunk.id.0.clone());
+        if let Some(song) = &chunk.source.song_id {
+            group.song_ids.insert(song.0.clone());
+        }
+    }
+
+    let mut membership: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    if let Some(songs) = &manifest.songs {
+        for (song, shas) in songs {
+            for sha in shas {
+                membership
+                    .entry(sha.clone())
+                    .or_default()
+                    .insert(song.0.clone());
+            }
+        }
+    }
+
+    let mut sources = Vec::new();
+    for (sha, group) in groups {
+        if group.song_ids.len() > 1 {
+            errors.push(CurationError::ConflictingExistingSongIds {
+                source_sha256: sha.clone(),
+                song_ids: group.song_ids.iter().cloned().collect(),
+            });
+        }
+        let membership_of = membership
+            .get(&sha)
+            .map(|m| m.iter().cloned().collect())
+            .unwrap_or_default();
+        sources.push(SourceRecord {
+            source_sha256: sha,
+            filenames: group.filenames.into_iter().collect(),
+            titles: group.titles.into_iter().collect(),
+            formats: group.formats.into_iter().collect(),
+            chunk_ids: group.chunk_ids.into_iter().collect(),
+            existing_song_ids: group.song_ids.into_iter().collect(),
+            existing_manifest_membership: membership_of,
+        });
+    }
+    if errors.is_empty() {
+        Ok(Inventory { sources })
+    } else {
+        Err(errors)
+    }
+}
+
+// ── fingerprints / digests ──────────────────────────────────────────────────────
+
+/// Order-insensitive corpus fingerprint over the label-bearing inputs (§9).
 #[must_use]
 pub fn corpus_fingerprint(manifest: &CorpusManifest) -> String {
-    let _ = manifest;
-    todo!("corpus_fingerprint")
+    let mut records: Vec<String> = Vec::new();
+    let presence = if manifest.songs.is_some() {
+        "present"
+    } else {
+        "absent"
+    };
+    records.push(canonical_json(&json!(["manifest_songs", presence])));
+    for chunk in &manifest.chunks {
+        records.push(canonical_json(&json!([
+            "chunk",
+            chunk.id.0,
+            opt_str(chunk.source.sha256.as_ref()),
+            opt_str(chunk.source.song_id.as_ref().map(|s| &s.0)),
+        ])));
+    }
+    if let Some(songs) = &manifest.songs {
+        for (song, shas) in songs {
+            let mut sorted = shas.clone();
+            sorted.sort();
+            sorted.dedup();
+            records.push(canonical_json(&json!(["song", song.0, sorted])));
+        }
+    }
+    records.sort();
+    source_sha256(records.join("\n").as_bytes())
 }
 
+/// Order-**sensitive** digest of a decision batch (events kept in append order).
 #[must_use]
 pub fn decisions_digest(batch: &DecisionBatch) -> String {
-    let _ = batch;
-    todo!("decisions_digest")
+    let value = serde_json::to_value(batch).unwrap_or(Value::Null);
+    source_sha256(canonical_json(&value).as_bytes())
 }
 
+/// Order-aware digest of a plan, computed with the `plan_digest` field omitted.
 #[must_use]
 pub fn plan_digest(plan: &DryRunPlan) -> String {
-    let _ = plan;
-    todo!("plan_digest")
+    let mut value = serde_json::to_value(plan).unwrap_or(Value::Null);
+    if let Value::Object(map) = &mut value {
+        map.remove("plan_digest");
+    }
+    source_sha256(canonical_json(&value).as_bytes())
 }
 
-#[allow(clippy::missing_errors_doc)]
+// ── validation + projection ─────────────────────────────────────────────────────
+
+/// Validate one batch's ordering invariants: array order is authoritative,
+/// `ordinal` == position, and `event_id`s are unique **within the batch**.
+///
+/// # Errors
+///
+/// [`CurationError::InvalidDecisionBatchOrder`] and
+/// [`CurationError::DuplicateDecisionEventId`].
 pub fn validate_batch(batch: &DecisionBatch) -> Result<(), Vec<CurationError>> {
-    let _ = batch;
-    todo!("validate_batch")
+    let mut errors = Vec::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for (index, event) in batch.events.iter().enumerate() {
+        let position = u64::try_from(index).unwrap_or(u64::MAX);
+        if event.ordinal != position {
+            errors.push(CurationError::InvalidDecisionBatchOrder {
+                batch_id: batch.batch_id.clone(),
+                detail: format!(
+                    "event {} has ordinal {}, expected {position}",
+                    event.event_id, event.ordinal
+                ),
+            });
+        }
+        if !seen.insert(event.event_id.as_str()) {
+            errors.push(CurationError::DuplicateDecisionEventId {
+                event_id: event.event_id.clone(),
+            });
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
-#[allow(clippy::missing_errors_doc)]
+/// Validate the whole ledger: every batch's ordering, and `event_id` uniqueness
+/// **across all batches** (not merely within each).
+///
+/// # Errors
+///
+/// [`CurationError::InvalidDecisionBatchOrder`] and
+/// [`CurationError::DuplicateDecisionEventId`] (ledger-wide).
 pub fn validate_ledger(ledger: &DecisionsLedger) -> Result<(), Vec<CurationError>> {
-    let _ = ledger;
-    todo!("validate_ledger")
+    let mut errors = Vec::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for batch in &ledger.batches {
+        if let Err(mut e) = validate_batch(batch) {
+            errors.append(&mut e);
+        }
+        for event in &batch.events {
+            if !seen.insert(event.event_id.as_str()) {
+                errors.push(CurationError::DuplicateDecisionEventId {
+                    event_id: event.event_id.clone(),
+                });
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
-#[allow(clippy::missing_errors_doc)]
+/// The `(source_sha256, effect)` list one action produces, where `effect` is
+/// `Some(song)` for a label assignment and `None` for a `reject` (a validated
+/// review that clears any earlier pending assignment).
+fn action_effects(action: &Action) -> Vec<(String, Option<String>)> {
+    let assign = |shas: &[String], song: &str| -> Vec<(String, Option<String>)> {
+        shas.iter()
+            .map(|s| (s.clone(), Some(song.to_owned())))
+            .collect()
+    };
+    match action {
+        Action::AcceptSuggestion {
+            source_sha256s,
+            assign_song_id,
+            ..
+        }
+        | Action::ManualDefine {
+            source_sha256s,
+            assign_song_id,
+        } => assign(source_sha256s, assign_song_id),
+        Action::Correct {
+            source_sha256s,
+            new_song_id,
+            ..
+        } => assign(source_sha256s, new_song_id),
+        Action::Merge {
+            source_sha256s,
+            into_song_id,
+            ..
+        } => assign(source_sha256s, into_song_id),
+        Action::Split { into, .. } => into
+            .iter()
+            .flat_map(|t| assign(&t.source_sha256s, &t.assign_song_id))
+            .collect(),
+        Action::RejectSuggestion {
+            reviewed_source_sha256s,
+            ..
+        } => reviewed_source_sha256s
+            .iter()
+            .map(|s| (s.clone(), None))
+            .collect(),
+    }
+}
+
+/// Replay a batch's events (append order, latest wins) into a per-source batch
+/// state: `Some(song)` where the batch assigns a label, `None` where it reviewed
+/// the source without assigning (a reject that supersedes any earlier pending
+/// assignment). Every referenced source is validated; a source assigned two
+/// distinct labels within one event refuses.
+fn replay(inventory: &Inventory, batch: &DecisionBatch) -> Result<BatchState, Vec<CurationError>> {
+    let known: BTreeSet<&str> = inventory
+        .sources
+        .iter()
+        .map(|s| s.source_sha256.as_str())
+        .collect();
+    let mut errors = Vec::new();
+    let mut state: BatchState = BTreeMap::new();
+    for event in &batch.events {
+        let effects = action_effects(&event.action);
+        let mut within: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for (sha, effect) in &effects {
+            if let Some(song) = effect {
+                within.entry(sha).or_default().insert(song);
+            }
+        }
+        for (sha, songs) in &within {
+            if songs.len() > 1 {
+                errors.push(CurationError::SourceAssignedToMultipleSongs {
+                    source_sha256: (*sha).to_owned(),
+                    song_ids: songs.iter().map(|s| (*s).to_owned()).collect(),
+                });
+            }
+        }
+        for (sha, effect) in effects {
+            if known.contains(sha.as_str()) {
+                state.insert(sha, effect);
+            } else {
+                errors.push(CurationError::UnknownDecisionSource { source_sha256: sha });
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(state)
+    } else {
+        Err(errors)
+    }
+}
+
+/// The derived body of a plan: the batch's assignments and the **complete
+/// post-plan** songs map (existing labels overlaid with the batch state).
+struct PlanBody {
+    assignments: Vec<Assignment>,
+    generated_songs_map: BTreeMap<String, Vec<String>>,
+}
+
+/// Inventory + validate one batch + replay it, then derive the assignments and
+/// the complete post-plan songs map. Shared by [`build_plan`] and [`verify_plan`]
+/// so both derive identically.
+fn derive(
+    manifest: &CorpusManifest,
+    batch: &DecisionBatch,
+) -> Result<PlanBody, Vec<CurationError>> {
+    let mut errors = Vec::new();
+    if let Err(mut e) = validate_batch(batch) {
+        errors.append(&mut e);
+    }
+    let inventory = match inventory(manifest) {
+        Ok(inv) => inv,
+        Err(mut e) => {
+            errors.append(&mut e);
+            return Err(errors);
+        }
+    };
+    let state = match replay(&inventory, batch) {
+        Ok(s) => s,
+        Err(mut e) => {
+            errors.append(&mut e);
+            return Err(errors);
+        }
+    };
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let by_sha: BTreeMap<&str, &SourceRecord> = inventory
+        .sources
+        .iter()
+        .map(|s| (s.source_sha256.as_str(), s))
+        .collect();
+
+    // Assignments: sources the batch actually labels (state == Some).
+    let mut assignments: Vec<Assignment> = state
+        .iter()
+        .filter_map(|(sha, effect)| {
+            let song = effect.clone()?;
+            let record = by_sha.get(sha.as_str());
+            Some(Assignment {
+                source_sha256: sha.clone(),
+                song_id: song,
+                expected_existing_song_id: record.and_then(|r| r.existing_label()),
+                affected_chunk_ids: record.map(|r| r.chunk_ids.clone()).unwrap_or_default(),
+            })
+        })
+        .collect();
+    assignments.sort_by(|a, b| a.source_sha256.cmp(&b.source_sha256));
+
+    // Complete post-plan songs map: every source's final label — the batch
+    // assignment when present, else its existing authoritative label — so
+    // untouched labels survive (the map is the Slice-2 manifest projection).
+    let mut generated_songs_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for source in &inventory.sources {
+        let batch_label = state.get(&source.source_sha256).and_then(Clone::clone);
+        if let Some(song) = batch_label.or_else(|| source.existing_label()) {
+            generated_songs_map
+                .entry(song)
+                .or_default()
+                .push(source.source_sha256.clone());
+        }
+    }
+    for shas in generated_songs_map.values_mut() {
+        shas.sort();
+        shas.dedup();
+    }
+
+    Ok(PlanBody {
+        assignments,
+        generated_songs_map,
+    })
+}
+
+/// Build the serialized dry-run plan for one unapplied batch of a validated
+/// ledger.
+///
+/// # Errors
+///
+/// Whole-ledger validation refusals, [`CurationError::BatchNotInLedger`],
+/// [`CurationError::DecisionBatchFingerprintMismatch`], any inventory refusal, or
+/// a replay refusal ([`CurationError::UnknownDecisionSource`] /
+/// [`CurationError::SourceAssignedToMultipleSongs`]).
 pub fn build_plan(
     manifest: &CorpusManifest,
     ledger: &DecisionsLedger,
     batch_id: &str,
 ) -> Result<DryRunPlan, Vec<CurationError>> {
-    let _ = (manifest, ledger, batch_id);
-    todo!("build_plan")
+    let mut errors = Vec::new();
+    if let Err(mut e) = validate_ledger(ledger) {
+        errors.append(&mut e);
+    }
+    let Some(batch) = ledger.batches.iter().find(|b| b.batch_id == batch_id) else {
+        errors.push(CurationError::BatchNotInLedger {
+            batch_id: batch_id.to_owned(),
+        });
+        return Err(errors);
+    };
+    let fingerprint = corpus_fingerprint(manifest);
+    if batch.input_corpus_fingerprint != fingerprint {
+        errors.push(CurationError::DecisionBatchFingerprintMismatch {
+            expected: fingerprint.clone(),
+            actual: batch.input_corpus_fingerprint.clone(),
+        });
+    }
+    let body = match derive(manifest, batch) {
+        Ok(b) => b,
+        Err(mut e) => {
+            errors.append(&mut e);
+            return Err(errors);
+        }
+    };
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut plan = DryRunPlan {
+        schema: PLAN_SCHEMA.to_owned(),
+        policy_id: POLICY_ID.to_owned(),
+        policy_version: POLICY_VERSION.to_owned(),
+        input_corpus_fingerprint: fingerprint,
+        decision_batch: batch.clone(),
+        decisions_digest: decisions_digest(batch),
+        plan_digest: String::new(),
+        assignments: body.assignments,
+        generated_songs_map: body.generated_songs_map,
+    };
+    plan.plan_digest = plan_digest(&plan);
+    Ok(plan)
 }
 
-#[allow(clippy::missing_errors_doc)]
-pub fn verify_plan(
-    plan: &DryRunPlan,
-    manifest: &CorpusManifest,
-) -> Result<(), Vec<CurationError>> {
-    let _ = (plan, manifest);
-    todo!("verify_plan")
+/// Verify a dry-run plan by re-deriving its **whole contract**: recompute both
+/// digests; re-derive the fingerprint, schema/policy, assignments, and complete
+/// songs map from the embedded batch + corpus; and refuse
+/// [`CurationError::DecisionProjectionMismatch`] on any divergence — so a plan
+/// cannot rubber-stamp itself even with self-consistent digests.
+///
+/// # Errors
+///
+/// [`CurationError::PlanDigestMismatch`], [`CurationError::DecisionDigestMismatch`],
+/// a batch-ordering refusal, [`CurationError::DecisionBatchFingerprintMismatch`],
+/// or [`CurationError::DecisionProjectionMismatch`] (plus any refusal from
+/// re-deriving the plan body).
+pub fn verify_plan(plan: &DryRunPlan, manifest: &CorpusManifest) -> Result<(), Vec<CurationError>> {
+    let mut errors = Vec::new();
+
+    let recomputed_plan = plan_digest(plan);
+    if recomputed_plan != plan.plan_digest {
+        errors.push(CurationError::PlanDigestMismatch {
+            expected: recomputed_plan,
+            actual: plan.plan_digest.clone(),
+        });
+    }
+    let recomputed_decisions = decisions_digest(&plan.decision_batch);
+    if recomputed_decisions != plan.decisions_digest {
+        errors.push(CurationError::DecisionDigestMismatch {
+            expected: recomputed_decisions,
+            actual: plan.decisions_digest.clone(),
+        });
+    }
+    if let Err(mut e) = validate_batch(&plan.decision_batch) {
+        errors.append(&mut e);
+    }
+
+    // The top-level corpus binding must match the corpus and the embedded batch.
+    let fingerprint = corpus_fingerprint(manifest);
+    if plan.input_corpus_fingerprint != fingerprint
+        || plan.decision_batch.input_corpus_fingerprint != fingerprint
+    {
+        errors.push(CurationError::DecisionBatchFingerprintMismatch {
+            expected: fingerprint,
+            actual: plan.input_corpus_fingerprint.clone(),
+        });
+    }
+    // Schema / policy must be the ones this tool produces.
+    if plan.schema != PLAN_SCHEMA
+        || plan.policy_id != POLICY_ID
+        || plan.policy_version != POLICY_VERSION
+    {
+        errors.push(CurationError::DecisionProjectionMismatch {
+            detail: "plan schema/policy is not the canonical decision-core contract".to_owned(),
+        });
+    }
+    // Assignments + complete songs map must be reproduced from the embedded events.
+    match derive(manifest, &plan.decision_batch) {
+        Ok(body) => {
+            if body.assignments != plan.assignments
+                || body.generated_songs_map != plan.generated_songs_map
+            {
+                errors.push(CurationError::DecisionProjectionMismatch {
+                    detail: "re-derived projection does not match the plan's assignments/songs map"
+                        .to_owned(),
+                });
+            }
+        }
+        Err(mut e) => errors.append(&mut e),
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
