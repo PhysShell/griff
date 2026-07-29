@@ -29,11 +29,17 @@ prepare_corpus_for_mode(corpus: LoadedCorpus, mode: CorpusMode, target: &TargetI
   exclude every representation of that song → compile the survivors.
 
 `LoadedCorpus { manifest, loaded, skipped }` is **one authority**: every loaded
-record maps by `ChunkId` to a manifest chunk whose `song_id` / `sha256` agree,
-and no id is loaded twice — otherwise the preflight would validate one dataset
-while the filter executes another (the stale-manifest leak). Violations, missing
-targets, and every `song_holdout_preflight` refusal are **typed** (`HoldoutError`
-/ `BindingRefusal`), never silent picks.
+record maps by `ChunkId` to exactly one manifest chunk whose **full** `ChunkMeta`
+matches (not a hand-picked two-field imitation), no id is duplicated in the
+manifest or the loaded set — otherwise the preflight would validate one dataset
+while the filter executes another (the stale-manifest leak).
+
+A holdout that would exclude nothing is a **refusal**, not a silent success: if
+the target `song_id` is carried by no *loaded* chunk — including when its only
+source failed to load and sits in `skipped` — the run typed-refuses
+(`TargetSongAbsent`) rather than returning the corpus unchanged. Every binding
+violation, missing/absent target, and `song_holdout_preflight` refusal is
+**typed** (`HoldoutError` / `BindingRefusal`), never a silent pick.
 
 The zero-leakage guarantee is proven by asserting the held-out material equals
 what the keeper alone produces across **all** channels — references, rhythm

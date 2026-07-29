@@ -62,11 +62,18 @@ pub enum HoldoutError {
     Preflight(Vec<SongHoldoutRefusal>),
     /// Song mode requires a target `song_id`, and none was supplied.
     MissingTargetSongId,
+    /// The target `song_id` is carried by no *loaded* chunk, so no holdout would
+    /// actually happen — returning the corpus unchanged would relabel an absent
+    /// holdout as valid (e.g. the target's only source failed to load).
+    TargetSongAbsent(SongId),
 }
 
 /// A single-authority violation between the manifest and the loaded records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindingRefusal {
+    /// The same `ChunkId` appears twice in `manifest.chunks`, so no single
+    /// authoritative entry exists for a loaded record to bind to.
+    DuplicateManifest(ChunkId),
     /// The same `ChunkId` appears twice among the loaded records.
     DuplicateLoaded(ChunkId),
     /// A loaded record whose `ChunkId` is not in the authoritative manifest.
@@ -88,8 +95,9 @@ pub enum BindingRefusal {
 ///
 /// [`HoldoutError`] when `HoldoutTargetSong` cannot proceed fail-closed: a
 /// single-authority binding violation ([`HoldoutError::CorpusBinding`]), a
-/// preflight refusal ([`HoldoutError::Preflight`]), or a missing target
-/// ([`HoldoutError::MissingTargetSongId`]). `NoCorpus` and `LeakyDiagnostic`
+/// preflight refusal ([`HoldoutError::Preflight`]), a missing target
+/// ([`HoldoutError::MissingTargetSongId`]), or a target carried by no loaded
+/// chunk ([`HoldoutError::TargetSongAbsent`]). `NoCorpus` and `LeakyDiagnostic`
 /// never refuse.
 pub fn prepare_corpus_for_mode(
     corpus: LoadedCorpus,
@@ -111,14 +119,17 @@ pub fn prepare_corpus_for_mode(
                 .song_id
                 .as_ref()
                 .ok_or(HoldoutError::MissingTargetSongId)?;
-            // Exclude every source representation carrying the target song_id,
-            // then compile only the survivors — provenance exclusion is primary
-            // and happens before material construction.
-            let kept: Vec<LoadedChunk> = corpus
+            // Partition into the target's representations and the survivors, so a
+            // holdout that excludes nothing is a refusal, not a silent success.
+            let (excluded, kept): (Vec<LoadedChunk>, Vec<LoadedChunk>) = corpus
                 .loaded
                 .into_iter()
-                .filter(|chunk| chunk.meta.source.song_id.as_ref() != Some(target_song))
-                .collect();
+                .partition(|chunk| chunk.meta.source.song_id.as_ref() == Some(target_song));
+            if excluded.is_empty() {
+                return Err(HoldoutError::TargetSongAbsent(target_song.clone()));
+            }
+            // Provenance exclusion is primary and happens before material
+            // construction: only the survivors are compiled.
             Ok(Some(corpus_material(kept, corpus.skipped)))
         }
     }
@@ -129,10 +140,16 @@ pub fn prepare_corpus_for_mode(
 /// `sha256`) agree with it, and no `ChunkId` is loaded twice. Otherwise the
 /// preflight could validate one dataset while the filter executes another.
 fn check_binding(corpus: &LoadedCorpus) -> Result<(), HoldoutError> {
-    let by_id: BTreeMap<&ChunkId, &ChunkMeta> =
-        corpus.manifest.chunks.iter().map(|c| (&c.id, c)).collect();
-    let mut seen: BTreeSet<&ChunkId> = BTreeSet::new();
     let mut refusals = Vec::new();
+    // Index the manifest, collecting (not silently overwriting) duplicate ids —
+    // a duplicated ChunkId means no single authoritative entry.
+    let mut by_id: BTreeMap<&ChunkId, &ChunkMeta> = BTreeMap::new();
+    for chunk in &corpus.manifest.chunks {
+        if by_id.insert(&chunk.id, chunk).is_some() {
+            refusals.push(BindingRefusal::DuplicateManifest(chunk.id.clone()));
+        }
+    }
+    let mut seen: BTreeSet<&ChunkId> = BTreeSet::new();
     for chunk in &corpus.loaded {
         let id = &chunk.meta.id;
         if !seen.insert(id) {
@@ -141,13 +158,12 @@ fn check_binding(corpus: &LoadedCorpus) -> Result<(), HoldoutError> {
         }
         match by_id.get(id) {
             None => refusals.push(BindingRefusal::LoadedNotInManifest(id.clone())),
-            Some(manifest_chunk) => {
-                if manifest_chunk.source.song_id != chunk.meta.source.song_id
-                    || manifest_chunk.source.sha256 != chunk.meta.source.sha256
-                {
-                    refusals.push(BindingRefusal::ProvenanceMismatch(id.clone()));
-                }
+            // Full metadata must match — not a hand-picked two-field imitation of
+            // equality — so no material-defining field can diverge unseen.
+            Some(manifest_chunk) if **manifest_chunk != chunk.meta => {
+                refusals.push(BindingRefusal::ProvenanceMismatch(id.clone()));
             }
+            Some(_) => {}
         }
     }
     if refusals.is_empty() {
@@ -618,7 +634,10 @@ mod tests {
             &song_target("work_absent"),
         )
         .expect_err("absent target must refuse");
-        assert_eq!(err, HoldoutError::TargetSongAbsent(SongId("work_absent".to_owned())));
+        assert_eq!(
+            err,
+            HoldoutError::TargetSongAbsent(SongId("work_absent".to_owned()))
+        );
     }
 
     #[test]
@@ -634,19 +653,34 @@ mod tests {
             loaded: vec![loaded("a", "shaA", "work_x", 0, 60, false)],
             skipped: vec!["z.gp5".to_owned()],
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("work_z"))
-            .expect_err("target only in a skipped record must refuse");
-        assert_eq!(err, HoldoutError::TargetSongAbsent(SongId("work_z".to_owned())));
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSong,
+            &song_target("work_z"),
+        )
+        .expect_err("target only in a skipped record must refuse");
+        assert_eq!(
+            err,
+            HoldoutError::TargetSongAbsent(SongId("work_z".to_owned()))
+        );
     }
 
     #[test]
     fn song_mode_successful_holdout_excludes_at_least_one() {
         // work_x has two loaded representations; a successful run must have
         // actually dropped them (3 loaded -> 1 kept).
-        let held = prepare_corpus_for_mode(curated_corpus(), CorpusMode::HoldoutTargetSong, &song_target("work_x"))
-            .expect("ok")
-            .expect("some");
-        assert_eq!(held.references.len(), 1, "the two work_x representations were excluded");
+        let held = prepare_corpus_for_mode(
+            curated_corpus(),
+            CorpusMode::HoldoutTargetSong,
+            &song_target("work_x"),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(
+            held.references.len(),
+            1,
+            "the two work_x representations were excluded"
+        );
     }
 
     // ── single authority: full metadata, no ambiguous manifest ─────────────
@@ -663,8 +697,9 @@ mod tests {
             loaded: vec![loaded("a", "shaA", "song1", 0, 60, false)],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("duplicate manifest id must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("duplicate manifest id must refuse");
         assert!(matches!(err, HoldoutError::CorpusBinding(ref rs)
             if rs.iter().any(|r| matches!(r, BindingRefusal::DuplicateManifest(id) if id.0 == "a"))));
     }
@@ -678,11 +713,16 @@ mod tests {
         loaded_meta.source.bar_range = Some((0, 4));
         let corpus = LoadedCorpus {
             manifest: manifest_of(vec![manifest_meta]),
-            loaded: vec![LoadedChunk { meta: loaded_meta, sliced: one_bar_score(0, 60), track: 0 }],
+            loaded: vec![LoadedChunk {
+                meta: loaded_meta,
+                sliced: one_bar_score(0, 60),
+                track: 0,
+            }],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("differing bar_range must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("differing bar_range must refuse");
         assert!(matches!(err, HoldoutError::CorpusBinding(ref rs)
             if rs.iter().any(|r| matches!(r, BindingRefusal::ProvenanceMismatch(id) if id.0 == "a"))));
     }
@@ -695,11 +735,16 @@ mod tests {
         let loaded_meta = meta("a", Some("shaA"), Some("song1"), true);
         let corpus = LoadedCorpus {
             manifest: manifest_of(vec![manifest_meta]),
-            loaded: vec![LoadedChunk { meta: loaded_meta, sliced: one_bar_score(0, 60), track: 0 }],
+            loaded: vec![LoadedChunk {
+                meta: loaded_meta,
+                sliced: one_bar_score(0, 60),
+                track: 0,
+            }],
             skipped: Vec::new(),
         };
-        let err = prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
-            .expect_err("differing gesture metadata must refuse");
+        let err =
+            prepare_corpus_for_mode(corpus, CorpusMode::HoldoutTargetSong, &song_target("song1"))
+                .expect_err("differing gesture metadata must refuse");
         assert!(matches!(err, HoldoutError::CorpusBinding(ref rs)
             if rs.iter().any(|r| matches!(r, BindingRefusal::ProvenanceMismatch(id) if id.0 == "a"))));
     }
