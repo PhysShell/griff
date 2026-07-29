@@ -56,4 +56,4 @@ live contract.
   manifest → validate) for assigning `SongId` (ADR-0031) to corpus sources by
   `sha256`, with suggestions held strictly non-authoritative and a typed
   refusal taxonomy; recommends a standalone `song-curation/` tool and a
-  four-slice implementation gated behind a new ADR. Status: for discussion.
+  four-slice implementation gated behind a new ADR. Status: historical context; durable decisions accepted in ADR-0033.

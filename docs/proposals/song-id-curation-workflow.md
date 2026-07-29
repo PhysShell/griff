@@ -1,6 +1,6 @@
 # Song-ID Curation Workflow (proposal)
 
-Status: for discussion (a proposal — it binds nothing and is **not** Accepted).
+Status: historical context — its durable decisions are Accepted in [ADR-0033](../adr/0033-song-id-curation-workflow.md); this proposal is not a live contract.
 
 An offline, **human-confirmed** workflow for assigning `SongId` (ADR-0031,
 schema v10) to corpus sources, so that song-level holdout

@@ -1,7 +1,7 @@
 # ADR 0033: Human-confirmed, transactional song-id curation workflow
 
 Date: 2026-07-29
-Status: Proposed
+Status: Accepted
 
 ## Context
 
