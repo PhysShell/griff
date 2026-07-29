@@ -514,6 +514,7 @@ mod tests {
                 bar_range: bars,
                 track_index: track,
                 sha256: sha.map(ToOwned::to_owned),
+                song_id: None,
             },
             tempo_bpm: 120.0,
             ticks_per_quarter: 480,

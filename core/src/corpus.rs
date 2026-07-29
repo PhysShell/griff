@@ -5,6 +5,8 @@
 //! git-ignored; only the schema, tooling, and minimal fixtures live in the
 //! repository (ADR-0005 / licensing).
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 use crate::complement::AxisScores;
@@ -48,6 +50,12 @@ use crate::structure::{ComplexityProfile, StructureMetrics};
 ///   and a content hash (a filename is not an identity). Pre-v9 records lack
 ///   both and keep the legacy first-note-bearing, unverified behavior; the keys
 ///   are skipped when unset, so older files round-trip byte-identically.
+/// - v10 — canonical song identity (ADR-0031): [`SourceRef`] gains optional
+///   `song_id` (a curator-assigned Work identifier above the `sha256`
+///   Manifestation) and [`CorpusManifest`] gains an optional `songs` map, under
+///   the same pattern. This is the identity that makes song-level holdout
+///   implementable fail-closed. Pre-v10 records lack the key, load it as `None`,
+///   and re-serialize byte-identically.
 ///
 /// Tag taxonomy is intentionally *not* versioned here: [`SwancoreTag`] grows
 /// additively (e.g. `let_ring`, #75) and `SCHEMA_VERSION` tracks structural
@@ -55,13 +63,27 @@ use crate::structure::{ComplexityProfile, StructureMetrics};
 /// not the tag set — a new tag only breaks readers that hard-reject unknown
 /// variants, a curation-tooling concern, not a corpus-structure one
 /// (decisions 2026-06-19).
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 // ── identifiers ───────────────────────────────────────────────────────────────
 
 /// Unique, stable identifier for a corpus chunk (e.g. `"dgd_001"`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ChunkId(pub String);
+
+/// Stable, opaque, curator-assigned identifier of a **composition** — a Work
+/// (schema v10, ADR-0031).
+///
+/// It sits one level above [`SourceRef::sha256`]: a `sha256` identifies one
+/// source *file* (a Manifestation), and a `SongId` names the work that several
+/// files transcribe. It is a fact about provenance the curator asserts, never
+/// derived from content similarity, and it grants no scoring authority — its
+/// sole purpose is leakage-safe song-level holdout and source-identity splits.
+/// Every manifestation, arrangement, edition, and cover of one composition
+/// carries the **same** `SongId`; musical distinctness never changes Work
+/// identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct SongId(pub String);
 
 /// Lowercase-hex SHA-256 of a source file's bytes — the content identity a
 /// filename cannot provide (schema v9 [`SourceRef::sha256`]). Shared by the
@@ -118,6 +140,15 @@ pub struct SourceRef {
     /// round-trip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// Curator-assigned canonical song identity (schema v10, ADR-0031) — the
+    /// Work above this file. Two source files of one composition share a
+    /// `song_id` even though their `sha256` differ, which is what makes
+    /// song-level holdout implementable fail-closed. Absent in pre-v10 records —
+    /// the key is skipped when unset, so older files round-trip byte-identically.
+    /// Never backfilled by analysis; a `None` here means "uncurated", and the
+    /// default song-holdout preflight refuses rather than guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub song_id: Option<SongId>,
 }
 
 // ── swancore tag taxonomy ─────────────────────────────────────────────────────
@@ -439,4 +470,184 @@ pub struct CorpusManifest {
     /// empty, so pre-v4 manifests keep loading and re-serialize losslessly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<EnsembleGroup>,
+    /// Canonical song map (schema v10, ADR-0031): `SongId → [sha256]`. A
+    /// *convenience and typo check*, not the coverage proof — corpus-wide song
+    /// coverage is proven by the per-`SourceRef` `song_id` scan in
+    /// [`song_holdout_preflight`], which runs whether or not this map is present.
+    ///
+    /// `None` (the key absent) means "no manifest supplied"; `Some` (even an
+    /// empty `{}`) means "a manifest is present" and triggers the bidirectional
+    /// agreement check — an explicitly-present empty map must therefore account
+    /// for every labelled source, so absent and present-empty are **not** the
+    /// same. The key is skipped while `None`, so pre-v10 manifests round-trip
+    /// byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub songs: Option<BTreeMap<SongId, Vec<String>>>,
+}
+
+// ── song-level holdout preflight (schema v10, ADR-0031) ─────────────────────────
+
+/// A reason [`song_holdout_preflight`] refuses a corpus for song-level holdout.
+///
+/// Song holdout is **fail-closed**: any uncurated, unidentifiable, or
+/// inconsistent source is a typed refusal, never a silent pick (ADR-0031). All
+/// refusals are collected so one preflight reports every problem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SongHoldoutRefusal {
+    /// A chunk carries no `sha256`, so its source file cannot be identified —
+    /// song holdout cannot prove it is not an alternate transcription of the
+    /// held-out song.
+    UnidentifiedSource { chunk: ChunkId },
+    /// A participating source file (`sha256`) carries no `song_id`. The default
+    /// policy refuses rather than guess; carries an example chunk that cites it.
+    UncuratedSource { sha256: String, example: ChunkId },
+    /// One source file (`sha256`) is labelled with more than one `SongId` across
+    /// its chunks — a file split across works would leak part of it. `song_ids`
+    /// is sorted and deduplicated.
+    InconsistentSource {
+        sha256: String,
+        song_ids: Vec<SongId>,
+    },
+    /// The `songs` manifest lists a `(song_id, sha256)` pair no source carries.
+    ManifestSourceMissing { song_id: SongId, sha256: String },
+    /// A source labelled with `song_id` whose `sha256` the present `songs`
+    /// manifest does not enumerate under that id.
+    ManifestLabelMissing { sha256: String, song_id: SongId },
+}
+
+/// Validate a corpus for fail-closed song-level holdout (ADR-0031).
+///
+/// Returns `Ok(())` only when the whole corpus may be song-held-out without
+/// leakage; otherwise every refusal is collected. This is a preflight over the
+/// entire manifest — every chunk participates — and it is read-only (it never
+/// backfills `song_id`). It checks, in order:
+///
+/// 1. every participating chunk has a `sha256` (an unidentifiable source cannot
+///    be reasoned about);
+/// 2. every participating source (`sha256`) carries a `song_id` — the
+///    strict-refusal default, since a `None` may be an alternate transcription
+///    of the held-out work;
+/// 3. each `sha256` maps to exactly one `SongId` (no file split across works);
+/// 4. if the `songs` manifest is present, it agrees with the per-source labels
+///    **both ways** (every manifest pair has a matching source, every labelled
+///    source is enumerated).
+pub fn song_holdout_preflight(manifest: &CorpusManifest) -> Result<(), Vec<SongHoldoutRefusal>> {
+    let mut refusals = Vec::new();
+    let labels = collect_source_labels(&manifest.chunks, &mut refusals);
+    check_source_consistency(&labels, &mut refusals);
+    // A present manifest — even an explicitly empty `{}` — is checked both ways;
+    // only an absent (`None`) manifest skips the cross-check.
+    if let Some(songs) = &manifest.songs {
+        check_manifest_agreement(songs, &labels, &mut refusals);
+    }
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals)
+    }
+}
+
+/// What the chunks assert about one source file (`sha256`): the distinct
+/// `SongId`s labelling it, whether any chunk left it unlabelled, and example
+/// chunk ids for messages.
+#[derive(Debug)]
+struct SourceLabel {
+    songs: BTreeSet<SongId>,
+    example: ChunkId,
+    none_example: Option<ChunkId>,
+}
+
+/// Group chunks by source `sha256`, recording each file's `song_id` labels. A
+/// chunk with no `sha256` cannot be file-identified, so it is refused outright.
+fn collect_source_labels(
+    chunks: &[ChunkMeta],
+    refusals: &mut Vec<SongHoldoutRefusal>,
+) -> BTreeMap<String, SourceLabel> {
+    let mut labels: BTreeMap<String, SourceLabel> = BTreeMap::new();
+    for chunk in chunks {
+        let Some(sha) = &chunk.source.sha256 else {
+            refusals.push(SongHoldoutRefusal::UnidentifiedSource {
+                chunk: chunk.id.clone(),
+            });
+            continue;
+        };
+        let entry = labels.entry(sha.clone()).or_insert_with(|| SourceLabel {
+            songs: BTreeSet::new(),
+            example: chunk.id.clone(),
+            none_example: None,
+        });
+        match &chunk.source.song_id {
+            Some(song) => {
+                entry.songs.insert(song.clone());
+            }
+            None => {
+                if entry.none_example.is_none() {
+                    entry.none_example = Some(chunk.id.clone());
+                }
+            }
+        }
+    }
+    labels
+}
+
+/// Refuse any source that is uncurated (no `song_id`, the strict-refusal
+/// default) or split across more than one `SongId` (chunk-level leakage).
+fn check_source_consistency(
+    labels: &BTreeMap<String, SourceLabel>,
+    refusals: &mut Vec<SongHoldoutRefusal>,
+) {
+    for (sha, label) in labels {
+        if let Some(example) = &label.none_example {
+            refusals.push(SongHoldoutRefusal::UncuratedSource {
+                sha256: sha.clone(),
+                example: example.clone(),
+            });
+        } else if label.songs.is_empty() {
+            // Every chunk of this file lacked a song_id: still uncurated.
+            refusals.push(SongHoldoutRefusal::UncuratedSource {
+                sha256: sha.clone(),
+                example: label.example.clone(),
+            });
+        }
+        if label.songs.len() >= 2 {
+            refusals.push(SongHoldoutRefusal::InconsistentSource {
+                sha256: sha.clone(),
+                song_ids: label.songs.iter().cloned().collect(),
+            });
+        }
+    }
+}
+
+/// When the `songs` manifest is present, require it to agree with the per-source
+/// labels both ways: no dangling manifest pair, no unenumerated labelled source.
+fn check_manifest_agreement(
+    songs: &BTreeMap<SongId, Vec<String>>,
+    labels: &BTreeMap<String, SourceLabel>,
+    refusals: &mut Vec<SongHoldoutRefusal>,
+) {
+    let mut source_pairs: BTreeSet<(SongId, String)> = BTreeSet::new();
+    for (sha, label) in labels {
+        for song in &label.songs {
+            source_pairs.insert((song.clone(), sha.clone()));
+        }
+    }
+    let mut manifest_pairs: BTreeSet<(SongId, String)> = BTreeSet::new();
+    for (song, shas) in songs {
+        for sha in shas {
+            manifest_pairs.insert((song.clone(), sha.clone()));
+        }
+    }
+    for (song, sha) in manifest_pairs.difference(&source_pairs) {
+        refusals.push(SongHoldoutRefusal::ManifestSourceMissing {
+            song_id: song.clone(),
+            sha256: sha.clone(),
+        });
+    }
+    for (song, sha) in source_pairs.difference(&manifest_pairs) {
+        refusals.push(SongHoldoutRefusal::ManifestLabelMissing {
+            sha256: sha.clone(),
+            song_id: song.clone(),
+        });
+    }
 }
