@@ -29,14 +29,16 @@ Public API:
 - `decisions_digest(&DecisionBatch)` / `plan_digest(&DryRunPlan)` — order-sensitive
   / order-aware, under one shared canonical JSON encoding (object keys sorted,
   compact UTF-8, array order preserved); `plan_digest` omits its own field.
-- `validate_batch(&DecisionBatch)` — array order is authoritative, `ordinal` ==
-  position, `event_id` unique within the batch.
+- `validate_batch(&DecisionBatch)` — a standalone batch: array order is
+  authoritative, `ordinal` == position, `event_id` unique within the batch.
 - `validate_ledger(&DecisionsLedger)` — the ledger's own identity and structure:
   the ledger `schema` is `song-curation.decisions.v1`
   (`UnsupportedDecisionsLedgerSchema`), `batch_id`s are **unique**
-  (`DuplicateDecisionBatchId`, so batch selection is unambiguous), the above per
-  batch, **plus `event_id` uniqueness across all batches**. `next_song_seq` is
-  read but **not** enforced here — song-id issuance is a later slice.
+  (`DuplicateDecisionBatchId`, so batch selection is unambiguous), positional
+  ordering per batch, **plus a single ledger-wide `event_id` uniqueness pass** so
+  a duplicate (intra- or cross-batch) is reported **exactly once**, never twice.
+  `next_song_seq` is read but **not** enforced here — song-id issuance is a later
+  slice.
 - `build_plan(&CorpusManifest, &DecisionsLedger, batch_id) -> Result<DryRunPlan, …>`
   — validate the whole ledger **and short-circuit on structural invalidity
   before any batch selection or projection** (so a schema / duplicate-id /
@@ -50,21 +52,28 @@ Public API:
     final label (the batch assignment when present, else its existing
     authoritative label), so **untouched existing labels survive** into the map
     that becomes the Slice-2 manifest projection.
-- `verify_plan(&DryRunPlan, &CorpusManifest)` — recompute both digests, validate
-  the embedded batch **once**, and **re-derive the whole contract** (top-level
-  fingerprint, batch fingerprint, schema/policy, assignments, and complete songs
-  map) from the embedded events. The two fingerprint checks are **separate**:
+- `verify_plan(&DryRunPlan, &CorpusManifest)` — validate the embedded batch
+  **first** and **short-circuit**: an invalid ordinal or duplicate `event_id`
+  refuses before any digest, fingerprint, or replay work. Otherwise recompute
+  both digests and **re-derive the whole contract** (top-level fingerprint, batch
+  fingerprint, schema/policy, assignments, and complete songs map) from the
+  embedded events. The two fingerprint checks are **separate**:
   `PlanCorpusFingerprintMismatch` (top level) and
   `DecisionBatchFingerprintMismatch` (embedded batch) each report the value of
   the field that actually disagreed, never a substitute.
 
 ## The artifact is JSON, and the verifier reads it back
 
-`DryRunPlan` and `Assignment` derive `Deserialize` with
-`#[serde(deny_unknown_fields)]`: the plan is an **immutable serialized artifact**
-(ADR-0033), so it round-trips build → serialize → deserialize → `verify_plan`,
-and a versioned artifact refuses smuggled foreign fields. The verifier operates
-at that artifact boundary — not merely on an already-constructed Rust struct —
+The whole ledger/plan graph is **strict on deserialization**: `DryRunPlan`,
+`Assignment`, `DecisionsLedger`, `DecisionBatch`, `DecisionEvent`, `SplitTarget`,
+and the internally tagged `Action` all carry `#[serde(deny_unknown_fields)]`, so
+a foreign field at **any** depth is rejected — not silently dropped before the
+digests are recomputed over a laundered object. (For the internally tagged
+`Action`, a regression test parses a rogue field inside a variant payload and
+asserts the actual serde version refuses it; the `kind` tag is still accepted.)
+The plan is an **immutable serialized artifact** (ADR-0033), so it round-trips
+build → serialize → deserialize → `verify_plan`, and the verifier operates at
+that artifact boundary — not merely on an already-constructed Rust struct —
 which is the input contract Slice 2's apply path will consume.
 
 ## The load-bearing guarantee
