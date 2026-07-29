@@ -37,6 +37,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0029](0029-swang-authoring-and-verified-lifting.md) | Adopt Swang as a deterministic authoring and verified lifting language | Accepted (Phases 0–3 frozen) |
 | [0030](0030-reduced-state-layered-dp-clients.md) | Reduced-state layered DP clients (amends ADR-0013) | Accepted |
 | [0031](0031-canonical-song-identity.md) | Add a curator-assigned canonical song identity to the corpus (schema v10) | Accepted |
+| [0032](0032-holdout-filtering-boundary.md) | Filter holdout over `LoadedChunk` before corpus material, owned by the offline Reachability Lab | Proposed |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).
