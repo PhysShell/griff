@@ -6,9 +6,10 @@
 //! mode/target/error vocabulary; production CLI, cockpit, generation, and
 //! reranking acquire no holdout policy.
 //!
-//! This first slice (ADR-0032 §7) implements **song mode only**, fail-closed,
-//! over a single-authority [`LoadedCorpus`]. File and fragment modes, and any
-//! measurement axes, are separate later slices.
+//! Implemented so far (ADR-0032), fail-closed over a single-authority
+//! [`LoadedCorpus`]: **song mode** (`HoldoutTargetSong`) and **source-file
+//! mode** (`HoldoutTargetSourceFile`, exact `sha256`, independent of song
+//! curation). Fragment mode and any measurement axes are separate later slices.
 
 use griff_core::corpus::{
     song_holdout_preflight, ChunkId, ChunkMeta, CorpusManifest, SongHoldoutRefusal, SongId,
@@ -41,13 +42,20 @@ pub enum CorpusMode {
     LeakyDiagnostic,
     /// Exclude every source representation of the target song, fail-closed.
     HoldoutTargetSong,
+    /// Exclude every chunk cut from the target source file (by exact `sha256`),
+    /// fail-closed. Independent of song curation.
+    HoldoutTargetSourceFile,
 }
 
-/// The identity a holdout targets. Song mode uses `song_id`; the file / fragment
-/// / measurement fields (`source_sha256`, `bar_range`, `track_index`,
-/// `projection`, `eligibility`) join with their own later slices.
+/// The identity a holdout targets, with the field per mode kept explicit. Song
+/// mode uses `song_id`; source-file mode uses `source_sha256`. The remaining
+/// fragment / measurement fields (`bar_range`, `track_index`, `projection`,
+/// `eligibility`) join with their own later slices.
 #[derive(Debug, Clone, Default)]
 pub struct TargetIdentity {
+    /// The source file to hold out, by content hash (required by
+    /// `HoldoutTargetSourceFile`).
+    pub source_sha256: Option<String>,
     /// The composition to hold out (required by `HoldoutTargetSong`).
     pub song_id: Option<SongId>,
 }
@@ -66,6 +74,24 @@ pub enum HoldoutError {
     /// actually happen — returning the corpus unchanged would relabel an absent
     /// holdout as valid (e.g. the target's only source failed to load).
     TargetSongAbsent(SongId),
+    /// Source-file mode requires a target `source_sha256`, and none was supplied.
+    MissingTargetSourceSha256,
+    /// The source-file preflight refused the corpus (a participating chunk had
+    /// no `sha256`, so file identity is incomplete).
+    SourcePreflight(Vec<SourceHoldoutRefusal>),
+    /// The target `sha256` is carried by no *loaded* chunk, so no holdout would
+    /// actually happen (e.g. the target file failed to load).
+    TargetSourceAbsent(String),
+}
+
+/// A reason the source-file preflight refuses a corpus (ADR-0032): source-file
+/// holdout is conditional on **complete** hash identity, with no basename
+/// fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceHoldoutRefusal {
+    /// A participating manifest chunk carries no `sha256`, so its source file
+    /// cannot be identified by content.
+    UnidentifiedSource(ChunkId),
 }
 
 /// A single-authority violation between the manifest and the loaded records.
@@ -78,8 +104,9 @@ pub enum BindingRefusal {
     DuplicateLoaded(ChunkId),
     /// A loaded record whose `ChunkId` is not in the authoritative manifest.
     LoadedNotInManifest(ChunkId),
-    /// A loaded record whose identity facts (`song_id` / `sha256`) disagree with
-    /// the manifest chunk of the same `ChunkId` — the stale-manifest leak.
+    /// A loaded record whose **full** `ChunkMeta` disagrees with the manifest
+    /// chunk of the same `ChunkId` — the stale-manifest leak. Every
+    /// material-defining field must match, not just `song_id` / `sha256`.
     ProvenanceMismatch(ChunkId),
 }
 
@@ -132,13 +159,51 @@ pub fn prepare_corpus_for_mode(
             // construction: only the survivors are compiled.
             Ok(Some(corpus_material(kept, corpus.skipped)))
         }
+        CorpusMode::HoldoutTargetSourceFile => {
+            check_binding(&corpus)?;
+            // File identity must be complete — no basename fallback, no
+            // "mostly identified" run. This does NOT run the song preflight and
+            // does NOT require song_id: a hash-identified but song-uncurated
+            // corpus is valid for file-mode experiments.
+            source_file_preflight(&corpus.manifest).map_err(HoldoutError::SourcePreflight)?;
+            let target_sha = target
+                .source_sha256
+                .as_ref()
+                .ok_or(HoldoutError::MissingTargetSourceSha256)?;
+            let (excluded, kept): (Vec<LoadedChunk>, Vec<LoadedChunk>) = corpus
+                .loaded
+                .into_iter()
+                .partition(|chunk| chunk.meta.source.sha256.as_ref() == Some(target_sha));
+            if excluded.is_empty() {
+                return Err(HoldoutError::TargetSourceAbsent(target_sha.clone()));
+            }
+            Ok(Some(corpus_material(kept, corpus.skipped)))
+        }
+    }
+}
+
+/// Fail-closed source-file preflight: every participating manifest chunk must
+/// carry a `sha256`, so file identity is complete across the corpus (ADR-0032 /
+/// audit §3). A missing hash is refused, never trusted by basename.
+fn source_file_preflight(manifest: &CorpusManifest) -> Result<(), Vec<SourceHoldoutRefusal>> {
+    let refusals: Vec<SourceHoldoutRefusal> = manifest
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.source.sha256.is_none())
+        .map(|chunk| SourceHoldoutRefusal::UnidentifiedSource(chunk.id.clone()))
+        .collect();
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals)
     }
 }
 
 /// Enforce the ADR-0032 single-authority invariant: every loaded record maps by
-/// `ChunkId` to exactly one manifest chunk whose identity facts (`song_id` /
-/// `sha256`) agree with it, and no `ChunkId` is loaded twice. Otherwise the
-/// preflight could validate one dataset while the filter executes another.
+/// `ChunkId` to exactly one manifest chunk whose **full** `ChunkMeta` matches it,
+/// no `ChunkId` is duplicated in the manifest, and none is loaded twice.
+/// Otherwise the preflight could validate one dataset while the filter executes
+/// another.
 fn check_binding(corpus: &LoadedCorpus) -> Result<(), HoldoutError> {
     let mut refusals = Vec::new();
     // Index the manifest, collecting (not silently overwriting) duplicate ids —
@@ -314,6 +379,7 @@ mod tests {
 
     fn song_target(song: &str) -> TargetIdentity {
         TargetIdentity {
+            source_sha256: None,
             song_id: Some(SongId(song.to_owned())),
         }
     }
@@ -747,5 +813,270 @@ mod tests {
                 .expect_err("differing gesture metadata must refuse");
         assert!(matches!(err, HoldoutError::CorpusBinding(ref rs)
             if rs.iter().any(|r| matches!(r, BindingRefusal::ProvenanceMismatch(id) if id.0 == "a"))));
+    }
+
+    // ── source-file mode (HoldoutTargetSourceFile) ──────────────────────────
+
+    fn file_target(sha: &str) -> TargetIdentity {
+        TargetIdentity {
+            source_sha256: Some(sha.to_owned()),
+            song_id: None,
+        }
+    }
+
+    /// A hash-identified chunk whose song may be uncurated (`None`).
+    #[allow(clippy::too_many_arguments)]
+    fn hashed(
+        id: &str,
+        sha: Option<&str>,
+        song: Option<&str>,
+        onset: u32,
+        pitch: u8,
+        gesture: bool,
+    ) -> (ChunkMeta, LoadedChunk) {
+        let m = meta(id, sha, song, gesture);
+        (
+            m.clone(),
+            LoadedChunk {
+                meta: m,
+                sliced: one_bar_score(onset, pitch),
+                track: 0,
+            },
+        )
+    }
+
+    #[test]
+    fn file_mode_refuses_missing_target_sha256() {
+        let (m, lc) = hashed("a", Some("shaA"), None, 0, 60, false);
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![m]),
+            loaded: vec![lc],
+            skipped: Vec::new(),
+        };
+        // TargetIdentity::default() has no source_sha256.
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSourceFile,
+            &TargetIdentity::default(),
+        )
+        .expect_err("no target sha must refuse");
+        assert_eq!(err, HoldoutError::MissingTargetSourceSha256);
+    }
+
+    #[test]
+    fn file_mode_refuses_unidentified_manifest_chunk() {
+        // A participating manifest chunk without sha256 → fail closed before material.
+        let (m, lc) = hashed("a", None, None, 0, 60, false);
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![m]),
+            loaded: vec![lc],
+            skipped: Vec::new(),
+        };
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaX"),
+        )
+        .expect_err("sha256-less chunk must refuse");
+        assert!(matches!(err, HoldoutError::SourcePreflight(ref rs)
+            if rs.iter().any(|r| matches!(r, SourceHoldoutRefusal::UnidentifiedSource(id) if id.0 == "a"))));
+    }
+
+    #[test]
+    fn file_mode_refuses_target_hash_absent() {
+        let (ma, la) = hashed("a", Some("shaA"), None, 0, 60, false);
+        let (mb, lb) = hashed("b", Some("shaB"), None, 240, 62, false);
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![ma, mb]),
+            loaded: vec![la, lb],
+            skipped: Vec::new(),
+        };
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaZ"),
+        )
+        .expect_err("absent target hash must refuse");
+        assert_eq!(err, HoldoutError::TargetSourceAbsent("shaZ".to_owned()));
+    }
+
+    #[test]
+    fn file_mode_refuses_target_present_only_in_skipped() {
+        // The manifest curates shaZ, but its source failed to load.
+        let (ma, la) = hashed("a", Some("shaA"), None, 0, 60, false);
+        let mz = meta("z", Some("shaZ"), None, false);
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![ma, mz]),
+            loaded: vec![la],
+            skipped: vec!["z.gp5".to_owned()],
+        };
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaZ"),
+        )
+        .expect_err("target only in skipped must refuse");
+        assert_eq!(err, HoldoutError::TargetSourceAbsent("shaZ".to_owned()));
+    }
+
+    #[test]
+    fn file_mode_excludes_every_chunk_of_target_hash_regardless_of_range_or_track() {
+        // Two chunks share shaX with differing bar_range/track; both excluded.
+        let ma = meta("a", Some("shaX"), None, false);
+        let mut mb = meta("b", Some("shaX"), None, false);
+        mb.source.bar_range = Some((1, 1));
+        mb.source.track_index = Some(1);
+        let mc = meta("c", Some("shaY"), None, false);
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![ma.clone(), mb.clone(), mc.clone()]),
+            loaded: vec![
+                LoadedChunk {
+                    meta: ma,
+                    sliced: one_bar_score(0, 60),
+                    track: 0,
+                },
+                LoadedChunk {
+                    meta: mb,
+                    sliced: one_bar_score(240, 62),
+                    track: 0,
+                },
+                LoadedChunk {
+                    meta: mc,
+                    sliced: one_bar_score(480, 64),
+                    track: 0,
+                },
+            ],
+            skipped: Vec::new(),
+        };
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaX"),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(
+            held.references.len(),
+            1,
+            "both shaX chunks excluded regardless of range/track"
+        );
+    }
+
+    #[test]
+    fn file_mode_succeeds_on_song_uncurated_corpus() {
+        // Complete hashes, but song_id is None everywhere — song mode would
+        // refuse; file mode must succeed.
+        let (ma, la) = hashed("a", Some("shaX"), None, 0, 60, false);
+        let (mc, lc) = hashed("c", Some("shaY"), None, 480, 64, false);
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![ma, mc]),
+            loaded: vec![la, lc],
+            skipped: Vec::new(),
+        };
+        let held = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaX"),
+        )
+        .expect("uncurated songs are fine for file mode")
+        .expect("corpus-backed");
+        assert_eq!(held.references.len(), 1);
+    }
+
+    fn file_corpus() -> LoadedCorpus {
+        // shaX target (carries gesture), shaY keeper; one skipped name.
+        let ma = meta("a", Some("shaX"), None, true);
+        let mc = meta("c", Some("shaY"), None, false);
+        LoadedCorpus {
+            manifest: manifest_of(vec![ma.clone(), mc.clone()]),
+            loaded: vec![
+                LoadedChunk {
+                    meta: ma,
+                    sliced: one_bar_score(0, 60),
+                    track: 0,
+                },
+                LoadedChunk {
+                    meta: mc,
+                    sliced: one_bar_score(480, 64),
+                    track: 0,
+                },
+            ],
+            skipped: vec!["gone.gp5".to_owned()],
+        }
+    }
+
+    #[test]
+    fn file_mode_zero_leakage_including_skipped() {
+        let held = prepare_corpus_for_mode(
+            file_corpus(),
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaX"),
+        )
+        .expect("ok")
+        .expect("some");
+        let keeper_only = corpus_material(
+            vec![LoadedChunk {
+                meta: meta("c", Some("shaY"), None, false),
+                sliced: one_bar_score(480, 64),
+                track: 0,
+            }],
+            vec!["gone.gp5".to_owned()],
+        );
+        assert_eq!(held.references, keeper_only.references);
+        assert_eq!(held.rhythms, keeper_only.rhythms);
+        assert_eq!(held.gesture, keeper_only.gesture);
+        assert_eq!(
+            held.skipped, keeper_only.skipped,
+            "skipped reporting preserved"
+        );
+        assert!(
+            held.gesture.is_none(),
+            "excluded source's gesture did not leak"
+        );
+    }
+
+    #[test]
+    fn file_mode_binding_runs_before_source_preflight() {
+        // A binding mismatch must surface before the source preflight.
+        let manifest_meta = meta("a", Some("shaA"), None, false);
+        let mut loaded_meta = meta("a", Some("shaA"), None, false);
+        loaded_meta.source.bar_range = Some((0, 4));
+        let corpus = LoadedCorpus {
+            manifest: manifest_of(vec![manifest_meta]),
+            loaded: vec![LoadedChunk {
+                meta: loaded_meta,
+                sliced: one_bar_score(0, 60),
+                track: 0,
+            }],
+            skipped: Vec::new(),
+        };
+        let err = prepare_corpus_for_mode(
+            corpus,
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaA"),
+        )
+        .expect_err("binding refuses first");
+        assert!(matches!(err, HoldoutError::CorpusBinding(_)));
+    }
+
+    #[test]
+    fn file_mode_is_deterministic() {
+        let a = prepare_corpus_for_mode(
+            file_corpus(),
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaX"),
+        )
+        .expect("ok")
+        .expect("some");
+        let b = prepare_corpus_for_mode(
+            file_corpus(),
+            CorpusMode::HoldoutTargetSourceFile,
+            &file_target("shaX"),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(a.references, b.references);
+        assert_eq!(a.rhythms, b.rhythms);
+        assert_eq!(a.gesture, b.gesture);
     }
 }
