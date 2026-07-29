@@ -4,9 +4,9 @@
 # that must never enter the production build, CI, `--workspace` clippy, or add
 # holdout policy to the CLI/cockpit. Mirrors the ADR-0010 isolation precedent.
 #
-# Scope of this crate right now (ADR-0032 first slice): song-mode holdout only —
-# a fail-closed, single-authority boundary over a bound LoadedCorpus. File and
-# fragment modes, and any measurement axes, are separate later slices.
+# Scope of this crate (ADR-0032): song-mode and source-file-mode holdout — a
+# fail-closed, single-authority boundary over a bound LoadedCorpus. Fragment mode
+# and any measurement axes are separate later slices.
 
 [package]
 name         = "griff-reachability-lab"
