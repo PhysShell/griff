@@ -15,6 +15,7 @@ pub fn build_manifest(mut chunks: Vec<ChunkMeta>) -> CorpusManifest {
         schema_version: SCHEMA_VERSION,
         chunks,
         groups: Vec::new(),
+        songs: None,
     }
 }
 

@@ -9,14 +9,16 @@
 
 use griff_core::complement::AxisScores;
 use griff_core::corpus::{
-    Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef,
-    PairRelation, QualityFlag, ReviewerDecision, RightsInfo, RightsStatus, SourceFormat, SourceRef,
-    StyleCohort, SwancoreTag, SCHEMA_VERSION,
+    song_holdout_preflight, Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest,
+    EnsembleGroup, EnsembleRef, PairRelation, QualityFlag, ReviewerDecision, RightsInfo,
+    RightsStatus, SongHoldoutRefusal, SongId, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
+    SCHEMA_VERSION,
 };
 use griff_core::gesture::GestureStats;
 use griff_core::novelty::PhraseDuplicate;
 use griff_core::structure::{ComplexityProfile, StructureMetrics};
 use proptest::{collection::vec as prop_vec, option::of as prop_opt, prelude::*};
+use std::collections::BTreeMap;
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -71,6 +73,7 @@ fn minimal_chunk() -> ChunkMeta {
             bar_range: Some((0, 4)),
             track_index: None,
             sha256: None,
+            song_id: None,
         },
         tempo_bpm: 140.0,
         ticks_per_quarter: 960,
@@ -100,11 +103,169 @@ fn minimal_chunk() -> ChunkMeta {
 // ── schema v9: exact source track + integrity hash ───────────────────────────
 
 #[test]
-fn schema_version_is_9() {
+fn schema_version_is_10() {
     assert_eq!(
-        SCHEMA_VERSION, 9,
-        "SourceRef.track_index + sha256 bump the corpus schema to v9"
+        SCHEMA_VERSION, 10,
+        "SourceRef.song_id + CorpusManifest.songs bump the corpus schema to v10"
     );
+}
+
+// ── schema v10: canonical song identity (ADR-0031) ───────────────────────────
+
+fn chunk_with(id: &str, sha: Option<&str>, song: Option<&str>) -> ChunkMeta {
+    let mut chunk = minimal_chunk();
+    chunk.id = ChunkId(id.to_owned());
+    chunk.source.sha256 = sha.map(ToOwned::to_owned);
+    chunk.source.song_id = song.map(|s| SongId(s.to_owned()));
+    chunk
+}
+
+const fn song_manifest(
+    chunks: Vec<ChunkMeta>,
+    songs: Option<BTreeMap<SongId, Vec<String>>>,
+) -> CorpusManifest {
+    CorpusManifest {
+        schema_version: SCHEMA_VERSION,
+        chunks,
+        groups: Vec::new(),
+        songs,
+    }
+}
+
+#[test]
+fn source_with_song_id_roundtrips() {
+    let mut chunk = minimal_chunk();
+    chunk.source.sha256 = Some("abc".to_owned());
+    chunk.source.song_id = Some(SongId("work:dgd-alex-english".to_owned()));
+    let json = serde_json::to_string(&chunk).expect("serialize");
+    assert!(json.contains(r#""song_id":"work:dgd-alex-english""#));
+    let back: ChunkMeta = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, chunk);
+}
+
+#[test]
+fn pre_v10_source_without_song_id_stays_lossless() {
+    // A v9 record (no song_id key) loads as None and re-serializes byte-identically.
+    let v9 = r#"{"filename":"x.gp5","format":"gp5","bar_range":null,"sha256":"abc"}"#;
+    let src: SourceRef = serde_json::from_str(v9).expect("parse v9 source");
+    assert_eq!(src.song_id, None);
+    assert_eq!(serde_json::to_string(&src).expect("serialize"), v9);
+}
+
+#[test]
+fn pre_v10_manifest_without_songs_stays_lossless() {
+    let v9 = r#"{"schema_version":9,"chunks":[]}"#;
+    let manifest: CorpusManifest = serde_json::from_str(v9).expect("parse v9 manifest");
+    assert_eq!(manifest.songs, None);
+    assert_eq!(serde_json::to_string(&manifest).expect("serialize"), v9);
+}
+
+#[test]
+fn songs_manifest_roundtrips() {
+    let mut songs = BTreeMap::new();
+    songs.insert(
+        SongId("song1".to_owned()),
+        vec!["shaA".to_owned(), "shaB".to_owned()],
+    );
+    let manifest = song_manifest(
+        vec![chunk_with("a1", Some("shaA"), Some("song1"))],
+        Some(songs),
+    );
+    let json = serde_json::to_string(&manifest).expect("serialize");
+    assert!(json.contains(r#""songs":{"song1":["shaA","shaB"]}"#));
+    let back: CorpusManifest = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, manifest);
+}
+
+#[test]
+fn preflight_accepts_fully_curated_consistent_corpus() {
+    // Two files, two songs; file A has two chunks that share sha + song_id.
+    let chunks = vec![
+        chunk_with("a1", Some("shaA"), Some("song1")),
+        chunk_with("a2", Some("shaA"), Some("song1")),
+        chunk_with("b1", Some("shaB"), Some("song2")),
+    ];
+    assert_eq!(song_holdout_preflight(&song_manifest(chunks, None)), Ok(()));
+}
+
+#[test]
+fn preflight_refuses_uncurated_source() {
+    let chunks = vec![
+        chunk_with("a1", Some("shaA"), Some("song1")),
+        chunk_with("b1", Some("shaB"), None),
+    ];
+    let errs = song_holdout_preflight(&song_manifest(chunks, None)).expect_err("must refuse");
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        SongHoldoutRefusal::UncuratedSource { sha256, .. } if sha256.as_str() == "shaB"
+    )));
+}
+
+#[test]
+fn preflight_refuses_unidentified_source() {
+    let chunks = vec![chunk_with("a1", None, Some("song1"))];
+    let errs = song_holdout_preflight(&song_manifest(chunks, None)).expect_err("must refuse");
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        SongHoldoutRefusal::UnidentifiedSource { chunk } if chunk.0.as_str() == "a1"
+    )));
+}
+
+#[test]
+fn preflight_refuses_file_split_across_songs() {
+    let chunks = vec![
+        chunk_with("a1", Some("shaA"), Some("song1")),
+        chunk_with("a2", Some("shaA"), Some("song2")),
+    ];
+    let errs = song_holdout_preflight(&song_manifest(chunks, None)).expect_err("must refuse");
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        SongHoldoutRefusal::InconsistentSource { sha256, song_ids }
+            if sha256.as_str() == "shaA" && song_ids.len() == 2
+    )));
+}
+
+#[test]
+fn preflight_manifest_must_enumerate_every_labelled_source() {
+    let chunks = vec![chunk_with("a1", Some("shaA"), Some("song1"))];
+    let mut songs = BTreeMap::new();
+    songs.insert(SongId("song1".to_owned()), Vec::new());
+    let errs =
+        song_holdout_preflight(&song_manifest(chunks, Some(songs))).expect_err("must refuse");
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        SongHoldoutRefusal::ManifestLabelMissing { sha256, .. } if sha256.as_str() == "shaA"
+    )));
+}
+
+#[test]
+fn preflight_manifest_pair_must_have_a_source() {
+    let chunks = vec![chunk_with("a1", Some("shaA"), Some("song1"))];
+    let mut songs = BTreeMap::new();
+    songs.insert(
+        SongId("song1".to_owned()),
+        vec!["shaA".to_owned(), "shaZ".to_owned()],
+    );
+    let errs =
+        song_holdout_preflight(&song_manifest(chunks, Some(songs))).expect_err("must refuse");
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        SongHoldoutRefusal::ManifestSourceMissing { sha256, .. } if sha256.as_str() == "shaZ"
+    )));
+}
+
+#[test]
+fn preflight_present_empty_manifest_still_demands_every_source() {
+    // `"songs": {}` is present-but-empty — distinct from absent. A labelled
+    // source must still be enumerated, so the bidirectional check fires and the
+    // unaccounted source is refused (absent vs present-empty must not collapse).
+    let chunks = vec![chunk_with("a1", Some("shaA"), Some("song1"))];
+    let errs = song_holdout_preflight(&song_manifest(chunks, Some(BTreeMap::new())))
+        .expect_err("present-but-empty manifest must still be checked");
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        SongHoldoutRefusal::ManifestLabelMissing { sha256, .. } if sha256.as_str() == "shaA"
+    )));
 }
 
 #[test]
@@ -359,6 +520,7 @@ fn manifest_groups_roundtrip() {
         schema_version: SCHEMA_VERSION,
         chunks: vec![minimal_chunk()],
         groups: vec![group.clone()],
+        songs: None,
     };
 
     let json = serde_json::to_string(&manifest).expect("serialize");
@@ -376,6 +538,7 @@ fn a_pre_v4_manifest_without_groups_loads_and_stays_lossless() {
         schema_version: 3,
         chunks: vec![minimal_chunk()],
         groups: Vec::new(),
+        songs: None,
     };
     let v3_json = serde_json::to_string(&v3_manifest).expect("serialize");
     assert!(
@@ -494,6 +657,7 @@ fn corpus_manifest_json_roundtrip() {
         schema_version: 1,
         chunks: vec![minimal_chunk()],
         groups: Vec::new(),
+        songs: None,
     };
     let json = serde_json::to_string(&manifest).expect("serialize");
     let back: CorpusManifest = serde_json::from_str(&json).expect("deserialize");
@@ -507,6 +671,7 @@ fn empty_manifest_roundtrip() {
         schema_version: 1,
         chunks: Vec::new(),
         groups: Vec::new(),
+        songs: None,
     };
     let json = serde_json::to_string(&manifest).expect("serialize");
     let back: CorpusManifest = serde_json::from_str(&json).expect("deserialize");
@@ -814,6 +979,7 @@ proptest! {
                 bar_range: None,
                 track_index: None,
                 sha256: None,
+                song_id: None,
             },
             tempo_bpm: f64::from(tempo_bpm_int),
             ticks_per_quarter: tpq,

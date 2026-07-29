@@ -133,6 +133,7 @@ fn chunk(
             bar_range: Some((0, 4)),
             track_index: None,
             sha256: None,
+            song_id: None,
         },
         tempo_bpm: 140.0,
         ticks_per_quarter: 960,

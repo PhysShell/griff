@@ -326,6 +326,7 @@ mod tests {
                 bar_range: Some((0, 3)),
                 track_index: Some(0),
                 sha256: Some(sha.to_owned()),
+                song_id: None,
             },
             tempo_bpm: 120.0,
             ticks_per_quarter: 480,

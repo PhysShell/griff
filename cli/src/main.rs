@@ -1900,6 +1900,7 @@ fn build_chunk_meta(
             bar_range: None,
             track_index: None,
             sha256: None,
+            song_id: None,
         },
         tempo_bpm,
         ticks_per_quarter: score.ticks_per_quarter,
@@ -1994,6 +1995,7 @@ fn cmd_manifest(dir: &Path, output: Option<&Path>) -> Result<(), CliError> {
         schema_version: SCHEMA_VERSION,
         chunks,
         groups,
+        songs: None,
     };
     print_manifest_summary(&manifest);
 

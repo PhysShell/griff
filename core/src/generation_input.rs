@@ -574,6 +574,7 @@ mod tests {
                 bar_range: Some((0, 1)),
                 track_index,
                 sha256: None,
+                song_id: None,
             },
             tempo_bpm: 120.0,
             ticks_per_quarter: 480,
