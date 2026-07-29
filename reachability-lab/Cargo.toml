@@ -1,0 +1,26 @@
+# Isolated offline Reachability Lab (ADR-0032): the holdout-filtering boundary
+# between corpus loading and material construction. Deliberately NOT a workspace
+# member — like `fuzz`/`lab`/`census`/`migrate`, this is a lab-style instrument
+# that must never enter the production build, CI, `--workspace` clippy, or add
+# holdout policy to the CLI/cockpit. Mirrors the ADR-0010 isolation precedent.
+#
+# Scope of this crate right now (ADR-0032 first slice): song-mode holdout only —
+# a fail-closed, single-authority boundary over a bound LoadedCorpus. File and
+# fragment modes, and any measurement axes, are separate later slices.
+
+[package]
+name         = "griff-reachability-lab"
+version      = "0.0.0"
+publish      = false
+edition      = "2021"
+rust-version = "1.92"
+
+[dependencies.griff-core]
+path = "../core"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all      = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
