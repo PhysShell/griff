@@ -1,0 +1,28 @@
+# Isolated offline song-id curation tool — Slice 1 (ADR-0033): the read-only
+# decision & validation core (inventory → batched ledger → projection →
+# dry-run plan → proof-by-rederivation verifier). Deliberately NOT a workspace
+# member (the fuzz/lab/census/migrate/reachability-lab isolation posture,
+# ADR-0010): never a production dependency, never built by CI, no CLI/cockpit or
+# generation policy, no corpus writes. Slice 1 has no apply/report/index/manifest
+# path and no suggestion generator — those are later, separately-accepted slices.
+
+[package]
+name         = "griff-song-curation"
+version      = "0.0.0"
+publish      = false
+edition      = "2021"
+rust-version = "1.92"
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[dependencies.griff-core]
+path = "../core"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all      = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
