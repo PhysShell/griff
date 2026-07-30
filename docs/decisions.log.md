@@ -1998,3 +1998,16 @@ Architectural decisions go to [`adr/`](adr/) instead.
   is human curation labour that content cannot backfill and that `SongId`
   carries no cover-detection or musical-equivalence claim. Idea reuse only; no
   external identifier scheme (ISWC/MBID) is adopted as the stored value.
+
+- 2026-07-30 — In the context of ADR-0033 Slice 1 (the isolated
+  `song-curation` read-only decision & validation core) being merged to `main`
+  (PR #174, merge commit `ffaca5f`) after two independent exact-head
+  re-reviews, facing how to record its status without letting the merge widen
+  scope, we decided for marking Slice 1 **ACCEPTED / CLOSED / FROZEN** and
+  against treating acceptance as license for further work, to achieve a clear
+  frozen boundary, accepting that Slices 2–4 each still need separate
+  independent acceptance and that corpus labeling / real-corpus writes remain
+  prohibited until the controlled pilot is independently opened (ADR-0033
+  Decision 10). Verification is local `nix` evidence only (45/45 tests, clippy
+  `all=deny`/`pedantic=warn`, fmt) — the crate is excluded from the workspace
+  and not built by CI (ADR-0010 isolation posture).
