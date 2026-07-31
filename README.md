@@ -17,6 +17,9 @@ human-in-the-loop curation.
 
 - [`docs/SPEC.md`](docs/SPEC.md) — what griff is/isn't, hard rules
 - [`docs/glossary.md`](docs/glossary.md) — the constitution (terms)
+- [`docs/graph-engineering.md`](docs/graph-engineering.md) — the current
+  deterministic generation/selection graph and where agentic loops do and do
+  not belong
 - [`docs/preview-guide.md`](docs/preview-guide.md) — using the interactive
   preview TUI (keys, inspector, curation, complexity)
 - [`docs/stages/`](docs/stages/) — canonical roadmap S0…S16
