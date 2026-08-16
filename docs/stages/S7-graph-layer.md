@@ -261,7 +261,7 @@ chain, and giving it alternatives is separate work.
   discipline extended from one path to the whole set.
 
 Implementation: `513fa91` (red) and `60b3493` (green) for the first cut;
-`e3e4efa` (red) and the commit that follows it for the review revision.
+`e3e4efa` (red) and `e9e3a0e` (green) for the review revision.
 Acceptance is a separate gate and has not been given.
 
 ### Slice D — specialised clients
