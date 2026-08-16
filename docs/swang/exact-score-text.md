@@ -83,10 +83,10 @@ the spelling when a collection or option is absent.
 | Field | Type | Req | Order | Empty | Malformed |
 | --- | --- | --- | --- | --- | --- |
 | `ticks_per_quarter` | `u16` | yes | — | — | `0` violates `InvalidTicksPerQuarter` (see H5) |
-| `master_bars` | `Vec<MasterBar>` | yes | **positional, load-bearing** | written, zero entries | — |
-| `tracks` | `Vec<Track>` | yes | **positional, load-bearing** | written, zero entries | — |
+| `master_bars` | `Vec<MasterBar>` | yes | **positional, load-bearing** | omitted when empty (§6.2) | — |
+| `tracks` | `Vec<Track>` | yes | **positional, load-bearing** | omitted when empty (§6.2) | — |
 | `source_meta` | `Option<SourceMeta>` | optional | — | omitted when `None` | — |
-| `loss` | `LossReport` | yes | warning order **load-bearing** | written, zero warnings | — |
+| `loss` | `LossReport` | yes | warning order **load-bearing** | omitted when clean (§6.2) | — |
 
 `source_meta: None` and `Some(SourceMeta { format: None })` are **different
 values** and must have different spellings. The exact walker compares
@@ -115,7 +115,7 @@ are distinct and both must be spellable.
 | `name` | `Option<String>` | optional | — | omitted when `None`; `Some("")` is distinct | arbitrary UTF-8 (H2) |
 | `channel` | `u8` | yes | — | — | `>15` is undocumented but type-legal |
 | `tuning` | `Tuning(Vec<Pitch>)` | yes | **positional — string 1 first** | empty vector is legal | — |
-| `voices` | `Vec<Voice>` | yes | **positional, load-bearing** | written, zero entries | — |
+| `voices` | `Vec<Voice>` | yes | **positional, load-bearing** | omitted when empty (§6.2) | — |
 
 `Tuning`'s vector is index 0 = string 1 (highest). Order is semantics, not
 presentation: reversing it retunes the instrument. The comparator settles
@@ -130,10 +130,10 @@ above 15 are model-valid and must be spellable.
 | Field | Type | Req | Order | Empty | Malformed |
 | --- | --- | --- | --- | --- | --- |
 | `Voice.id` | `u8` | yes | — | — | duplicates within a track are legal |
-| `Voice.event_groups` | `Vec<EventGroup>` | yes | **positional, load-bearing** | written, zero entries | — |
+| `Voice.event_groups` | `Vec<EventGroup>` | yes | **positional, load-bearing** | omitted when empty (§6.2) | — |
 | `EventGroup.kind` | `EventGroupKind` | yes | — | — | `Tuplet { 0, 0 }` is legal |
-| `EventGroup.atoms` | `Vec<AtomEvent>` | yes | **positional, load-bearing** | written, zero entries | — |
-| `EventGroup.technique_spans` | `Vec<TechniqueSpan>` | yes | **positional, load-bearing** | written, zero entries | range may fall outside the group's atoms |
+| `EventGroup.atoms` | `Vec<AtomEvent>` | yes | **positional, load-bearing** | omitted when empty (§6.2) | — |
+| `EventGroup.technique_spans` | `Vec<TechniqueSpan>` | yes | **positional, load-bearing** | omitted when empty (§6.2) | range may fall outside the group's atoms |
 
 `EventGroupKind` has six variants and exactly one carries a payload:
 
@@ -205,7 +205,7 @@ combination.
 | Field | Type | Req | Empty | Malformed |
 | --- | --- | --- | --- | --- |
 | `SourceMeta.format` | `Option<String>` | optional | omitted when `None`; `Some("")` distinct | arbitrary UTF-8 (H2) |
-| `LossReport.warnings` | `Vec<ImportWarning>` | yes | written, zero warnings | — |
+| `LossReport.warnings` | `Vec<ImportWarning>` | yes | omitted when clean (§6.2) | — |
 
 `ImportWarning` has four variants, three with payloads:
 
@@ -449,3 +449,238 @@ wrong in a more expensive way.
 
 Both are `griff-core` scopes with their own commit chains. Neither is
 touched by SWG-4A-01.
+
+## 6. The grammar
+
+Derived from §2's census and §3's domain decision, and not before them. It
+inherits level 1's shape — `word value` pairs, canonical order fixed by the
+formatter, no invented defaults — because the two levels are read by one
+build and should not feel like two languages.
+
+### 6.1 The reference document
+
+```text
+swang 2
+
+score {
+    ppqn 960
+
+    master_bar {
+        index 0
+        ticks 0..3840
+        meter 4/4
+        tempo 120/1
+    }
+
+    master_bar {
+        index 1
+        ticks 3840..7680
+        meter 7/8
+        tempo 100/7
+        repeat { start true play_count 2 }
+    }
+
+    track {
+        name "Guitar"
+        channel 0
+        tuning [64 59 55 50 45 40]
+
+        voice {
+            id 0
+
+            group chord {
+                note { at 0 duration 480 pitch 40 velocity 96 }
+                note { at 0 duration 480 pitch 47 velocity 96 marks [accent] }
+                span palm_mute {
+                    ticks 0..480
+                    evidence { source explicit confidence 10000 }
+                }
+            }
+
+            group single {
+                rest { at 480 duration 240 }
+            }
+
+            group tuplet 3/2 {
+                note {
+                    at 720
+                    duration 160
+                    pitch 52
+                    velocity 80
+                    position {
+                        string 4
+                        fret 2
+                        evidence { source inferred_from_midi confidence 5000 }
+                    }
+                }
+            }
+        }
+    }
+
+    source { format "GP5" }
+
+    loss {
+        tempo_approximated { bar_index 1 nearest_micros 4200000 }
+    }
+}
+```
+
+### 6.2 Canonical order and omission
+
+Field order inside every block is fixed by the formatter, in the order the
+census lists it; an author may write words in any order and `fmt` normalizes
+them. Collections are written in their vector order, which is semantics
+(§2.3, §2.7), never sorted.
+
+Exactly three things are omitted, and none of them is an invented default:
+
+| Omitted when | Spells | Why it is not a default |
+| --- | --- | --- |
+| an `Option` is `None` | absence | `Some("")` is written as `""`, so absence is unambiguous |
+| a collection is empty | absence | a collection has no `None`, so absence can only mean empty |
+| `repeat` equals `RepeatMarker::default()` | absence | the model itself documents `default()` as "no repeat barline" |
+
+Everything else is written every time. `ppqn`, `index`, `ticks`, `meter`,
+`tempo`, `channel`, `tuning`, `id`, `at`, `duration`, `pitch`, and
+`velocity` are required words: level 1 refuses to invent defaults over
+frozen semantics (spec §3.5 law 7) and level 2 does not get a discount.
+
+### 6.3 Scalars and their one spelling
+
+| Form | Spelling | Non-canonical → |
+| --- | --- | --- |
+| integer | decimal, no leading zeros, no separators, no sign | `SWG0505` |
+| tick range | `<start>..<end>` | `SWG0505` |
+| meter | `<numerator>/<denominator>` | `SWG0505` |
+| tempo | reduced `<num>/<den>`, `den` written even when `1` | `SWG0505` |
+| confidence | basis points, `0..=10000` | `SWG0506` |
+| boolean | `true` / `false` | `SWG0402` |
+| pitch list | `[p1 p2 …]`, space-separated, vector order | `SWG0505` |
+| mark list | `[m1 m2 …]` in `NoteMark::ALL` order | `SWG0505` |
+
+`tempo 120/1` keeps its denominator so that one production covers every
+tempo and the reduced-fraction law has a single shape to check.
+
+Mark order is the declaration order of `NoteMark::ALL` — `accent`, `ghost`,
+`staccato`, `dead_note`, `harmonic_natural`, `harmonic_pinch`, `tap` — which
+is already what `NoteMarks::iter` yields. A set has no author order to
+preserve, so canonical order is the only order.
+
+### 6.4 Closed word sets
+
+No wildcards; an unknown name is `SWG0402` listing the set.
+
+```text
+group kind    single | chord | arpeggio | strum | tuplet <num>/<den> | grace
+span          slide | bend | legato | palm_mute | hammer_on | pull_off
+              | vibrato | let_ring
+mark          accent | ghost | staccato | dead_note | harmonic_natural
+              | harmonic_pinch | tap
+evidence src  explicit | inferred_from_midi
+loss          track_name_invalid_utf8 | smpte_timing_unsupported
+              | tempo_approximated | other
+atom          note | rest
+```
+
+`tuplet` is the only group kind carrying a payload, and it is written
+inline — `group tuplet 3/2` — because the payload is part of the kind, not
+a field of the group.
+
+### 6.5 Strings — the canonical encoding policy
+
+Level 2's string lexeme is the one piece of lexical machinery level 1 does
+not have (H2). Exactly one spelling per string value:
+
+- every code point **outside** the escaped set is written through as UTF-8,
+  unescaped;
+- `"` is `\"` and `\` is `\\`, always;
+- U+000A is `\n`, U+000D is `\r`, U+0009 is `\t`;
+- every code point in the enumerated set
+
+  ```text
+  U+0000..=U+0008   U+000B..=U+000C   U+000E..=U+001F   U+007F..=U+009F
+  ```
+
+  is written `\u{h}` with **lowercase** hex digits and no leading zeros.
+
+The escaped set is this frozen range list and nothing else. It is not
+`char::is_control()`, not `char::is_whitespace()`, and not any other
+Unicode-table predicate: §1.2 keeps table-dependent classification out of
+observable semantics, and a formatter whose fixed point moved when the
+build relinked a newer Unicode table would violate it. A malformed or
+non-canonical escape is `SWG0508`.
+
+### 6.6 Diagnostics
+
+Level 2 reuses the `04xx` syntax class wherever the meaning is identical to
+level 1's — §5.10 forbids one number meaning two things, and these mean the
+same thing:
+
+| Code | Reused meaning |
+| --- | --- |
+| `SWG0401` | malformed syntax, unexpected token, structural violation |
+| `SWG0402` | unknown name in a closed word set |
+| `SWG0403` | required word missing from a construct |
+| `SWG0404` | word repeated within a construct |
+
+Four codes are new, because these failures do not exist at level 1:
+
+| Code | Meaning |
+| --- | --- |
+| `SWG0505` | non-canonical spelling: leading zeros, an unreduced tempo, a mark list out of canonical order, or a written-out omissible default |
+| `SWG0506` | a value violates a canonical-model invariant named in §3 (pitch or velocity above 127, zero `ppqn`, zero meter numerator, non-power-of-two meter denominator, inverted tick range) |
+| `SWG0507` | the tempo is a reduced fraction the canonical model cannot construct (H1's third branch) |
+| `SWG0508` | malformed or non-canonical string escape |
+
+No block is reserved beyond these four. Errors that do not exist yet get
+numbers when they do.
+
+## 7. Negative matrix
+
+Each row needs a positive fixture, a malformed negative fixture, and a
+recorded round-trip result. The list is the alphaTab #1484 expressibility
+checklist as S16 requires, plus the rows this census added.
+
+| Feature | Canonical representation | Swang representation | Negative fixture |
+| --- | --- | --- | --- |
+| note crossing a barline | one `AtomNote`, duration spans the line | one `note`, no tie synthesized | a text that splits it into two notes must not compare equal |
+| tuplet | `Tuplet { num, den }` | `group tuplet 3/2` | `group tuplet 3` (missing den) |
+| degenerate tuplet | `Tuplet { 0, 0 }` | `group tuplet 0/0` | — (legal; must round-trip) |
+| multiple voices | `Vec<Voice>` | repeated `voice` blocks | duplicate `id` must round-trip, not be rejected |
+| rests | `AtomRest` | `rest { … }` | a text omitting the rest must not compare equal |
+| repeats | `RepeatMarker` | `repeat { start … play_count … }` | `repeat { start false play_count 0 }` written out → `SWG0505` |
+| alternate endings | *not in the model* | unrepresentable, by design | — |
+| bends and techniques | `TechniqueSpan` | `span bend { … }` | span range outside the group must round-trip |
+| fretboard positions | `NotePosition` | `position { … }` | `string` beyond the tuning must round-trip |
+| evidence | `TechniqueEvidence` | `evidence { source … confidence … }` | `explicit` at `0` bps must round-trip |
+| tempo changes | per-bar `Tempo` | `tempo num/den` | `tempo 200/14` → `SWG0505`; `tempo 7/2` → `SWG0507` |
+| unusual meters | `TimeSignature` | `meter 7/8` | `meter 4/3` → `SWG0506` |
+| loss metadata | `LossReport` | `loss { … }` | reordered warnings must not compare equal |
+| source metadata | `Option<SourceMeta>` | `source { … }` | `source { }` and an absent `source` are different |
+| strings | arbitrary UTF-8 | escaped literal | `"\u{0A}"` for LF → `SWG0505` (canonical is `\n`) |
+
+Alternate endings and jump directions are absent from the canonical model
+(ADR-0022; `RepeatMarker`'s own documentation says an importer meeting them
+records a loss). Exact text cannot represent what the model does not hold,
+and inventing syntax for it here would promise a fact the round trip could
+never deliver.
+
+## 8. Acceptance
+
+SWG-4A-01 is complete when:
+
+- every field in §2 has a written form, an optionality, an order rule, an
+  empty spelling, and its malformed cases — with no entry left as
+  "obvious";
+- every enum variant appears in §6.4 with no wildcard arm;
+- §1's 34 exact-walker variants each map to at least one §2 row, and no
+  §2 row rests on a normalized-only variant;
+- the writer domain predicate in §3 cites only invariants `griff-core`
+  already states, and every model-permitted state outside it is listed as
+  spellable;
+- each representability hole has either a resolution requiring no core
+  change, or a filed prerequisite that this task does not perform;
+- §7 names a positive and a negative fixture per row.
+
+Level 2 freezes when Phase 4A is accepted — not with this document, and not
+before SWG-CORE-01 closes.
