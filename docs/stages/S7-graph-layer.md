@@ -244,13 +244,25 @@ chain, and giving it alternatives is separate work.
   padded and never repeated. Three asks that cannot mean anything are refused
   outright: zero alternatives, a zero distance (it would admit a clone), and a
   distance wider than the problem has layers.
-- 18 tests, including a brute-force oracle over every shape from 1–4 layers ×
-  1–3 states, for every diversity distance and every `k` up to 5, compared on
-  both the exact paths and the bit-identical totals — Slice A's oracle
+- **Every fold that becomes a heap key is checked.** The backward pass only ever
+  adds a local to the *cheapest* completion, so a non-optimal enumerated path is
+  folded over sums the DP never formed and can leave `f64` where the DP stayed
+  finite. `prefix_cost` therefore checks each addition as it forms, in the same
+  two steps as `trace_total` and naming the same states. Without it a `+inf`
+  could enter the queue and order alternatives by a number no path reports —
+  found in review, with a fixture where the overflowing candidate is discarded
+  by the diversity rule and so never reaches the assembly that would have caught
+  it.
+- 19 tests, including a brute-force oracle over **all 120 width vectors** for
+  1–4 layers over widths 1–3 — ragged shapes included, since `LayeredProblem`
+  admits layers of differing width and a rectangles-only sweep is not the sweep
+  its name claims — for every diversity distance and every `k` up to 5, compared
+  on both the exact paths and the bit-identical totals. Slice A's oracle
   discipline extended from one path to the whole set.
 
-Implementation: `513fa91` (red), `60b3493` (green). Acceptance is a separate
-gate and has not been given.
+Implementation: `513fa91` (red) and `60b3493` (green) for the first cut;
+`e3e4efa` (red) and the commit that follows it for the review revision.
+Acceptance is a separate gate and has not been given.
 
 ### Slice D — specialised clients
 

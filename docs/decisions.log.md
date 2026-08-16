@@ -2215,3 +2215,34 @@ Architectural decisions go to [`adr/`](adr/) instead.
   one shared `Prepared` so the two entry points cannot drift into different
   validation or a different table. Slice B paid an ULP to learn this once
   already.
+
+- 2026-08-16 — In the context of the S7 Slice C review, facing the finding that
+  `prefix_cost` — the fold that builds every k-best heap key — checked none of
+  its additions while `Candidate`'s ordering documented the opposite, we decided
+  to **check each addition as it forms**, in the same two steps as `trace_total`
+  and naming the same states, and against relying on the backward pass having
+  already checked things: that pass adds a local to the *cheapest* completion
+  only, so a non-optimal enumerated path is folded over sums the DP never formed
+  and can leave `f64` where the DP stayed finite. We decided for **refusing**
+  such a candidate rather than skipping it, because `solve` already refuses on
+  accumulations nowhere near its own winner and a laxer rule in the extension
+  would be the inconsistency, and for keeping the unaddressable-candidate case
+  in a separate `Ok(None)` channel rather than folding it into the same error,
+  since "this index does not exist" and "this sum left f64" are different facts.
+  To achieve a queue whose ordering rests on numbers paths can actually report,
+  accepting that a problem whose far-fetched alternative overflows now refuses
+  the whole call even when the requested k are all finite — which is exactly
+  what `solve` does today, and consistency was the point.
+
+- 2026-08-16 — In the context of the same review, facing the finding that the
+  brute-force sweep named "every tiny shape" only ever built *rectangular*
+  problems while `LayeredProblem` deliberately admits layers of differing width,
+  we decided to **widen the oracle to all 120 width vectors** (1–4 layers over
+  widths 1–3) and against relaxing the documentation to match the narrower
+  sweep, to achieve evidence that means what its name says — the space is tiny,
+  so it is enumerated rather than sampled. The widening passed as written, which
+  is itself the finding: the Lawler partition and `branch_from` were already
+  correct on ragged layers and only the evidence was narrow. Accepting that a
+  test asserting its own coverage (that ragged shapes were really reached) is
+  slightly unusual, and preferring it to a sweep that could silently narrow
+  again.
