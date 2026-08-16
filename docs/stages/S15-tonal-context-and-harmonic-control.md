@@ -230,7 +230,7 @@ reach it either. The same note is in `PitchEvidence::validate`'s doc comment.
 Implementation: `5d667ac` (red) and `af97684` (green) for the first cut;
 `84bb992` (red) and `c9da896` (green) for the first review revision; `818f799`
 (red) and `bc13ea2` (green) for the second, which validated the evidence itself; and
-`76ba934` (red) and the commit that follows it for the third, which made the
+`76ba934` (red) and `4c1ccb7` (green) for the third, which made the
 span-endpoint rule count multiplicity. Acceptance is a separate gate and has not
 been given.
 
