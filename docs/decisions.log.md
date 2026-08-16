@@ -2171,3 +2171,52 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Actions run exists on `8799b55` because no pull request was open. A red
   Actions run on the pull request that follows would be a merge blocker, not a
   retroactive withdrawal of this acceptance.
+
+- 2026-08-16 — In the context of planning the work after Phase 4-pre B
+  (PRs #140/#142/#146 landed while the S16 status block still described
+  Phases 4–9 as future), facing an external review that proposed rebuilding
+  the Swang front end on `logos` and `rowan` before Phase 4A, we decided
+  for keeping the hand-written lexer → recursive-descent parser → typed AST
+  → evaluator chain (ADR-0029 §11's initial strategy) and against both
+  generators for now, and for recording the plan as a non-normative
+  execution backlog
+  ([`swang/foundation-backlog.md`](swang/foundation-backlog.md)) rather
+  than as new normative text, to achieve a next milestone that spends its
+  PRs on the exact score contract instead of on a front-end rewrite,
+  accepting that `logos` is refused only while the lexer stays at six token
+  categories and that `rowan` is refused only until the SWG-UI-07
+  admission gate (three demonstrated needs from the lossless-CST list:
+  comment-preserving refactor, incremental parsing, rename, semantic
+  selection, robust completion, external LSP) passes — at which point it
+  enters behind a differential gate asserting the old parser's AST, the
+  diagnostic codes, and the canonical formatter bytes are unchanged. Both
+  refusals are reversible by evidence and would be recorded here.
+
+- 2026-08-16 — In the context of SWG-INF-02, needing a language-level
+  evolution contract before Phase 4A's exact score text can claim to be
+  level 2, facing the ambiguity that every script already carries `swang 1`
+  in its frozen header — so `parse_v2(valid_v1)` reads equally as "a
+  1-and-2 build parses an old script unchanged" (**Law A**) and as "an old
+  body stays legal once its header is promoted to `swang 2`" (**Law B**) —
+  we decided **for Law A**, strengthened to cover *every* `swang 1` source
+  including invalid ones and compared on all seven observables (verdict,
+  AST, canonical bytes, diagnostic code, message, span, and order), and
+  **against Law B**, and for allocating level 2 to the Phase 4A exact
+  canonical `Score` text alone — one new root form, `score`, with recipes,
+  named definitions, pattern operators, patches, and tonal constructs all
+  excluded, and the level-1 `pattern` root not admitted — to achieve a
+  level that is a capability contract rather than a perpetual grammar
+  superset, accepting four consequences: a `swang 2` header over a level-1
+  body is not valid by default and any future promotion path is a migration
+  tool with its own laws rather than a guarantee attached to editing one
+  digit; a helpful "`score` requires language level 2" inside a `swang 1`
+  script is forbidden because it changes a frozen verdict; each released
+  level owns its own parser and formatter entry point instead of one
+  grammar with level-conditioned branches, since a branching grammar cannot
+  prove level 1 survived; and new input bounds may exist at level 2 only,
+  declared before its first accepted program, never at level 1 whose
+  acceptance set is frozen. Recorded as spec §5 plus this entry, with no new
+  ADR: the decision stays inside Swang, changes no `griff-core` contract,
+  and ADR-0029 already delegates normative semantics to the spec. §1 and §3
+  are byte-unchanged; level 2 is allocated, not frozen — it freezes when
+  Phase 4A is accepted.
