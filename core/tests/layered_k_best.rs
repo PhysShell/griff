@@ -33,7 +33,11 @@
     clippy::missing_assert_message,
     clippy::indexing_slicing,
     clippy::float_cmp,
-    clippy::arithmetic_side_effects
+    clippy::arithmetic_side_effects,
+    // The canonical fold keeps the accumulator on the *right* of the `+`.
+    // `expected += x` is `expected = expected + x`, the left-associated
+    // grouping this suite exists to check the engine does not use.
+    clippy::assign_op_pattern
 )]
 
 use griff_core::{
@@ -82,7 +86,7 @@ fn transitions_of(values: &[&[&[f64]]]) -> Vec<Vec<Vec<Axes>>> {
         .collect()
 }
 
-fn request(k: usize, min_distance: usize) -> KBestRequest {
+const fn request(k: usize, min_distance: usize) -> KBestRequest {
     KBestRequest { k, min_distance }
 }
 
@@ -90,10 +94,13 @@ fn ordinals_of(solution: &KBestSolution) -> Vec<Vec<usize>> {
     solution.paths.iter().map(PathSolution::ordinals).collect()
 }
 
+/// A problem's two cost tables, as the engine takes them.
+type Tables = (Vec<Vec<Axes>>, Vec<Vec<Vec<Axes>>>);
+
 /// Four layers of three states whose costs spread deterministically — enough
 /// structure that the optimum, its near-clones, and genuinely different routes
 /// are all distinct paths.
-fn spread_problem() -> (Vec<Vec<Axes>>, Vec<Vec<Vec<Axes>>>) {
+fn spread_problem() -> Tables {
     let locals = locals_of(&[
         &[1.0, 2.0, 4.0],
         &[3.0, 1.0, 2.0],
@@ -295,8 +302,7 @@ fn the_engine_agrees_with_brute_force_on_every_tiny_shape() {
                 for k in 1..=5_usize {
                     let engine = solve_k_best(&problem, request(k, min_distance))
                         .expect("a well-formed problem solves");
-                    let oracle =
-                        oracle_k_best(&locals_raw, &transitions_raw, k, min_distance);
+                    let oracle = oracle_k_best(&locals_raw, &transitions_raw, k, min_distance);
 
                     assert_eq!(
                         ordinals_of(&engine),
@@ -364,7 +370,10 @@ fn a_wider_distance_skips_the_near_clone_the_plain_ranking_would_return() {
     let plain = ordinals_of(&solve_k_best(&problem, request(2, 1)).expect("solves"));
     let diverse = ordinals_of(&solve_k_best(&problem, request(2, 2)).expect("solves"));
 
-    assert_eq!(plain[0], diverse[0], "the optimum is the optimum either way");
+    assert_eq!(
+        plain[0], diverse[0],
+        "the optimum is the optimum either way"
+    );
     assert_eq!(
         distance(&plain[0], &plain[1]),
         1,
@@ -493,7 +502,11 @@ fn each_alternative_carries_its_full_trace_and_a_total_derived_from_it() {
         assert_eq!(path.steps.len(), 4, "one scored state per layer");
         assert_eq!(path.edges.len(), 3, "one scored edge per adjacent pair");
         for step in &path.steps {
-            assert_eq!(step.rationale.entries().len(), 1, "the local axis is retained");
+            assert_eq!(
+                step.rationale.entries().len(),
+                1,
+                "the local axis is retained"
+            );
         }
         for edge in &path.edges {
             assert_eq!(
@@ -543,8 +556,12 @@ fn the_same_problem_yields_the_same_set_every_time() {
     let again = solve_k_best(&problem, request(5, 2)).expect("solves");
 
     assert_eq!(ordinals_of(&first), ordinals_of(&again));
-    let bits = |s: &KBestSolution| -> Vec<u64> {
-        s.paths.iter().map(|p| p.total_cost.to_bits()).collect()
+    let bits = |solution: &KBestSolution| -> Vec<u64> {
+        solution
+            .paths
+            .iter()
+            .map(|path| path.total_cost.to_bits())
+            .collect()
     };
     assert_eq!(bits(&first), bits(&again), "identical to the last bit");
 }
@@ -565,11 +582,12 @@ fn an_alternative_is_identified_by_its_ordinals_not_its_rank() {
     let narrow = ordinals_of(&solve_k_best(&problem, request(5, 1)).expect("solves"));
     let wide = ordinals_of(&solve_k_best(&problem, request(5, 2)).expect("solves"));
 
-    let moved = wide
-        .iter()
-        .find(|path| narrow.iter().position(|n| n == *path).is_some_and(|i| {
-            wide.iter().position(|w| w == *path) != Some(i)
-        }));
+    let moved = wide.iter().find(|path| {
+        narrow
+            .iter()
+            .position(|n| n == *path)
+            .is_some_and(|i| wide.iter().position(|w| w == *path) != Some(i))
+    });
     assert!(
         moved.is_some(),
         "at least one route survives both rules at a different rank, \

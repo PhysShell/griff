@@ -1075,6 +1075,17 @@ fn path_error_summary(error: PathError) -> String {
             "the costs stopped adding up at bar {} (reached {cost})",
             state.layer,
         ),
+        // S7 Slice C's request errors. The cockpit plans one chain rather than a
+        // set, so these are unreachable from here today — spelled out anyway,
+        // because a `_` arm would silently absorb the next variant too.
+        PathError::KZero => "no alternatives were asked for".to_owned(),
+        PathError::MinDistanceZero => "alternatives must differ in at least one bar".to_owned(),
+        PathError::MinDistanceUnsatisfiable {
+            min_distance,
+            layers,
+        } => format!(
+            "alternatives cannot differ in {min_distance} bars when there are only {layers}",
+        ),
     }
 }
 
