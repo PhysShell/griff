@@ -28,6 +28,9 @@
 //! clients evaluate their baselines *through* [`solve`] rather than adding the
 //! same terms up themselves.
 
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
+
 use crate::scoring::{Axes, Provenance, Scored, WeightPolicy};
 
 /// A state's address: its layer and its ordinal within that layer.
@@ -130,6 +133,29 @@ pub enum PathError {
         /// The offending accumulated value.
         cost: f64,
     },
+    /// [`solve_k_best`] was asked for no alternatives at all.
+    ///
+    /// An empty set is not an answer to "show me the alternatives"; it is a
+    /// caller that has not decided how many it wants.
+    KZero,
+    /// [`solve_k_best`] was asked for a minimum distance of zero.
+    ///
+    /// Distance zero admits a path identical to one already chosen, which would
+    /// make the word *alternative* false. The rule has to demand at least one
+    /// layer of difference to mean anything.
+    MinDistanceZero,
+    /// The requested minimum distance exceeds the number of layers, so no two
+    /// paths in this problem could ever satisfy it.
+    ///
+    /// Returning the optimum alone would answer a question the caller did not
+    /// ask — it looks like "there are no alternatives" when the truth is "that
+    /// rule cannot be met here".
+    MinDistanceUnsatisfiable {
+        /// The distance asked for.
+        min_distance: usize,
+        /// The layers available to differ in.
+        layers: usize,
+    },
 }
 
 /// The one association every path cost in this engine is folded under.
@@ -191,72 +217,437 @@ impl PathSolution {
 /// [`PathError`] when the problem has no layers, an empty layer, a transition
 /// table whose shape does not match its layers, or any non-finite cost.
 pub fn solve(problem: &LayeredProblem<'_>) -> Result<PathSolution, PathError> {
-    let layers = problem.locals.len();
-    if layers == 0 {
-        return Err(PathError::NoLayers);
-    }
-    for (layer, states) in problem.locals.iter().enumerate() {
-        if states.is_empty() {
-            return Err(PathError::EmptyLayer { layer });
-        }
-    }
-    // The outer count first: an unreachable extra table must never get to
-    // report its own contents as the problem.
-    let expected = layers.saturating_sub(1);
-    if problem.transitions.len() != expected {
-        return Err(PathError::TransitionCount {
-            expected,
-            found: problem.transitions.len(),
-        });
-    }
-    check_transition_shapes(problem)?;
-
-    let local = score_locals(problem)?;
-    let transition = score_transitions(problem)?;
-
-    // Backward pass: `suffix[i][s]` is the cheapest completion from state `s`
-    // of layer `i` to the end, its own local cost included. Fallible: finite
-    // costs can still accumulate past f64's range.
-    let suffix = suffix_costs(&local, &transition)?;
+    let prepared = Prepared::of(problem)?;
 
     // Forward pass: walk the optimum, taking the lowest ordinal among exact
     // ties at every layer. Deciding front-to-back is what makes the winner the
     // lexicographically smallest optimal path rather than merely *an* optimum.
-    let chosen = walk_lexicographic(&transition, &suffix);
+    let chosen = prepared.walk_optimum();
 
-    let steps: Vec<Scored<StateId>> = chosen
-        .iter()
-        .enumerate()
-        .filter_map(|(layer, &ordinal)| local.get(layer)?.get(ordinal).map(|c| c.scored.clone()))
-        .collect();
-    let edges: Vec<Scored<EdgeId>> = chosen
-        .windows(2)
-        .enumerate()
-        .filter_map(|(layer, pair)| {
-            let (from, to) = (*pair.first()?, *pair.get(1)?);
-            transition
-                .get(layer)?
-                .get(from)?
-                .get(to)
-                .map(|c| c.scored.clone())
-        })
-        .collect();
+    prepared.assemble(problem, &chosen)
+}
 
-    // Derived from the retained rationale — the trace is the truth (ADR-0017 §2).
-    // Summed in path order and checked at every step: a finite `suffix` does not
-    // make this sum finite, because it adds the same terms in a different order.
-    let total_cost = trace_total(&steps, &edges)?;
+/// How many alternatives to return, and how different they must be.
+///
+/// `min_distance` is a **Hamming distance in layers**: two paths are that far
+/// apart when they choose different states in at least that many layers. It is
+/// the whole reason this is not plain k-best — over a trellis the second-best
+/// path is almost always the winner with one layer nudged, and a list of those
+/// is one alternative wearing several hats. `1` means "merely a different
+/// path"; `2` and above force genuinely different routes.
+///
+/// The rule is a *constraint*, never a score: nothing here trades cost against
+/// novelty behind a tuning constant, so what came back is always explainable as
+/// "the cheapest paths that are this far apart".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KBestRequest {
+    /// How many alternatives to return, at most.
+    pub k: usize,
+    /// The fewest layers any two returned paths must differ in.
+    pub min_distance: usize,
+}
 
-    Ok(PathSolution {
-        steps,
-        edges,
-        total_cost,
-        provenance: Provenance {
-            policy_id: problem.policy.id,
-            policy_version: problem.policy.version,
-            seed: None,
-        },
+/// Several ranked global paths, and the rule they were selected under.
+///
+/// **Identity is the ordinal vector, not the rank.** A route keeps
+/// [`PathSolution::ordinals`] across re-planning, while its index moves the
+/// moment `k` or `min_distance` changes — so an S9 record of "the human chose
+/// this one" must store the vector, and an S8 display that labels alternatives
+/// by position is labelling something that does not hold still.
+#[derive(Debug, Clone)]
+pub struct KBestSolution {
+    /// The alternatives, cheapest first, each a complete [`PathSolution`].
+    ///
+    /// Ordering is by cost, and exact ties break by the lexicographically
+    /// smallest ordinal vector — the same rule that decides [`solve`]'s single
+    /// winner, so the set is as reproducible as the winner was.
+    pub paths: Vec<PathSolution>,
+    /// The request these paths answer. It travels with them because the rule is
+    /// part of what the set means.
+    pub request: KBestRequest,
+    /// Whether the search ran out of qualifying paths before reaching `k`.
+    ///
+    /// `true` with fewer than `k` paths is the honest shortfall: the problem
+    /// (or the diversity rule) admits no more. The set is never padded and
+    /// never repeats itself to reach a count.
+    pub exhausted: bool,
+}
+
+impl KBestSolution {
+    /// The ordinal vector of each alternative, in rank order.
+    #[must_use]
+    pub fn ordinals(&self) -> Vec<Vec<usize>> {
+        self.paths.iter().map(PathSolution::ordinals).collect()
+    }
+}
+
+/// Returns up to `k` ranked global paths, no two closer than
+/// `request.min_distance` layers apart.
+///
+/// **Prior art.** This is a trellis, so the k-best problem is an old one and is
+/// not reinvented here. The enumeration is the *serial* list Viterbi algorithm
+/// (Seshadri & Sundberg 1994) in Lawler's formulation (1972): each already-found
+/// path is branched at every layer after its own deviation point, the branch's
+/// cost is read off the backward table [`solve`] already computes, and a heap
+/// pops them in nondecreasing order. Every path is generated exactly once,
+/// because the paths differing from a found one first at layer `i` partition the
+/// remainder. Eppstein's sidetrack heap (1998) buys asymptotics that bar-scale
+/// problems do not need, and Yen (1971) recomputes shortest paths this engine
+/// already has. The diversity rule is the greedy conditioning of `DivMBest` (Batra
+/// et al., ECCV 2012) — accept the cheapest path far enough from everything
+/// already accepted — chosen over MMR's relevance/novelty trade-off and over
+/// DPPs, both of which price diversity with a constant instead of stating a rule.
+///
+/// **Greedy, and says so.** The set is not jointly optimal: it is what you get
+/// by taking the cheapest qualifying path, then the cheapest qualifying path
+/// given that one, and so on. A jointly optimal diverse set is a different and
+/// much harder problem, and it is not what an alternatives list needs.
+///
+/// Determinism is Slice A's, unchanged: no seed, no RNG, exact costs, and exact
+/// ties broken by the lexicographically smallest ordinal vector.
+///
+/// # Errors
+/// [`PathError::KZero`], [`PathError::MinDistanceZero`] or
+/// [`PathError::MinDistanceUnsatisfiable`] for a request that cannot mean
+/// anything, plus every structural and finiteness error [`solve`] can return —
+/// the two entry points validate through one function.
+pub fn solve_k_best(
+    problem: &LayeredProblem<'_>,
+    request: KBestRequest,
+) -> Result<KBestSolution, PathError> {
+    if request.k == 0 {
+        return Err(PathError::KZero);
+    }
+    if request.min_distance == 0 {
+        return Err(PathError::MinDistanceZero);
+    }
+
+    let prepared = Prepared::of(problem)?;
+    let layers = prepared.layers();
+    if request.min_distance > layers {
+        return Err(PathError::MinDistanceUnsatisfiable {
+            min_distance: request.min_distance,
+            layers,
+        });
+    }
+
+    let mut accepted: Vec<Vec<usize>> = Vec::new();
+    let mut paths: Vec<PathSolution> = Vec::new();
+    let mut queue: BinaryHeap<Reverse<Candidate>> = BinaryHeap::new();
+
+    let optimum = prepared.walk_optimum();
+    if let Some(cost) = prepared.prefix_cost(&optimum, 0)? {
+        queue.push(Reverse(Candidate {
+            cost,
+            ordinals: optimum,
+            branch_from: 0,
+        }));
+    }
+
+    let exhausted = loop {
+        let Some(Reverse(candidate)) = queue.pop() else {
+            break true;
+        };
+
+        // Rejected paths still branch: a near-clone of an accepted path can have
+        // descendants far from it, and pruning here would lose them silently.
+        if accepted
+            .iter()
+            .all(|chosen| hamming(chosen, &candidate.ordinals) >= request.min_distance)
+        {
+            paths.push(prepared.assemble(problem, &candidate.ordinals)?);
+            accepted.push(candidate.ordinals.clone());
+            if paths.len() == request.k {
+                break false;
+            }
+        }
+
+        for layer in candidate.branch_from..layers {
+            let held = candidate.ordinals.get(layer).copied().unwrap_or(0);
+            let width = prepared.local.get(layer).map_or(0, Vec::len);
+            for ordinal in (0..width).filter(|&o| o != held) {
+                let mut ordinals: Vec<usize> =
+                    candidate.ordinals.get(..layer).unwrap_or_default().to_vec();
+                ordinals.extend(prepared.walk_from(layer, ordinal));
+                if let Some(cost) = prepared.prefix_cost(&ordinals, layer)? {
+                    queue.push(Reverse(Candidate {
+                        cost,
+                        ordinals,
+                        branch_from: layer.saturating_add(1),
+                    }));
+                }
+            }
+        }
+    };
+
+    Ok(KBestSolution {
+        paths,
+        request,
+        exhausted,
     })
+}
+
+/// The number of layers two paths disagree on.
+fn hamming(a: &[usize], b: &[usize]) -> usize {
+    a.iter().zip(b.iter()).filter(|(x, y)| x != y).count()
+}
+
+/// One enumerated path waiting its turn, with the first layer its own branches
+/// may deviate at.
+///
+/// Ordered cheapest first, exact ties by the lexicographically smallest ordinal
+/// vector — so the queue imposes precisely the order the contract promises.
+/// `total_cmp` is a total order and every cost reaching here has been checked
+/// finite, so no comparison can be undefined.
+#[derive(Debug, Clone)]
+struct Candidate {
+    cost: f64,
+    ordinals: Vec<usize>,
+    branch_from: usize,
+}
+
+impl Ord for Candidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cost
+            .total_cmp(&other.cost)
+            .then_with(|| self.ordinals.cmp(&other.ordinals))
+    }
+}
+
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Candidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Candidate {}
+
+/// The shared preparation behind [`solve`] and [`solve_k_best`]: the validated
+/// problem, its weighed costs, and the backward DP table.
+///
+/// Both entry points run this one function, so k-best cannot become a second,
+/// laxer door — the same shape checks, the same finiteness checks, the same
+/// `suffix` table, and therefore the same cost association.
+struct Prepared {
+    local: LocalCosts,
+    transition: TransitionCosts,
+    /// `suffix[i][s]`: the cheapest completion from state `s` of layer `i` to
+    /// the end, its own local cost included.
+    suffix: Vec<Vec<f64>>,
+}
+
+impl Prepared {
+    /// Validates `problem` and runs the backward DP.
+    fn of(problem: &LayeredProblem<'_>) -> Result<Self, PathError> {
+        let layers = problem.locals.len();
+        if layers == 0 {
+            return Err(PathError::NoLayers);
+        }
+        for (layer, states) in problem.locals.iter().enumerate() {
+            if states.is_empty() {
+                return Err(PathError::EmptyLayer { layer });
+            }
+        }
+        // The outer count first: an unreachable extra table must never get to
+        // report its own contents as the problem.
+        let expected = layers.saturating_sub(1);
+        if problem.transitions.len() != expected {
+            return Err(PathError::TransitionCount {
+                expected,
+                found: problem.transitions.len(),
+            });
+        }
+        check_transition_shapes(problem)?;
+
+        let local = score_locals(problem)?;
+        let transition = score_transitions(problem)?;
+        // Fallible: finite costs can still accumulate past f64's range.
+        let suffix = suffix_costs(&local, &transition)?;
+
+        Ok(Self {
+            local,
+            transition,
+            suffix,
+        })
+    }
+
+    /// The number of layers.
+    const fn layers(&self) -> usize {
+        self.local.len()
+    }
+
+    /// The lexicographically smallest optimal path, as ordinals.
+    fn walk_optimum(&self) -> Vec<usize> {
+        let first = self.suffix.first().map_or(0, |s| argmin_first(s));
+        self.walk_from(0, first)
+    }
+
+    /// The lexicographically smallest optimal completion from state `ordinal`
+    /// of layer `layer`, as the ordinals of layers `layer..`.
+    fn walk_from(&self, layer: usize, ordinal: usize) -> Vec<usize> {
+        let mut chosen = Vec::with_capacity(self.layers().saturating_sub(layer));
+        chosen.push(ordinal);
+        for current in layer..self.layers().saturating_sub(1) {
+            let from = chosen.last().copied().unwrap_or(0);
+            let completions = self
+                .suffix
+                .get(current.saturating_add(1))
+                .map_or(&[][..], Vec::as_slice);
+            let combined: Vec<f64> = self
+                .transition
+                .get(current)
+                .and_then(|t| t.get(from))
+                .map_or_else(Vec::new, |row| {
+                    row.iter()
+                        .zip(completions.iter())
+                        .map(|(edge, &completion)| edge.aggregate + completion)
+                        .collect()
+                });
+            chosen.push(argmin_first(&combined));
+        }
+        chosen
+    }
+
+    /// The cost of the path that follows `ordinals` through layer `through` and
+    /// then completes optimally, folded under [`PATH_COST_ASSOCIATION`].
+    ///
+    /// The fold starts from `suffix[through][ordinals[through]]` — already the
+    /// right-associated completion cost — and wraps the fixed prefix around it
+    /// from the back, which is the recurrence's own grouping. A key computed as
+    /// `prefix + suffix` would be a different function of the same terms, and
+    /// would order alternatives by a number none of them reports.
+    ///
+    /// **Every addition is checked**, exactly as [`trace_total`] checks its own
+    /// and in the same two steps, so the two agree on both the value and the
+    /// state a failure names. The backward pass cannot stand in for this: it
+    /// only ever adds a local to the *cheapest* completion, so a non-optimal
+    /// enumerated path can leave `f64` on a sum the DP never formed. An
+    /// unchecked key would then order alternatives by a number no path can
+    /// report — and [`Candidate`]'s ordering states that every cost reaching it
+    /// is finite.
+    ///
+    /// `Ok(None)` is the structurally unaddressable candidate, which the caller
+    /// skips; `Err` is an accumulation that left `f64`, which it refuses. Two
+    /// different outcomes, so two different channels.
+    // `total = x + total` is NOT `total += x`: see `trace_total`.
+    #[allow(clippy::assign_op_pattern)]
+    fn prefix_cost(&self, ordinals: &[usize], through: usize) -> Result<Option<f64>, PathError> {
+        let Some(anchor) = ordinals.get(through).copied() else {
+            return Ok(None);
+        };
+        let Some(mut total) = self
+            .suffix
+            .get(through)
+            .and_then(|s| s.get(anchor))
+            .copied()
+        else {
+            return Ok(None);
+        };
+        check_accumulation(
+            total,
+            StateId {
+                layer: through,
+                ordinal: anchor,
+            },
+        )?;
+
+        for layer in (0..through).rev() {
+            let next = layer.saturating_add(1);
+            let (Some(from), Some(to)) =
+                (ordinals.get(layer).copied(), ordinals.get(next).copied())
+            else {
+                return Ok(None);
+            };
+            let Some(edge) = self
+                .transition
+                .get(layer)
+                .and_then(|t| t.get(from))
+                .and_then(|row| row.get(to))
+                .map(|c| c.aggregate)
+            else {
+                return Ok(None);
+            };
+            let Some(local) = self
+                .local
+                .get(layer)
+                .and_then(|states| states.get(from))
+                .map(|c| c.aggregate)
+            else {
+                return Ok(None);
+            };
+
+            total = edge + total;
+            check_accumulation(
+                total,
+                StateId {
+                    layer: next,
+                    ordinal: to,
+                },
+            )?;
+            total = local + total;
+            check_accumulation(
+                total,
+                StateId {
+                    layer,
+                    ordinal: from,
+                },
+            )?;
+        }
+        Ok(Some(total))
+    }
+
+    /// Builds the full [`PathSolution`] for an ordinal vector.
+    fn assemble(
+        &self,
+        problem: &LayeredProblem<'_>,
+        chosen: &[usize],
+    ) -> Result<PathSolution, PathError> {
+        let steps: Vec<Scored<StateId>> = chosen
+            .iter()
+            .enumerate()
+            .filter_map(|(layer, &ordinal)| {
+                self.local
+                    .get(layer)?
+                    .get(ordinal)
+                    .map(|c| c.scored.clone())
+            })
+            .collect();
+        let edges: Vec<Scored<EdgeId>> = chosen
+            .windows(2)
+            .enumerate()
+            .filter_map(|(layer, pair)| {
+                let (from, to) = (*pair.first()?, *pair.get(1)?);
+                self.transition
+                    .get(layer)?
+                    .get(from)?
+                    .get(to)
+                    .map(|c| c.scored.clone())
+            })
+            .collect();
+
+        // Derived from the retained rationale — the trace is the truth
+        // (ADR-0017 §2). Summed in path order and checked at every step: a
+        // finite `suffix` does not make this sum finite, because it adds the
+        // same terms in a different order.
+        let total_cost = trace_total(&steps, &edges)?;
+
+        Ok(PathSolution {
+            steps,
+            edges,
+            total_cost,
+            provenance: Provenance {
+                policy_id: problem.policy.id,
+                policy_version: problem.policy.version,
+                seed: None,
+            },
+        })
+    }
 }
 
 /// Folds the selected trace in **the recurrence's association**, checking every
@@ -472,34 +863,6 @@ fn suffix_costs(
     }
     back.reverse();
     Ok(back)
-}
-
-/// The forward walk over the optimum, lowest ordinal first among exact ties.
-fn walk_lexicographic(transition: &TransitionCostSlice, suffix: &[Vec<f64>]) -> Vec<usize> {
-    let mut chosen: Vec<usize> = Vec::with_capacity(suffix.len());
-    let Some(first) = suffix.first() else {
-        return chosen;
-    };
-    chosen.push(argmin_first(first));
-
-    for layer in 0..suffix.len().saturating_sub(1) {
-        let from = chosen.last().copied().unwrap_or(0);
-        let completions = suffix
-            .get(layer.saturating_add(1))
-            .map_or(&[][..], Vec::as_slice);
-        let combined: Vec<f64> =
-            transition
-                .get(layer)
-                .and_then(|t| t.get(from))
-                .map_or_else(Vec::new, |row| {
-                    row.iter()
-                        .zip(completions.iter())
-                        .map(|(edge, &completion)| edge.aggregate + completion)
-                        .collect()
-                });
-        chosen.push(argmin_first(&combined));
-    }
-    chosen
 }
 
 /// The index of the smallest value; the **first** wins an exact tie, which is

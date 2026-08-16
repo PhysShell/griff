@@ -2220,3 +2220,108 @@ Architectural decisions go to [`adr/`](adr/) instead.
   and ADR-0029 already delegates normative semantics to the spec. §1 and §3
   are byte-unchanged; level 2 is allocated, not frozen — it freezes when
   Phase 4A is accepted.
+- 2026-08-16 — In the context of S7 Slice C (deterministic k-best alternatives
+  over the layered-path engine), facing the prior-art-first rule for both halves
+  of the problem, we surveyed the k-best-paths literature and the diverse-
+  solutions literature separately, because they answer different questions.
+  *Enumeration:* **serial list Viterbi** (Seshadri & Sundberg, IEEE Trans. Comm.
+  1994) in **Lawler's formulation** (1972) — branch each found path at every
+  layer after its own deviation point, read the branch's cost off the backward
+  table the engine already computes, and pop from a heap in nondecreasing order;
+  each path is generated exactly once because the paths first differing from a
+  found one at layer `i` partition the remainder. Against **Eppstein** (1998),
+  whose sidetrack heap buys asymptotics a bars-by-candidates problem does not
+  need and adds a structure nobody can review against the cost-association law,
+  and against **Yen** (1971), which recomputes shortest paths this engine
+  already holds and whose loopless-ness is free in a DAG. *Diversity:*
+  **DivMBest's greedy conditioning** (Batra, Yadollahpour, Guzmán-Rivera &
+  Shakhnarovich, ECCV 2012) — accept the cheapest path far enough from
+  everything already accepted — expressed as a **hard Hamming-distance
+  constraint in layers**, against **MMR** (Carbonell & Goldstein 1998) and
+  **DPPs**, both of which price novelty against relevance with a tuning
+  constant where the stage asks for an explicit rule, and DPPs additionally
+  bring a probabilistic flavour into a deliberately seedless engine. To achieve
+  alternatives that are genuinely different routes rather than the winner with
+  one layer nudged, accepting that the set is **greedy, not jointly optimal**
+  (that is a harder problem and not what an alternatives list needs, and the
+  docs say so rather than implying otherwise), that rejected candidates must
+  still branch (a near-clone can have descendants far from an accepted path, so
+  pruning would lose them silently), and that the enumeration has no artificial
+  cap — it terminates when the qualifying space is exhausted and reports that,
+  rather than truncating quietly. Idea reuse only; no dependency added.
+
+- 2026-08-16 — In the context of the same slice, facing the fact that a
+  candidate's priority-queue key is a path cost and `PATH_COST_ASSOCIATION`
+  makes the *grouping* of those additions normative, we decided to fold each
+  candidate's key from `suffix[i][s]` **outward through its fixed prefix** — the
+  recurrence's own right-associated grouping — and against the obvious
+  `prefix + suffix`, which is a different function of the same terms and would
+  have ordered alternatives by a number none of them reports. To achieve a heap
+  key, a reported `total_cost`, and an independently folded brute-force oracle
+  value that agree bit for bit, accepting that computing a key is O(prefix)
+  rather than O(1) and that `solve` and `solve_k_best` had to be refactored onto
+  one shared `Prepared` so the two entry points cannot drift into different
+  validation or a different table. Slice B paid an ULP to learn this once
+  already.
+
+- 2026-08-16 — In the context of the S7 Slice C review, facing the finding that
+  `prefix_cost` — the fold that builds every k-best heap key — checked none of
+  its additions while `Candidate`'s ordering documented the opposite, we decided
+  to **check each addition as it forms**, in the same two steps as `trace_total`
+  and naming the same states, and against relying on the backward pass having
+  already checked things: that pass adds a local to the *cheapest* completion
+  only, so a non-optimal enumerated path is folded over sums the DP never formed
+  and can leave `f64` where the DP stayed finite. We decided for **refusing**
+  such a candidate rather than skipping it, because `solve` already refuses on
+  accumulations nowhere near its own winner and a laxer rule in the extension
+  would be the inconsistency, and for keeping the unaddressable-candidate case
+  in a separate `Ok(None)` channel rather than folding it into the same error,
+  since "this index does not exist" and "this sum left f64" are different facts.
+  To achieve a queue whose ordering rests on numbers paths can actually report,
+  accepting that a problem whose far-fetched alternative overflows now refuses
+  the whole call even when the requested k are all finite — which is exactly
+  what `solve` does today, and consistency was the point.
+
+- 2026-08-16 — In the context of the same review, facing the finding that the
+  brute-force sweep named "every tiny shape" only ever built *rectangular*
+  problems while `LayeredProblem` deliberately admits layers of differing width,
+  we decided to **widen the oracle to all 120 width vectors** (1–4 layers over
+  widths 1–3) and against relaxing the documentation to match the narrower
+  sweep, to achieve evidence that means what its name says — the space is tiny,
+  so it is enumerated rather than sampled. The widening passed as written, which
+  is itself the finding: the Lawler partition and `branch_from` were already
+  correct on ragged layers and only the evidence was narrow. Accepting that a
+  test asserting its own coverage (that ragged shapes were really reached) is
+  slightly unusual, and preferring it to a sweep that could silently narrow
+  again.
+
+- 2026-08-16 — In the context of S7 Slice C's engine (deterministic k-best
+  alternatives) passing independent review at `7d0c0cb` after two revision
+  rounds — the checked candidate fold and the width-vector sweep — facing how to
+  record its status without letting acceptance widen scope, we decided for
+  marking the **engine** ACCEPTED / CLOSED and against treating acceptance as
+  licence to build its client, to achieve a frozen boundary around a
+  domain-free primitive. Frozen: serial list Viterbi in Lawler's formulation
+  over the Slice A backward table; diversity as a hard Hamming constraint in
+  layers, greedy and documented as not jointly optimal; identity by ordinal
+  vector rather than rank; and a fail-closed arithmetic in which every fold that
+  becomes a heap key is checked. Accepting that the last of these is a
+  deliberate *tightening* — a problem whose far-fetched alternative cannot be
+  represented in `f64` now refuses the whole call even when the requested `k`
+  are finite, which is what `solve` already does and was the point — and that
+  the `candidate_chain` client, any other diversity solver, Eppstein, and
+  joint-set optimisation each remain separate work behind their own gates.
+  Verification is reviewed diff plus local evidence only (1453 tests, clippy
+  `--workspace --all-targets -D warnings`, fmt, doc, MSRV 1.92): the branch
+  carries no pull request, so no GitHub Actions run exists on `7d0c0cb`.
+
+- 2026-08-16 — In the context of the same closure, facing a review finding that
+  the "1350 engine-versus-oracle comparisons" claimed in `e9e3a0e`'s commit
+  message does not match the loop, we recounted independently — 3 + 9 + 27 + 81
+  width vectors, each run for `min_distance` in `1..=layers` and `k` in `1..=5`,
+  giving 15 + 90 + 405 + 1620 = **2130** comparisons over 120 vectors of which
+  108 are ragged — and decided to record the correct figure at closure rather
+  than rewrite a pushed commit message for an arithmetic slip. The sweep is
+  stronger than the number that was claimed for it, not weaker, and the stage
+  doc had sensibly stated the ranges rather than a product; the correction is
+  noted there beside them so the wrong count cannot propagate.
