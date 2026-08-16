@@ -106,30 +106,37 @@ Acceptance:
 
 `core/src/tonal.rs` gained the carriable third layer:
 
-- `TonalContext { scope, projection, provenance }`, built only through
+- `TonalContext { evidence, projection, provenance }`, built only through
   `TonalContext::measure(score, scope)` or `TonalContext::from_evidence`. Both
   take the scope from the caller, and **there is no scope-free constructor** —
   the core cannot pick a track, a voice, or the whole score on anyone's behalf.
+  Fields are private with getters (`scope()`, `evidence()`, `projection()`,
+  `provenance()`), so Rust callers cannot assemble an envelope either.
+- The context carries the **`PitchEvidence`**, not just the scope. That is what
+  makes the ranking replayable from the artifact *alone*:
+  `estimate_key(context.evidence())` returns all 24 candidates with no score in
+  hand and no second measurement pass.
 - `TonalProjection { winner, runner_up, confidence_margin }` — the compact
-  immutable form. Compact is safe because the ranked estimate is *replayable*
-  from the carried scope (`PitchEvidence::measure` + `estimate_key`); what it
-  must not drop is the uncertainty, so the runner-up and the margin stay. No
-  threshold and no `is_confident` — that is Phase 3B.
-- `TonalProvenance { method, weighting, note_count }`, with
-  `TonalMethod::KsV1` and `TonalWeighting::{DurationMass, OnsetCounts}`. The
-  KS v1 duration/onset fallback was previously invisible in the result; the
-  context now names the histogram that actually weighted the estimate.
-  `resolve_weights` reports the branch it took and the new
-  `estimate_with_weighting` is the single place that decides it, so the
-  estimate and its provenance cannot drift apart. `TonalEstimate`'s public
-  shape is unchanged.
+  immutable form, and compact *safely* for the reason above. What it must not
+  drop is the uncertainty, so the runner-up and the margin stay. No threshold
+  and no `is_confident` — that is Phase 3B.
+- `TonalProvenance { method, weighting }`, with `TonalMethod::KsV1` and
+  `TonalWeighting::{DurationMass, OnsetCounts}`. The KS v1 duration/onset
+  fallback was previously invisible in the result; the context now names the
+  histogram that actually weighted the estimate. `resolve_weights` reports the
+  branch it took and the new `estimate_with_weighting` is the single place that
+  decides it, so the estimate and its provenance cannot drift apart.
+  `TonalEstimate`'s public shape is unchanged, and `note_count` lives in the
+  evidence rather than being stored a second time.
 - Two absences, never conflated: no context at all (`Option` on the request)
   versus a context whose scope had nothing to estimate (`projection: None`).
-  The projection and the weighting are derived from one `Option`, so their
-  absence is coherent by construction rather than by two matching conditions.
-- Serde across the tonal types with `deny_unknown_fields`, and a tagged
-  `EvidenceScope` (`{"kind": "track", "at": 1}`) so a scope read back out of an
-  artifact is unambiguous.
+- **The artifact proves itself.** There is one wire form (a private `Raw*`
+  layer reached through `#[serde(into, try_from)]`), `deny_unknown_fields` at
+  every level of it, and deserialisation that re-derives the whole context from
+  the carried evidence and compares before returning the re-derived value.
+  `TonalArtifactError` makes each failure a typed refusal. `EvidenceScope`
+  serialises as one flat object (`{"kind": "track", "track": 1}`) because
+  serde's tagged-enum representations accept foreign keys silently.
 
 `core/src/generation_input.rs` gained `GenerationAsk.tonal` and
 `RankedSet.tonal`; `ranked_candidates` echoes the ask's context into the set
@@ -140,26 +147,47 @@ have a scope measured on their behalf.
 
 ### Evidence
 
-- `cargo test --workspace`: 1409 passed, 0 failed (1390 before; +19 in the new
-  `core/tests/tonal_context.rs`).
-- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all --check`: clean.
-  `cargo doc --no-deps --workspace`: no new warning.
-- Byte-identity: the new suite generates the same source twice, once with a
-  context and once without, and compares candidates, derived seeds, aggregate
-  bits, notes, the pitch palette, and the rerank policy id/version. The S6
-  chain baseline golden (`core/tests/s6_chain_baseline.rs`, recorded before
-  this field existed) is untouched and still passes.
+- `cargo test --workspace`: 1423 passed, 0 failed (1390 before this phase's
+  work; +33 in the new `core/tests/tonal_context.rs`).
+- `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all
+  --check`: clean. `cargo doc --no-deps --workspace`: no new warning.
+  `cargo +1.92 check --workspace --all-targets` (MSRV): clean.
+- Byte-identity: the suite generates the same source twice, once with a context
+  and once without, and compares candidates, derived seeds, aggregate bits,
+  notes, the pitch palette, and the rerank policy id/version. The S6 chain
+  baseline golden (`core/tests/s6_chain_baseline.rs`, recorded before this field
+  existed) is untouched and still passes.
 - Ambiguity and absence: an exactly flat chromatic scope projects a zero margin
   with its rival intact; a silent scope abstains with `weighting: None`.
 - Scope authority: a score whose two tracks sit a tritone apart reports C major
   or F# major strictly according to the scope asked for.
-- Round-trip and replay: every scope shape round-trips exactly (floats
-  included), the abstaining envelope is pinned byte-for-byte, a foreign field is
-  refused at each level, and a context deserialised from JSON re-measures from
-  its own carried scope to an identical value.
+- Self-contained replay: one test builds the score inside a block, drops it, and
+  recovers all 24 candidates from the JSON alone, checking the top two and the
+  margin against the carried projection.
+- Fail-closed: a foreign field is refused at all six levels (context, evidence,
+  scope, projection, winner, provenance); scope kind/payload mismatches are
+  refused; and semantically impossible envelopes are refused — abstaining but
+  weighted, projecting but unweighted, projecting over `note_count: 0`, a
+  note count contradicting its histogram, a sounding scope with no observed
+  span, an inverted or out-of-range span, a tonic outside `0..=11`, a
+  `scale_fit` outside `[0, 1]`, a negative margin, a margin that is not the
+  winner-rival gap, a weighting branch the evidence never triggers, an unknown
+  method, and a well-formed projection that is simply not what the carried
+  evidence yields. One test guards the guard: a valid envelope still
+  deserialises, whatever its key order.
 
-Implementation: `5d667ac` (red), `af97684` (green). Acceptance is a separate
-gate and has not been given.
+### Known consequence
+
+Validation by re-derivation means an artifact is readable only by a build whose
+`TonalMethod` produces the same result. That is deliberate and fail-closed — a
+document whose numbers this build cannot reproduce is refused rather than
+half-trusted — but it does mean that changing the estimator must add a
+`TonalMethod` variant with its own re-derivation path, not silently alter
+`KsV1`. `TonalMethod` is the versioning hook for exactly this.
+
+Implementation: `5d667ac` (red) and `af97684` (green) for the first cut;
+`84bb992` (red) and `c9da896` (green) for the post-review revision. Acceptance
+is a separate gate and has not been given.
 
 ## Phase 3 — scope policy and confidence calibration
 

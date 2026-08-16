@@ -2043,3 +2043,50 @@ Architectural decisions go to [`adr/`](adr/) instead.
   KS v1 implementation branch — it is provenance *about* that fallback, and a
   future method would need its own vocabulary rather than reusing this one.
   Idea reuse only; no dependency added.
+
+- 2026-08-16 — In the context of the S15 Phase 2 review returning REQUEST
+  CHANGES on the scoped tonal context, facing two findings — that a type named
+  *provenance* could be handed a logically impossible envelope
+  (`projection: null` beside `weighting: "duration_mass"`), because public
+  fields plus a derived `Deserialize` meant "coherent by construction" held
+  only for values built through the constructor and `deny_unknown_fields`
+  guards field *names* rather than contradictory *values*; and that the
+  compactness of the projection was justified by a replayability the artifact
+  did not deliver, since it carried a scope but neither the `Score` nor the
+  evidence, so "re-measure it" silently required the reader to still hold the
+  exact same input — we decided for **carrying the `PitchEvidence` itself** and
+  for **validating by re-derivation**: the context stores the evidence (making
+  `estimate_key(context.evidence())` recover all 24 candidates from the
+  artifact alone), its fields become private with getters, and deserialisation
+  goes through a single fail-closed wire form that rebuilds the context from
+  that evidence and compares it before returning the re-derived value, with a
+  typed `TonalArtifactError` per failure. We decided against narrowing the docs
+  to "replayable if you still hold the same `Score`" (it would have kept a
+  provenance record whose central claim depends on data it did not keep),
+  against field-range checks alone (they would have caught the reviewer's
+  examples but not a well-formed projection that is simply not what the
+  evidence yields), and against a tolerance on the float comparison (a licence
+  to misstate confidence by exactly that tolerance). This reuses ADR-0033
+  Decision 5 — Apply replays the events and *derives* the assignments rather
+  than asserting them — applied to a much smaller artifact. To achieve a
+  provenance record that cannot misdescribe its own origin, accepting that the
+  context grows to 248 bytes (still `Copy`, and `GenerationAsk` is always taken
+  by reference), that deserialisation now runs 24 correlations, and — the real
+  cost — that an artifact is readable only by a build that reproduces its
+  numbers, so changing the estimator must add a `TonalMethod` variant with its
+  own re-derivation path instead of altering `KsV1` in place.
+
+- 2026-08-16 — In the context of the same review's third finding, facing the
+  claim that the artifact denied unknown fields "throughout" when
+  `EvidenceScope` was an adjacently tagged enum, we verified directly that
+  serde accepts foreign keys there silently (`{"kind":"track","at":1,"bogus":2}`
+  deserialises without complaint, as does a foreign key inside the struct
+  variant's payload), so the claim was false rather than merely loose. We
+  decided for **one flat, plain-object scope encoding**
+  (`{"kind": "voice", "track": 1, "voice": 0}`) carrying
+  `deny_unknown_fields`, with each `kind` admitting exactly one payload shape
+  and anything else refused, and against keeping the tagged representation with
+  a softened sentence in the docs, to achieve a wire form where every level is
+  actually fail-closed and can be tested as such, accepting a wire-shape change
+  to an unreleased contract and the loss of serde's automatic enum tagging in
+  favour of an explicit `From`/`TryFrom` pair.
