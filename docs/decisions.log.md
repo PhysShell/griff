@@ -2011,3 +2011,163 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Decision 10). Verification is local `nix` evidence only (45/45 tests, clippy
   `all=deny`/`pedantic=warn`, fmt) — the crate is excluded from the workspace
   and not built by CI (ADR-0010 isolation posture).
+
+- 2026-08-16 — In the context of S15 Phase 2 (letting a generation-facing
+  request and its provenance carry an explicitly scoped tonal estimate without
+  touching note selection), facing the choice of *what* to carry and *where* to
+  attach it, we surveyed the prior art for "a key estimate that admits its own
+  uncertainty": the repo's own ADR-0017 `Scored` envelope (a value travelling
+  with the provenance that produced it) and `complement::HarmonicContext` (the
+  winner-only projection already in the core); the MIR convention of key
+  estimators reporting a winner **plus its rivals or a strength** rather than a
+  bare key (music21's `Key.correlationCoefficient` /
+  `alternateInterpretations`, Essentia's `KeyExtractor` key + scale + strength);
+  and the W3C PROV principle that a derived entity carries the activity that
+  produced it. We decided for a **compact `TonalProjection`** — winner,
+  runner-up, and margin — inside a `TonalContext` that also carries the
+  caller's `EvidenceScope` and a `TonalProvenance` (method, the histogram that
+  actually weighted the estimate, note count), attached as an optional field on
+  `GenerationAsk` and echoed verbatim on `RankedSet`; and against carrying all
+  24 ranked candidates (dead weight in every record, and exactly reproducible
+  from the carried scope), against a winner-only projection in the
+  `HarmonicContext` shape (it discards the uncertainty the estimate exists to
+  express), against attaching to `RuleGenerationRequest` (the compiled request
+  the generator consumes — a field there invites consumption), and against
+  exposing any `is_confident` or margin threshold (uncalibrated until Phase
+  3B). To achieve a request and a provenance record that can say *which*
+  scope's estimate was on the table and reproduce it, while generation stays
+  byte-identical, accepting that a consumer needing the full ranking must
+  re-measure (the carried scope makes that exact and deterministic), that
+  adding a field to `GenerationAsk` touched every construction site across five
+  crates so each caller opts out in the open, and that `TonalWeighting` names a
+  KS v1 implementation branch — it is provenance *about* that fallback, and a
+  future method would need its own vocabulary rather than reusing this one.
+  Idea reuse only; no dependency added.
+
+- 2026-08-16 — In the context of the S15 Phase 2 review returning REQUEST
+  CHANGES on the scoped tonal context, facing two findings — that a type named
+  *provenance* could be handed a logically impossible envelope
+  (`projection: null` beside `weighting: "duration_mass"`), because public
+  fields plus a derived `Deserialize` meant "coherent by construction" held
+  only for values built through the constructor and `deny_unknown_fields`
+  guards field *names* rather than contradictory *values*; and that the
+  compactness of the projection was justified by a replayability the artifact
+  did not deliver, since it carried a scope but neither the `Score` nor the
+  evidence, so "re-measure it" silently required the reader to still hold the
+  exact same input — we decided for **carrying the `PitchEvidence` itself** and
+  for **validating by re-derivation**: the context stores the evidence (making
+  `estimate_key(context.evidence())` recover all 24 candidates from the
+  artifact alone), its fields become private with getters, and deserialisation
+  goes through a single fail-closed wire form that rebuilds the context from
+  that evidence and compares it before returning the re-derived value, with a
+  typed `TonalArtifactError` per failure. We decided against narrowing the docs
+  to "replayable if you still hold the same `Score`" (it would have kept a
+  provenance record whose central claim depends on data it did not keep),
+  against field-range checks alone (they would have caught the reviewer's
+  examples but not a well-formed projection that is simply not what the
+  evidence yields), and against a tolerance on the float comparison (a licence
+  to misstate confidence by exactly that tolerance). This reuses ADR-0033
+  Decision 5 — Apply replays the events and *derives* the assignments rather
+  than asserting them — applied to a much smaller artifact. To achieve a
+  provenance record that cannot misdescribe its own origin, accepting that the
+  context grows to 248 bytes (still `Copy`, and `GenerationAsk` is always taken
+  by reference), that deserialisation now runs 24 correlations, and — the real
+  cost — that an artifact is readable only by a build that reproduces its
+  numbers, so changing the estimator must add a `TonalMethod` variant with its
+  own re-derivation path instead of altering `KsV1` in place.
+
+- 2026-08-16 — In the context of the same review's third finding, facing the
+  claim that the artifact denied unknown fields "throughout" when
+  `EvidenceScope` was an adjacently tagged enum, we verified directly that
+  serde accepts foreign keys there silently (`{"kind":"track","at":1,"bogus":2}`
+  deserialises without complaint, as does a foreign key inside the struct
+  variant's payload), so the claim was false rather than merely loose. We
+  decided for **one flat, plain-object scope encoding**
+  (`{"kind": "voice", "track": 1, "voice": 0}`) carrying
+  `deny_unknown_fields`, with each `kind` admitting exactly one payload shape
+  and anything else refused, and against keeping the tagged representation with
+  a softened sentence in the docs, to achieve a wire form where every level is
+  actually fail-closed and can be tested as such, accepting a wire-shape change
+  to an unreleased contract and the loss of serde's automatic enum tagging in
+  favour of an explicit `From`/`TryFrom` pair.
+
+- 2026-08-16 — In the context of the second S15 Phase 2 review, facing the
+  finding that validation-by-re-derivation had moved the hole one floor down
+  rather than closing it — `PitchEvidence` was now the root of trust while
+  remaining the one unvalidated type, with public fields and an infallible
+  public `TonalContext::from_evidence`, so a document could forge its facts
+  (onsets on C, duration mass on F#, an observed span holding only C), compute
+  an impeccable estimate *from the forgery*, and satisfy the re-derivation
+  check by being honestly wrong; and that `resolve_weights` summed an untrusted
+  `[u64; 12]` with `Iterator::sum`, a debug panic or a release wrap where a
+  typed refusal was promised — we decided for **one shared
+  `PitchEvidence::validate`, enforced on both doors**: the wire boundary and a
+  now-fallible `from_evidence`, with `measure` staying infallible because its
+  output is valid by construction and both paths sharing one private `project`
+  so a single projection rule survives. The rules are the ones the estimator
+  structurally cannot notice, since it reads the two histograms neither against
+  each other nor against the span: mass only where onsets are and never beyond
+  what those onsets could carry, every sounding class representable inside the
+  observed span, both span endpoints themselves sounding, and totals that fit
+  `u64`. We decided against validating only at the wire (Rust callers would
+  keep a private door into an official `TonalContext`), against a separate
+  `ValidatedPitchEvidence` newtype (a second evidence type for every consumer
+  to thread, where the existing type plus one gate suffices), and against
+  leaving `resolve_weights` unchecked on the grounds that the boundary now
+  rejects such histograms (`estimate_key` is public over a struct with public
+  fields, so the estimator must be safe on its own terms). To achieve a root of
+  trust that is checked rather than assumed, accepting that `from_evidence`
+  becomes fallible, that the gate is strict enough to need a proptest holding
+  it against `measure` so it cannot start rejecting real scores unnoticed, and
+  that `resolve_weights` now saturates — which cannot change any measured
+  score's estimate, since the branch depends only on the total being non-zero.
+
+- 2026-08-16 — In the context of the third S15 Phase 2 review, facing a
+  remaining existential-consistency hole in `PitchEvidence::validate` — the
+  span-endpoint rule tested only that each endpoint's *pitch class* had
+  sounded, so an octave span (C4..C5, both ends in class C) was satisfied by a
+  single C onset even though reaching both ends demands two sounding notes,
+  letting a document again state facts no measurement could produce — we
+  decided for **counting endpoint occurrences per pitch class** (each endpoint
+  contributes one required onset in its class; a class is refused when the
+  histogram holds fewer than its endpoints require) and against widening the
+  rule to something structural like "the span's width implies a minimum note
+  count" (it would reject ordinary sparse measurements) or outlawing spans
+  wider than an octave outright, to achieve a rule that admits C4..C5 with two
+  C onsets and refuses it with one, accepting that the existing typed refusal
+  is renamed to `RangeEndpointsExceedOnsets` and now reports the required and
+  held counts rather than claiming an endpoint "never sounded", which was
+  precisely the overstatement the old message made.
+
+- 2026-08-16 — In the context of the same review noting that a saturation
+  caveat reported as written had never been committed, facing the choice
+  between reworking `Tally::push` and recording the bound, we decided for
+  **documenting it in `PitchEvidence::validate` and in the stage's Known
+  consequence** and against changing Phase-1 tallying: `onset_counts` (`u32`)
+  and `note_count` (`usize`) saturate independently, so beyond `u32::MAX` notes
+  in one pitch class on a 64-bit target the validator would reject a genuine
+  measurement, and that threshold is unreachable for any real score. To achieve
+  an honest statement of where "`measure` is valid by construction" actually
+  holds, accepting that the claim is bounded rather than absolute and that the
+  proptest establishes the agreement below the bound only.
+
+- 2026-08-16 — In the context of S15 Phase 2 (the explicit scoped tonal
+  context) passing independent review at `8799b55` after three revision rounds
+  — the artifact's semantic validation, the carried evidence that makes replay
+  self-contained, and the endpoint-multiplicity rule — facing how to record its
+  status without letting acceptance widen scope, we decided for marking Phase 2
+  **ACCEPTED / CLOSED / FROZEN** and against treating acceptance as licence to
+  begin using the context, to achieve a clear frozen boundary around a contract
+  that is deliberately inert. Frozen: the context carries its `PitchEvidence`;
+  `PitchEvidence::validate` gates both doors; the artifact re-derives and
+  compares exactly; the scope stays caller-owned; and generation, reranking,
+  and cadence remain untouched, byte-identically. Accepting that confidence
+  calibration, automatic scope selection, and any tonal influence on generation
+  are Phase 3 work needing separate acceptance; that changing the estimator now
+  requires a new `TonalMethod` variant rather than an in-place edit of `KsV1`;
+  and that verification is local evidence only at the moment of acceptance
+  (1434 tests, clippy `--workspace --all-targets -D warnings`, fmt, doc, MSRV
+  1.92, and the `measure`/`validate` proptest at 20 000 cases) — no GitHub
+  Actions run exists on `8799b55` because no pull request was open. A red
+  Actions run on the pull request that follows would be a merge blocker, not a
+  retroactive withdrawal of this acceptance.

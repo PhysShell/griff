@@ -2097,6 +2097,7 @@ mod tests {
             rhythm_explicit: false,
             gesture: None,
             policy: s6_policy(),
+            tonal: None,
         }
     }
 
@@ -2428,6 +2429,7 @@ mod tests {
             bars: 4,
             variants_per_strategy: 2,
             gesture: false,
+            tonal: None,
         };
         let set = ranked_candidates(&source, None, &ask, None).expect("the pass runs");
         let a = plan_candidate_chain(&set).expect("plans");

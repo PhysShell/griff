@@ -92,6 +92,7 @@ fn ranked_set() -> RankedSet {
             bars: 2,
             variants_per_strategy: 2,
             gesture: false,
+            tonal: None,
         },
         None,
     )

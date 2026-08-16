@@ -19,6 +19,7 @@ use crate::rerank;
 use crate::score::{AtomEvent, Score, Track};
 use crate::scoring::{Scored, WeightPolicy};
 use crate::slice;
+use crate::tonal::TonalContext;
 
 /// Why building a generation input failed.
 #[derive(Debug)]
@@ -170,6 +171,18 @@ pub struct GenerationAsk {
     /// Carve the corpus's burst/rest gesture. Ignored without a corpus, and
     /// when no chunk carries gesture stats — a pass never invents a gesture.
     pub gesture: bool,
+    /// An explicitly scoped tonal estimate to record with the pass, or `None`.
+    ///
+    /// **Carried, not consumed** (S15 Phase 2): the pass reads no pitch, no
+    /// palette, and no weight from it, so a set generated with a context is
+    /// byte-identical to one generated without. It travels so a session, a
+    /// candidate record, or a frontend can say which scope's estimate was on
+    /// the table, and reproduce it.
+    ///
+    /// The core never measures one on the caller's behalf — the scope is a
+    /// human/frontend choice ([`TonalContext::measure`]), and `None` means the
+    /// caller supplied no context, never that the source has no key.
+    pub tonal: Option<TonalContext>,
 }
 
 /// A ranked candidate set and the input it was generated from — enough to show
@@ -194,6 +207,10 @@ pub struct RankedSet {
     pub gesture: Option<GestureControl>,
     /// The rerank policy the aggregates were scored under.
     pub policy: WeightPolicy,
+    /// The tonal context the ask carried, verbatim — `None` when it carried
+    /// none. Provenance only: nothing in the pass consulted it, and a pass that
+    /// was given none reports none rather than measuring a default.
+    pub tonal: Option<TonalContext>,
 }
 
 /// Generates and reranks the full candidate set for `score` under `ask`.
@@ -264,6 +281,8 @@ pub fn ranked_candidates(
         rhythm_explicit: explicit.is_some(),
         gesture,
         policy,
+        // Echoed, never read: the pass above is the Phase-1 pass, unchanged.
+        tonal: ask.tonal,
     })
 }
 
