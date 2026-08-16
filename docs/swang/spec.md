@@ -18,6 +18,7 @@ Status of each section:
 | 2. Experimental transport syntax | **Superseded** by §3 at Phase 3 closure; retained as historical record of the Phase-2 contract. |
 | 3. Surface grammar | **Frozen (Phase 3 closed).** The operators the audible demo earned; changes require a new language level. |
 | 4. Deferred research | No promised names, no promised semantics. |
+| 5. Language-level evolution | **Accepted (level-2 admission).** Level 2 is *allocated* to Phase 4A — reserved and scoped, not yet released or frozen. |
 
 ## 1. Semantic core (frozen — Phase 0 accepted)
 
@@ -605,3 +606,206 @@ for admission bars):
   semantics);
 - static growth-class prediction via the expansion matrix's spectral radius;
 - versioned default budget/limit profiles as language objects.
+
+## 5. Language-level evolution and level-2 admission
+
+**Status: accepted evolution rules; level 2 is *allocated*, not released and
+not frozen.** This section adds no syntax and changes no byte of §1 or §3.
+Where it restates a frozen rule it is an interpretation of that rule, and
+the frozen text governs.
+
+### 5.1 What a language level is
+
+A level is a **capability contract** between a script and a build. The
+header states which grammar and builtin set the body is written in; a build
+states which levels it implements. A build advertising `1..=N` must accept
+every **released** level `≤ N` in full — not "mostly", not "the parts it
+recognizes".
+
+A level is not a project version, not a feature flag, and not a range the
+body may exceed. Nothing in a body may depend on which build is reading it.
+
+### 5.2 When a new level is created
+
+A new level is required for any change a frozen level would otherwise have
+to absorb:
+
+- a new root form, operator, word, or builtin;
+- a changed meaning for anything already spelled;
+- a word becoming required or optional;
+- any narrowing of what is accepted, including new input bounds (§5.11);
+- a changed diagnostic **code** or a changed accept/reject **verdict**.
+
+A new level is *not* required for a diagnostic **message** rewording that
+keeps its code, span, and verdict, nor for a bug fix that restores this
+document's stated behaviour. Both are still behaviour changes and still
+need characterization tests; they are simply not level events.
+
+### 5.3 When a level freezes
+
+A level freezes on the acceptance of the phase that delivers it — as §1
+froze at Phase 0 acceptance and §3 at Phase 3 closure. Between allocation
+and freeze the level is provisional and no compatibility promise attaches
+to scripts written against it.
+
+**A frozen level's meaning never grows.** This is what makes `SWG0001`
+work. Suppose level 2 were frozen and a later release added `rotate` to it.
+A build shipped in between advertises `1..=2` truthfully, reads
+
+```text
+swang 2
+… |> rotate …
+```
+
+and cannot raise `SWG0001` — the header names a level it implements — so it
+fails somewhere in the grammar instead, with a syntax error about a
+construct that is perfectly legal. Version negotiation becomes decorative.
+Additions therefore go to the next level, always.
+
+### 5.4 Level dispatch
+
+```text
+frozen §1.1 pre-parser
+  level == 1  -> the frozen level-1 grammar
+  level == 2  -> the level-2 grammar
+  otherwise   -> SWG0001, naming the supported range
+```
+
+Each released level owns its own parser and formatter entry point. A build
+routes to one of them and never mixes them: there is no single grammar with
+level-conditioned branches, because such a grammar has no way to prove that
+level 1's behaviour survived the addition of level 2.
+
+### 5.5 Law A — interpreter compatibility (adopted)
+
+For **every** source whose first line is a valid `swang 1` header — whether
+its body is valid or not:
+
+```text
+build_supporting_1..=N(source) == build_supporting_only_1(source)
+```
+
+compared on all seven observables:
+
+```text
+accept / reject verdict
+the AST
+the canonical formatter output, byte for byte
+each diagnostic's code
+each diagnostic's message
+each diagnostic's span
+the order of the diagnostics
+```
+
+This is §1.1's additive-only sentence, stated so it can be tested.
+
+The invalid-body half is the half that gets lost. When a level-2 keyword
+appears in a `swang 1` script, the diagnostic must be exactly the one
+level 1 already raised — `SWG0401` — and **not** a friendlier
+"`score` requires language level 2". The friendlier message is a changed
+frozen verdict wearing a helpful expression.
+
+### 5.6 Law B — level-promotion compatibility (rejected)
+
+Law B would say: rewriting a level-1 program's header to `swang 2`,
+changing nothing else, preserves its meaning. **Swang does not adopt it.**
+
+Law B is a strictly stronger claim than Law A, and §1.1 does not make it.
+§1.1 promises that *old scripts* keep working, and an old script carries
+its old header; changing that header is an edit by the author, not a
+compatibility event. Four reasons to keep it that way:
+
+1. **It would make every level a grammar superset of the last, forever.**
+   No level could ever drop a form or tighten a bound, however clearly
+   wrong the older form turned out to be.
+2. **It collides with input bounds.** Level 1 admits arbitrarily long
+   identifiers, paths, and kernel literals. "Any valid level-1 body stays
+   valid under a `swang 2` header" cannot coexist with any finite level-2
+   source, token, or nesting bound (§5.11).
+3. **It would be a promise attached to editing one digit.** Migration
+   deserves a tool with its own laws — `griff swang migrate --to 2` — not
+   an eternal guarantee triggered by a text substitution.
+4. **Levels stay capability contracts** rather than a nesting chain, so
+   `swang 1` with a `pattern` root and `swang 2` with a `score` root can be
+   two different documents that one build reads, which is what §5.1 wanted
+   in the first place.
+
+Consequence: a `swang 2` header over a level-1 body is **not** valid by
+default. Whether the level-2 grammar accepts any particular level-1 form is
+decided form by form in that level's own spec section, and is never assumed.
+Adopting Law B later would itself require a new level and its own decision
+record.
+
+### 5.7 What level 2 is allocated to
+
+**Level 2 is allocated to exactly one thing: the exact canonical `Score`
+text projection of S16 Phase 4A.** Its one new root form is `score`.
+
+Out of scope for level 2, exhaustively — each belongs to a later level, on
+its own evidence:
+
+- recipes and intent constructs (`part`, `complement`, policies);
+- multiple named definitions in one script;
+- new pattern operators (`rotate`, `reverse`, `mask`, `euclidean_mask`, …);
+- exact patches (`exact` / `replace` / `overlay` / `delete`), which are
+  Phase 4C;
+- tonal constructs;
+- any convenience default over any level (§3.5 law 7 does not weaken with
+  altitude).
+
+Level 2 does **not** admit the level-1 `pattern` root. A program that wants
+the pattern pipeline writes `swang 1`; a program that wants exact score text
+writes `swang 2`; one build reads both. Nothing has yet earned a document
+that holds both roots at once, and by §5.6 the admission is not automatic.
+
+The level-2 **body grammar is not defined here.** This section reserves the
+number and fences the scope so that the grammar task designs a score text
+rather than half a language. Level 2 freezes when Phase 4A is accepted, not
+before.
+
+### 5.8 The formatter and the level
+
+- For `swang 1` the canonical formatter output is byte-identical to the
+  frozen level-1 formatter's, permanently (§3.5 laws 2–3, and Law A).
+- For `swang 2` the formatter preserves `swang 2`. It never downgrades a
+  document to an older level and never promotes one to a newer level;
+  changing a level is an authoring act, never a formatting act.
+- The level therefore belongs to the **document contract**, even though it
+  is excluded from the content hash (§5.9).
+
+### 5.9 Digests: source versus semantic content
+
+§1.1 keeps the level out of content hashes. Two distinct digests exist and
+must not be confused:
+
+```text
+source digest  = H(exact source bytes)        -- the header is included
+semantic hash  = H(normalized semantic form)  -- the level is excluded,
+                                                 and travels beside it
+```
+
+The trap is `H(format(program))`. Canonical text begins with the header, so
+that expression is a source digest of canonical text — never the level-free
+semantic hash §1.1 requires. Anything relying on the level-free property
+hashes the normalized semantic form directly.
+
+### 5.10 The diagnostic registry across levels
+
+- Level 1's codes, verdicts, spans, and diagnostic order are frozen.
+- A new level may only **append** codes; §1.5's never-reuse rule is
+  unchanged.
+- One numeric code never carries a different meaning at a different level.
+- A new level's codes are defined by the section that earns them. No block
+  is reserved in advance for errors that do not exist yet.
+
+### 5.11 Where new input bounds are allowed
+
+Level 1's acceptance set is frozen (§5.5), so **no parser-wide input bound
+may be introduced that rejects a source level 1 accepts.** A build may still
+fail on exhaustion, but that is a runtime outcome, not a language rule, and
+it never becomes a typed refusal at level 1.
+
+Level 2 may declare bounds — source bytes, token count, nesting depth,
+diagnostic count — as part of its own contract, and must declare them
+**before its first accepted program**, not after the first crash. That is
+the space the parser resource gate works in.

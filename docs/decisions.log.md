@@ -2031,3 +2031,32 @@ Architectural decisions go to [`adr/`](adr/) instead.
   enters behind a differential gate asserting the old parser's AST, the
   diagnostic codes, and the canonical formatter bytes are unchanged. Both
   refusals are reversible by evidence and would be recorded here.
+
+- 2026-08-16 — In the context of SWG-INF-02, needing a language-level
+  evolution contract before Phase 4A's exact score text can claim to be
+  level 2, facing the ambiguity that every script already carries `swang 1`
+  in its frozen header — so `parse_v2(valid_v1)` reads equally as "a
+  1-and-2 build parses an old script unchanged" (**Law A**) and as "an old
+  body stays legal once its header is promoted to `swang 2`" (**Law B**) —
+  we decided **for Law A**, strengthened to cover *every* `swang 1` source
+  including invalid ones and compared on all seven observables (verdict,
+  AST, canonical bytes, diagnostic code, message, span, and order), and
+  **against Law B**, and for allocating level 2 to the Phase 4A exact
+  canonical `Score` text alone — one new root form, `score`, with recipes,
+  named definitions, pattern operators, patches, and tonal constructs all
+  excluded, and the level-1 `pattern` root not admitted — to achieve a
+  level that is a capability contract rather than a perpetual grammar
+  superset, accepting four consequences: a `swang 2` header over a level-1
+  body is not valid by default and any future promotion path is a migration
+  tool with its own laws rather than a guarantee attached to editing one
+  digit; a helpful "`score` requires language level 2" inside a `swang 1`
+  script is forbidden because it changes a frozen verdict; each released
+  level owns its own parser and formatter entry point instead of one
+  grammar with level-conditioned branches, since a branching grammar cannot
+  prove level 1 survived; and new input bounds may exist at level 2 only,
+  declared before its first accepted program, never at level 1 whose
+  acceptance set is frozen. Recorded as spec §5 plus this entry, with no new
+  ADR: the decision stays inside Swang, changes no `griff-core` contract,
+  and ADR-0029 already delegates normative semantics to the spec. §1 and §3
+  are byte-unchanged; level 2 is allocated, not frozen — it freezes when
+  Phase 4A is accepted.

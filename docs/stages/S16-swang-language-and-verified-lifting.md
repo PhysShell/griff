@@ -535,6 +535,12 @@ typed diff must state the semantic path and the kind of divergence.
 
 #### Phase 4A — exact canonical score text
 
+Exact score text is **language level 2**, allocated to this phase and to
+nothing else by the spec's §5 admission contract: one new root form,
+`score`, with recipes, named definitions, pattern operators, patches, and
+the level-1 `pattern` root all excluded. Level 2 freezes when this phase is
+accepted; until then it is reserved and scoped, not released.
+
 ```text
 griff swang dump input.gp5 > input.swg
 griff swang verify input.swg --against input.gp5

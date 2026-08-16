@@ -74,8 +74,8 @@ correction is durable:
    sub-phase of S16 with a deliberately weaker contract. It is scheduled
    below as SWG-4D-01/02 rather than dropped.
 4. **Parser resource limits are not free.** Rejecting an input that level 1
-   previously accepted is an observable change to a frozen level. See
-   SWG-INF-06 for the constraint that follows.
+   previously accepted is an observable change to a frozen level. Settled by
+   SWG-INF-02: spec §5.11 puts every declared bound at level 2 only.
 
 Confirmed as stated: `repeat` is sugar over ring (**adapt**), `bounded_walk`
 stays with the S6 generator (**defer**), `thin` stays unspecified until a
@@ -105,7 +105,7 @@ recorded in `decisions.log.md` if reversed.
 | ID | Title | Kind | Depends on |
 | --- | --- | --- | --- |
 | SWG-INF-01 | Sync the S16 status block with reality *(done)* | docs | — |
-| SWG-INF-02 | Language level 2 admission contract | docs | INF-01 |
+| SWG-INF-02 | Language level 2 admission contract *(done)* | docs | INF-03 |
 | SWG-INF-03 | Split `syntax.rs` without behaviour change *(done)* | code | INF-01 |
 | SWG-INF-04 | Replace `ProgramSpans` with a `SourceMap` | code | INF-03 |
 | SWG-INF-05 | Deterministic multi-error recovery | code | INF-04 |
@@ -138,13 +138,13 @@ recorded in `decisions.log.md` if reversed.
 | SWG-4C-07 | Patch fuzzing | code | 4C-05 |
 | SWG-4D-01 | MIDI playback-projection contract | docs | 4A-12 |
 | SWG-4D-02 | MIDI projection harness | code | 4D-01 |
-| SWG-L2-01 | Typed intermediate representation | code | 4C-05 |
-| SWG-L2-02 | Names, definitions, resolver | code | L2-01 |
-| SWG-L2-03 | Typed pipeline checker | code | L2-02 |
-| SWG-L2-04 | Budget hierarchy | code | L2-01 |
-| SWG-L2-05 | Named seed streams | code | L2-01 |
-| SWG-L2-06 | First operator wave | code | L2-03, L2-04, L2-05 |
-| SWG-L2-07 | Second operator wave | code | L2-06 |
+| SWG-AUTH-01 | Typed intermediate representation | code | 4C-05 |
+| SWG-AUTH-02 | Names, definitions, resolver | code | AUTH-01 |
+| SWG-AUTH-03 | Typed pipeline checker | code | AUTH-02 |
+| SWG-AUTH-04 | Budget hierarchy | code | AUTH-01 |
+| SWG-AUTH-05 | Named seed streams | code | AUTH-01 |
+| SWG-AUTH-06 | First operator wave | code | AUTH-03, AUTH-04, AUTH-05 |
+| SWG-AUTH-07 | Second operator wave | code | AUTH-06 |
 | SWG-UI-01 | Debounced live check | code | INF-05 |
 | SWG-UI-02 | Underlines and diagnostic navigation | code | UI-01, INF-04 |
 | SWG-UI-03 | Highlighting from the shared token stream | code | INF-03 |
@@ -192,62 +192,47 @@ Acceptance:
 - stage state is derivable from the header plus the phase blocks together,
   per the AGENTS.md routing rule.
 
-### SWG-INF-02 — Language level 2 admission contract
+### SWG-INF-02 — Language level 2 admission contract *(done)*
 
-**Kind:** docs. **Depends on:** INF-01
+**Kind:** docs. **Depends on:** INF-03
 
-The level-1 surface grammar is frozen. Score text, multiple definitions,
-recipes, and new operators are all additive-only changes and therefore need
-level 2 to exist as a contract *before* anything claims to be level 2.
+Landed as **[`spec.md`](spec.md) §5** (a new section — §4 was already
+Deferred research, and nothing was renumbered) plus a decisions-log
+Y-statement. No ADR: the decision stays inside Swang, changes no
+`griff-core` contract, and ADR-0029 already delegates normative semantics to
+the spec. `spec.md` §1 and §3 are byte-unchanged, verified by digest.
 
-Decide and write down:
+What §5 settles, for downstream tasks that need the answer:
 
-- what level 2 adds, exhaustively;
-- which level-1 programs must keep parsing unchanged (answer: all of them);
-- how parser dispatch selects a grammar after the frozen header pre-parser;
-- which root forms are legal — `pattern`, `score`, later `project` /
-  `recipe`;
-- which formatter behaviour is level-dependent and which is not;
-- how the `SWG____` registry extends without renumbering;
-- that the canonical hash stores the level alongside, never inside;
-- **which of the two compatibility laws below is being adopted.** Every
-  program already carries `swang 1` in its frozen header, so a bare
-  `parse_v2(valid_v1)` is ambiguous between them, and the weaker one does
-  not imply the stronger.
+- **Law A adopted, strengthened.** A build supporting `1..=N` treats every
+  `swang 1` source — *including invalid ones* — exactly as a level-1-only
+  build did, compared on all seven observables: verdict, AST, canonical
+  bytes, diagnostic code, message, span, and order. A level-2 keyword in a
+  `swang 1` script raises the `SWG0401` level 1 already raised, never a
+  friendlier "requires language level 2".
+- **Law B rejected.** A `swang 2` header over a level-1 body is not valid by
+  default. Promotion, if ever wanted, is a migration tool with its own laws,
+  not a guarantee attached to editing one digit.
+- **Level 2 is allocated to Phase 4A's exact canonical `Score` text and
+  nothing else.** One new root form, `score`. Recipes, multiple named
+  definitions, pattern operators, patches, tonal constructs, and convenience
+  defaults are all excluded; the level-1 `pattern` root is **not** admitted.
+- **Allocated, not frozen.** Level 2 freezes when Phase 4A is accepted. Its
+  body grammar is SWG-4A-01's job — §5 reserves the number and fences the
+  scope so that task designs a score text rather than half a language.
+- **Dispatch is per level.** Each released level owns its parser and
+  formatter entry point; there is no single grammar with level-conditioned
+  branches, because such a grammar cannot prove level 1 survived.
+- **Input bounds belong to level 2 only**, declared before its first
+  accepted program. Level 1's acceptance set is frozen. This is the space
+  SWG-INF-06 works in.
+- **Two digests, not one.** `H(format(program))` is a source digest of
+  canonical text and includes the header; the level-free semantic hash §1.1
+  requires must be taken over the normalized semantic form.
 
-**Law A — interpreter compatibility (mandatory).** A build that supports
-levels 1 and 2 parses a `swang 1` script exactly as a level-1-only build
-did:
-
-```text
-compiler_supporting_1_2("swang 1\n…") == v1_semantics("swang 1\n…")
-format_1_2(parse_1_2(v1_text))        == format_v1(parse_v1(v1_text))
-```
-
-**Law B — level-promotion compatibility (adopt explicitly or not at all).**
-Rewriting a level-1 program's header to `swang 2`, changing nothing else,
-preserves its semantics:
-
-```text
-promote_header_1_to_2(valid_v1_program) preserves v1 semantics
-```
-
-Law A says the old text keeps working. Law B says the old text is also
-*legal level-2 text* — a claim about level 2's grammar containing level 1's,
-which constrains every future addition. Adopting B by accident, because the
-notation looked like A, is the failure mode this split exists to prevent.
-
-Further acceptance:
-
-- every level-1 golden is byte-unchanged;
-- a level-3 header is still rejected by the frozen pre-parser before the
-  main grammar runs;
-- the contract states, for each addition, whether it is expressible at
-  level 1 (it must not be).
-
-This is an ADR-shaped decision. Land it as an ADR if it constrains
-`griff-core`; a spec §4 section plus a decisions-log entry suffices if it
-only constrains `griff-swang`.
+Still open, deliberately: every level-2 diagnostic code (defined by the
+section that earns it — no block is reserved in advance), and the level-2
+body grammar itself.
 
 ### SWG-INF-03 — Split `syntax.rs` without behaviour change *(done)*
 
@@ -373,12 +358,14 @@ Add bounded-input laws: maximum source bytes, maximum token count, maximum
 nesting depth, maximum diagnostics, no recursion overflow, and a canonical
 formatter that only ever writes from a checked AST.
 
-**Constraint from the freeze:** rejecting an input that level 1 previously
-accepted is an observable semantic change to a frozen level. Therefore
-either the limits land as part of the level-2 contract (INF-02) and level 1
-keeps its current acceptance set, or each level-1 limit is set provably
-above every representable level-1 program and that proof is written down.
-Pick one, in writing, in the PR.
+**Constraint from the freeze, settled by INF-02:** rejecting an input that
+level 1 previously accepted is an observable semantic change to a frozen
+level, so spec §5.11 puts every declared bound at **level 2 only**, to be
+declared before level 2's first accepted program. Level 1 keeps its
+acceptance set exactly; a level-1 run may still die of exhaustion, but that
+is a runtime outcome and never becomes a typed refusal. This task therefore
+adds no level-1 limit at all — the earlier "or prove the bound exceeds every
+representable level-1 program" branch is closed.
 
 Differential harness: the pre-refactor parser output is compared with the
 refactored parser over the fixture set and the fuzz corpus on AST, canonical
@@ -515,11 +502,14 @@ diagnostics, resource budgets, and formatter dispatch.
 
 Acceptance:
 
-- level 1 behaviour is bit-for-bit unchanged;
-- a level-2 `pattern` is either an explicitly supported additive subset or
-  an explicit rejection — whichever INF-02 chose, with a test either way;
+- level 1 behaviour is bit-for-bit unchanged — Law A's seven observables
+  (spec §5.5), asserted over valid *and* invalid `swang 1` sources;
+- a level-2 `pattern` root is **rejected** (spec §5.7), with a test naming
+  the diagnostic;
 - a level-2 `score` reaches the exact parser;
-- an unknown newer level is still refused by the frozen pre-parser.
+- an unknown newer level is still refused by the frozen pre-parser;
+- dispatch routes to one level's entry point and never branches inside a
+  shared grammar (spec §5.4).
 
 ### SWG-4A-07 — Parser: exact scalar types
 
@@ -806,12 +796,19 @@ rounding.
 
 ---
 
-## Epic E — language level 2 (`SWG-L2-*`)
+## Epic E — the authoring language (`SWG-AUTH-*`)
 
-Scheduled after exact text and patches. L2 recipes that reference vaguely
+Scheduled after exact text and patches. Recipes that reference vaguely
 defined objects turn the following quarter into archaeology.
 
-### SWG-L2-01 — Typed intermediate representation
+**These constructs are not level 2.** Spec §5.7 allocates level 2 to the
+exact canonical `Score` text and nothing else; the typed IR, named
+definitions, seed streams, and every operator below land at **level 3 or
+later**, each on its own evidence and each freezing with the phase that
+delivers it. The `AUTH` prefix replaced an earlier `L2` prefix precisely
+because the latter read as a level number it was never going to be.
+
+### SWG-AUTH-01 — Typed intermediate representation
 
 **Kind:** code. **Depends on:** 4C-05
 
@@ -832,9 +829,9 @@ generate   : RhythmPalette × GenerationAsk -> CandidateSet
 
 The parser builds a surface AST; the type checker decides what may compose.
 
-### SWG-L2-02 — Names, definitions, resolver
+### SWG-AUTH-02 — Names, definitions, resolver
 
-**Kind:** code. **Depends on:** L2-01
+**Kind:** code. **Depends on:** AUTH-01
 
 Support several declaration kinds (`pattern`, `rhythm`, `source`, `policy`,
 later `part`) with lexical scope, duplicate-name and unknown-name
@@ -842,9 +839,9 @@ diagnostics, kind mismatch, cycle detection, a deterministic topological
 order, and an unused-definition **warning** — a frontend diagnostic, not a
 semantic error.
 
-### SWG-L2-03 — Typed pipeline checker
+### SWG-AUTH-03 — Typed pipeline checker
 
-**Kind:** code. **Depends on:** L2-02
+**Kind:** code. **Depends on:** AUTH-02
 
 ```text
 SWG12xx: `rotate` expects Cycle<T>, found Pattern2D
@@ -854,18 +851,18 @@ A typed operator registry, not a string switch. Type checking precedes
 materialization. No coercions unless a spec section says so. Unit types do
 not mix. Every lowering step leaves a provenance node.
 
-### SWG-L2-04 — Budget hierarchy
+### SWG-AUTH-04 — Budget hierarchy
 
-**Kind:** code. **Depends on:** L2-01
+**Kind:** code. **Depends on:** AUTH-01
 
 `ExpansionBudget` exists today (spec §1.4). Add `CycleBudget`,
 `EventBudget`, and `CandidateBudget`, each charged by its own stage. One
 shared `max_items` across unrelated stages is how a limit stops limiting
 anything.
 
-### SWG-L2-05 — Named seed streams
+### SWG-AUTH-05 — Named seed streams
 
-**Kind:** code. **Depends on:** L2-01
+**Kind:** code. **Depends on:** AUTH-01
 
 ```text
 seed rhythm 17
@@ -879,9 +876,9 @@ sequence; provenance stores the stream id and the derived seed; reordering
 independent operators does not change the result where the law allows it.
 This extends spec §1.13's two-axis rule rather than replacing it.
 
-### SWG-L2-06 — First operator wave
+### SWG-AUTH-06 — First operator wave
 
-**Kind:** code. **Depends on:** L2-03, L2-04, L2-05
+**Kind:** code. **Depends on:** AUTH-03, AUTH-04, AUTH-05
 
 Per the operator inventory's classification: `rotate`, `reverse`,
 `euclidean_mask`, `mask`. (`stutter` is **not** here — it is deferred to the
@@ -903,9 +900,9 @@ euclidean_mask(0, n)   = all off
 euclidean_mask(n, n)   = all on
 ```
 
-### SWG-L2-07 — Second operator wave
+### SWG-AUTH-07 — Second operator wave
 
-**Kind:** code. **Depends on:** L2-06
+**Kind:** code. **Depends on:** AUTH-06
 
 `ring`/`cycle` (adapt — reconcile with §1.11 palette cycling first, since
 `repeat` is sugar over it), `multi_cycle`, `creep`, envelope modulation,
@@ -1085,7 +1082,7 @@ the exact and normalized diffs, and unsupported facts.
 ```text
 INF-01 status sync                    (done)
   -> INF-03 syntax split              (done)
-  -> INF-02 level-2 contract
+  -> INF-02 level-2 contract          (done)
        │
        ├─→ INF-04 SourceMap ──→ INF-05 recovery ──┐
        │                                          ├─→ 4A-06 parser skeleton
@@ -1095,7 +1092,7 @@ INF-01 status sync                    (done)
   -> 4B corpus acceptance
   -> 4C selectors and patches
   -> 4D MIDI projection
-  -> L2 typed IR and first operators
+  -> AUTH typed IR and first operators (level 3+)
   -> UI richer Playground
   -> LIFT recognizers and verified lift
 ```
@@ -1123,8 +1120,8 @@ its own private theory of time, budget, seed, and reality.
 
 M1 is complete when all ten hold:
 
-1. the level-2 admission contract is accepted;
-2. `syntax.rs` is split with no behaviour change;
+1. the level-2 admission contract is accepted *(done — spec §5)*;
+2. `syntax.rs` is split with no behaviour change *(done)*;
 3. a full `SourceMap` replaces `ProgramSpans`;
 4. the normative exact-score grammar is written;
 5. the canonical writer covers the whole `Score`;
