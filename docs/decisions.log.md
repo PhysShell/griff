@@ -2121,3 +2121,32 @@ Architectural decisions go to [`adr/`](adr/) instead.
   it against `measure` so it cannot start rejecting real scores unnoticed, and
   that `resolve_weights` now saturates — which cannot change any measured
   score's estimate, since the branch depends only on the total being non-zero.
+
+- 2026-08-16 — In the context of the third S15 Phase 2 review, facing a
+  remaining existential-consistency hole in `PitchEvidence::validate` — the
+  span-endpoint rule tested only that each endpoint's *pitch class* had
+  sounded, so an octave span (C4..C5, both ends in class C) was satisfied by a
+  single C onset even though reaching both ends demands two sounding notes,
+  letting a document again state facts no measurement could produce — we
+  decided for **counting endpoint occurrences per pitch class** (each endpoint
+  contributes one required onset in its class; a class is refused when the
+  histogram holds fewer than its endpoints require) and against widening the
+  rule to something structural like "the span's width implies a minimum note
+  count" (it would reject ordinary sparse measurements) or outlawing spans
+  wider than an octave outright, to achieve a rule that admits C4..C5 with two
+  C onsets and refuses it with one, accepting that the existing typed refusal
+  is renamed to `RangeEndpointsExceedOnsets` and now reports the required and
+  held counts rather than claiming an endpoint "never sounded", which was
+  precisely the overstatement the old message made.
+
+- 2026-08-16 — In the context of the same review noting that a saturation
+  caveat reported as written had never been committed, facing the choice
+  between reworking `Tally::push` and recording the bound, we decided for
+  **documenting it in `PitchEvidence::validate` and in the stage's Known
+  consequence** and against changing Phase-1 tallying: `onset_counts` (`u32`)
+  and `note_count` (`usize`) saturate independently, so beyond `u32::MAX` notes
+  in one pitch class on a 64-bit target the validator would reject a genuine
+  measurement, and that threshold is unreachable for any real score. To achieve
+  an honest statement of where "`measure` is valid by construction" actually
+  holds, accepting that the claim is bounded rather than absolute and that the
+  proptest establishes the agreement below the bound only.

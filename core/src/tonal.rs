@@ -194,8 +194,25 @@ impl PitchEvidence {
     ///   could carry (one onset contributes at most one `u32` of ticks);
     /// - the total duration mass fits `u64`;
     /// - every sounding pitch class has at least one MIDI representative inside
-    ///   the observed span, and both span endpoints are themselves sounding
-    ///   classes — an endpoint is by definition an observed note.
+    ///   the observed span;
+    /// - the span's endpoints are covered *per class, counting multiplicity*.
+    ///   An endpoint is by definition an observed note, so each needs an onset
+    ///   of its own: C4..C5 puts both ends in class C and therefore requires
+    ///   **two** C onsets. Testing mere presence would let one note stand at
+    ///   both ends of an octave, which no measurement can do.
+    ///
+    /// # Known limit
+    /// [`measure`] tallies `onset_counts` as `u32` and `note_count` as `usize`,
+    /// each saturating independently. Past `u32::MAX` notes in a single pitch
+    /// class on a 64-bit target the two stop agreeing, and this validator would
+    /// reject a genuine measurement on the `note_count`-versus-histogram rule.
+    /// That threshold is unreachable for any real score — four billion notes of
+    /// one pitch class — and it is Phase-1 behaviour, left alone deliberately
+    /// rather than reworked for an astronomical case. The
+    /// [`measure`]-and-`validate` proptest does not reach it either, so the
+    /// agreement between the two is established below that bound, not above it.
+    ///
+    /// [`measure`]: Self::measure
     ///
     /// # Errors
     /// One [`TonalArtifactError`] naming the first rule broken.
@@ -255,9 +272,26 @@ impl PitchEvidence {
                 return Err(TonalArtifactError::PitchClassOutsideObservedRange { pitch_class });
             }
         }
-        for endpoint in [range.lowest, range.highest] {
-            if self.onset_counts[usize::from(endpoint.0 % 12)] == 0 {
-                return Err(TonalArtifactError::RangeEndpointNeverSounded { pitch: endpoint.0 });
+        // Each endpoint is a note that actually sounded, so each needs an onset
+        // of its own. Counting per class rather than testing presence is what
+        // makes an octave span (C4..C5, both ends in class C) demand *two* C
+        // onsets — one onset cannot be at both ends at once.
+        let mut required = [0_u32; 12];
+        let lowest = usize::from(range.lowest.0 % 12);
+        required[lowest] = required[lowest].saturating_add(1);
+        if range.highest != range.lowest {
+            let highest = usize::from(range.highest.0 % 12);
+            required[highest] = required[highest].saturating_add(1);
+        }
+        for (pc, (&needed, &sounded)) in required.iter().zip(self.onset_counts.iter()).enumerate() {
+            if sounded < needed {
+                #[allow(clippy::cast_possible_truncation)] // pc < 12
+                let pitch_class = pc as u8;
+                return Err(TonalArtifactError::RangeEndpointsExceedOnsets {
+                    pitch_class,
+                    required: needed,
+                    onsets: sounded,
+                });
             }
         }
 
@@ -672,12 +706,20 @@ pub enum TonalArtifactError {
         /// The offending class.
         pitch_class: u8,
     },
-    /// A span endpoint's pitch class never sounded — an endpoint is by
-    /// definition an observed note.
-    #[error("range endpoint {pitch} never sounded")]
-    RangeEndpointNeverSounded {
-        /// The offending endpoint.
-        pitch: u8,
+    /// The span's endpoints need more onsets in one pitch class than the
+    /// histogram holds — each endpoint is an observed note, and two endpoints
+    /// sharing a class (an octave span) cannot rest on the same single onset.
+    #[error(
+        "the span endpoints need {required} onset(s) in pitch class {pitch_class}, \
+         but {onsets} sounded"
+    )]
+    RangeEndpointsExceedOnsets {
+        /// The under-supplied class.
+        pitch_class: u8,
+        /// How many onsets the endpoints require there.
+        required: u32,
+        /// How many the histogram holds.
+        onsets: u32,
     },
     /// A tonic outside `0..=11`.
     #[error("tonic {tonic} is not a pitch class")]

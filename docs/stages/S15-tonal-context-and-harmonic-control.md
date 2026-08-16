@@ -144,10 +144,12 @@ Acceptance:
   the root of trust, enforced on both doors — the wire boundary and the now
   fallible `TonalContext::from_evidence` — rejecting duration mass without
   onsets, mass beyond what its onsets could carry, a sounding class with no
-  representative inside the observed span, a span endpoint that never sounded,
-  and totals that do not fit `u64`. `measure` stays infallible (its output is
-  valid by construction) and both paths share one private `project`, so there
-  is still exactly one projection rule. `resolve_weights` folds with
+  representative inside the observed span, span endpoints not covered *per
+  class counting multiplicity* (C4..C5 puts both ends in class C and so needs
+  two C onsets — testing mere presence would let one note stand at both ends of
+  an octave), and totals that do not fit `u64`. `measure` stays infallible (its
+  output is valid by construction) and both paths share one private `project`,
+  so there is still exactly one projection rule. `resolve_weights` folds with
   `saturating_add` rather than `Iterator::sum`, because `estimate_key` is
   public over a struct with public fields and must not assume a summable
   histogram.
@@ -161,8 +163,8 @@ have a scope measured on their behalf.
 
 ### Evidence
 
-- `cargo test --workspace`: 1433 passed, 0 failed (1390 before this phase's
-  work; +43 in the new `core/tests/tonal_context.rs`).
+- `cargo test --workspace`: 1434 passed, 0 failed (1390 before this phase's
+  work; +44 in the new `core/tests/tonal_context.rs`).
 - `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all
   --check`: clean. `cargo doc --no-deps --workspace`: no new warning.
   `cargo +1.92 check --workspace --all-targets` (MSRV): clean.
@@ -192,7 +194,10 @@ have a scope measured on their behalf.
 - Root of trust: forged evidence is refused through both doors — duration mass
   on a silent scope, mass for a class that never sounded, mass beyond its
   onsets' ceiling, an onset with no representative in the span, and a span
-  endpoint that never sounded. The sharpest case has its own test: forge the
+  endpoint with no onset to stand on — including an octave span resting on a
+  single onset, which its counterpart test pairs with the same span carrying
+  two, so the rule refuses impossible spans rather than octaves. The sharpest
+  case has its own test: forge the
   facts, then compute the estimate *honestly* from the forgery, so
   re-derivation is satisfied and only the evidence gate can catch it. Two more
   cover the arithmetic — an unsummable duration histogram is an `Err` from the
@@ -212,10 +217,22 @@ half-trusted — but it does mean that changing the estimator must add a
 `TonalMethod` variant with its own re-derivation path, not silently alter
 `KsV1`. `TonalMethod` is the versioning hook for exactly this.
 
+A second, far smaller limit is recorded rather than fixed.
+`PitchEvidence::measure` tallies `onset_counts` as `u32` and `note_count` as
+`usize`, each saturating independently, so past `u32::MAX` notes in a single
+pitch class on a 64-bit target the two stop agreeing and `validate` would reject
+a genuine measurement on the `note_count`-versus-histogram rule. Four billion
+notes of one pitch class is unreachable for any real score, and the saturation
+is Phase-1 behaviour, so it is left alone deliberately — but "`measure` is valid
+by construction" holds below that bound, not above it, and the proptest does not
+reach it either. The same note is in `PitchEvidence::validate`'s doc comment.
+
 Implementation: `5d667ac` (red) and `af97684` (green) for the first cut;
 `84bb992` (red) and `c9da896` (green) for the first review revision; `818f799`
-(red) and `bc13ea2` (green) for the second, which validated the evidence itself.
-Acceptance is a separate gate and has not been given.
+(red) and `bc13ea2` (green) for the second, which validated the evidence itself; and
+`76ba934` (red) and the commit that follows it for the third, which made the
+span-endpoint rule count multiplicity. Acceptance is a separate gate and has not
+been given.
 
 ## Phase 3 — scope policy and confidence calibration
 
