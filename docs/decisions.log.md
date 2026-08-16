@@ -2150,3 +2150,24 @@ Architectural decisions go to [`adr/`](adr/) instead.
   an honest statement of where "`measure` is valid by construction" actually
   holds, accepting that the claim is bounded rather than absolute and that the
   proptest establishes the agreement below the bound only.
+
+- 2026-08-16 — In the context of S15 Phase 2 (the explicit scoped tonal
+  context) passing independent review at `8799b55` after three revision rounds
+  — the artifact's semantic validation, the carried evidence that makes replay
+  self-contained, and the endpoint-multiplicity rule — facing how to record its
+  status without letting acceptance widen scope, we decided for marking Phase 2
+  **ACCEPTED / CLOSED / FROZEN** and against treating acceptance as licence to
+  begin using the context, to achieve a clear frozen boundary around a contract
+  that is deliberately inert. Frozen: the context carries its `PitchEvidence`;
+  `PitchEvidence::validate` gates both doors; the artifact re-derives and
+  compares exactly; the scope stays caller-owned; and generation, reranking,
+  and cadence remain untouched, byte-identically. Accepting that confidence
+  calibration, automatic scope selection, and any tonal influence on generation
+  are Phase 3 work needing separate acceptance; that changing the estimator now
+  requires a new `TonalMethod` variant rather than an in-place edit of `KsV1`;
+  and that verification is local evidence only at the moment of acceptance
+  (1434 tests, clippy `--workspace --all-targets -D warnings`, fmt, doc, MSRV
+  1.92, and the `measure`/`validate` proptest at 20 000 cases) — no GitHub
+  Actions run exists on `8799b55` because no pull request was open. A red
+  Actions run on the pull request that follows would be a merge blocker, not a
+  retroactive withdrawal of this acceptance.

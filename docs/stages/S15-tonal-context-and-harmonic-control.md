@@ -2,8 +2,8 @@
 
 Status: in progress — Phase 0 (evidence audit) and Phase 1 (shared tonal core)
 accepted and closed on 2026-07-12; Phase 2 (explicit scoped context contract)
-implemented on 2026-08-16 and **pending acceptance**; Phase 3 follows only after
-Phase 2 is accepted
+accepted and closed on 2026-08-16 at `8799b55`; Phase 3 is next, and opens as
+its own scope
 Depends on: S1 (canonical score), S5 (corpus), S6 (rule generator)
 Builds on: S13 harmonic-context analysis
 Feeds: S6 generation, S7 graph costs, S11 regeneration, S13 complement
@@ -80,7 +80,31 @@ Cloud implementation: `6f9114d` (red), `184b586` (green), `e2c9c7f` (docs),
 `af26206` (accepted/closed). Local validation: `bd2c7c8`; archival:
 `3993bb0`.
 
-## Phase 2 — explicit scoped context contract (implemented, pending acceptance)
+## Phase 2 — explicit scoped context contract ✅
+
+Accepted and closed at `8799b55` on 2026-08-16, after three independent review
+rounds. **Frozen consequences:**
+
+- the context carries its `PitchEvidence`, so replay is self-contained — that,
+  and not the caller still holding the score, is what licenses the compact
+  projection;
+- `PitchEvidence::validate` is the single gate on the root of trust, enforced on
+  both doors (the wire boundary and `TonalContext::from_evidence`);
+- the artifact re-derives itself from that evidence and compares exactly, and
+  every failure is a typed `TonalArtifactError`;
+- the scope stays caller-owned: no scope-free constructor, no automatic
+  whole-score/track/voice selection;
+- Phase 2 is **carriage only** — no note selection, pitch restriction, rerank
+  weight, or cadence reads the context, and generation stays byte-identical
+  with and without one;
+- changing the estimator means a new `TonalMethod` variant with its own
+  re-derivation path, never an in-place edit of `KsV1`;
+- the `u32::MAX`-onsets-per-pitch-class bound on `measure`/`validate` agreement
+  is a recorded Phase-1 saturation limit, not a fixed defect.
+
+Acceptance closes Phase 2 and authorises nothing beyond it. Confidence
+calibration, automatic scope selection, and any tonal influence on generation
+are Phase 3 work and need their own acceptance.
 
 Allow generation-facing requests and provenance to carry an optional, explicit
 scoped tonal estimate **without changing note selection yet**.
