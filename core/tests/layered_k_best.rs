@@ -263,10 +263,33 @@ fn alternatives_are_distinct_paths() {
     assert_eq!(seen.len(), before, "no alternative is returned twice");
 }
 
+/// Every width vector of `layers` entries, each width in `1..=max_width`.
+///
+/// The layers of a `LayeredProblem` are deliberately allowed to differ in
+/// width, so a sweep that only ever builds rectangular problems is not the
+/// sweep its name claims. 1–4 layers over widths 1–3 is 120 vectors; the space
+/// is tiny, so it is enumerated rather than sampled.
+fn width_vectors(layers: usize, max_width: usize) -> Vec<Vec<usize>> {
+    let mut vectors = vec![Vec::new()];
+    for _ in 0..layers {
+        let mut next = Vec::new();
+        for vector in &vectors {
+            for width in 1..=max_width {
+                let mut extended = vector.clone();
+                extended.push(width);
+                next.push(extended);
+            }
+        }
+        vectors = next;
+    }
+    vectors
+}
+
 #[test]
-fn the_engine_agrees_with_brute_force_on_every_tiny_shape() {
-    // Slice A's oracle discipline, extended to the whole set: for each shape and
-    // each diversity rule, the engine's alternatives must be exactly the ones an
+fn the_engine_agrees_with_brute_force_on_every_shape_ragged_ones_included() {
+    // Slice A's oracle discipline, extended to the whole set *and* to every
+    // width vector — not just the square ones. For each shape and each
+    // diversity rule the engine's alternatives must be exactly the ones an
     // exhaustive enumeration would pick, in the same order.
     const LOCALS: [&[f64]; 4] = [
         &[1.0, 2.0, 4.0],
@@ -281,11 +304,18 @@ fn the_engine_agrees_with_brute_force_on_every_tiny_shape() {
     ];
 
     let mut shapes_checked = 0_usize;
+    let mut ragged_checked = 0_usize;
     for layers in 1..=4_usize {
-        for states in 1..=3_usize {
-            let locals_raw: Vec<&[f64]> = (0..layers).map(|l| &LOCALS[l][..states]).collect();
+        for widths in width_vectors(layers, 3) {
+            let locals_raw: Vec<&[f64]> =
+                (0..layers).map(|l| &LOCALS[l][..widths[l]]).collect();
+            // Row count is this layer's width, column count the next layer's.
             let owned_rows: Vec<Vec<&[f64]>> = (0..layers.saturating_sub(1))
-                .map(|l| (0..states).map(|r| &TRANSITIONS[l][r][..states]).collect())
+                .map(|l| {
+                    (0..widths[l])
+                        .map(|r| &TRANSITIONS[l][r][..widths[l + 1]])
+                        .collect()
+                })
                 .collect();
             let transitions_raw: Vec<&[&[f64]]> = owned_rows.iter().map(Vec::as_slice).collect();
 
@@ -298,6 +328,9 @@ fn the_engine_agrees_with_brute_force_on_every_tiny_shape() {
                 policy: &p,
             };
 
+            if widths.iter().any(|w| *w != widths[0]) {
+                ragged_checked += 1;
+            }
             for min_distance in 1..=layers {
                 for k in 1..=5_usize {
                     let engine = solve_k_best(&problem, request(k, min_distance))
@@ -307,7 +340,7 @@ fn the_engine_agrees_with_brute_force_on_every_tiny_shape() {
                     assert_eq!(
                         ordinals_of(&engine),
                         oracle,
-                        "layers {layers}, states {states}, k {k}, distance {min_distance}"
+                        "widths {widths:?}, k {k}, distance {min_distance}"
                     );
                     for (path, expected) in engine.paths.iter().zip(oracle.iter()) {
                         assert_eq!(
@@ -321,7 +354,11 @@ fn the_engine_agrees_with_brute_force_on_every_tiny_shape() {
             }
         }
     }
-    assert!(shapes_checked >= 100, "the sweep actually ran");
+    assert!(shapes_checked >= 1000, "the sweep actually ran: {shapes_checked}");
+    assert!(
+        ragged_checked >= 100,
+        "and it really did cover layers of differing width: {ragged_checked}"
+    );
 }
 
 // ── the diversity rule is explicit and enforced ──────────────────────────────
@@ -706,6 +743,41 @@ fn slice_a_s_refusals_still_refuse() {
         .expect_err("a non-finite cost is refused"),
         PathError::NonFiniteLocal { .. }
     ));
+}
+
+#[test]
+fn an_enumerated_path_whose_fold_overflows_is_refused_not_queued() {
+    // Every input is finite, and `solve` is content: every accumulation the
+    // backward DP forms stays finite, because it only ever adds a local to the
+    // *cheapest* completion. A non-optimal enumerated path is not so lucky —
+    // `[0, 1, 0]` folds to `B + (0 + B)`, which leaves f64 — and that value is
+    // a heap key, ordering alternatives by a number no path can report.
+    //
+    // The rejection rule here is what makes the defect visible at all: the
+    // overflowing candidate is two layers from the optimum, so it is discarded
+    // before `assemble` could catch it, and `k` is met from finite paths. A
+    // laxer accumulation path than `solve`'s therefore returns a clean answer
+    // while an infinity sat in the queue.
+    const B: f64 = 0.9e308;
+    let locals = locals_of(&[&[B, B], &[0.0, B], &[0.0, 0.0]]);
+    let transitions = transitions_of(&[&[&[0.0, 0.0], &[0.0, 0.0]], &[&[0.0, 0.0], &[0.0, 0.0]]]);
+    let p = policy();
+    let problem = LayeredProblem {
+        locals: &locals,
+        transitions: &transitions,
+        policy: &p,
+    };
+
+    solve(&problem).expect("the single-path engine finds a finite optimum here");
+
+    assert!(
+        matches!(
+            solve_k_best(&problem, request(2, 2))
+                .expect_err("an accumulation that leaves f64 is refused, as in Slice A"),
+            PathError::NonFiniteAccumulation { .. }
+        ),
+        "k-best must not have a laxer arithmetic than the engine it extends"
+    );
 }
 
 #[test]
