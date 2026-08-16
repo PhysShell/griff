@@ -174,7 +174,11 @@ fn the_scope_decides_the_key_nothing_re_picks_it() {
     let w0 = t0.projection().expect("track 0 sounds").winner();
     let w1 = t1.projection().expect("track 1 sounds").winner();
 
-    assert_eq!((w0.tonic, w0.mode), (0, KeyMode::Major), "track 0 is C major");
+    assert_eq!(
+        (w0.tonic, w0.mode),
+        (0, KeyMode::Major),
+        "track 0 is C major"
+    );
     assert_eq!(
         (w1.tonic, w1.mode),
         (6, KeyMode::Major),
@@ -195,7 +199,11 @@ fn a_silent_scope_yields_a_context_that_abstains() {
     let ctx = TonalContext::measure(&score, EvidenceScope::Track(9));
 
     assert_eq!(ctx.scope(), EvidenceScope::Track(9), "the asked-for scope");
-    assert_eq!(ctx.projection(), None, "nothing to project: honest abstention");
+    assert_eq!(
+        ctx.projection(),
+        None,
+        "nothing to project: honest abstention"
+    );
     assert_eq!(ctx.evidence().note_count, 0);
     assert_eq!(
         ctx.provenance().weighting(),
@@ -339,7 +347,10 @@ fn the_full_ranking_is_recoverable_from_the_artifact_without_the_score() {
     );
     let projection = ctx.projection().expect("track 1 sounded");
     assert_eq!(estimate.candidates[0], projection.winner());
-    assert_eq!(estimate.candidates[1], projection.runner_up().expect("rival"));
+    assert_eq!(
+        estimate.candidates[1],
+        projection.runner_up().expect("rival")
+    );
     assert_eq!(estimate.confidence_margin, projection.confidence_margin());
 }
 
@@ -371,7 +382,10 @@ fn re_measuring_from_the_contexts_own_scope_reproduces_it_exactly() {
     ] {
         let first = TonalContext::measure(&score, scope);
         let replayed = TonalContext::measure(&score, first.scope());
-        assert_eq!(replayed, first, "replay from the carried scope at {scope:?}");
+        assert_eq!(
+            replayed, first,
+            "replay from the carried scope at {scope:?}"
+        );
         assert_eq!(
             json_of(&replayed),
             json_of(&first),
@@ -453,7 +467,11 @@ fn every_scope_shape_serialises_flat_and_round_trips() {
 fn serialising_the_same_context_twice_yields_the_same_bytes() {
     let score = two_key_score();
     let ctx = TonalContext::measure(&score, EvidenceScope::WholeScore);
-    assert_eq!(json_of(&ctx), json_of(&ctx), "serialisation is deterministic");
+    assert_eq!(
+        json_of(&ctx),
+        json_of(&ctx),
+        "serialisation is deterministic"
+    );
 }
 
 // ── fail-closed: a foreign field is refused at every level ───────────────────
@@ -534,7 +552,10 @@ fn an_envelope_that_abstains_but_claims_a_weighting_is_refused() {
 fn an_envelope_that_projects_but_claims_no_weighting_is_refused() {
     let mut envelope = valid_envelope();
     envelope["provenance"]["weighting"] = serde_json::Value::Null;
-    refuses(&envelope, "a projection with nothing said to have weighted it");
+    refuses(
+        &envelope,
+        "a projection with nothing said to have weighted it",
+    );
 }
 
 #[test]
@@ -643,13 +664,22 @@ fn an_unknown_method_is_refused_rather_than_read_as_the_current_one() {
 }
 
 #[test]
-fn a_valid_envelope_still_deserialises() {
-    // The guard rail above must not have closed the road: the untouched
-    // envelope round-trips.
-    let envelope = valid_envelope();
-    let text = envelope.to_string();
-    let back: TonalContext = serde_json::from_str(&text).expect("a valid artifact deserialises");
-    assert_eq!(json_of(&back), text);
+fn a_valid_envelope_still_deserialises_whatever_its_key_order() {
+    // The guard rail above must not have closed the road. `serde_json::Value`
+    // re-emits object keys in sorted order, so this also pins that validation
+    // reads the document rather than pattern-matching our own byte layout.
+    let score = score_of(vec![track_of(&C_MAJOR, QUARTER)], 2);
+    let context = TonalContext::measure(&score, EvidenceScope::Track(0));
+    let reordered = valid_envelope().to_string();
+
+    assert_ne!(
+        reordered,
+        json_of(&context),
+        "the fixture is genuinely reordered"
+    );
+    let back: TonalContext =
+        serde_json::from_str(&reordered).expect("a valid artifact deserialises");
+    assert_eq!(back, context);
 }
 
 // ── generation: the context is carried and ignored ───────────────────────────
@@ -659,6 +689,11 @@ fn generation_source() -> Score {
     score_of(vec![track_of(&C_MAJOR, QUARTER)], 2)
 }
 
+// Carrying the evidence made `TonalContext` a 248-byte `Copy` type, so a
+// by-value parameter trips the size lint. Production code never does this:
+// `GenerationAsk` is always taken by reference (`ranked_candidates`), and this
+// is a fixture builder.
+#[allow(clippy::large_types_passed_by_value)]
 const fn ask(tonal: Option<TonalContext>) -> GenerationAsk {
     GenerationAsk {
         seed: 42,
@@ -726,8 +761,7 @@ fn tonal_context_restricts_no_pitch_and_reweights_no_policy() {
     let with_context = ranked_candidates(&source, None, &ask(Some(context)), None).expect("seeds");
 
     assert_eq!(
-        plain.base.pitch_material.root.0,
-        with_context.base.pitch_material.root.0,
+        plain.base.pitch_material.root.0, with_context.base.pitch_material.root.0,
         "the tab-seeded anchor is untouched: no tonic substitution"
     );
     assert_eq!(

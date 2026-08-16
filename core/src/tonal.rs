@@ -83,11 +83,14 @@ impl KeyMode {
 
 /// The region of a [`Score`] a [`PitchEvidence`] projection covers.
 ///
-/// Serialises tagged (`{"kind": "track", "at": 1}`) so a scope read back out of
-/// a provenance artifact says *which* region was measured without positional
-/// guesswork.
+/// Serialises flat and tagged (`{"kind": "track", "track": 1}`) so a scope read
+/// back out of an artifact says *which* region was measured without positional
+/// guesswork — and so the shape is one plain object that can refuse unknown
+/// fields. Serde's tagged-enum representations cannot: they accept foreign keys
+/// silently, which would leave a hole at exactly the level a fail-closed
+/// artifact must not have one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "at")]
+#[serde(into = "RawScope", try_from = "RawScope")]
 pub enum EvidenceScope {
     /// Every note of every voice on every track.
     WholeScore,
@@ -176,8 +179,7 @@ impl PitchEvidence {
 /// is corpus/S9 calibration territory. It is duration-weighted whenever duration
 /// mass is present and onset-count-weighted only in the zero-duration fallback,
 /// exactly matching the correlation's weighting.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TonalCandidate {
     /// Tonic pitch class: `0` = C … `11` = B.
     pub tonic: u8,
@@ -260,41 +262,53 @@ pub enum TonalWeighting {
 }
 
 /// How a [`TonalProjection`] was measured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Fields are private and there is no public constructor: a provenance record
+/// is only ever produced by the estimator that it describes, or by a
+/// [`TonalContext`] deserialisation that re-derived and checked it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TonalProvenance {
+    method: TonalMethod,
+    weighting: Option<TonalWeighting>,
+}
+
+impl TonalProvenance {
     /// The estimator that ran.
-    pub method: TonalMethod,
+    #[must_use]
+    pub const fn method(self) -> TonalMethod {
+        self.method
+    }
+
     /// The histogram that weighted it, or `None` when no estimate ran at all —
     /// a silent scope weights nothing, and saying otherwise would be a claim
     /// about material that was never there.
-    pub weighting: Option<TonalWeighting>,
-    /// Notes observed in scope: how much evidence the projection rests on, so a
-    /// three-note scope is not read as a three-hundred-note one.
-    pub note_count: usize,
+    #[must_use]
+    pub const fn weighting(self) -> Option<TonalWeighting> {
+        self.weighting
+    }
 }
 
 /// The compact, immutable projection of a ranked [`TonalEstimate`]: its winner,
 /// its closest rival, and the margin between them.
 ///
-/// Compact by intent. Carrying all 24 candidates through every request and
-/// provenance record would be dead weight, and the ranked estimate is
-/// *replayable* — [`PitchEvidence::measure`] over the carried [`EvidenceScope`]
-/// followed by [`estimate_key`] reproduces it exactly. What the projection must
-/// not drop is the **uncertainty**: the runner-up and the margin stay, so a near
-/// tie still reads as a near tie.
+/// Compact by intent, and compact *safely* because a [`TonalContext`] carries
+/// the [`PitchEvidence`] the estimate was drawn from: the other 22 candidates
+/// are recoverable by handing that evidence back to [`estimate_key`], with no
+/// score and no second measurement pass. What the projection must not drop is
+/// the **uncertainty**: the runner-up and the margin stay, so a near tie still
+/// reads as a near tie.
 ///
 /// There is deliberately no `is_confident` and no threshold. Which margin counts
 /// as confident is calibration work (S15 Phase 3B), not a constant.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Fields are private and the only constructor is
+/// [`from_estimate`](Self::from_estimate), so a projection always is the top of
+/// some ranking rather than three numbers someone assembled.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TonalProjection {
-    /// The best-ranked candidate.
-    pub winner: TonalCandidate,
-    /// The next-best candidate, or `None` when the estimate ranked only one.
-    pub runner_up: Option<TonalCandidate>,
-    /// `winner.correlation - runner_up.correlation` (`0.0` when tied or alone).
-    pub confidence_margin: f64,
+    winner: TonalCandidate,
+    runner_up: Option<TonalCandidate>,
+    confidence_margin: f64,
 }
 
 impl TonalProjection {
@@ -307,6 +321,24 @@ impl TonalProjection {
             confidence_margin: estimate.confidence_margin,
         })
     }
+
+    /// The best-ranked candidate.
+    #[must_use]
+    pub const fn winner(self) -> TonalCandidate {
+        self.winner
+    }
+
+    /// The next-best candidate, or `None` when the estimate ranked only one.
+    #[must_use]
+    pub const fn runner_up(self) -> Option<TonalCandidate> {
+        self.runner_up
+    }
+
+    /// `winner.correlation - runner_up.correlation` (`0.0` when tied or alone).
+    #[must_use]
+    pub const fn confidence_margin(self) -> f64 {
+        self.confidence_margin
+    }
 }
 
 /// An explicitly scoped tonal estimate a caller may attach to a generation
@@ -314,34 +346,43 @@ impl TonalProjection {
 ///
 /// Three things travel together:
 ///
-/// - the [`EvidenceScope`] the caller **chose** — there is no scope-free
-///   constructor here, so nothing picks a track, a voice, or the whole score on
-///   a caller's behalf (an S15 guardrail: `argmax(margin)` is not an approved
-///   policy);
+/// - the [`PitchEvidence`] of the scope the caller **chose** — there is no
+///   scope-free constructor here, so nothing picks a track, a voice, or the
+///   whole score on a caller's behalf (an S15 guardrail: `argmax(margin)` is
+///   not an approved policy);
 /// - the [`TonalProjection`], or `None` when the scope had nothing to estimate
 ///   from;
 /// - the [`TonalProvenance`] saying how it was measured.
 ///
+/// **Self-contained replay.** The evidence travels, not just the scope, so the
+/// full 24-key ranking is recoverable from the artifact *alone*
+/// (`estimate_key(context.evidence())`) — no score, no re-measurement, no "if
+/// you still happen to hold the same input". That is what licenses the compact
+/// projection; carrying only a scope would have made the claim depend on data
+/// the artifact did not keep.
+///
 /// **Two absences, never conflated.** No context at all (an `Option` on the
 /// request) means the caller never asked. A context with `projection: None`
 /// means the caller asked about a scope that turned out silent — an honest
-/// abstention, and itself a fact worth recording. The projection and the
-/// provenance's `weighting` go missing together, by construction.
+/// abstention, and itself a fact worth recording.
+///
+/// **The artifact proves itself.** Fields are private, and deserialisation goes
+/// through one fail-closed wire form that re-derives the whole context from the
+/// carried evidence and compares it against what the document claims, refusing
+/// with a typed [`TonalArtifactError`] on any disagreement (the ADR-0033
+/// "replay and compare, do not trust" posture). `deny_unknown_fields` guards
+/// field *names*; this guards their *values*, which is where a provenance
+/// record would otherwise be free to misdescribe its own origin.
 ///
 /// **Carried, not consumed (Phase 2).** Generation, pitch selection, reranking,
 /// and cadence are unchanged: a pass given a context produces byte-identical
-/// output to one given none. The context exists so a session, a candidate
-/// record, or a frontend can say which scope's estimate was on the table — and
-/// reproduce it.
+/// output to one given none.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(into = "RawContext", try_from = "RawContext")]
 pub struct TonalContext {
-    /// The region the caller named.
-    pub scope: EvidenceScope,
-    /// The compact ranked-estimate projection, or `None` for a silent scope.
-    pub projection: Option<TonalProjection>,
-    /// How the estimate was measured.
-    pub provenance: TonalProvenance,
+    evidence: PitchEvidence,
+    projection: Option<TonalProjection>,
+    provenance: TonalProvenance,
 }
 
 impl TonalContext {
@@ -376,13 +417,473 @@ impl TonalContext {
         .unwrap_or((None, None));
 
         Self {
-            scope: evidence.scope,
+            evidence: *evidence,
             projection,
             provenance: TonalProvenance {
                 method: TonalMethod::KsV1,
                 weighting,
-                note_count: evidence.note_count,
             },
+        }
+    }
+
+    /// The region the caller named.
+    #[must_use]
+    pub const fn scope(&self) -> EvidenceScope {
+        self.evidence.scope
+    }
+
+    /// The raw evidence the estimate was drawn from — hand it to
+    /// [`estimate_key`] to recover the full 24-key ranking.
+    #[must_use]
+    pub const fn evidence(&self) -> &PitchEvidence {
+        &self.evidence
+    }
+
+    /// The compact ranked-estimate projection, or `None` for a silent scope.
+    #[must_use]
+    pub const fn projection(&self) -> Option<TonalProjection> {
+        self.projection
+    }
+
+    /// How the estimate was measured.
+    #[must_use]
+    pub const fn provenance(&self) -> TonalProvenance {
+        self.provenance
+    }
+}
+
+// ── the artifact's wire form ─────────────────────────────────────────────────
+//
+// A [`TonalContext`] has exactly one serialised representation, defined by the
+// private `Raw*` types below. Two properties follow from keeping it in one
+// place, and neither survives a set of derived `Deserialize`s on the public
+// types:
+//
+//   - every level denies unknown fields, including the scope (serde's tagged
+//     enum representations accept foreign keys silently, so the scope is a flat
+//     object here);
+//   - every value is checked. Names are guarded by `deny_unknown_fields`;
+//     *values* are guarded by re-deriving the whole context from the evidence
+//     the document carries and comparing. A document that describes an estimate
+//     its own evidence does not yield is refused, not read.
+//
+// The checks below the re-derivation are redundant with it by construction —
+// the comparison would catch them all. They exist so the refusal names the
+// actual fault instead of "does not match its own evidence".
+
+/// Why a serialised [`TonalContext`] was refused.
+///
+/// Every variant is a *typed refusal*: the artifact is never repaired, coerced,
+/// or partially accepted.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum TonalArtifactError {
+    /// The scope's `kind` does not match the fields it carries.
+    #[error("scope kind `{kind}` does not match its payload")]
+    ScopeShape {
+        /// The `kind` that was named.
+        kind: &'static str,
+    },
+    /// A pitch outside the MIDI 7-bit range.
+    #[error("pitch {value} is outside the MIDI range")]
+    PitchOutOfRange {
+        /// The offending value.
+        value: u8,
+    },
+    /// The observed span runs backwards.
+    #[error("pitch range {lowest}..{highest} is inverted")]
+    PitchRangeInverted {
+        /// Claimed lowest pitch.
+        lowest: u8,
+        /// Claimed highest pitch.
+        highest: u8,
+    },
+    /// `note_count` disagrees with the onset histogram it is supposed to total.
+    #[error("note_count {note_count} disagrees with the onset histogram ({onsets})")]
+    EvidenceNotSelfConsistent {
+        /// Claimed note count.
+        note_count: usize,
+        /// What the histogram actually sums to.
+        onsets: u64,
+    },
+    /// A sounding scope with no observed span, or a silent one carrying a span.
+    #[error("note_count {note_count} and pitch-range presence {has_range} disagree")]
+    EvidenceRangeMismatch {
+        /// Claimed note count.
+        note_count: usize,
+        /// Whether a span was carried.
+        has_range: bool,
+    },
+    /// A tonic outside `0..=11`.
+    #[error("tonic {tonic} is not a pitch class")]
+    TonicOutOfRange {
+        /// The offending value.
+        tonic: u8,
+    },
+    /// A `scale_fit` outside `[0, 1]`, or not finite.
+    #[error("scale_fit {scale_fit} is not a fraction in [0, 1]")]
+    ScaleFitOutOfRange {
+        /// The offending value.
+        scale_fit: f64,
+    },
+    /// A correlation that is not a finite number.
+    #[error("correlation {correlation} is not finite")]
+    NonFiniteCorrelation {
+        /// The offending value.
+        correlation: f64,
+    },
+    /// A margin that is not finite, or is negative — the winner cannot trail
+    /// its own runner-up.
+    #[error("confidence margin {margin} is not a finite, non-negative gap")]
+    MarginNotAFiniteGap {
+        /// The offending value.
+        margin: f64,
+    },
+    /// The margin is not the gap between the two candidates it travels with.
+    #[error("confidence margin {claimed} is not the winner-rival gap {actual}")]
+    MarginIsNotTheGap {
+        /// The margin the document claims.
+        claimed: f64,
+        /// The gap its own candidates imply.
+        actual: f64,
+    },
+    /// The projection, the weighting, and the note count disagree about whether
+    /// an estimate happened at all.
+    #[error(
+        "projection presence {has_projection}, weighting presence {has_weighting}, \
+         and note_count {note_count} disagree about whether an estimate ran"
+    )]
+    IncoherentAbsence {
+        /// Whether a projection was carried.
+        has_projection: bool,
+        /// Whether a weighting was named.
+        has_weighting: bool,
+        /// Claimed note count.
+        note_count: usize,
+    },
+    /// The document describes an estimate that its own evidence does not yield.
+    #[error("the context does not match the evidence it carries")]
+    DoesNotMatchItsOwnEvidence,
+}
+
+/// The `kind` discriminant of a serialised [`EvidenceScope`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RawScopeKind {
+    WholeScore,
+    Track,
+    Voice,
+}
+
+impl RawScopeKind {
+    /// The wire spelling, for refusal messages.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::WholeScore => "whole_score",
+            Self::Track => "track",
+            Self::Voice => "voice",
+        }
+    }
+}
+
+/// A scope as one flat object: `{"kind": "voice", "track": 1, "voice": 0}`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawScope {
+    kind: RawScopeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    track: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    voice: Option<usize>,
+}
+
+impl From<EvidenceScope> for RawScope {
+    fn from(scope: EvidenceScope) -> Self {
+        match scope {
+            EvidenceScope::WholeScore => Self {
+                kind: RawScopeKind::WholeScore,
+                track: None,
+                voice: None,
+            },
+            EvidenceScope::Track(index) => Self {
+                kind: RawScopeKind::Track,
+                track: Some(index),
+                voice: None,
+            },
+            EvidenceScope::Voice { track, voice } => Self {
+                kind: RawScopeKind::Voice,
+                track: Some(track),
+                voice: Some(voice),
+            },
+        }
+    }
+}
+
+impl TryFrom<RawScope> for EvidenceScope {
+    type Error = TonalArtifactError;
+
+    /// Each kind admits exactly one payload shape; anything else is refused
+    /// rather than read with the surplus ignored.
+    fn try_from(raw: RawScope) -> Result<Self, Self::Error> {
+        match (raw.kind, raw.track, raw.voice) {
+            (RawScopeKind::WholeScore, None, None) => Ok(Self::WholeScore),
+            (RawScopeKind::Track, Some(track), None) => Ok(Self::Track(track)),
+            (RawScopeKind::Voice, Some(track), Some(voice)) => Ok(Self::Voice { track, voice }),
+            (kind, _, _) => Err(TonalArtifactError::ScopeShape { kind: kind.label() }),
+        }
+    }
+}
+
+/// An observed pitch span on the wire.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPitchRange {
+    lowest: u8,
+    highest: u8,
+}
+
+/// The raw evidence the estimate was drawn from — the half of the artifact that
+/// makes the ranking recoverable without the score.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEvidence {
+    scope: EvidenceScope,
+    note_count: usize,
+    onset_counts: [u32; 12],
+    duration_mass: [u64; 12],
+    pitch_range: Option<RawPitchRange>,
+}
+
+impl RawEvidence {
+    /// Rebuilds the evidence, checking that it is internally consistent: the
+    /// span is valid and present exactly when notes were observed, and the
+    /// claimed note count is the onset histogram's total.
+    fn into_evidence(self) -> Result<PitchEvidence, TonalArtifactError> {
+        let pitch_range = self
+            .pitch_range
+            .map(|range| {
+                let lowest =
+                    Pitch::new(range.lowest).map_err(|_| TonalArtifactError::PitchOutOfRange {
+                        value: range.lowest,
+                    })?;
+                let highest =
+                    Pitch::new(range.highest).map_err(|_| TonalArtifactError::PitchOutOfRange {
+                        value: range.highest,
+                    })?;
+                if lowest > highest {
+                    return Err(TonalArtifactError::PitchRangeInverted {
+                        lowest: range.lowest,
+                        highest: range.highest,
+                    });
+                }
+                Ok(PitchRange { lowest, highest })
+            })
+            .transpose()?;
+
+        let onsets: u64 = self.onset_counts.iter().copied().map(u64::from).sum();
+        if u64::try_from(self.note_count).unwrap_or(u64::MAX) != onsets {
+            return Err(TonalArtifactError::EvidenceNotSelfConsistent {
+                note_count: self.note_count,
+                onsets,
+            });
+        }
+        if pitch_range.is_some() != (self.note_count > 0) {
+            return Err(TonalArtifactError::EvidenceRangeMismatch {
+                note_count: self.note_count,
+                has_range: pitch_range.is_some(),
+            });
+        }
+
+        Ok(PitchEvidence {
+            scope: self.scope,
+            note_count: self.note_count,
+            onset_counts: self.onset_counts,
+            duration_mass: self.duration_mass,
+            pitch_range,
+        })
+    }
+}
+
+/// One ranked candidate on the wire.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCandidate {
+    tonic: u8,
+    mode: KeyMode,
+    correlation: f64,
+    scale_fit: f64,
+}
+
+impl From<TonalCandidate> for RawCandidate {
+    fn from(candidate: TonalCandidate) -> Self {
+        Self {
+            tonic: candidate.tonic,
+            mode: candidate.mode,
+            correlation: candidate.correlation,
+            scale_fit: candidate.scale_fit,
+        }
+    }
+}
+
+impl TryFrom<RawCandidate> for TonalCandidate {
+    type Error = TonalArtifactError;
+
+    fn try_from(raw: RawCandidate) -> Result<Self, Self::Error> {
+        if raw.tonic > 11 {
+            return Err(TonalArtifactError::TonicOutOfRange { tonic: raw.tonic });
+        }
+        if !raw.correlation.is_finite() {
+            return Err(TonalArtifactError::NonFiniteCorrelation {
+                correlation: raw.correlation,
+            });
+        }
+        if !raw.scale_fit.is_finite() || !(0.0..=1.0).contains(&raw.scale_fit) {
+            return Err(TonalArtifactError::ScaleFitOutOfRange {
+                scale_fit: raw.scale_fit,
+            });
+        }
+        Ok(Self {
+            tonic: raw.tonic,
+            mode: raw.mode,
+            correlation: raw.correlation,
+            scale_fit: raw.scale_fit,
+        })
+    }
+}
+
+/// The compact projection on the wire.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProjection {
+    winner: RawCandidate,
+    runner_up: Option<RawCandidate>,
+    confidence_margin: f64,
+}
+
+impl From<TonalProjection> for RawProjection {
+    fn from(projection: TonalProjection) -> Self {
+        Self {
+            winner: projection.winner.into(),
+            runner_up: projection.runner_up.map(Into::into),
+            confidence_margin: projection.confidence_margin,
+        }
+    }
+}
+
+impl TryFrom<RawProjection> for TonalProjection {
+    type Error = TonalArtifactError;
+
+    /// The margin is re-derived from the two candidates it travels with, so a
+    /// document cannot overstate its own confidence while carrying the
+    /// candidates that contradict it.
+    // Exact float comparison is the contract, not an oversight: the margin is a
+    // single subtraction of the document's own two correlations, so a tolerance
+    // here would be a licence to misstate confidence by that tolerance.
+    #[allow(clippy::arithmetic_side_effects, clippy::float_cmp)]
+    fn try_from(raw: RawProjection) -> Result<Self, Self::Error> {
+        let winner = TonalCandidate::try_from(raw.winner)?;
+        let runner_up = raw.runner_up.map(TonalCandidate::try_from).transpose()?;
+
+        let margin = raw.confidence_margin;
+        if !margin.is_finite() || margin < 0.0 {
+            return Err(TonalArtifactError::MarginNotAFiniteGap { margin });
+        }
+        let actual = runner_up.map_or(0.0, |rival| winner.correlation - rival.correlation);
+        if margin != actual {
+            return Err(TonalArtifactError::MarginIsNotTheGap {
+                claimed: margin,
+                actual,
+            });
+        }
+
+        Ok(Self {
+            winner,
+            runner_up,
+            confidence_margin: margin,
+        })
+    }
+}
+
+/// The provenance on the wire.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProvenance {
+    method: TonalMethod,
+    weighting: Option<TonalWeighting>,
+}
+
+/// The whole artifact on the wire.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawContext {
+    evidence: RawEvidence,
+    projection: Option<RawProjection>,
+    provenance: RawProvenance,
+}
+
+impl From<TonalContext> for RawContext {
+    fn from(context: TonalContext) -> Self {
+        let evidence = context.evidence;
+        Self {
+            evidence: RawEvidence {
+                scope: evidence.scope,
+                note_count: evidence.note_count,
+                onset_counts: evidence.onset_counts,
+                duration_mass: evidence.duration_mass,
+                pitch_range: evidence.pitch_range.map(|range| RawPitchRange {
+                    lowest: range.lowest.0,
+                    highest: range.highest.0,
+                }),
+            },
+            projection: context.projection.map(Into::into),
+            provenance: RawProvenance {
+                method: context.provenance.method,
+                weighting: context.provenance.weighting,
+            },
+        }
+    }
+}
+
+impl TryFrom<RawContext> for TonalContext {
+    type Error = TonalArtifactError;
+
+    /// Replays the artifact instead of trusting it: the evidence must be
+    /// self-consistent, the projection well-formed, the absences coherent, and
+    /// then the whole context is **re-derived from that evidence and compared**.
+    /// What comes back is the re-derived value, so a caller always holds a
+    /// context its own evidence supports.
+    ///
+    /// The float comparison is exact. Every operation in the estimator
+    /// (multiply, add, `mul_add`, `sqrt`, divide) is IEEE-754 correctly rounded
+    /// and `serde_json` round-trips `f64` losslessly, which is the same
+    /// determinism the S6 chain baseline's aggregate-bit golden already rests
+    /// on.
+    fn try_from(raw: RawContext) -> Result<Self, Self::Error> {
+        let evidence = raw.evidence.into_evidence()?;
+        let projection = raw.projection.map(TonalProjection::try_from).transpose()?;
+
+        let has_projection = projection.is_some();
+        let has_weighting = raw.provenance.weighting.is_some();
+        if has_projection != has_weighting || has_projection != (evidence.note_count > 0) {
+            return Err(TonalArtifactError::IncoherentAbsence {
+                has_projection,
+                has_weighting,
+                note_count: evidence.note_count,
+            });
+        }
+
+        let claimed = Self {
+            evidence,
+            projection,
+            provenance: TonalProvenance {
+                method: raw.provenance.method,
+                weighting: raw.provenance.weighting,
+            },
+        };
+        let derived = Self::from_evidence(&evidence);
+        if derived == claimed {
+            Ok(derived)
+        } else {
+            Err(TonalArtifactError::DoesNotMatchItsOwnEvidence)
         }
     }
 }
