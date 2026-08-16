@@ -2090,3 +2090,34 @@ Architectural decisions go to [`adr/`](adr/) instead.
   actually fail-closed and can be tested as such, accepting a wire-shape change
   to an unreleased contract and the loss of serde's automatic enum tagging in
   favour of an explicit `From`/`TryFrom` pair.
+
+- 2026-08-16 — In the context of the second S15 Phase 2 review, facing the
+  finding that validation-by-re-derivation had moved the hole one floor down
+  rather than closing it — `PitchEvidence` was now the root of trust while
+  remaining the one unvalidated type, with public fields and an infallible
+  public `TonalContext::from_evidence`, so a document could forge its facts
+  (onsets on C, duration mass on F#, an observed span holding only C), compute
+  an impeccable estimate *from the forgery*, and satisfy the re-derivation
+  check by being honestly wrong; and that `resolve_weights` summed an untrusted
+  `[u64; 12]` with `Iterator::sum`, a debug panic or a release wrap where a
+  typed refusal was promised — we decided for **one shared
+  `PitchEvidence::validate`, enforced on both doors**: the wire boundary and a
+  now-fallible `from_evidence`, with `measure` staying infallible because its
+  output is valid by construction and both paths sharing one private `project`
+  so a single projection rule survives. The rules are the ones the estimator
+  structurally cannot notice, since it reads the two histograms neither against
+  each other nor against the span: mass only where onsets are and never beyond
+  what those onsets could carry, every sounding class representable inside the
+  observed span, both span endpoints themselves sounding, and totals that fit
+  `u64`. We decided against validating only at the wire (Rust callers would
+  keep a private door into an official `TonalContext`), against a separate
+  `ValidatedPitchEvidence` newtype (a second evidence type for every consumer
+  to thread, where the existing type plus one gate suffices), and against
+  leaving `resolve_weights` unchecked on the grounds that the boundary now
+  rejects such histograms (`estimate_key` is public over a struct with public
+  fields, so the estimator must be safe on its own terms). To achieve a root of
+  trust that is checked rather than assumed, accepting that `from_evidence`
+  becomes fallible, that the gate is strict enough to need a proptest holding
+  it against `measure` so it cannot start rejecting real scores unnoticed, and
+  that `resolve_weights` now saturates — which cannot change any measured
+  score's estimate, since the branch depends only on the total being non-zero.

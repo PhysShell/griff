@@ -137,6 +137,20 @@ Acceptance:
   `TonalArtifactError` makes each failure a typed refusal. `EvidenceScope`
   serialises as one flat object (`{"kind": "track", "track": 1}`) because
   serde's tagged-enum representations accept foreign keys silently.
+- **And the evidence proves itself too.** Re-derivation shows the estimate
+  follows from the evidence; it says nothing about whether the evidence is
+  possible, and the estimator reads the two histograms neither against each
+  other nor against the span. So `PitchEvidence::validate` is the one gate on
+  the root of trust, enforced on both doors — the wire boundary and the now
+  fallible `TonalContext::from_evidence` — rejecting duration mass without
+  onsets, mass beyond what its onsets could carry, a sounding class with no
+  representative inside the observed span, a span endpoint that never sounded,
+  and totals that do not fit `u64`. `measure` stays infallible (its output is
+  valid by construction) and both paths share one private `project`, so there
+  is still exactly one projection rule. `resolve_weights` folds with
+  `saturating_add` rather than `Iterator::sum`, because `estimate_key` is
+  public over a struct with public fields and must not assume a summable
+  histogram.
 
 `core/src/generation_input.rs` gained `GenerationAsk.tonal` and
 `RankedSet.tonal`; `ranked_candidates` echoes the ask's context into the set
@@ -147,8 +161,8 @@ have a scope measured on their behalf.
 
 ### Evidence
 
-- `cargo test --workspace`: 1423 passed, 0 failed (1390 before this phase's
-  work; +33 in the new `core/tests/tonal_context.rs`).
+- `cargo test --workspace`: 1433 passed, 0 failed (1390 before this phase's
+  work; +43 in the new `core/tests/tonal_context.rs`).
 - `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all
   --check`: clean. `cargo doc --no-deps --workspace`: no new warning.
   `cargo +1.92 check --workspace --all-targets` (MSRV): clean.
@@ -175,6 +189,19 @@ have a scope measured on their behalf.
   method, and a well-formed projection that is simply not what the carried
   evidence yields. One test guards the guard: a valid envelope still
   deserialises, whatever its key order.
+- Root of trust: forged evidence is refused through both doors — duration mass
+  on a silent scope, mass for a class that never sounded, mass beyond its
+  onsets' ceiling, an onset with no representative in the span, and a span
+  endpoint that never sounded. The sharpest case has its own test: forge the
+  facts, then compute the estimate *honestly* from the forgery, so
+  re-derivation is satisfied and only the evidence gate can catch it. Two more
+  cover the arithmetic — an unsummable duration histogram is an `Err` from the
+  wire, and `estimate_key` on the same histogram returns finite correlations
+  rather than panicking.
+- A proptest holds `measure` and `validate` together across all four scope
+  shapes, so a gate this strict cannot quietly start rejecting real scores. It
+  passes at the committed 512 cases and at a 20 000-case sweep
+  (`PROPTEST_CASES=20000`).
 
 ### Known consequence
 
@@ -186,8 +213,9 @@ half-trusted — but it does mean that changing the estimator must add a
 `KsV1`. `TonalMethod` is the versioning hook for exactly this.
 
 Implementation: `5d667ac` (red) and `af97684` (green) for the first cut;
-`84bb992` (red) and `c9da896` (green) for the post-review revision. Acceptance
-is a separate gate and has not been given.
+`84bb992` (red) and `c9da896` (green) for the first review revision; `818f799`
+(red) and `bc13ea2` (green) for the second, which validated the evidence itself.
+Acceptance is a separate gate and has not been given.
 
 ## Phase 3 — scope policy and confidence calibration
 
