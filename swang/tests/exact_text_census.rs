@@ -133,17 +133,87 @@ fn struct_fields(source: &str, name: &str, public_only: bool) -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with('#'))
-        .filter_map(|line| {
-            let declaration = match line.strip_prefix("pub ") {
-                Some(rest) => rest,
-                None if public_only => return None,
-                None => line,
-            };
-            declaration.split(':').next()
-        })
-        .filter(|field| !field.is_empty() && !field.contains(' '))
-        .map(str::to_owned)
+        .filter(|line| !public_only || is_public(line))
+        .filter_map(field_name)
         .collect()
+}
+
+/// Whether a field declaration is visible outside the crate.
+///
+/// `pub(crate)` and `pub(super)` are *not*: they are private for the
+/// purposes of the public-API witness, and exact state for the purposes of
+/// the opaque-leaf one.
+fn is_public(declaration: &str) -> bool {
+    declaration.starts_with("pub ") && !declaration.starts_with("pub(")
+}
+
+/// The identifier of a field declaration, whatever its visibility.
+///
+/// Taken as the last whitespace-separated token before the `:`, so every
+/// visibility spelling reduces to the same name:
+///
+/// ```text
+/// capo: u8              -> capo
+/// pub capo: u8          -> capo
+/// pub(crate) capo: u8   -> capo
+/// pub(super) capo: u8   -> capo
+/// ```
+///
+/// An earlier version stripped the literal `"pub "` and then discarded any
+/// remaining token containing a space, which silently dropped
+/// `pub(crate) capo` — the same exact-state drift the witness exists to
+/// catch, wearing a different visibility.
+fn field_name(declaration: &str) -> Option<String> {
+    let head = declaration.split(':').next()?.trim();
+    let name = head.split_whitespace().last()?;
+    (!name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        .then(|| name.to_owned())
+}
+
+/// Payload fields of every variant of an enum, keyed `Enum::Variant.field`.
+///
+/// Tuple payloads are keyed by position (`Other.0`). Canonical state lives
+/// here as much as in structs, and no struct-field scan reaches it.
+fn enum_payload_fields(source: &str, enum_name: &str) -> Vec<String> {
+    let needle = format!("pub enum {enum_name} {{");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{enum_name} is declared"));
+    let body = &source[start + needle.len()..];
+    let end = body
+        .find("\n}")
+        .unwrap_or_else(|| panic!("{enum_name} closes"));
+
+    let mut keys = Vec::new();
+    let mut variant = String::new();
+    let mut depth = 0_u32;
+    for line in body[..end].lines().map(str::trim) {
+        if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
+            continue;
+        }
+        if depth == 0 {
+            let head = line.trim_end_matches([' ', '{', ',']);
+            if let Some(open) = head.find('(') {
+                // Tuple payload on one line: `Other(String),`
+                head[..open].clone_into(&mut variant);
+                keys.push(format!("{enum_name}::{variant}.0"));
+                continue;
+            }
+            head.clone_into(&mut variant);
+            if line.ends_with('{') {
+                depth = 1;
+            }
+            continue;
+        }
+        if line.starts_with('}') {
+            depth = 0;
+            continue;
+        }
+        if let Some(field) = field_name(line) {
+            keys.push(format!("{enum_name}::{variant}.{field}"));
+        }
+    }
+    keys
 }
 
 /// The section of the census a witness is allowed to look in, so that a
@@ -186,6 +256,15 @@ fn table_rows(section: &str) -> Vec<Vec<String>> {
 fn row_for<'a>(rows: &'a [Vec<String>], key: &str) -> Option<&'a Vec<String>> {
     rows.iter()
         .find(|row| row.first().is_some_and(|cell| cell.contains(key)))
+}
+
+/// A section with every whitespace run collapsed to one space.
+///
+/// Prose assertions must survive the document's line wrapping: the phrase
+/// they look for is a sentence, and a sentence in an 76-column markdown file
+/// is split across lines at an arbitrary word.
+fn flattened(section: &str) -> String {
+    section.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ── the witnesses ──────────────────────────────────────────────────────────
@@ -471,14 +550,16 @@ fn opaque_exact_leaves_keep_their_documented_shape() {
 fn repeated_structural_blocks_are_marked_as_such() {
     let doc = census();
     let sets = section(&doc, "### 6.4b Field words are closed", "### 6.5 Strings");
+    // `note` and `rest` are deliberately absent: they are tags of the
+    // `atom *` slot, not repeated fields of their own (§6.4b).
     for word in [
         "master_bar *",
         "track *",
         "voice *",
         "group *",
-        "note *",
-        "rest *",
+        "atom *",
         "span *",
+        "warning *",
     ] {
         assert!(
             sets.contains(word),
@@ -487,7 +568,90 @@ fn repeated_structural_blocks_are_marked_as_such() {
         );
     }
     assert!(
-        sets.contains("`SWG0404` applies to `1` and `?` words only"),
+        flattened(sets).contains("`SWG0404` applies to `1` and `?` words only"),
         "§6.4b must scope SWG0404 to singleton words"
+    );
+}
+
+/// Canonical state that lives in enum payloads, which no struct-field scan
+/// reaches.
+///
+/// Adding `TempoApproximated.source_tick` and repairing the compile would
+/// leave the variant name present, the `SemanticField` set unchanged, and
+/// every struct witness green — while exact text quietly stopped carrying
+/// the field. §2.8 keys these `Enum::Variant.field` so this can match them.
+#[test]
+fn every_enum_payload_field_has_a_syntax_location() {
+    let score = read("core/src/score.rs");
+    let doc = census();
+    let map = section(
+        &doc,
+        "### 2.8 Canonical field",
+        "### 2.9 Opaque exact leaves",
+    );
+
+    let mut keys = enum_payload_fields(&score, "ImportWarning");
+    keys.extend(enum_payload_fields(&score, "EventGroupKind"));
+    assert!(
+        keys.len() >= 5,
+        "expected at least the five known payload fields, found {keys:?}"
+    );
+
+    let missing: Vec<&String> = keys.iter().filter(|key| !map.contains(*key)).collect();
+    assert!(
+        missing.is_empty(),
+        "enum payload fields with no entry in the §2.8 syntax-location map: \
+         {missing:?}. Payload state is canonical state; it adds no \
+         SemanticField variant and no struct field, so this entry is the \
+         only thing standing between it and silent loss."
+    );
+}
+
+/// `EventGroup.atoms` and `LossReport.warnings` are each **one** vector, so
+/// their variant tags are alternatives at one position — not independent
+/// repeated fields a formatter may group.
+///
+/// Without the `:=` lines, a canonical writer could tidily emit every
+/// `note` before every `rest` and destroy the vector order it exists to
+/// preserve.
+#[test]
+fn sum_type_collections_are_single_slots() {
+    let score = read("core/src/score.rs");
+    let doc = census();
+    let sets = section(&doc, "### 6.4b Field words are closed", "### 6.5 Strings");
+
+    // The model really does hold one vector each.
+    assert!(
+        score.contains("pub atoms: Vec<AtomEvent>"),
+        "EventGroup.atoms is no longer a single Vec<AtomEvent>; the joint \
+         slot contract in §6.4b must be revisited"
+    );
+    assert!(
+        score.contains("pub warnings: Vec<ImportWarning>"),
+        "LossReport.warnings is no longer a single Vec<ImportWarning>; the \
+         joint slot contract in §6.4b must be revisited"
+    );
+
+    for slot in [
+        "atom *                 := note | rest",
+        "warning *              :=",
+    ] {
+        assert!(
+            sets.contains(slot),
+            "§6.4b does not declare the joint slot `{slot}`; without it, \
+             note/rest and the warning names read as separate repeated \
+             fields that a formatter may group and reorder"
+        );
+    }
+    assert!(
+        !sets.contains("group                      note * | rest *"),
+        "§6.4b still lists note and rest as independent repeated fields"
+    );
+
+    let ordering = flattened(section(&doc, "### 6.2 Canonical order", "### 6.3 Scalars"));
+    assert!(
+        ordering.contains("do not form separate sortable fields"),
+        "§6.2 must state that variant tags inside one repeated sum-type \
+         collection are not separately sortable fields"
     );
 }

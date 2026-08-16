@@ -290,15 +290,28 @@ SourceMeta.format                source.format <string>    (optional)
 LossReport.warnings              loss.<warning>*
 ```
 
-`EventGroupKind::Tuplet`'s payload is part of the kind word, written
-`group tuplet <u8>/<u8>`. The `ImportWarning` payloads are:
+Canonical state also lives in **enum payloads**, which no struct-field scan
+reaches. They are keyed the same way, `Enum::Variant.field`, so the same
+witness can match them exactly:
 
 ```text
-track_name_invalid_utf8   { track_index <index> }
-smpte_timing_unsupported  (bare word, no payload)
-tempo_approximated        { bar_index <index> nearest_micros <u32> }
-other                     { message <string> }
+EventGroupKind::Tuplet.num       group tuplet <u8>/…
+EventGroupKind::Tuplet.den       group tuplet …/<u8>
+
+ImportWarning::TrackNameInvalidUtf8.track_index
+                                 loss.track_name_invalid_utf8.track_index <index>
+ImportWarning::SmpteTimingUnsupported
+                                 loss.smpte_timing_unsupported  (bare word)
+ImportWarning::TempoApproximated.bar_index
+                                 loss.tempo_approximated.bar_index <index>
+ImportWarning::TempoApproximated.nearest_micros
+                                 loss.tempo_approximated.nearest_micros <u32>
+ImportWarning::Other.0           loss.other.message <string>
 ```
+
+A payload field added to either enum is canonical state that adds no
+`SemanticField` variant and no struct field, so only an entry here — and the
+witness that checks it — stands between such a field and silent loss.
 
 `<index>` is the `usize` of H3, written in decimal. Its width becomes a
 fixed one when SWG-CORE-01 closes; until then the text is as portable as the
@@ -649,10 +662,22 @@ score {
 
 ### 6.2 Canonical order and omission
 
-Field order inside every block is fixed by the formatter, in the order the
-census lists it; an author may write words in any order and `fmt` normalizes
-them. Collections are written in their vector order, which is semantics
-(§2.3, §2.7), never sorted.
+Ordering has three classes, and only the first is the formatter's to
+decide:
+
+1. **singleton fields** (`1` and `?`) — an author may write them in any
+   order and `fmt` normalizes to the order the census lists;
+2. **elements of a repeated collection** — encounter order is preserved
+   exactly, because it is the vector order and the vector order is
+   semantics (§2.3, §2.7). `fmt` never sorts them;
+3. **variant tags inside one repeated sum-type collection** — `note` versus
+   `rest`, and the four warning names — **do not form separate sortable
+   fields**. They are alternatives at one position of a single sequence, so
+   rule 2 governs them and rule 1 must never be applied across them.
+
+Class 3 exists because it is the one a well-meaning formatter gets wrong:
+grouping every `note` before every `rest` looks tidy, is a field-order
+normalization by rule 1, and silently rewrites the music.
 
 "Collection" is not self-evident here, so it is defined rather than
 assumed. Two kinds of repeated thing exist in the census and they behave
@@ -745,7 +770,8 @@ master_bar                 index 1 | ticks 1 | meter 1 | tempo 1 | repeat ?
 repeat                     start 1 | play_count 1
 track                      name ? | channel 1 | tuning 1 | voice *
 voice                      id 1 | group *
-group                      note * | rest * | span *
+group                      atom * | span *
+    atom *                 := note | rest
 note                       at 1 | duration 1 | pitch 1 | velocity 1
                            | marks 1 | position ?
 rest                       at 1 | duration 1
@@ -753,8 +779,11 @@ position                   string 1 | fret 1 | evidence 1
 span                       ticks 1 | evidence 1
 evidence                   source 1 | confidence 1
 source                     format ?
-loss                       track_name_invalid_utf8 * | tempo_approximated *
-                           | smpte_timing_unsupported * | other *
+loss                       warning *
+    warning *              := track_name_invalid_utf8
+                            | smpte_timing_unsupported
+                            | tempo_approximated
+                            | other
 track_name_invalid_utf8    track_index 1
 tempo_approximated         bar_index 1 | nearest_micros 1
 other                      message 1
@@ -778,6 +807,16 @@ the census marks load-bearing.
 A `*` word appearing zero times is the omission of §6.2, not a missing
 required word: `SWG0403` never fires for a `*`. It fires for an absent `1`,
 and never for an absent `?`.
+
+**`atom *` and `warning *` are single slots with alternative tags, not
+several collections.** `EventGroup.atoms` is one `Vec<AtomEvent>` and
+`LossReport.warnings` one `Vec<ImportWarning>`; `note` and `rest` are two
+spellings of an element of the first, and the four warning names four
+spellings of an element of the second. Writing them as independent repeated
+fields would invite a formatter to group all the `note` blocks and then all
+the `rest` blocks, which reorders a vector the census marks load-bearing —
+a canonical writer destroying the very order it exists to preserve. The
+`:=` line is where that is ruled out.
 
 Forward compatibility is a level question, not a field question: a future
 canonical field arrives with level 3, not as a word level 2 tolerated.
@@ -852,6 +891,12 @@ Every row needs an adversarial legal witness and a rejected witness. A
 divergence witness appears only where the feature admits one; `—` means the
 category is genuinely empty for that row, not that it was skipped.
 
+Cardinality itself has no negative case — a `*` word cannot be repeated
+"too often" — so the repeated-block row's rejected witness is a malformed
+*element*, not a malformed count. That is the honest shape of the
+obligation, and it is why the row still carries one rather than an em dash
+that would quietly contradict §8.
+
 | Feature | Text | Adversarial legal (round-trips) | Divergence (valid, different `Score`) | Rejected (code) |
 | --- | --- | --- | --- | --- |
 | note crossing a barline | one `note`, no tie | duration spanning two bars | split into two notes at the barline | `note` without `duration` → `SWG0403` |
@@ -874,7 +919,8 @@ category is genuinely empty for that row, not that it was skipped.
 | ppqn | `ppqn <u16>` | `ppqn 1` | — | `ppqn 0` → `SWG0506` |
 | bar index | `index <index>` | `index 17` at position 3 | `index` taken from the position | `index 03` → `SWG0505` |
 | channel | `channel <u8>` | `channel 200` | — | `channel` omitted → `SWG0403` |
-| repeated blocks | `master_bar *` | two `master_bar` blocks | the two bars swapped | — (multiplicity `*`; `SWG0404` does not apply, §6.4b) |
+| repeated blocks | `master_bar *` | two `master_bar` blocks | the two bars swapped | `master_bar` without `index` → `SWG0403` |
+| sum-type slot order | `atom * := note \| rest` | a group of `rest note rest` | the notes grouped before the rests | `group { atom … }` — `atom` is not a word → `SWG0401` |
 
 `tempo 7/1` earns its own row rather than a footnote. The inhabited set and
 the builder algorithm disagreed about it once already, in a draft where the
