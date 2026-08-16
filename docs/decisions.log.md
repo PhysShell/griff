@@ -2171,3 +2171,47 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Actions run exists on `8799b55` because no pull request was open. A red
   Actions run on the pull request that follows would be a merge blocker, not a
   retroactive withdrawal of this acceptance.
+
+- 2026-08-16 — In the context of S7 Slice C (deterministic k-best alternatives
+  over the layered-path engine), facing the prior-art-first rule for both halves
+  of the problem, we surveyed the k-best-paths literature and the diverse-
+  solutions literature separately, because they answer different questions.
+  *Enumeration:* **serial list Viterbi** (Seshadri & Sundberg, IEEE Trans. Comm.
+  1994) in **Lawler's formulation** (1972) — branch each found path at every
+  layer after its own deviation point, read the branch's cost off the backward
+  table the engine already computes, and pop from a heap in nondecreasing order;
+  each path is generated exactly once because the paths first differing from a
+  found one at layer `i` partition the remainder. Against **Eppstein** (1998),
+  whose sidetrack heap buys asymptotics a bars-by-candidates problem does not
+  need and adds a structure nobody can review against the cost-association law,
+  and against **Yen** (1971), which recomputes shortest paths this engine
+  already holds and whose loopless-ness is free in a DAG. *Diversity:*
+  **DivMBest's greedy conditioning** (Batra, Yadollahpour, Guzmán-Rivera &
+  Shakhnarovich, ECCV 2012) — accept the cheapest path far enough from
+  everything already accepted — expressed as a **hard Hamming-distance
+  constraint in layers**, against **MMR** (Carbonell & Goldstein 1998) and
+  **DPPs**, both of which price novelty against relevance with a tuning
+  constant where the stage asks for an explicit rule, and DPPs additionally
+  bring a probabilistic flavour into a deliberately seedless engine. To achieve
+  alternatives that are genuinely different routes rather than the winner with
+  one layer nudged, accepting that the set is **greedy, not jointly optimal**
+  (that is a harder problem and not what an alternatives list needs, and the
+  docs say so rather than implying otherwise), that rejected candidates must
+  still branch (a near-clone can have descendants far from an accepted path, so
+  pruning would lose them silently), and that the enumeration has no artificial
+  cap — it terminates when the qualifying space is exhausted and reports that,
+  rather than truncating quietly. Idea reuse only; no dependency added.
+
+- 2026-08-16 — In the context of the same slice, facing the fact that a
+  candidate's priority-queue key is a path cost and `PATH_COST_ASSOCIATION`
+  makes the *grouping* of those additions normative, we decided to fold each
+  candidate's key from `suffix[i][s]` **outward through its fixed prefix** — the
+  recurrence's own right-associated grouping — and against the obvious
+  `prefix + suffix`, which is a different function of the same terms and would
+  have ordered alternatives by a number none of them reports. To achieve a heap
+  key, a reported `total_cost`, and an independently folded brute-force oracle
+  value that agree bit for bit, accepting that computing a key is O(prefix)
+  rather than O(1) and that `solve` and `solve_k_best` had to be refactored onto
+  one shared `Prepared` so the two entry points cannot drift into different
+  validation or a different table. Slice B paid an ULP to learn this once
+  already.

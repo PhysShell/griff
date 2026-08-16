@@ -1,9 +1,11 @@
 # S7: Graph layer (late)
 
 Status: in progress — landed: chunk similarity edge (2026-06-10), Slices A/B
-(2026-07-17: the layered-path engine and the multi-bar candidate chain).
-Remaining: Slice C; the corpus-scale full graph and any Slice D specialised
-clients stay deliberately late
+(2026-07-17: the layered-path engine and the multi-bar candidate chain), Slice C
+engine-side (2026-08-16: deterministic k-best alternatives, pending acceptance).
+Remaining: a Slice C client (the chain returning alternatives rather than one
+plan); the corpus-scale full graph and any Slice D specialised clients stay
+deliberately late
 Depends on: S6 acceptance
 ADRs: ADR-0013 (DP/Viterbi traversal) as amended by ADR-0030 (reduced-state
 layered DP clients), ADR-0018 (rich note model: fretboard + multi-technique with
@@ -188,7 +190,7 @@ count, non-finite DP accumulations, the boundary facts' valid bars and last
 sounding note, the compatibility contract over the shared skeleton, and
 group-local lossless assembly.
 
-### Slice C — deterministic k-best alternatives
+### Slice C — deterministic k-best alternatives — **engine landed 2026-08-16**
 
 Return several ranked global paths with:
 
@@ -196,6 +198,59 @@ Return several ranked global paths with:
 - complete total/local/transition explanations;
 - an explicit diversity rule so alternatives are not path clones;
 - stable provenance for S8 display and S9 feedback.
+
+`layered_path::solve_k_best(problem, KBestRequest { k, min_distance })` →
+`KBestSolution`. Engine-side only: the candidate-chain client still plans one
+chain, and giving it alternatives is separate work.
+
+- **Prior art, not invention.** A trellis's k-best problem is old. The
+  enumeration is the *serial* list Viterbi algorithm (Seshadri & Sundberg 1994)
+  in Lawler's formulation (1972): every found path branches at each layer after
+  its own deviation point, the branch's cost is read off the backward table
+  Slice A already computes, and a heap pops candidates in nondecreasing order.
+  Each path is generated exactly once, because the paths first differing from a
+  found one at layer `i` partition the remainder. The diversity rule is
+  DivMBest's greedy conditioning (Batra et al., ECCV 2012). Rejected: Eppstein
+  (1998), whose sidetrack heap buys asymptotics bar-scale problems do not need;
+  Yen (1971), which recomputes shortest paths this engine already holds; MMR and
+  DPPs, which price diversity with a constant where this stage asks for a rule.
+- **The diversity rule is a constraint, not a score.** `min_distance` is a
+  Hamming distance in layers: two returned paths must choose different states in
+  at least that many. Nothing trades cost against novelty behind a tuning
+  constant, so the set is always explainable as "the cheapest paths this far
+  apart". `1` means merely distinct; `2`+ forces different routes. Over a
+  trellis the plain runner-up is the winner with one layer nudged, which is one
+  alternative wearing several hats — a fixture pins that the wider rule really
+  does replace it.
+- **Greedy, and says so.** The set is the cheapest qualifying path, then the
+  cheapest given that one, and so on — not a jointly optimal diverse set, which
+  is a harder problem and not what an alternatives list needs. Rejected
+  candidates still branch: a near-clone can have descendants far from an
+  accepted path, and pruning there would lose them silently.
+- **One door, not two.** `solve` and `solve_k_best` share a private `Prepared`
+  — the same shape and finiteness checks, the same `suffix` table, and therefore
+  the same cost association. A candidate's heap key is folded from
+  `suffix[i][s]` outward through its fixed prefix, the recurrence's own
+  grouping, rather than as `prefix + suffix`, which is a different function of
+  the same terms. Key, reported `total_cost`, and the oracle's independent fold
+  agree bit for bit.
+- **Identity is the ordinal vector, not the rank.** A route keeps its ordinals
+  across re-planning while its index moves the moment `k` or `min_distance`
+  changes, so an S9 record of a human's choice must store the vector, and an S8
+  display labelling alternatives by position is labelling something that does
+  not hold still. A test pins a route appearing at two different ranks under two
+  rules.
+- **Shortfall is honest.** Fewer than `k` comes back with `exhausted` set, never
+  padded and never repeated. Three asks that cannot mean anything are refused
+  outright: zero alternatives, a zero distance (it would admit a clone), and a
+  distance wider than the problem has layers.
+- 18 tests, including a brute-force oracle over every shape from 1–4 layers ×
+  1–3 states, for every diversity distance and every `k` up to 5, compared on
+  both the exact paths and the bit-identical totals — Slice A's oracle
+  discipline extended from one path to the whole set.
+
+Implementation: `513fa91` (red), `60b3493` (green). Acceptance is a separate
+gate and has not been given.
 
 ### Slice D — specialised clients
 
