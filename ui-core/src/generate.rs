@@ -479,6 +479,7 @@ mod tests {
             bars: 4,
             variants_per_strategy: 2,
             gesture: false,
+            tonal: None,
         }
     }
 

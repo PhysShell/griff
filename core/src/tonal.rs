@@ -1,5 +1,5 @@
 //! Shared pure-core tonal *evidence* and *inference* — the tonal-context layer
-//! (Phase 1).
+//! (S15 Phases 1–2).
 //!
 //! Two layers, deliberately separated so measurement is a pure fact and
 //! inference is a scored, *uncertain* verdict (mirroring the axes-vs-aggregate
@@ -28,7 +28,15 @@
 //! part whose notes all have zero duration still estimates). Phase 1 blends
 //! nothing and applies no metric-accent policy — those remain uncalibrated
 //! design space (see `docs/audit/2026-07-tonal-context-phase0.md`).
+//!
+//! Phase 2 adds a third, *carriable* layer on top: a [`TonalContext`] bundles
+//! the scope a caller chose, a compact [`TonalProjection`] of the ranked
+//! estimate, and the [`TonalProvenance`] describing how it was measured, so a
+//! generation request and its provenance can record which scope's estimate was
+//! on the table. It is **carried, not consumed** — nothing here restricts a
+//! pitch, reweights a policy, or changes a note.
 
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 use crate::event::Pitch;
@@ -45,7 +53,8 @@ const KK_MINOR: [f64; 12] = [
 ];
 
 /// Major or natural minor — the two scale shapes the key estimate considers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum KeyMode {
     /// The major (Ionian) scale.
     Major,
@@ -73,7 +82,12 @@ impl KeyMode {
 }
 
 /// The region of a [`Score`] a [`PitchEvidence`] projection covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialises tagged (`{"kind": "track", "at": 1}`) so a scope read back out of
+/// a provenance artifact says *which* region was measured without positional
+/// guesswork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "at")]
 pub enum EvidenceScope {
     /// Every note of every voice on every track.
     WholeScore,
@@ -162,7 +176,8 @@ impl PitchEvidence {
 /// is corpus/S9 calibration territory. It is duration-weighted whenever duration
 /// mass is present and onset-count-weighted only in the zero-duration fallback,
 /// exactly matching the correlation's weighting.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TonalCandidate {
     /// Tonic pitch class: `0` = C … `11` = B.
     pub tonic: u8,
@@ -213,48 +228,228 @@ pub fn estimate_key(evidence: &PitchEvidence) -> Option<TonalEstimate> {
     )
 }
 
+/// The estimator behind a [`TonalProjection`] — the *method* half of
+/// [`TonalProvenance`].
+///
+/// Spelled out rather than implied: a projection read back from an artifact
+/// must say which estimator produced it, and one naming a method this build
+/// does not know refuses to deserialise instead of being read as the current
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TonalMethod {
+    /// Krumhansl–Schmuckler v1, as [`estimate_key`] implements it: Pearson
+    /// correlation against the 24 rotated Krumhansl–Kessler profiles.
+    KsV1,
+}
+
+/// Which histogram actually weighted an inference.
+///
+/// KS v1 is duration-only *except* that a scope whose notes all carry zero
+/// duration falls back to raw onset counts, so the estimate stays defined.
+/// Which of the two ran is invisible in the result, so the context records it —
+/// otherwise a consumer cannot tell an estimate resting on sounded time from
+/// one resting on bare attack tallies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TonalWeighting {
+    /// Summed sounded ticks per pitch class — the normal path.
+    DurationMass,
+    /// Raw onset tallies — the fallback, taken only at zero total duration mass.
+    OnsetCounts,
+}
+
+/// How a [`TonalProjection`] was measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TonalProvenance {
+    /// The estimator that ran.
+    pub method: TonalMethod,
+    /// The histogram that weighted it, or `None` when no estimate ran at all —
+    /// a silent scope weights nothing, and saying otherwise would be a claim
+    /// about material that was never there.
+    pub weighting: Option<TonalWeighting>,
+    /// Notes observed in scope: how much evidence the projection rests on, so a
+    /// three-note scope is not read as a three-hundred-note one.
+    pub note_count: usize,
+}
+
+/// The compact, immutable projection of a ranked [`TonalEstimate`]: its winner,
+/// its closest rival, and the margin between them.
+///
+/// Compact by intent. Carrying all 24 candidates through every request and
+/// provenance record would be dead weight, and the ranked estimate is
+/// *replayable* — [`PitchEvidence::measure`] over the carried [`EvidenceScope`]
+/// followed by [`estimate_key`] reproduces it exactly. What the projection must
+/// not drop is the **uncertainty**: the runner-up and the margin stay, so a near
+/// tie still reads as a near tie.
+///
+/// There is deliberately no `is_confident` and no threshold. Which margin counts
+/// as confident is calibration work (S15 Phase 3B), not a constant.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TonalProjection {
+    /// The best-ranked candidate.
+    pub winner: TonalCandidate,
+    /// The next-best candidate, or `None` when the estimate ranked only one.
+    pub runner_up: Option<TonalCandidate>,
+    /// `winner.correlation - runner_up.correlation` (`0.0` when tied or alone).
+    pub confidence_margin: f64,
+}
+
+impl TonalProjection {
+    /// Projects `estimate`, or `None` when it ranked nothing.
+    #[must_use]
+    pub fn from_estimate(estimate: &TonalEstimate) -> Option<Self> {
+        Some(Self {
+            winner: *estimate.winner()?,
+            runner_up: estimate.candidates.get(1).copied(),
+            confidence_margin: estimate.confidence_margin,
+        })
+    }
+}
+
+/// An explicitly scoped tonal estimate a caller may attach to a generation
+/// request, and that the request's provenance carries back unchanged.
+///
+/// Three things travel together:
+///
+/// - the [`EvidenceScope`] the caller **chose** — there is no scope-free
+///   constructor here, so nothing picks a track, a voice, or the whole score on
+///   a caller's behalf (an S15 guardrail: `argmax(margin)` is not an approved
+///   policy);
+/// - the [`TonalProjection`], or `None` when the scope had nothing to estimate
+///   from;
+/// - the [`TonalProvenance`] saying how it was measured.
+///
+/// **Two absences, never conflated.** No context at all (an `Option` on the
+/// request) means the caller never asked. A context with `projection: None`
+/// means the caller asked about a scope that turned out silent — an honest
+/// abstention, and itself a fact worth recording. The projection and the
+/// provenance's `weighting` go missing together, by construction.
+///
+/// **Carried, not consumed (Phase 2).** Generation, pitch selection, reranking,
+/// and cadence are unchanged: a pass given a context produces byte-identical
+/// output to one given none. The context exists so a session, a candidate
+/// record, or a frontend can say which scope's estimate was on the table — and
+/// reproduce it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TonalContext {
+    /// The region the caller named.
+    pub scope: EvidenceScope,
+    /// The compact ranked-estimate projection, or `None` for a silent scope.
+    pub projection: Option<TonalProjection>,
+    /// How the estimate was measured.
+    pub provenance: TonalProvenance,
+}
+
+impl TonalContext {
+    /// Measures `scope` on `score` and projects the estimate.
+    ///
+    /// The caller names the scope; this never searches for a better one.
+    // `score` (the Score) and `scope` (the region) are distinct domain terms.
+    #[allow(clippy::similar_names)]
+    #[must_use]
+    pub fn measure(score: &Score, scope: EvidenceScope) -> Self {
+        Self::from_evidence(&PitchEvidence::measure(score, scope))
+    }
+
+    /// Projects already-measured `evidence`, keeping the scope it was measured
+    /// over.
+    ///
+    /// The same contract as [`measure`](Self::measure) for a caller that
+    /// already holds the evidence: the context's scope is the evidence's scope,
+    /// never a second choice.
+    #[must_use]
+    pub fn from_evidence(evidence: &PitchEvidence) -> Self {
+        // One decision drives both fields, so a context can never claim to have
+        // weighted a histogram it produced no projection from.
+        let (projection, weighting) = estimate_with_weighting(
+            evidence.note_count,
+            &evidence.onset_counts,
+            &evidence.duration_mass,
+        )
+        .and_then(|(estimate, weighting)| {
+            TonalProjection::from_estimate(&estimate).map(|p| (Some(p), Some(weighting)))
+        })
+        .unwrap_or((None, None));
+
+        Self {
+            scope: evidence.scope,
+            projection,
+            provenance: TonalProvenance {
+                method: TonalMethod::KsV1,
+                weighting,
+                note_count: evidence.note_count,
+            },
+        }
+    }
+}
+
 /// The shared inference core over raw histograms, reused by [`estimate_key`] and
 /// by `complement::estimate_harmony` (which has weighted notes, not a scope).
-#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 pub(crate) fn estimate_from_histograms(
     note_count: usize,
     onset_counts: &[u32; 12],
     duration_mass: &[u64; 12],
 ) -> Option<TonalEstimate> {
+    estimate_with_weighting(note_count, onset_counts, duration_mass).map(|(estimate, _)| estimate)
+}
+
+/// The same inference, also reporting *which* histogram weighted it — the one
+/// place that decides, so [`TonalContext`]'s provenance and the estimate itself
+/// can never disagree about the KS v1 fallback.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+pub(crate) fn estimate_with_weighting(
+    note_count: usize,
+    onset_counts: &[u32; 12],
+    duration_mass: &[u64; 12],
+) -> Option<(TonalEstimate, TonalWeighting)> {
     if note_count == 0 {
         return None;
     }
 
-    let weights = resolve_weights(onset_counts, duration_mass);
+    let (weights, weighting) = resolve_weights(onset_counts, duration_mass);
     let candidates = rank_keys(&weights);
     let confidence_margin = match (candidates.first(), candidates.get(1)) {
         (Some(best), Some(runner_up)) => best.correlation - runner_up.correlation,
         _ => 0.0,
     };
 
-    Some(TonalEstimate {
-        candidates,
-        confidence_margin,
-    })
+    Some((
+        TonalEstimate {
+            candidates,
+            confidence_margin,
+        },
+        weighting,
+    ))
 }
 
 /// Resolves the weighting histogram: duration mass when any is present, else the
 /// raw onset counts (KS v1 duration-only rule, onset fallback at zero duration).
+///
+/// Returns the branch it took alongside the weights, so the fallback is a
+/// reportable fact rather than an invisible one.
 #[allow(clippy::cast_precision_loss)]
-fn resolve_weights(onset_counts: &[u32; 12], duration_mass: &[u64; 12]) -> [f64; 12] {
+fn resolve_weights(
+    onset_counts: &[u32; 12],
+    duration_mass: &[u64; 12],
+) -> ([f64; 12], TonalWeighting) {
     let total_duration: u64 = duration_mass.iter().sum();
     let mut weights = [0.0_f64; 12];
     if total_duration == 0 {
         for (slot, &count) in weights.iter_mut().zip(onset_counts.iter()) {
             *slot = f64::from(count);
         }
+        (weights, TonalWeighting::OnsetCounts)
     } else {
         // Duration mass in ticks; exact in f64 for any realistic score.
         for (slot, &mass) in weights.iter_mut().zip(duration_mass.iter()) {
             *slot = mass as f64;
         }
+        (weights, TonalWeighting::DurationMass)
     }
-    weights
 }
 
 /// Scores all 24 keys against `weights` and returns them best-first.

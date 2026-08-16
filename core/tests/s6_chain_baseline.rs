@@ -122,6 +122,10 @@ const fn ask() -> GenerationAsk {
         bars: 4,
         variants_per_strategy: 2,
         gesture: false,
+        // S15 Phase 2 added the field; the golden below was recorded before it
+        // existed, so `None` is what keeps this a characterization of that
+        // pass. A context here would have to leave the golden untouched too.
+        tonal: None,
     }
 }
 

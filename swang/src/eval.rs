@@ -221,6 +221,9 @@ pub fn evaluate_program(
         )
         .map_err(|d| vec![d])?,
         gesture: true,
+        // S16 patterns carry no tonal context: Swang's `generate` verb has no
+        // scope word, and the core must not measure one on its behalf.
+        tonal: None,
     };
     // `bars`/`candidates` were range-checked above, so a failure here is a
     // seed score that cannot seed the request (no pitch material, unusable
@@ -578,6 +581,7 @@ pattern p {{
                 bars: 4,
                 variants_per_strategy: 2,
                 gesture: true,
+                tonal: None,
             },
             Some(plan.templates.as_slice()),
         )
