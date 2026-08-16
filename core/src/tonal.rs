@@ -170,6 +170,124 @@ impl PitchEvidence {
             pitch_range: tally.pitch_range,
         }
     }
+
+    /// Checks that these facts are ones a measurement could have produced.
+    ///
+    /// [`measure`](Self::measure) satisfies every rule below by construction,
+    /// but the fields are public and the type is deserialised at the
+    /// [`TonalContext`] wire boundary, so evidence that arrives from anywhere
+    /// else is *claimed*, not measured. Everything downstream — the estimate,
+    /// the projection, the re-derivation that checks them — treats this
+    /// structure as ground truth, which makes it the root of trust and the one
+    /// place a forgery has to be stopped: an impossible fact set will otherwise
+    /// yield an impeccably computed estimate and prove itself right about a lie.
+    ///
+    /// The estimator reads only the two histograms, and never reads them
+    /// against each other or against the span, so none of these disagreements
+    /// would surface later:
+    ///
+    /// - the span runs forwards;
+    /// - `note_count` is the onset histogram's total;
+    /// - a silent scope holds no duration mass and no span, and a sounding one
+    ///   holds a span;
+    /// - duration mass only where onsets are, and never more than those onsets
+    ///   could carry (one onset contributes at most one `u32` of ticks);
+    /// - the total duration mass fits `u64`;
+    /// - every sounding pitch class has at least one MIDI representative inside
+    ///   the observed span, and both span endpoints are themselves sounding
+    ///   classes — an endpoint is by definition an observed note.
+    ///
+    /// # Errors
+    /// One [`TonalArtifactError`] naming the first rule broken.
+    #[allow(clippy::indexing_slicing)] // fixed 12-bin histograms, indices are mod-12
+    pub fn validate(&self) -> Result<(), TonalArtifactError> {
+        if let Some(range) = self.pitch_range {
+            if range.lowest > range.highest {
+                return Err(TonalArtifactError::PitchRangeInverted {
+                    lowest: range.lowest.0,
+                    highest: range.highest.0,
+                });
+            }
+        }
+
+        let onsets = checked_total(self.onset_counts.iter().copied().map(u64::from))
+            .ok_or(TonalArtifactError::OnsetCountOverflow)?;
+        if u64::try_from(self.note_count).unwrap_or(u64::MAX) != onsets {
+            return Err(TonalArtifactError::EvidenceNotSelfConsistent {
+                note_count: self.note_count,
+                onsets,
+            });
+        }
+        if self.pitch_range.is_some() != (self.note_count > 0) {
+            return Err(TonalArtifactError::EvidenceRangeMismatch {
+                note_count: self.note_count,
+                has_range: self.pitch_range.is_some(),
+            });
+        }
+
+        for pc in 0..12_usize {
+            let class_onsets = self.onset_counts[pc];
+            let mass = self.duration_mass[pc];
+            #[allow(clippy::cast_possible_truncation)] // pc < 12
+            let pitch_class = pc as u8;
+            if mass > 0 && class_onsets == 0 {
+                return Err(TonalArtifactError::DurationMassWithoutOnsets { pitch_class });
+            }
+            // Both operands come from `u32`s, so the `u128` product is exact;
+            // `saturating_mul` states that rather than relying on it.
+            let ceiling = u128::from(class_onsets).saturating_mul(u128::from(u32::MAX));
+            if u128::from(mass) > ceiling {
+                return Err(TonalArtifactError::DurationMassExceedsOnsets { pitch_class });
+            }
+        }
+        checked_total(self.duration_mass.iter().copied())
+            .ok_or(TonalArtifactError::DurationMassOverflow)?;
+
+        // Without a span there is nothing left to reconcile: the checks above
+        // already established that such a scope is silent.
+        let Some(range) = self.pitch_range else {
+            return Ok(());
+        };
+        for pc in 0..12_usize {
+            #[allow(clippy::cast_possible_truncation)] // pc < 12
+            let pitch_class = pc as u8;
+            if self.onset_counts[pc] > 0 && !range_holds_class(range, pitch_class) {
+                return Err(TonalArtifactError::PitchClassOutsideObservedRange { pitch_class });
+            }
+        }
+        for endpoint in [range.lowest, range.highest] {
+            if self.onset_counts[usize::from(endpoint.0 % 12)] == 0 {
+                return Err(TonalArtifactError::RangeEndpointNeverSounded { pitch: endpoint.0 });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Sums without wrapping or panicking — `None` when the total leaves `u64`.
+///
+/// Untrusted histograms are summed through here rather than `Iterator::sum`,
+/// which panics on overflow in a debug build and wraps in a release one. A
+/// fail-closed artifact may do neither.
+fn checked_total(mut values: impl Iterator<Item = u64>) -> Option<u64> {
+    values.try_fold(0_u64, u64::checked_add)
+}
+
+/// Whether any MIDI pitch inside `range` belongs to `pitch_class`.
+///
+/// The lowest candidate at or above `range.lowest` is `lowest` advanced to the
+/// next occurrence of the class; the class is representable exactly when that
+/// candidate still fits under `highest`.
+fn range_holds_class(range: PitchRange, pitch_class: u8) -> bool {
+    let lowest = u16::from(range.lowest.0);
+    // `pitch_class` and `lowest % 12` are both below 12, so the intermediate
+    // stays well inside `u16`; saturating operations keep that explicit.
+    let step = u16::from(pitch_class)
+        .saturating_add(12)
+        .saturating_sub(lowest % 12)
+        % 12;
+    lowest.saturating_add(step) <= u16::from(range.highest.0)
 }
 
 /// One key's fit against the evidence: a tonic, a mode, the Pearson correlation
@@ -393,7 +511,10 @@ impl TonalContext {
     #[allow(clippy::similar_names)]
     #[must_use]
     pub fn measure(score: &Score, scope: EvidenceScope) -> Self {
-        Self::from_evidence(&PitchEvidence::measure(score, scope))
+        // Measured evidence is valid by construction, so this door needs no
+        // gate — `PitchEvidence::validate`'s own rules are exactly the ones
+        // `measure` establishes, and a proptest holds the two together.
+        Self::project(&PitchEvidence::measure(score, scope))
     }
 
     /// Projects already-measured `evidence`, keeping the scope it was measured
@@ -401,9 +522,21 @@ impl TonalContext {
     ///
     /// The same contract as [`measure`](Self::measure) for a caller that
     /// already holds the evidence: the context's scope is the evidence's scope,
-    /// never a second choice.
-    #[must_use]
-    pub fn from_evidence(evidence: &PitchEvidence) -> Self {
+    /// never a second choice. Because [`PitchEvidence`] has public fields, the
+    /// evidence handed in here is *claimed* rather than measured, so it goes
+    /// through [`PitchEvidence::validate`] first — the same gate the wire
+    /// boundary uses, so both doors admit exactly the same facts.
+    ///
+    /// # Errors
+    /// [`TonalArtifactError`] when `evidence` is not something a measurement
+    /// could have produced.
+    pub fn from_evidence(evidence: &PitchEvidence) -> Result<Self, TonalArtifactError> {
+        evidence.validate()?;
+        Ok(Self::project(evidence))
+    }
+
+    /// The projection rule itself, over evidence already known to be valid.
+    fn project(evidence: &PitchEvidence) -> Self {
         // One decision drives both fields, so a context can never claim to have
         // weighted a histogram it produced no projection from.
         let (projection, weighting) = estimate_with_weighting(
@@ -512,6 +645,39 @@ pub enum TonalArtifactError {
         note_count: usize,
         /// Whether a span was carried.
         has_range: bool,
+    },
+    /// The onset histogram's total does not fit `u64`.
+    #[error("the onset histogram does not sum within u64")]
+    OnsetCountOverflow,
+    /// A pitch class holds sounded ticks without ever having sounded.
+    #[error("pitch class {pitch_class} holds duration mass but no onset")]
+    DurationMassWithoutOnsets {
+        /// The offending class.
+        pitch_class: u8,
+    },
+    /// A pitch class holds more sounded ticks than its onsets could carry —
+    /// each onset contributes at most one `u32` of ticks.
+    #[error("pitch class {pitch_class} holds more duration mass than its onsets could")]
+    DurationMassExceedsOnsets {
+        /// The offending class.
+        pitch_class: u8,
+    },
+    /// The duration histogram's total does not fit `u64`.
+    #[error("the duration histogram does not sum within u64")]
+    DurationMassOverflow,
+    /// A sounding pitch class has no MIDI representative inside the observed
+    /// span, so the span cannot be the one those notes were observed in.
+    #[error("pitch class {pitch_class} sounded but fits nowhere in the observed range")]
+    PitchClassOutsideObservedRange {
+        /// The offending class.
+        pitch_class: u8,
+    },
+    /// A span endpoint's pitch class never sounded — an endpoint is by
+    /// definition an observed note.
+    #[error("range endpoint {pitch} never sounded")]
+    RangeEndpointNeverSounded {
+        /// The offending endpoint.
+        pitch: u8,
     },
     /// A tonic outside `0..=11`.
     #[error("tonic {tonic} is not a pitch class")]
@@ -654,52 +820,36 @@ struct RawEvidence {
 }
 
 impl RawEvidence {
-    /// Rebuilds the evidence, checking that it is internally consistent: the
-    /// span is valid and present exactly when notes were observed, and the
-    /// claimed note count is the onset histogram's total.
+    /// Rebuilds the evidence and puts it through the shared validator.
+    ///
+    /// Only the raw-`u8` concern lives here: a value outside the MIDI range
+    /// cannot become a [`Pitch`] at all, so it would never reach
+    /// [`PitchEvidence::validate`]. Every other rule belongs to that one
+    /// validator, so the wire boundary and [`TonalContext::from_evidence`]
+    /// cannot drift into admitting different facts.
     fn into_evidence(self) -> Result<PitchEvidence, TonalArtifactError> {
         let pitch_range = self
             .pitch_range
             .map(|range| {
-                let lowest =
-                    Pitch::new(range.lowest).map_err(|_| TonalArtifactError::PitchOutOfRange {
-                        value: range.lowest,
-                    })?;
-                let highest =
-                    Pitch::new(range.highest).map_err(|_| TonalArtifactError::PitchOutOfRange {
-                        value: range.highest,
-                    })?;
-                if lowest > highest {
-                    return Err(TonalArtifactError::PitchRangeInverted {
-                        lowest: range.lowest,
-                        highest: range.highest,
-                    });
-                }
-                Ok(PitchRange { lowest, highest })
+                let pitch = |value: u8| {
+                    Pitch::new(value).map_err(|_| TonalArtifactError::PitchOutOfRange { value })
+                };
+                Ok(PitchRange {
+                    lowest: pitch(range.lowest)?,
+                    highest: pitch(range.highest)?,
+                })
             })
             .transpose()?;
 
-        let onsets: u64 = self.onset_counts.iter().copied().map(u64::from).sum();
-        if u64::try_from(self.note_count).unwrap_or(u64::MAX) != onsets {
-            return Err(TonalArtifactError::EvidenceNotSelfConsistent {
-                note_count: self.note_count,
-                onsets,
-            });
-        }
-        if pitch_range.is_some() != (self.note_count > 0) {
-            return Err(TonalArtifactError::EvidenceRangeMismatch {
-                note_count: self.note_count,
-                has_range: pitch_range.is_some(),
-            });
-        }
-
-        Ok(PitchEvidence {
+        let evidence = PitchEvidence {
             scope: self.scope,
             note_count: self.note_count,
             onset_counts: self.onset_counts,
             duration_mass: self.duration_mass,
             pitch_range,
-        })
+        };
+        evidence.validate()?;
+        Ok(evidence)
     }
 }
 
@@ -879,7 +1029,9 @@ impl TryFrom<RawContext> for TonalContext {
                 weighting: raw.provenance.weighting,
             },
         };
-        let derived = Self::from_evidence(&evidence);
+        // `into_evidence` already ran the validator, so the projection rule is
+        // applied directly rather than re-checking facts already established.
+        let derived = Self::project(&evidence);
         if derived == claimed {
             Ok(derived)
         } else {
@@ -937,7 +1089,11 @@ fn resolve_weights(
     onset_counts: &[u32; 12],
     duration_mass: &[u64; 12],
 ) -> ([f64; 12], TonalWeighting) {
-    let total_duration: u64 = duration_mass.iter().sum();
+    // Saturating, not `sum()`: `estimate_key` is public over a `PitchEvidence`
+    // with public fields, so the histogram is not guaranteed summable. Which
+    // branch is taken only depends on the total being non-zero, and saturation
+    // preserves that, so no measured score's estimate changes.
+    let total_duration: u64 = duration_mass.iter().copied().fold(0, u64::saturating_add);
     let mut weights = [0.0_f64; 12];
     if total_duration == 0 {
         for (slot, &count) in weights.iter_mut().zip(onset_counts.iter()) {

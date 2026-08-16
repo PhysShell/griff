@@ -54,8 +54,8 @@ use griff_core::{
     },
     slice::TickRange,
     tonal::{
-        estimate_key, EvidenceScope, KeyMode, PitchEvidence, TonalContext, TonalMethod,
-        TonalProjection, TonalWeighting,
+        estimate_key, EvidenceScope, KeyMode, PitchEvidence, TonalCandidate, TonalContext,
+        TonalMethod, TonalProjection, TonalWeighting,
     },
 };
 use proptest::prelude::*;
@@ -714,13 +714,13 @@ fn forged_evidence(
     }
 }
 
-fn one_at(index: usize, value: u32) -> [u32; 12] {
+const fn one_at(index: usize, value: u32) -> [u32; 12] {
     let mut histogram = [0_u32; 12];
     histogram[index] = value;
     histogram
 }
 
-fn mass_at(index: usize, value: u64) -> [u64; 12] {
+const fn mass_at(index: usize, value: u64) -> [u64; 12] {
     let mut histogram = [0_u64; 12];
     histogram[index] = value;
     histogram
@@ -807,7 +807,7 @@ fn an_evidence_forgery_is_refused_even_when_its_projection_is_honest() {
     let winner = estimate.candidates[0];
     let rival = estimate.candidates[1];
 
-    let candidate = |c: griff_core::tonal::TonalCandidate| {
+    let candidate = |c: TonalCandidate| {
         json!({
             "tonic": c.tonic,
             "mode": if c.mode == KeyMode::Major { "major" } else { "minor" },
@@ -839,7 +839,10 @@ fn an_overflowing_duration_histogram_is_refused_rather_than_panicking() {
     let mut envelope = valid_envelope();
     envelope["evidence"]["duration_mass"] =
         json!([u64::MAX, u64::MAX, u64::MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-    refuses(&envelope, "a duration histogram whose total does not fit u64");
+    refuses(
+        &envelope,
+        "a duration histogram whose total does not fit u64",
+    );
 }
 
 #[test]
@@ -875,7 +878,7 @@ fn a_valid_measurement_passes_both_doors() {
     let score = two_key_score();
     let evidence = PitchEvidence::measure(&score, EvidenceScope::Track(0));
 
-    assert!(evidence.validate().is_ok());
+    evidence.validate().expect("a measured scope validates");
     assert_eq!(
         TonalContext::from_evidence(&evidence).expect("valid evidence projects"),
         TonalContext::measure(&score, EvidenceScope::Track(0)),
@@ -895,11 +898,7 @@ fn track_of_pairs(notes: &[(u8, u32)]) -> Track {
                 .enumerate()
                 .map(|(i, &(pitch, duration))| EventGroup {
                     kind: EventGroupKind::Single,
-                    atoms: vec![note(
-                        u32::try_from(i).unwrap() * QUARTER,
-                        pitch,
-                        duration,
-                    )],
+                    atoms: vec![note(u32::try_from(i).unwrap() * QUARTER, pitch, duration)],
                     technique_spans: Vec::new(),
                 })
                 .collect(),
