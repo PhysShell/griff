@@ -35,7 +35,7 @@ Checked against the tree, not against memory:
 | --- | --- |
 | Semantic core and surface grammar frozen | `spec.md` §1, §3 headings |
 | `check` / `fmt` / `expand` / `build` exist | `cli/src/main.rs` `SwangCommand` |
-| Hand-written lexer + recursive-descent parser + formatter | `swang/src/syntax.rs` (2122 lines, one file) |
+| Hand-written lexer + recursive-descent parser + formatter | `swang/src/syntax/` (one 2122-line file until SWG-INF-03 split it) |
 | Parser fuzz target on the blocking gate | `fuzz/fuzz_targets/swang_parse.rs` |
 | Phase 4-pre A landed — rational `Tempo`, `ConfidenceBps` | `core/src/event.rs`, `core/tests/exact_scalars.rs` (PR #140) |
 | Phase 4-pre B landed — `ExactSemanticDiff` | `core/src/semantic_diff.rs::exact_semantic_diff` (PR #142) |
@@ -49,8 +49,9 @@ second time.
 Two limits of the current parser are load-bearing for Epic A and are worth
 naming precisely rather than approximately:
 
-- `ProgramSpans` (`swang/src/syntax.rs:522`) carries exactly four spans —
-  `kernel`, `unit`, `tail`, `source`. Every other AST field is unlocatable.
+- `ProgramSpans` (`swang/src/syntax/parser/v1.rs`) carries exactly four
+  spans — `kernel`, `unit`, `tail`, `source`. Every other AST field is
+  unlocatable.
 - `parse_with_spans` returns `Vec<Diagnostic>` but every failure path is
   `Err(vec![one])`. The vector is a shape, not a capability.
 
@@ -103,9 +104,9 @@ recorded in `decisions.log.md` if reversed.
 
 | ID | Title | Kind | Depends on |
 | --- | --- | --- | --- |
-| SWG-INF-01 | Sync the S16 status block with reality | docs | — |
+| SWG-INF-01 | Sync the S16 status block with reality *(done)* | docs | — |
 | SWG-INF-02 | Language level 2 admission contract | docs | INF-01 |
-| SWG-INF-03 | Split `syntax.rs` without behaviour change | code | INF-01 |
+| SWG-INF-03 | Split `syntax.rs` without behaviour change *(done)* | code | INF-01 |
 | SWG-INF-04 | Replace `ProgramSpans` with a `SourceMap` | code | INF-03 |
 | SWG-INF-05 | Deterministic multi-error recovery | code | INF-04 |
 | SWG-INF-06 | Parser resource gate and differential harness | code | INF-02, INF-03 |
@@ -208,14 +209,35 @@ Decide and write down:
   `recipe`;
 - which formatter behaviour is level-dependent and which is not;
 - how the `SWG____` registry extends without renumbering;
-- that the canonical hash stores the level alongside, never inside.
+- that the canonical hash stores the level alongside, never inside;
+- **which of the two compatibility laws below is being adopted.** Every
+  program already carries `swang 1` in its frozen header, so a bare
+  `parse_v2(valid_v1)` is ambiguous between them, and the weaker one does
+  not imply the stronger.
 
-Acceptance:
+**Law A — interpreter compatibility (mandatory).** A build that supports
+levels 1 and 2 parses a `swang 1` script exactly as a level-1-only build
+did:
 
 ```text
-parse_v2(valid_v1)          == parse_v1(valid_v1)
-format_v2(parse_v1(x))      == format_v1(parse_v1(x))
+compiler_supporting_1_2("swang 1\n…") == v1_semantics("swang 1\n…")
+format_1_2(parse_1_2(v1_text))        == format_v1(parse_v1(v1_text))
 ```
+
+**Law B — level-promotion compatibility (adopt explicitly or not at all).**
+Rewriting a level-1 program's header to `swang 2`, changing nothing else,
+preserves its semantics:
+
+```text
+promote_header_1_to_2(valid_v1_program) preserves v1 semantics
+```
+
+Law A says the old text keeps working. Law B says the old text is also
+*legal level-2 text* — a claim about level 2's grammar containing level 1's,
+which constrains every future addition. Adopting B by accident, because the
+notation looked like A, is the failure mode this split exists to prevent.
+
+Further acceptance:
 
 - every level-1 golden is byte-unchanged;
 - a level-3 header is still rejected by the frozen pre-parser before the
@@ -227,44 +249,57 @@ This is an ADR-shaped decision. Land it as an ADR if it constrains
 `griff-core`; a spec §4 section plus a decisions-log entry suffices if it
 only constrains `griff-swang`.
 
-### SWG-INF-03 — Split `syntax.rs` without behaviour change
+### SWG-INF-03 — Split `syntax.rs` without behaviour change *(done)*
 
 **Kind:** code (mechanical refactor). **Depends on:** INF-01
 
-`swang/src/syntax.rs` holds the header pre-parser, AST, lexer, parser,
-formatter, spans, and tests in one 2122-line file. Target layout:
+`swang/src/syntax.rs` held the header pre-parser, AST, lexer, parser,
+formatter, spans, and tests in one 2122-line file. Landed layout — the
+repository denies `clippy::mod_module_files`, so it is the 2018 style
+(`syntax.rs` beside `syntax/`), not the `mod.rs` tree this entry first
+sketched:
 
 ```text
+swang/src/syntax.rs        re-exports; the public API is unchanged
 swang/src/syntax/
-├── mod.rs          re-exports; the public API is unchanged
-├── header.rs       frozen pre-parser
-├── diagnostic.rs   Diagnostic, codes
-├── span.rs         Span
-├── token.rs        token kinds
+├── header.rs              frozen pre-parser, LANGUAGE_LEVEL
+├── diagnostic.rs          Diagnostic
+├── span.rs                Span, span_of
+├── token.rs               Token, TokenKind
 ├── lexer.rs
-├── ast/
-│   ├── mod.rs
-│   └── v1.rs
-├── parser/
-│   ├── mod.rs
-│   └── v1.rs
-└── format/
-    ├── mod.rs
-    └── v1.rs
+├── tests.rs
+├── ast.rs      + ast/v1.rs
+├── parser.rs   + parser/v1.rs
+└── format.rs   + format/v1.rs
 ```
 
 Hard condition: mechanical only. No message improvements, no span
 adjustments, no "while I'm here".
 
-Acceptance:
+Acceptance — all met:
 
-- every existing test passes with no edit to an expected value;
-- the spec §3.1 reference program formats byte-identically;
-- every `SWG____` code, message, and span is unchanged;
+- every existing test passes with no edit to an expected value (79 swang,
+  824 core, 22 pattern, 194 ui-core, 80 cli — identical counts);
+- the spec §3.1 reference program formats byte-identically (sha256
+  `b10f82e6…`);
+- every `SWG____` code, message, and span is unchanged — verified by a
+  differential harness over 168 mutations of the reference program covering
+  12 codes, byte-identical output and exit status (sha256 `c3ea6183…`);
 - `parse`, `parse_with_spans`, `format`, `header_level` keep their paths and
-  signatures;
+  signatures; the public item set is identical (70 items);
 - the fuzz corpus is unchanged and `swang_parse` still builds;
-- `cargo clippy --all-targets -- -D warnings` is clean.
+- `cargo clippy --all-targets -- -D warnings` is clean, and the `cargo doc`
+  warning count is unchanged.
+
+Visibility moved only where the split forced it: `span_of`,
+`HEADER_WINDOW`, `lex`, `Token` (with its fields), and `TokenKind` became
+`pub(crate)`. No item gained `pub`; the level modules are
+`pub(crate) mod v1` behind private parents.
+
+**Deliberately not done here**, so that INF-02 stays a real decision rather
+than a description of something already coded: no `v2` module, no
+`Level2Root`, no `GrammarVersion`, no dispatch stub, no `Parsed<T>`, no
+`SourceMap`, no recovery, no limits, no public token API.
 
 ### SWG-INF-04 — Replace `ProgramSpans` with a `SourceMap`
 
@@ -1048,11 +1083,13 @@ the exact and normalized diffs, and unsupported facts.
 ## Dependency order
 
 ```text
-INF-01 status sync
+INF-01 status sync                    (done)
+  -> INF-03 syntax split              (done)
   -> INF-02 level-2 contract
-  -> INF-03 syntax split
-  -> INF-04 SourceMap
-  -> 4A-01 exact grammar
+       │
+       ├─→ INF-04 SourceMap ──→ INF-05 recovery ──┐
+       │                                          ├─→ 4A-06 parser skeleton
+       └─→ 4A-01 exact grammar ───────────────────┘
   -> 4A-02..4A-09 writer / parser / builder
   -> 4A-10..4A-14 dump / verify / laws / fuzz
   -> 4B corpus acceptance
@@ -1063,11 +1100,18 @@ INF-01 status sync
   -> LIFT recognizers and verified lift
 ```
 
+INF-03 comes before INF-02 deliberately. The split is pure cleanup with an
+acceptance that can only fail one way, and it moves nothing into the design
+space; deciding how level 2 coexists with level 1 is easier once level 1 is
+physically separated into `ast/v1`, `parser/v1`, and `format/v1`. The
+reverse order would have INF-03 quietly encoding a dispatch shape that
+INF-02 then documents after the fact.
+
 Only independent branches may run in parallel:
 
 ```text
 exact writer (4A-03..05) ─────┐
-parser platform (INF-03..06)  ├─→ Phase 4A integration
+parser platform (INF-04..06)  ├─→ Phase 4A integration
 CLI shell (4A-10 skeleton) ───┘
 ```
 
