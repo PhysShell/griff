@@ -2011,3 +2011,35 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Decision 10). Verification is local `nix` evidence only (45/45 tests, clippy
   `all=deny`/`pedantic=warn`, fmt) — the crate is excluded from the workspace
   and not built by CI (ADR-0010 isolation posture).
+
+- 2026-08-16 — In the context of S15 Phase 2 (letting a generation-facing
+  request and its provenance carry an explicitly scoped tonal estimate without
+  touching note selection), facing the choice of *what* to carry and *where* to
+  attach it, we surveyed the prior art for "a key estimate that admits its own
+  uncertainty": the repo's own ADR-0017 `Scored` envelope (a value travelling
+  with the provenance that produced it) and `complement::HarmonicContext` (the
+  winner-only projection already in the core); the MIR convention of key
+  estimators reporting a winner **plus its rivals or a strength** rather than a
+  bare key (music21's `Key.correlationCoefficient` /
+  `alternateInterpretations`, Essentia's `KeyExtractor` key + scale + strength);
+  and the W3C PROV principle that a derived entity carries the activity that
+  produced it. We decided for a **compact `TonalProjection`** — winner,
+  runner-up, and margin — inside a `TonalContext` that also carries the
+  caller's `EvidenceScope` and a `TonalProvenance` (method, the histogram that
+  actually weighted the estimate, note count), attached as an optional field on
+  `GenerationAsk` and echoed verbatim on `RankedSet`; and against carrying all
+  24 ranked candidates (dead weight in every record, and exactly reproducible
+  from the carried scope), against a winner-only projection in the
+  `HarmonicContext` shape (it discards the uncertainty the estimate exists to
+  express), against attaching to `RuleGenerationRequest` (the compiled request
+  the generator consumes — a field there invites consumption), and against
+  exposing any `is_confident` or margin threshold (uncalibrated until Phase
+  3B). To achieve a request and a provenance record that can say *which*
+  scope's estimate was on the table and reproduce it, while generation stays
+  byte-identical, accepting that a consumer needing the full ranking must
+  re-measure (the carried scope makes that exact and deterministic), that
+  adding a field to `GenerationAsk` touched every construction site across five
+  crates so each caller opts out in the open, and that `TonalWeighting` names a
+  KS v1 implementation branch — it is provenance *about* that fallback, and a
+  future method would need its own vocabulary rather than reusing this one.
+  Idea reuse only; no dependency added.
