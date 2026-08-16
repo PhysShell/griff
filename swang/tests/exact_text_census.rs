@@ -1,0 +1,335 @@
+//! The exhaustive census witness for `docs/swang/exact-score-text.md`
+//! (SWG-4A-01 acceptance).
+//!
+//! The census claims to cover every canonical fact. A one-off script can
+//! prove that today; only a committed test proves it after the next field
+//! lands. So this reads the canonical model and the comparator straight out
+//! of `core/src/`, and fails until the document has caught up.
+//!
+//! It is evidence, not product code: it adds no public API, changes no
+//! behaviour, and reads sources as text rather than linking against them,
+//! because the facts it guards are *names in a document* and a type-level
+//! check cannot see a markdown table.
+//!
+//! When this fails, the fix is to update the census — never to relax the
+//! test. That direction is the whole point.
+
+// The same allowances the level-1 grammar tests take: this file slices
+// source text by byte offsets found with `find`, which are always on
+// character boundaries but which clippy cannot prove.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::arithmetic_side_effects,
+    clippy::missing_assert_message
+)]
+
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::PathBuf;
+
+/// Repository root, from this crate's manifest directory.
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("swang/ has a parent")
+        .to_path_buf()
+}
+
+fn read(relative: &str) -> String {
+    let path = repo_root().join(relative);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+}
+
+fn census() -> String {
+    read("docs/swang/exact-score-text.md")
+}
+
+/// Every `SemanticField` variant, in declaration order.
+fn semantic_field_variants(source: &str) -> Vec<String> {
+    let start = source
+        .find("pub enum SemanticField {")
+        .expect("SemanticField is declared");
+    let body = &source[start..];
+    let end = body.find("\n}").expect("the enum closes");
+    body[..end]
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("//")
+                && !line.starts_with('#')
+                && line.ends_with(',')
+        })
+        .map(|line| line.trim_end_matches(',').to_owned())
+        .collect()
+}
+
+/// The variants the *exact* walker mentions, as opposed to the normalized
+/// projection's.
+fn exact_walker_variants(source: &str) -> BTreeSet<String> {
+    let from = source
+        .find("pub fn exact_semantic_diff")
+        .expect("the exact walker exists");
+    let to = source
+        .find("pub fn normalized_musical_diff")
+        .expect("the normalized walker exists");
+    assert!(from < to, "the exact walker is declared first");
+    mentioned_variants(&source[from..to])
+}
+
+fn normalized_walker_variants(source: &str) -> BTreeSet<String> {
+    let from = source
+        .find("pub fn normalized_musical_diff")
+        .expect("the normalized walker exists");
+    mentioned_variants(&source[from..])
+}
+
+/// `SemanticField::Foo` occurrences within `region`.
+fn mentioned_variants(region: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    for (index, _) in region.match_indices("SemanticField::") {
+        let tail = &region[index + "SemanticField::".len()..];
+        let name: String = tail
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            found.insert(name);
+        }
+    }
+    found
+}
+
+/// `CamelCase` to `snake_case`, the spelling a census row uses.
+fn snake_case(camel: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in camel.char_indices() {
+        if c.is_ascii_uppercase() && i != 0 {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+/// Field names declared in a `pub struct` block.
+fn struct_fields(source: &str, name: &str) -> Vec<String> {
+    let needle = format!("pub struct {name} {{");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{name} is declared"));
+    let body = &source[start + needle.len()..];
+    let end = body.find("\n}").unwrap_or_else(|| panic!("{name} closes"));
+    body[..end]
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("pub "))
+        .filter_map(|line| line.split(':').next())
+        .map(str::to_owned)
+        .collect()
+}
+
+// ── the witnesses ──────────────────────────────────────────────────────────
+
+#[test]
+fn every_exact_walker_field_appears_in_the_census() {
+    let diff = read("core/src/semantic_diff.rs");
+    let doc = census();
+    let missing: Vec<String> = exact_walker_variants(&diff)
+        .into_iter()
+        .filter(|variant| {
+            let snake = snake_case(variant);
+            !doc.contains(&snake) && !doc.contains(variant)
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these exact-walker fields are compared but absent from \
+         docs/swang/exact-score-text.md: {missing:?}. Add a census row \
+         before relaxing this test."
+    );
+}
+
+#[test]
+fn the_census_records_the_current_semantic_field_partition() {
+    let diff = read("core/src/semantic_diff.rs");
+    let doc = census();
+
+    let all = semantic_field_variants(&diff);
+    let exact = exact_walker_variants(&diff);
+    let normalized = normalized_walker_variants(&diff);
+    let normalized_only = normalized.difference(&exact).count();
+    let exact_only = exact.difference(&normalized).count();
+    let shared = exact.intersection(&normalized).count();
+
+    let unused: Vec<&String> = all
+        .iter()
+        .filter(|v| !exact.contains(*v) && !normalized.contains(*v))
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "SemanticField variants walked by neither comparator: {unused:?}"
+    );
+
+    // The document states these four numbers in prose; if the model moves,
+    // the prose is now a lie and must be corrected.
+    for (label, value) in [
+        ("total", all.len()),
+        ("exact-only", exact_only),
+        ("shared", shared),
+        ("normalized-only", normalized_only),
+    ] {
+        assert!(
+            doc.contains(&format!("**{value}**")) || doc.contains(&format!("| {value} |")),
+            "the census does not state {label} = {value}; \
+             SemanticField changed and docs/swang/exact-score-text.md \
+             must be updated"
+        );
+    }
+    assert!(
+        doc.contains(&format!("uses {} of the", exact.len())),
+        "the census does not state that the exact walker uses {} variants",
+        exact.len()
+    );
+}
+
+#[test]
+fn every_canonical_field_appears_in_the_syntax_location_map() {
+    let score = read("core/src/score.rs");
+    let event = read("core/src/event.rs");
+    let doc = census();
+    let map_start = doc
+        .find("### 2.8 Canonical field")
+        .expect("the syntax-location map exists");
+    let map_end = doc[map_start..]
+        .find("## 3. Writer domain")
+        .expect("the map ends")
+        + map_start;
+    let map = &doc[map_start..map_end];
+
+    let mut missing = Vec::new();
+    for (source, type_name) in [
+        (&score, "Score"),
+        (&score, "MasterBar"),
+        (&score, "Track"),
+        (&score, "Voice"),
+        (&score, "EventGroup"),
+        (&score, "AtomNote"),
+        (&score, "AtomRest"),
+        (&score, "TechniqueSpan"),
+        (&score, "RepeatMarker"),
+        (&score, "SourceMeta"),
+        (&score, "LossReport"),
+        (&event, "TimeSignature"),
+        (&event, "TechniqueEvidence"),
+        (&event, "FretboardPosition"),
+        (&event, "NotePosition"),
+    ] {
+        for field in struct_fields(source, type_name) {
+            if !map.contains(&field) {
+                missing.push(format!("{type_name}.{field}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "canonical fields with no entry in the §2.8 syntax-location map: \
+         {missing:?}. A new field needs a syntax location before the \
+         census can claim to be exhaustive."
+    );
+}
+
+#[test]
+fn every_import_warning_variant_has_a_syntax_location() {
+    let score = read("core/src/score.rs");
+    let doc = census();
+    let start = score
+        .find("pub enum ImportWarning {")
+        .expect("ImportWarning is declared");
+    let body = &score[start..];
+    let end = body.find("\n}").expect("the enum closes");
+    let variants: Vec<String> = body[..end]
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|l| {
+            l.chars().next().is_some_and(char::is_uppercase)
+                && (l.ends_with('{') || l.ends_with(',') || l.ends_with("),"))
+        })
+        .map(|l| {
+            l.trim_end_matches([' ', '{', ',', ')'])
+                .split(['(', ' '])
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .filter(|v| !v.is_empty())
+        .collect();
+
+    assert!(
+        variants.len() >= 4,
+        "expected at least the four known ImportWarning variants, found {variants:?}"
+    );
+    let missing: Vec<&String> = variants
+        .iter()
+        .filter(|v| !doc.contains(&snake_case(v)))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "ImportWarning variants with no spelling in the census: {missing:?}"
+    );
+}
+
+#[test]
+fn every_closed_word_set_member_is_spelled_in_the_census() {
+    let event = read("core/src/event.rs");
+    let score = read("core/src/score.rs");
+    let doc = census();
+
+    let mut missing = Vec::new();
+    for (source, enum_name) in [
+        (&event, "SpanTechnique"),
+        (&event, "NoteMark"),
+        (&event, "TechniqueSource"),
+        (&score, "EventGroupKind"),
+    ] {
+        let needle = format!("pub enum {enum_name} {{");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{enum_name} is declared"));
+        let body = &source[start + needle.len()..];
+        let end = body
+            .find("\n}")
+            .unwrap_or_else(|| panic!("{enum_name} closes"));
+        for line in body[..end].lines().map(str::trim) {
+            let Some(first) = line.chars().next() else {
+                continue;
+            };
+            if !first.is_ascii_uppercase() {
+                continue;
+            }
+            let variant = line
+                .trim_end_matches([' ', '{', ','])
+                .split([' ', '{', ','])
+                .next()
+                .unwrap_or_default();
+            if variant.is_empty() {
+                continue;
+            }
+            if !doc.contains(&snake_case(variant)) {
+                missing.push(format!("{enum_name}::{variant}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "closed-set variants with no spelling in §6.4: {missing:?}. \
+         Every variant is listed with no wildcard arm — that is the \
+         acceptance criterion."
+    );
+}
