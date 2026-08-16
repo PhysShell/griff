@@ -118,7 +118,11 @@ fn snake_case(camel: &str) -> String {
 }
 
 /// Field names declared in a `pub struct` block.
-fn struct_fields(source: &str, name: &str) -> Vec<String> {
+///
+/// `public_only` mirrors what a caller outside the crate can see; the
+/// opaque-leaf witness needs the private fields too, because a new private
+/// field is exact state that no public signature reveals.
+fn struct_fields(source: &str, name: &str, public_only: bool) -> Vec<String> {
     let needle = format!("pub struct {name} {{");
     let start = source
         .find(&needle)
@@ -128,10 +132,60 @@ fn struct_fields(source: &str, name: &str) -> Vec<String> {
     body[..end]
         .lines()
         .map(str::trim)
-        .filter_map(|line| line.strip_prefix("pub "))
-        .filter_map(|line| line.split(':').next())
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with('#'))
+        .filter_map(|line| {
+            let declaration = match line.strip_prefix("pub ") {
+                Some(rest) => rest,
+                None if public_only => return None,
+                None => line,
+            };
+            declaration.split(':').next()
+        })
+        .filter(|field| !field.is_empty() && !field.contains(' '))
         .map(str::to_owned)
         .collect()
+}
+
+/// The section of the census a witness is allowed to look in, so that a
+/// number appearing elsewhere in 900 lines cannot satisfy a check by
+/// coincidence.
+fn section<'a>(doc: &'a str, from: &str, to: &str) -> &'a str {
+    let start = doc
+        .find(from)
+        .unwrap_or_else(|| panic!("the census has a {from:?} section"));
+    let end = doc[start..]
+        .find(to)
+        .unwrap_or_else(|| panic!("the {from:?} section ends at {to:?}"))
+        + start;
+    &doc[start..end]
+}
+
+/// The cells of a markdown table, row by row.
+///
+/// Witnesses match against these and never against surrounding prose: an
+/// earlier draft of the opaque-leaf witness checked the whole section, and
+/// passed for `Tuning.capo` because the section's own explanation used
+/// `capo` as its worked example. A check a narrative sentence can satisfy
+/// is not a check.
+fn table_rows(section: &str) -> Vec<Vec<String>> {
+    section
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('|'))
+        .filter(|line| !line.replace(['|', '-', ' '], "").is_empty())
+        .map(|line| {
+            line.trim_matches('|')
+                .split('|')
+                .map(|cell| cell.trim().to_owned())
+                .collect()
+        })
+        .collect()
+}
+
+/// The row whose first cell names `key`, if the table has one.
+fn row_for<'a>(rows: &'a [Vec<String>], key: &str) -> Option<&'a Vec<String>> {
+    rows.iter()
+        .find(|row| row.first().is_some_and(|cell| cell.contains(key)))
 }
 
 // ── the witnesses ──────────────────────────────────────────────────────────
@@ -160,6 +214,10 @@ fn the_census_records_the_current_semantic_field_partition() {
     let diff = read("core/src/semantic_diff.rs");
     let doc = census();
 
+    // Scoped to Inventory A: a "23" elsewhere in 900 lines of markdown must
+    // not be able to satisfy this by coincidence.
+    let inventory_a = section(&doc, "## 1. Inventory A", "## 2. Inventory B");
+
     let all = semantic_field_variants(&diff);
     let exact = exact_walker_variants(&diff);
     let normalized = normalized_walker_variants(&diff);
@@ -185,15 +243,16 @@ fn the_census_records_the_current_semantic_field_partition() {
         ("normalized-only", normalized_only),
     ] {
         assert!(
-            doc.contains(&format!("**{value}**")) || doc.contains(&format!("| {value} |")),
-            "the census does not state {label} = {value}; \
+            inventory_a.contains(&format!("**{value}**"))
+                || inventory_a.contains(&format!("| {value} |")),
+            "Inventory A does not state {label} = {value}; \
              SemanticField changed and docs/swang/exact-score-text.md \
              must be updated"
         );
     }
     assert!(
-        doc.contains(&format!("uses {} of the", exact.len())),
-        "the census does not state that the exact walker uses {} variants",
+        inventory_a.contains(&format!("uses {} of the", exact.len())),
+        "Inventory A does not state that the exact walker uses {} variants",
         exact.len()
     );
 }
@@ -203,14 +262,13 @@ fn every_canonical_field_appears_in_the_syntax_location_map() {
     let score = read("core/src/score.rs");
     let event = read("core/src/event.rs");
     let doc = census();
-    let map_start = doc
-        .find("### 2.8 Canonical field")
-        .expect("the syntax-location map exists");
-    let map_end = doc[map_start..]
-        .find("## 3. Writer domain")
-        .expect("the map ends")
-        + map_start;
-    let map = &doc[map_start..map_end];
+    // Ends at §2.9, not at §3: otherwise the map inherits the opaque-leaf
+    // section's prose and a field named only there would count as mapped.
+    let map = section(
+        &doc,
+        "### 2.8 Canonical field",
+        "### 2.9 Opaque exact leaves",
+    );
 
     let mut missing = Vec::new();
     for (source, type_name) in [
@@ -230,9 +288,13 @@ fn every_canonical_field_appears_in_the_syntax_location_map() {
         (&event, "FretboardPosition"),
         (&event, "NotePosition"),
     ] {
-        for field in struct_fields(source, type_name) {
-            if !map.contains(&field) {
-                missing.push(format!("{type_name}.{field}"));
+        for field in struct_fields(source, type_name, true) {
+            // The qualified key, not the bare field name: `start` alone
+            // matches `TickRange.start` and would let `RepeatMarker.start`
+            // vanish unnoticed.
+            let key = format!("{type_name}.{field}");
+            if !map.contains(&key) {
+                missing.push(key);
             }
         }
     }
@@ -331,5 +393,101 @@ fn every_closed_word_set_member_is_spelled_in_the_census() {
         "closed-set variants with no spelling in §6.4: {missing:?}. \
          Every variant is listed with no wildcard arm — that is the \
          acceptance criterion."
+    );
+}
+
+/// The blind spot Inventory A cannot see.
+///
+/// `Tempo`, `Tuning`, `NoteMarks`, and `ConfidenceBps` keep their state
+/// private. A new private field inside one of them is new exact semantics
+/// that adds no `SemanticField` variant, changes no public signature, and
+/// would leave every Inventory-A witness above perfectly green while the
+/// text quietly stopped carrying a fact. `Tuning.capo` is the worked
+/// example. This is the only witness that looks at private shape.
+#[test]
+fn opaque_exact_leaves_keep_their_documented_shape() {
+    let event = read("core/src/event.rs");
+    let doc = census();
+    let rows = table_rows(section(
+        &doc,
+        "### 2.9 Opaque exact leaves",
+        "## 3. Writer domain",
+    ));
+
+    let mut missing = Vec::new();
+
+    // Brace structs: every field, private included, must appear in the
+    // "private shape" cell of that leaf's own row.
+    for leaf in ["Tempo", "Tuning"] {
+        let fields = struct_fields(&event, leaf, false);
+        assert!(
+            !fields.is_empty(),
+            "{leaf} parsed as having no fields — the parser, not the model, is wrong"
+        );
+        let row =
+            row_for(&rows, leaf).unwrap_or_else(|| panic!("§2.9 has no table row for {leaf}"));
+        let shape = row.get(1).map_or("", String::as_str);
+        for field in fields {
+            if !shape.contains(&field) {
+                missing.push(format!("{leaf}.{field}"));
+            }
+        }
+    }
+
+    // Tuple newtypes: §2.9 must state the carried type, since that is the
+    // whole of their shape.
+    for (leaf, carried) in [("NoteMarks", "u16"), ("ConfidenceBps", "u16")] {
+        let needle = format!("pub struct {leaf}(");
+        let start = event
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{leaf} is declared as a tuple struct"));
+        let tail = &event[start + needle.len()..];
+        let end = tail.find(')').expect("the tuple struct closes");
+        let declared = tail[..end].trim();
+        assert_eq!(
+            declared, carried,
+            "{leaf} now carries `{declared}`, not `{carried}`; §2.9 must be updated"
+        );
+        let row =
+            row_for(&rows, leaf).unwrap_or_else(|| panic!("§2.9 has no table row for {leaf}"));
+        assert!(
+            row.get(1).is_some_and(|shape| shape.contains(carried)),
+            "§2.9's row for {leaf} does not describe it as carrying {carried}"
+        );
+    }
+
+    assert!(
+        missing.is_empty(),
+        "opaque leaf state absent from the §2.9 decomposition table: \
+         {missing:?}. This is exact semantics that Inventory A cannot see — \
+         the text must open it, so the census must name it."
+    );
+}
+
+/// Multiplicity is part of the closed word sets (§6.4b), and `SWG0404`
+/// applies to singletons only. A `*` word that lost its marker would make
+/// the reference document in §6.1 reject itself at its second `master_bar`.
+#[test]
+fn repeated_structural_blocks_are_marked_as_such() {
+    let doc = census();
+    let sets = section(&doc, "### 6.4b Field words are closed", "### 6.5 Strings");
+    for word in [
+        "master_bar *",
+        "track *",
+        "voice *",
+        "group *",
+        "note *",
+        "rest *",
+        "span *",
+    ] {
+        assert!(
+            sets.contains(word),
+            "§6.4b does not mark `{word}` as a repeated block; without the \
+             multiplicity, SWG0404 would reject a second one"
+        );
+    }
+    assert!(
+        sets.contains("`SWG0404` applies to `1` and `?` words only"),
+        "§6.4b must scope SWG0404 to singleton words"
     );
 }

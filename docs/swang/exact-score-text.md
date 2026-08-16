@@ -228,79 +228,106 @@ them for the same reason a receipt keeps the tax line.
 
 The backlog's acceptance asks for a table mapping **every** canonical field
 to its syntax location, so it is written out mechanically rather than left
-to be inferred from the reference document. `*` marks a repeated block.
-Field renamings are visible here and nowhere else — `ticks_per_quarter`
-becomes `ppqn`, `tick_range` becomes `ticks`, `absolute_start` becomes `at`,
-`time_signature` becomes `meter`.
+to be inferred from the reference document. The left column is keyed by the
+**declaring type**, so every entry is unique and a witness can match it
+exactly; `*` marks a repeated block. Field renamings are visible here and
+nowhere else — `ticks_per_quarter` becomes `ppqn`, `tick_range` becomes
+`ticks`, `absolute_start` becomes `at`, `time_signature` becomes `meter`.
 
 ```text
-Score.ticks_per_quarter                 score.ppqn <u16>
-Score.master_bars[]                     score.master_bar*
-Score.tracks[]                          score.track*
-Score.source_meta                       score.source              (optional block)
-Score.loss                              score.loss                (omitted when clean)
+Score.ticks_per_quarter          score.ppqn <u16>
+Score.master_bars                score.master_bar*
+Score.tracks                     score.track*
+Score.source_meta                score.source              (optional block)
+Score.loss                       score.loss                (omitted when clean)
 
-MasterBar.index                         master_bar.index <index>
-MasterBar.tick_range.start/.end         master_bar.ticks <u32>..<u32>
-MasterBar.time_signature.numerator      master_bar.meter <u8>/…
-MasterBar.time_signature.denominator    master_bar.meter …/<u8>
-MasterBar.tempo                         master_bar.tempo <u32>/<u32>
-MasterBar.repeat.start                  master_bar.repeat.start <bool>
-MasterBar.repeat.play_count             master_bar.repeat.play_count <u8>
+MasterBar.index                  master_bar.index <index>
+MasterBar.tick_range             master_bar.ticks <u32>..<u32>
+MasterBar.time_signature         master_bar.meter <u8>/<u8>
+MasterBar.tempo                  master_bar.tempo <u32>/<u32>
+MasterBar.repeat                 master_bar.repeat         (block)
 
-Track.name                              track.name <string>       (optional)
-Track.channel                           track.channel <u8>
-Track.tuning                            track.tuning [<u8> …]
-Track.voices[]                          track.voice*
+TickRange.start                  …ticks <u32>..
+TickRange.end                    …ticks ..<u32>
+TimeSignature.numerator          master_bar.meter <u8>/…
+TimeSignature.denominator        master_bar.meter …/<u8>
+RepeatMarker.start               master_bar.repeat.start <bool>
+RepeatMarker.play_count          master_bar.repeat.play_count <u8>
 
-Voice.id                                voice.id <u8>
-Voice.event_groups[]                    voice.group*
+Track.name                       track.name <string>       (optional)
+Track.channel                    track.channel <u8>
+Track.tuning                     track.tuning [<u8> …]
+Track.voices                     track.voice*
 
-EventGroup.kind                         group <kind>              (inline word)
-EventGroup.kind Tuplet.num/.den         group tuplet <u8>/<u8>
-EventGroup.atoms[] Note                 group.note*
-EventGroup.atoms[] Rest                 group.rest*
-EventGroup.technique_spans[]            group.span*
+Voice.id                         voice.id <u8>
+Voice.event_groups               voice.group*
 
-AtomNote.absolute_start                 note.at <u32>
-AtomNote.duration                       note.duration <u32>
-AtomNote.pitch                          note.pitch <u8>
-AtomNote.velocity                       note.velocity <u8>
-AtomNote.marks                          note.marks [<mark> …]
-AtomNote.position                       note.position             (optional block)
-AtomRest.absolute_start                 rest.at <u32>
-AtomRest.duration                       rest.duration <u32>
+EventGroup.kind                  group <kind>              (inline word)
+EventGroup.atoms                 group.note* | group.rest*
+EventGroup.technique_spans       group.span*
 
-NotePosition.position.string            position.string <u8>
-NotePosition.position.fret              position.fret <u8>
-NotePosition.evidence                   position.evidence         (block)
+AtomNote.absolute_start          note.at <u32>
+AtomNote.duration                note.duration <u32>
+AtomNote.pitch                   note.pitch <u8>
+AtomNote.velocity                note.velocity <u8>
+AtomNote.marks                   note.marks [<mark> …]
+AtomNote.position                note.position             (optional block)
+AtomRest.absolute_start          rest.at <u32>
+AtomRest.duration                rest.duration <u32>
 
-TechniqueSpan.technique                 span <technique>          (inline word)
-TechniqueSpan.tick_range.start/.end     span.ticks <u32>..<u32>
-TechniqueSpan.evidence                  span.evidence             (block)
+NotePosition.position            note.position             (block)
+NotePosition.evidence            position.evidence         (block)
+FretboardPosition.string         position.string <u8>
+FretboardPosition.fret           position.fret <u8>
 
-TechniqueEvidence.source                evidence.source <src>
-TechniqueEvidence.confidence            evidence.confidence <u16>
+TechniqueSpan.technique          span <technique>          (inline word)
+TechniqueSpan.tick_range         span.ticks <u32>..<u32>
+TechniqueSpan.evidence           span.evidence             (block)
+TechniqueEvidence.source         evidence.source <src>
+TechniqueEvidence.confidence     evidence.confidence <u16>
 
-SourceMeta.format                       source.format <string>    (optional)
+SourceMeta.format                source.format <string>    (optional)
+LossReport.warnings              loss.<warning>*
+```
 
-LossReport.warnings[]                   loss.<warning>*
-ImportWarning::TrackNameInvalidUtf8
-  .track_index                          loss.track_name_invalid_utf8 {
-                                          track_index <index> }
-ImportWarning::SmpteTimingUnsupported   loss.smpte_timing_unsupported
-                                          (bare word, no payload)
-ImportWarning::TempoApproximated
-  .bar_index                            loss.tempo_approximated {
-                                          bar_index <index> … }
-  .nearest_micros                       loss.tempo_approximated {
-                                          … nearest_micros <u32> }
-ImportWarning::Other.0                  loss.other { message <string> }
+`EventGroupKind::Tuplet`'s payload is part of the kind word, written
+`group tuplet <u8>/<u8>`. The `ImportWarning` payloads are:
+
+```text
+track_name_invalid_utf8   { track_index <index> }
+smpte_timing_unsupported  (bare word, no payload)
+tempo_approximated        { bar_index <index> nearest_micros <u32> }
+other                     { message <string> }
 ```
 
 `<index>` is the `usize` of H3, written in decimal. Its width becomes a
 fixed one when SWG-CORE-01 closes; until then the text is as portable as the
 model is, which is the honest amount.
+
+### 2.9 Opaque exact leaves and their decomposition
+
+Four canonical leaves keep their state **private**, so `SemanticField` sees
+one field where the text must open several. They are listed separately
+because they are the census's blind spot: new private state inside one of
+them changes exact semantics without adding a `SemanticField` variant and
+without touching any public signature, so nothing in Inventory A would
+notice.
+
+| Leaf | Private shape | Text opens it as |
+| --- | --- | --- |
+| `Tempo` | `num: NonZeroU32`, `den: NonZeroU32` | `tempo <num>/<den>` |
+| `Tuning` | `open_strings: Vec<Pitch>` | `tuning [<u8> …]`, vector order |
+| `NoteMarks` | `u16` bitset over `NoteMark::ALL` | `marks [<mark> …]`, `ALL` order |
+| `ConfidenceBps` | `u16`, `0..=10_000` | `evidence.confidence <u16>` |
+
+For completeness, the transparent newtypes — `Pitch(pub u8)`,
+`Velocity(pub u8)`, `Ticks(pub u32)` — carry exactly one value each and are
+written as that value.
+
+A committed witness checks this table field by field, private fields
+included, matching the **cells** and never the prose around them. New
+private state in one of these four leaves would otherwise leave every
+Inventory-A check green while exact text silently dropped a fact.
 
 ## 3. Writer domain — the decision
 
@@ -708,24 +735,29 @@ Every construct admits an **exhaustive, closed set of field words**. A word
 outside its construct's set is a typed refusal, never ignored and never
 stored: exact text with a field nobody understands is not exact.
 
+Each word carries a **multiplicity**, because level 2 has something level 1
+never had: repeated structural blocks. `1` is a singleton, `?` an optional
+singleton, `*` a repeated block admitting zero or more.
+
 ```text
-score                      ppqn | master_bar | track | source | loss
-master_bar                 index | ticks | meter | tempo | repeat
-repeat                     start | play_count
-track                      name | channel | tuning | voice
-voice                      id | group
-group                      note | rest | span
-note                       at | duration | pitch | velocity | marks | position
-rest                       at | duration
-position                   string | fret | evidence
-span                       ticks | evidence
-evidence                   source | confidence
-source                     format
-loss                       track_name_invalid_utf8 | smpte_timing_unsupported
-                           | tempo_approximated | other
-track_name_invalid_utf8    track_index
-tempo_approximated         bar_index | nearest_micros
-other                      message
+score                      ppqn 1 | master_bar * | track * | source ? | loss ?
+master_bar                 index 1 | ticks 1 | meter 1 | tempo 1 | repeat ?
+repeat                     start 1 | play_count 1
+track                      name ? | channel 1 | tuning 1 | voice *
+voice                      id 1 | group *
+group                      note * | rest * | span *
+note                       at 1 | duration 1 | pitch 1 | velocity 1
+                           | marks 1 | position ?
+rest                       at 1 | duration 1
+position                   string 1 | fret 1 | evidence 1
+span                       ticks 1 | evidence 1
+evidence                   source 1 | confidence 1
+source                     format ?
+loss                       track_name_invalid_utf8 * | tempo_approximated *
+                           | smpte_timing_unsupported * | other *
+track_name_invalid_utf8    track_index 1
+tempo_approximated         bar_index 1 | nearest_micros 1
+other                      message 1
 ```
 
 An unknown field word is **`SWG0401`**, matching level 1, whose `scan_pairs`
@@ -733,8 +765,19 @@ already raises `SWG0401` with "`{construct}` does not take a `{word}` word"
 for exactly this. `SWG0402` stays what it is at level 1 — an unknown *value*
 name in a closed set — because §5.10 forbids one number meaning two things
 across levels, and reusing a code for the same meaning is the point of
-reusing it at all. A repeated field word within one construct is `SWG0404`,
-also as at level 1.
+reusing it at all.
+
+**`SWG0404` applies to `1` and `?` words only.** Level 1 could say "a
+repeated word is always an error" because every level-1 word was a
+singleton; level 2 cannot, and the rule inherited without that caveat would
+have the reference document in §6.1 reject itself at its second
+`master_bar`. Repeating a `*` word is how a collection with more than one
+element is written, and the order of those repetitions is the vector order
+the census marks load-bearing.
+
+A `*` word appearing zero times is the omission of §6.2, not a missing
+required word: `SWG0403` never fires for a `*`. It fires for an absent `1`,
+and never for an absent `?`.
 
 Forward compatibility is a level question, not a field question: a future
 canonical field arrives with level 3, not as a word level 2 tolerated.
@@ -792,45 +835,55 @@ numbers when they do.
 
 ## 7. Fixture matrix
 
-Two categories, kept apart because the previous draft mixed them and a table
-that calls a legal round-trip a "negative fixture" teaches the wrong reflex.
+Three categories, kept apart. The previous draft had two and quietly filed
+the third under "rejected", which is the more expensive confusion: text the
+grammar happily accepts, that builds a *different* `Score`, is not a
+rejection at all, and a fixture expecting a diagnostic there will never see
+one.
 
 - an **adversarial legal witness** is a value the model permits, that looks
   wrong, and that must round-trip unchanged;
-- a **rejected witness** is text the grammar must refuse, with the code it
-  refuses under.
+- a **divergence witness** is *syntactically valid* text that builds a
+  different `Score` — no diagnostic fires, and the proof obligation is that
+  `ExactSemanticDiff` reports the difference;
+- a **rejected witness** is text the grammar must refuse, with its code.
 
-Every row needs both, plus a recorded round-trip result. Rows are the
-alphaTab #1484 expressibility checklist as S16 requires, plus the rows this
-census added.
+Every row needs an adversarial legal witness and a rejected witness. A
+divergence witness appears only where the feature admits one; `—` means the
+category is genuinely empty for that row, not that it was skipped.
 
-| Feature | Text representation | Adversarial legal witness (must round-trip) | Rejected witness |
-| --- | --- | --- | --- |
-| note crossing a barline | one `note`, no tie synthesized | duration spanning two bars | text splitting it into two notes — must not compare equal |
-| tuplet | `group tuplet 3/2` | `group tuplet 7/11` | `group tuplet 3` → `SWG0401` |
-| degenerate tuplet | `group tuplet 0/0` | `Tuplet { 0, 0 }` itself | `group tuplet 00/0` → `SWG0505` |
-| multiple voices | repeated `voice` blocks | two voices sharing `id 0` | `voice { group … }` without `id` → `SWG0403` |
-| rests | `rest { … }` | zero-duration rest | text omitting the rest — must not compare equal |
-| repeats | `repeat { start … play_count … }` | `{ start false play_count 1 }` | `repeat { start false play_count 0 }` written out → `SWG0505` |
-| bends and techniques | `span bend { … }` | span range outside its group's atoms | `span shred { … }` → `SWG0402` |
-| fretboard positions | `position { … }` | `string 9` on a six-string tuning | `position { string 4 }` without `fret` → `SWG0403` |
-| evidence | `evidence { source … confidence … }` | `explicit` at `0` bps | `confidence 10001` → `SWG0506` |
-| tempo — integer | `tempo 7/1` | **`tempo 7/1`, the H1 regression witness** | `tempo 0/1` → `SWG0507` |
-| tempo — rational | `tempo 100/7` | `tempo 100/7` (`micros 4_200_000`) | `tempo 200/14` → `SWG0505`; `tempo 7/2` → `SWG0507` |
-| unusual meters | `meter 7/8` | `meter 255/128` | `meter 4/3` → `SWG0506` |
-| loss metadata | `loss { … }` | two identical warnings in sequence | reordered warnings — must not compare equal |
-| source metadata | `source { … }` | `source { }` versus absent `source` | `source { vendor "x" }` → `SWG0401` |
-| strings | escaped literal | `name ""`, and a name holding U+0085 | `"\u{0a}"` where `\n` is canonical → `SWG0508` |
-| tuning | `tuning [<u8> …]` | `tuning []` | `tuning` omitted → `SWG0403` |
-| marks | `marks [<mark> …]` | `marks []` | `marks [ghost accent]` out of order → `SWG0505` |
-| ppqn | `ppqn <u16>` | `ppqn 1` | `ppqn 0` → `SWG0506` |
-| bar index | `index <index>` | `index 17` at position 3 | `index 03` → `SWG0505` |
-| channel | `channel <u8>` | `channel 200` | `channel` omitted → `SWG0403` |
+| Feature | Text | Adversarial legal (round-trips) | Divergence (valid, different `Score`) | Rejected (code) |
+| --- | --- | --- | --- | --- |
+| note crossing a barline | one `note`, no tie | duration spanning two bars | split into two notes at the barline | `note` without `duration` → `SWG0403` |
+| tuplet | `group tuplet 3/2` | `group tuplet 7/11` | — | `group tuplet 3` → `SWG0401` |
+| degenerate tuplet | `group tuplet 0/0` | `Tuplet { 0, 0 }` itself | — | `group tuplet 00/0` → `SWG0505` |
+| multiple voices | repeated `voice` | two voices sharing `id 0` | the two voices swapped | `voice` without `id` → `SWG0403` |
+| rests | `rest { … }` | zero-duration rest | the rest omitted entirely | `rest { at 480 }` → `SWG0403` |
+| repeats | `repeat { … }` | `{ start false play_count 1 }` | — | `repeat { start false play_count 0 }` written out → `SWG0505` |
+| bends and techniques | `span bend { … }` | span range outside its group | span moved to a sibling group | `span shred { … }` → `SWG0402` |
+| fretboard positions | `position { … }` | `string 9` on six strings | `position` omitted | `position { string 4 }` → `SWG0403` |
+| evidence | `evidence { … }` | `explicit` at `0` bps | `inferred_from_midi` swapped for `explicit` | `confidence 10001` → `SWG0506` |
+| tempo — integer | `tempo 7/1` | **`tempo 7/1`, the H1 regression witness** | — | `tempo 0/1` → `SWG0507` |
+| tempo — rational | `tempo 100/7` | `tempo 100/7` (`micros 4_200_000`) | — | `tempo 200/14` → `SWG0505`; `tempo 7/2` → `SWG0507` |
+| unusual meters | `meter 7/8` | `meter 255/128` | — | `meter 4/3` → `SWG0506` |
+| loss metadata | `loss { … }` | two identical warnings in sequence | warnings reordered | `tempo_approximated { bar_index 1 }` → `SWG0403` |
+| source metadata | `source { … }` | `source { }` versus absent | `source { }` written as absent | `source { vendor "x" }` → `SWG0401` |
+| strings | escaped literal | `name ""`, a name holding U+0085 | — | `"\u{0a}"` where `\n` is canonical → `SWG0508` |
+| tuning | `tuning [<u8> …]` | `tuning []` | the tuning reversed | `tuning` omitted → `SWG0403` |
+| marks | `marks [<mark> …]` | `marks []` | a mark dropped | `marks [ghost accent]` out of order → `SWG0505` |
+| ppqn | `ppqn <u16>` | `ppqn 1` | — | `ppqn 0` → `SWG0506` |
+| bar index | `index <index>` | `index 17` at position 3 | `index` taken from the position | `index 03` → `SWG0505` |
+| channel | `channel <u8>` | `channel 200` | — | `channel` omitted → `SWG0403` |
+| repeated blocks | `master_bar *` | two `master_bar` blocks | the two bars swapped | — (multiplicity `*`; `SWG0404` does not apply, §6.4b) |
 
 `tempo 7/1` earns its own row rather than a footnote. The inhabited set and
 the builder algorithm disagreed about it once already, in a draft where the
 prose was right and the procedure was wrong; a regression witness is cheaper
 than rediscovering that.
+
+The divergence column is where "the writer never synthesizes ties" and "a
+rest is never an absence" become checkable. Both are claims that a
+*correct-looking* text is wrong, and only a semantic diff can say so.
 
 ### 7.1 Unrepresentable because absent from the canonical model
 
@@ -859,7 +912,10 @@ SWG-4A-01 is complete when:
 - each representability hole has either a resolution requiring no core
   change, or a filed prerequisite that this task does not perform;
 - §7 names an adversarial legal witness **and** a rejected witness for every
-  row, with the two never conflated;
+  row, with rejection, divergence, and legal-but-ugly never conflated — a
+  divergence witness is valid text proving a semantic difference, not a
+  diagnostic, and expecting a code there would be a fixture that can never
+  pass;
 - **adding a canonical field or a `SemanticField` variant fails a committed
   test until this census is updated** — the exhaustive witness the backlog
   asked for, living in `swang/tests/exact_text_census.rs`, not in a commit
