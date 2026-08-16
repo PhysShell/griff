@@ -662,22 +662,40 @@ score {
 
 ### 6.2 Canonical order and omission
 
-Ordering has three classes, and only the first is the formatter's to
-decide:
+Ordering has three classes. The formatter owns the first, is forbidden the
+second, and the third says which of the two a given pair of words falls
+under:
 
-1. **singleton fields** (`1` and `?`) — an author may write them in any
-   order and `fmt` normalizes to the order the census lists;
-2. **elements of a repeated collection** — encounter order is preserved
-   exactly, because it is the vector order and the vector order is
-   semantics (§2.3, §2.7). `fmt` never sorts them;
-3. **variant tags inside one repeated sum-type collection** — `note` versus
-   `rest`, and the four warning names — **do not form separate sortable
-   fields**. They are alternatives at one position of a single sequence, so
-   rule 2 governs them and rule 1 must never be applied across them.
+1. **slot order** — the slots of a construct, singleton and repeated alike,
+   are emitted in the order the census lists. `fmt` normalizes to it. So
+   `ppqn`, then every `master_bar`, then every `track`; inside a group,
+   every `atom`, then every `span`;
+2. **element order within one repeated slot** — encounter order is preserved
+   exactly, because it is the vector order and the vector order is semantics
+   (§2.3, §2.7). `fmt` never sorts or regroups here;
+3. **variant tags inside one sum-type slot** — `note` versus `rest`, and the
+   four warning names — **do not create separate slots**. They are
+   alternatives at one position of a single sequence, so rule 2 governs
+   them and rule 1 must never be applied across them.
 
-Class 3 exists because it is the one a well-meaning formatter gets wrong:
-grouping every `note` before every `rest` looks tidy, is a field-order
-normalization by rule 1, and silently rewrites the music.
+Rule 1 has to cover repeated slots, not only singletons, because the model
+does not store the interleaving *between* different slots. An author may
+write
+
+```text
+score { track { … } master_bar { … } track { … } master_bar { … } }
+```
+
+and the parsed `Score` holds `master_bars` and `tracks` as two separate
+vectors — the alternation is already gone before the formatter runs. If
+`fmt` were not entitled to choose a canonical slot order, `format(parse(x))`
+would have no single answer and §8's idempotence law would be unprovable.
+
+Rule 3 is the one a well-meaning formatter gets wrong in the other
+direction: grouping every `note` before every `rest` looks tidy, would be a
+rule-1 normalization if `note` and `rest` were slots, and silently rewrites
+the music because they are not. `atom *` is one slot; `atom *` and `span *`
+are two.
 
 "Collection" is not self-evident here, so it is defined rather than
 assumed. Two kinds of repeated thing exist in the census and they behave

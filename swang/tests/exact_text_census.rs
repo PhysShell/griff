@@ -170,6 +170,27 @@ fn field_name(declaration: &str) -> Option<String> {
         .then(|| name.to_owned())
 }
 
+/// How many top-level elements a tuple payload declares.
+///
+/// Commas nested inside `<…>` or `(…)` belong to a type argument, not to
+/// the payload: `Vec<(u8, u8)>` is one element, `String, u32` is two.
+fn tuple_arity(inner: &str) -> usize {
+    if inner.trim().is_empty() {
+        return 0;
+    }
+    let mut depth = 0_i32;
+    let mut count = 1_usize;
+    for c in inner.chars() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
 /// Payload fields of every variant of an enum, keyed `Enum::Variant.field`.
 ///
 /// Tuple payloads are keyed by position (`Other.0`). Canonical state lives
@@ -194,9 +215,14 @@ fn enum_payload_fields(source: &str, enum_name: &str) -> Vec<String> {
         if depth == 0 {
             let head = line.trim_end_matches([' ', '{', ',']);
             if let Some(open) = head.find('(') {
-                // Tuple payload on one line: `Other(String),`
+                // Tuple payload on one line: `Other(String)` — one key per
+                // element, because `Other(String, u32)` is two facts and a
+                // hard-coded `.0` would let the second one vanish.
                 head[..open].clone_into(&mut variant);
-                keys.push(format!("{enum_name}::{variant}.0"));
+                let inner = head[open + 1..].trim_end_matches(')');
+                for slot in 0..tuple_arity(inner) {
+                    keys.push(format!("{enum_name}::{variant}.{slot}"));
+                }
                 continue;
             }
             head.clone_into(&mut variant);
@@ -389,6 +415,15 @@ fn every_canonical_field_appears_in_the_syntax_location_map() {
 fn every_import_warning_variant_has_a_syntax_location() {
     let score = read("core/src/score.rs");
     let doc = census();
+    // §2.8 only. The variant name appears in §2.7 and §6.4 as well, so a
+    // document-wide search would call a variant "located" on the strength
+    // of a mention that is not a location — the Tuning.capo failure mode
+    // with a different noun.
+    let map = section(
+        &doc,
+        "### 2.8 Canonical field",
+        "### 2.9 Opaque exact leaves",
+    );
     let start = score
         .find("pub enum ImportWarning {")
         .expect("ImportWarning is declared");
@@ -418,11 +453,12 @@ fn every_import_warning_variant_has_a_syntax_location() {
     );
     let missing: Vec<&String> = variants
         .iter()
-        .filter(|v| !doc.contains(&snake_case(v)))
+        .filter(|v| !map.contains(&format!("ImportWarning::{v}")))
         .collect();
     assert!(
         missing.is_empty(),
-        "ImportWarning variants with no spelling in the census: {missing:?}"
+        "ImportWarning variants with no entry in the §2.8 syntax-location \
+         map: {missing:?}"
     );
 }
 
@@ -431,6 +467,9 @@ fn every_closed_word_set_member_is_spelled_in_the_census() {
     let event = read("core/src/event.rs");
     let score = read("core/src/score.rs");
     let doc = census();
+    // §6.4 only — the section whose acceptance criterion this is. The
+    // message already claimed §6.4; now the search agrees with it.
+    let word_sets = section(&doc, "### 6.4 Closed word sets", "### 6.4b Field words");
 
     let mut missing = Vec::new();
     for (source, enum_name) in [
@@ -462,7 +501,7 @@ fn every_closed_word_set_member_is_spelled_in_the_census() {
             if variant.is_empty() {
                 continue;
             }
-            if !doc.contains(&snake_case(variant)) {
+            if !word_sets.contains(&snake_case(variant)) {
                 missing.push(format!("{enum_name}::{variant}"));
             }
         }
@@ -650,8 +689,59 @@ fn sum_type_collections_are_single_slots() {
 
     let ordering = flattened(section(&doc, "### 6.2 Canonical order", "### 6.3 Scalars"));
     assert!(
-        ordering.contains("do not form separate sortable fields"),
-        "§6.2 must state that variant tags inside one repeated sum-type \
-         collection are not separately sortable fields"
+        ordering.contains("do not create separate slots"),
+        "§6.2 must state that variant tags inside one sum-type slot do not \
+         create separate slots"
+    );
+    assert!(
+        ordering.contains("singleton and repeated alike"),
+        "§6.2 must give the formatter a canonical order over repeated slots \
+         too, or format(parse(x)) has no single answer where the model does \
+         not store the interleaving between two slots"
+    );
+}
+
+/// The payload parser is itself checked, against a synthetic source rather
+/// than by mutilating `griff-core`.
+///
+/// Widening a tuple payload is the one enum drift the compiler does *not*
+/// force into every call site's face as a named field, and an earlier
+/// version hard-coded `.0` for every tuple variant — so
+/// `Other(String, u32)` would have kept the census green while `.1` went
+/// unwritten.
+#[test]
+fn the_payload_parser_counts_tuple_elements() {
+    assert_eq!(tuple_arity(""), 0);
+    assert_eq!(tuple_arity("String"), 1);
+    assert_eq!(tuple_arity("String, u32"), 2);
+    assert_eq!(
+        tuple_arity("Vec<(u8, u8)>"),
+        1,
+        "nested commas are not elements"
+    );
+    assert_eq!(tuple_arity("Vec<(u8, u8)>, u32"), 2);
+
+    let synthetic = "\
+pub enum Probe {
+    Named {
+        alpha: u8,
+        beta: u32,
+    },
+    Bare,
+    One(String),
+    Two(String, u32),
+}
+";
+    let keys = enum_payload_fields(synthetic, "Probe");
+    assert_eq!(
+        keys,
+        vec![
+            "Probe::Named.alpha".to_owned(),
+            "Probe::Named.beta".to_owned(),
+            "Probe::One.0".to_owned(),
+            "Probe::Two.0".to_owned(),
+            "Probe::Two.1".to_owned(),
+        ],
+        "a widened tuple payload must yield one key per element"
     );
 }
