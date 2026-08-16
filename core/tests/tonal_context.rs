@@ -797,6 +797,25 @@ fn a_range_endpoint_that_never_sounded_is_refused() {
 }
 
 #[test]
+fn a_span_whose_endpoints_share_a_class_needs_an_onset_for_each() {
+    // One note cannot be both ends of an octave span: reaching C4 *and* C5
+    // takes two sounding notes, and they land in the same pitch class, so a
+    // per-class presence check is satisfied by one onset while the facts are
+    // impossible. Anything below two C onsets is not a measurement.
+    refuses_evidence(
+        &forged_evidence(1, one_at(0, 1), mass_at(0, 480), Some((60, 72))),
+        "an octave span standing on a single onset",
+    );
+
+    // The same span with both notes present is a perfectly ordinary
+    // measurement, so the rule must not simply outlaw octave spans.
+    let honest = forged_evidence(2, one_at(0, 2), mass_at(0, 960), Some((60, 72)));
+    honest
+        .validate()
+        .expect("two C onsets can reach from C4 to C5");
+}
+
+#[test]
 fn an_evidence_forgery_is_refused_even_when_its_projection_is_honest() {
     // The nastiest shape: forge the facts, then compute the estimate *honestly*
     // from the forgery. Re-derivation is satisfied — the document really does
