@@ -2246,3 +2246,34 @@ Architectural decisions go to [`adr/`](adr/) instead.
   test asserting its own coverage (that ragged shapes were really reached) is
   slightly unusual, and preferring it to a sweep that could silently narrow
   again.
+
+- 2026-08-16 — In the context of S7 Slice C's engine (deterministic k-best
+  alternatives) passing independent review at `7d0c0cb` after two revision
+  rounds — the checked candidate fold and the width-vector sweep — facing how to
+  record its status without letting acceptance widen scope, we decided for
+  marking the **engine** ACCEPTED / CLOSED and against treating acceptance as
+  licence to build its client, to achieve a frozen boundary around a
+  domain-free primitive. Frozen: serial list Viterbi in Lawler's formulation
+  over the Slice A backward table; diversity as a hard Hamming constraint in
+  layers, greedy and documented as not jointly optimal; identity by ordinal
+  vector rather than rank; and a fail-closed arithmetic in which every fold that
+  becomes a heap key is checked. Accepting that the last of these is a
+  deliberate *tightening* — a problem whose far-fetched alternative cannot be
+  represented in `f64` now refuses the whole call even when the requested `k`
+  are finite, which is what `solve` already does and was the point — and that
+  the `candidate_chain` client, any other diversity solver, Eppstein, and
+  joint-set optimisation each remain separate work behind their own gates.
+  Verification is reviewed diff plus local evidence only (1453 tests, clippy
+  `--workspace --all-targets -D warnings`, fmt, doc, MSRV 1.92): the branch
+  carries no pull request, so no GitHub Actions run exists on `7d0c0cb`.
+
+- 2026-08-16 — In the context of the same closure, facing a review finding that
+  the "1350 engine-versus-oracle comparisons" claimed in `e9e3a0e`'s commit
+  message does not match the loop, we recounted independently — 3 + 9 + 27 + 81
+  width vectors, each run for `min_distance` in `1..=layers` and `k` in `1..=5`,
+  giving 15 + 90 + 405 + 1620 = **2130** comparisons over 120 vectors of which
+  108 are ragged — and decided to record the correct figure at closure rather
+  than rewrite a pushed commit message for an arithmetic slip. The sweep is
+  stronger than the number that was claimed for it, not weaker, and the stage
+  doc had sensibly stated the ranges rather than a product; the correction is
+  noted there beside them so the wrong count cannot propagate.

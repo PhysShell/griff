@@ -2,10 +2,10 @@
 
 Status: in progress — landed: chunk similarity edge (2026-06-10), Slices A/B
 (2026-07-17: the layered-path engine and the multi-bar candidate chain), Slice C
-engine-side (2026-08-16: deterministic k-best alternatives, pending acceptance).
-Remaining: a Slice C client (the chain returning alternatives rather than one
-plan); the corpus-scale full graph and any Slice D specialised clients stay
-deliberately late
+engine-side (2026-08-16: deterministic k-best alternatives, accepted and closed
+at `7d0c0cb`). Remaining: a Slice C client (the chain returning alternatives
+rather than one plan); the corpus-scale full graph and any Slice D specialised
+clients stay deliberately late
 Depends on: S6 acceptance
 ADRs: ADR-0013 (DP/Viterbi traversal) as amended by ADR-0030 (reduced-state
 layered DP clients), ADR-0018 (rich note model: fretboard + multi-technique with
@@ -190,7 +190,21 @@ count, non-finite DP accumulations, the boundary facts' valid bars and last
 sounding note, the compatibility contract over the shared skeleton, and
 group-local lossless assembly.
 
-### Slice C — deterministic k-best alternatives — **engine landed 2026-08-16**
+### Slice C — deterministic k-best alternatives — **engine accepted 2026-08-16** ✅
+
+Accepted and closed at `7d0c0cb` after two review rounds, for the **engine scope
+only**. Frozen: the enumeration (serial list Viterbi in Lawler's formulation
+over the Slice A backward table), the diversity rule as a hard Hamming
+constraint in layers, identity by ordinal vector rather than rank, and the
+fail-closed arithmetic — every fold that becomes a heap key is checked, so a
+problem whose far-fetched alternative cannot be represented in `f64` refuses the
+whole call even when the requested `k` are finite. That is a deliberate
+tightening to match `solve`, recorded in the decisions log with its cost rather
+than smuggled in as a refactor.
+
+Acceptance covers no client. `candidate_chain` still plans one chain, and
+returning alternatives from it is separate work needing its own gate — as are
+any other diversity solver, Eppstein, and joint-set optimisation.
 
 Return several ranked global paths with:
 
@@ -254,11 +268,14 @@ chain, and giving it alternatives is separate work.
   by the diversity rule and so never reaches the assembly that would have caught
   it.
 - 19 tests, including a brute-force oracle over **all 120 width vectors** for
-  1–4 layers over widths 1–3 — ragged shapes included, since `LayeredProblem`
-  admits layers of differing width and a rectangles-only sweep is not the sweep
-  its name claims — for every diversity distance and every `k` up to 5, compared
-  on both the exact paths and the bit-identical totals. Slice A's oracle
-  discipline extended from one path to the whole set.
+  1–4 layers over widths 1–3 — 108 of them ragged, since `LayeredProblem` admits
+  layers of differing width and a rectangles-only sweep is not the sweep its
+  name claims — for every diversity distance and every `k` up to 5. That is
+  **2130 engine-versus-oracle comparisons**, each on both the exact paths and
+  the bit-identical totals. Slice A's oracle discipline extended from one path
+  to the whole set.
+  (The `e9e3a0e` commit message says 1350; that count was wrong. History is not
+  rewritten, so the correct figure is recorded here.)
 
 Implementation: `513fa91` (red) and `60b3493` (green) for the first cut;
 `e3e4efa` (red) and `e9e3a0e` (green) for the review revision.
