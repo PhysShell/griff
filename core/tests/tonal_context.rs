@@ -45,6 +45,7 @@
 
 use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
+    feature::PitchRange,
     generate::GenerationStrategy,
     generation_input::{ranked_candidates, GenerationAsk, RankedSet},
     score::{
@@ -57,6 +58,8 @@ use griff_core::{
         TonalProjection, TonalWeighting,
     },
 };
+use proptest::prelude::*;
+use serde_json::json;
 
 const PPQN: u16 = 480;
 const QUARTER: u32 = 480;
@@ -680,6 +683,257 @@ fn a_valid_envelope_still_deserialises_whatever_its_key_order() {
     let back: TonalContext =
         serde_json::from_str(&reordered).expect("a valid artifact deserialises");
     assert_eq!(back, context);
+}
+
+// ── the root of trust: evidence no measurement could have produced ───────────
+//
+// Re-derivation proves the *estimate* follows from the evidence. It says
+// nothing about whether the evidence itself is possible, and the estimator only
+// ever reads the two histograms — never `pitch_range`, and never the two
+// histograms against each other. So a document can forge the facts, recompute
+// an impeccable estimate from the forgery, and prove itself right about a lie.
+// `PitchEvidence::validate` is the one gate that closes it, on both doors: the
+// wire boundary and the public `TonalContext::from_evidence`.
+
+/// Evidence built by hand rather than measured — the shape a forgery takes.
+fn forged_evidence(
+    note_count: usize,
+    onset_counts: [u32; 12],
+    duration_mass: [u64; 12],
+    span: Option<(u8, u8)>,
+) -> PitchEvidence {
+    PitchEvidence {
+        scope: EvidenceScope::Track(0),
+        note_count,
+        onset_counts,
+        duration_mass,
+        pitch_range: span.map(|(lowest, highest)| PitchRange {
+            lowest: Pitch::new(lowest).expect("valid pitch"),
+            highest: Pitch::new(highest).expect("valid pitch"),
+        }),
+    }
+}
+
+fn one_at(index: usize, value: u32) -> [u32; 12] {
+    let mut histogram = [0_u32; 12];
+    histogram[index] = value;
+    histogram
+}
+
+fn mass_at(index: usize, value: u64) -> [u64; 12] {
+    let mut histogram = [0_u64; 12];
+    histogram[index] = value;
+    histogram
+}
+
+/// Refuses through *both* doors: the public constructor and the wire form.
+fn refuses_evidence(evidence: &PitchEvidence, why: &str) {
+    assert!(
+        TonalContext::from_evidence(evidence).is_err(),
+        "from_evidence must refuse ({why})"
+    );
+
+    let mut envelope = valid_envelope();
+    envelope["evidence"] = json!({
+        "scope": {"kind": "track", "track": 0},
+        "note_count": evidence.note_count,
+        "onset_counts": evidence.onset_counts,
+        "duration_mass": evidence.duration_mass,
+        "pitch_range": evidence.pitch_range.map(|r| json!({
+            "lowest": r.lowest.0, "highest": r.highest.0
+        })),
+    });
+    refuses(&envelope, why);
+}
+
+#[test]
+fn a_silent_scope_that_carries_duration_mass_is_refused() {
+    // Nothing sounded, yet a pitch class holds sounded ticks.
+    refuses_evidence(
+        &forged_evidence(0, [0; 12], mass_at(0, 1), None),
+        "duration mass with no notes at all",
+    );
+}
+
+#[test]
+fn duration_mass_for_a_pitch_class_that_never_sounded_is_refused() {
+    refuses_evidence(
+        &forged_evidence(1, one_at(0, 1), mass_at(6, 480), Some((60, 60))),
+        "F# holds the duration while only C ever sounded",
+    );
+}
+
+#[test]
+fn duration_mass_beyond_what_its_onsets_could_produce_is_refused() {
+    // One onset can contribute at most one `u32` of ticks.
+    refuses_evidence(
+        &forged_evidence(1, one_at(0, 1), mass_at(0, u64::MAX), Some((60, 60))),
+        "more sounded ticks than one note can hold",
+    );
+}
+
+#[test]
+fn an_onset_outside_the_observed_pitch_range_is_refused() {
+    // C and F# both sounded, but the observed span is a single C: F# has no
+    // representative anywhere in `60..=60`.
+    let mut onsets = one_at(0, 1);
+    onsets[6] = 1;
+    let mut mass = mass_at(0, 480);
+    mass[6] = 480;
+    refuses_evidence(
+        &forged_evidence(2, onsets, mass, Some((60, 60))),
+        "a pitch class that cannot fit inside the observed span",
+    );
+}
+
+#[test]
+fn a_range_endpoint_that_never_sounded_is_refused() {
+    // The span claims to reach D4, but no D was ever counted — an endpoint is
+    // by definition an observed note.
+    refuses_evidence(
+        &forged_evidence(1, one_at(0, 1), mass_at(0, 480), Some((60, 62))),
+        "a span endpoint absent from the onset histogram",
+    );
+}
+
+#[test]
+fn an_evidence_forgery_is_refused_even_when_its_projection_is_honest() {
+    // The nastiest shape: forge the facts, then compute the estimate *honestly*
+    // from the forgery. Re-derivation is satisfied — the document really does
+    // follow from its own stated evidence — so only validating the evidence
+    // itself can catch it.
+    let forged = forged_evidence(1, one_at(0, 1), mass_at(6, 480), Some((60, 60)));
+    let estimate = estimate_key(&forged).expect("the forged facts still estimate");
+    let winner = estimate.candidates[0];
+    let rival = estimate.candidates[1];
+
+    let candidate = |c: griff_core::tonal::TonalCandidate| {
+        json!({
+            "tonic": c.tonic,
+            "mode": if c.mode == KeyMode::Major { "major" } else { "minor" },
+            "correlation": c.correlation,
+            "scale_fit": c.scale_fit,
+        })
+    };
+
+    let mut envelope = valid_envelope();
+    envelope["evidence"] = json!({
+        "scope": {"kind": "track", "track": 0},
+        "note_count": 1,
+        "onset_counts": forged.onset_counts,
+        "duration_mass": forged.duration_mass,
+        "pitch_range": {"lowest": 60, "highest": 60},
+    });
+    envelope["projection"] = json!({
+        "winner": candidate(winner),
+        "runner_up": candidate(rival),
+        "confidence_margin": estimate.confidence_margin,
+    });
+    envelope["provenance"] = json!({"method": "ks_v1", "weighting": "duration_mass"});
+
+    refuses(&envelope, "impossible facts, impeccably reasoned from");
+}
+
+#[test]
+fn an_overflowing_duration_histogram_is_refused_rather_than_panicking() {
+    let mut envelope = valid_envelope();
+    envelope["evidence"]["duration_mass"] =
+        json!([u64::MAX, u64::MAX, u64::MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    refuses(&envelope, "a duration histogram whose total does not fit u64");
+}
+
+#[test]
+fn estimating_from_an_overflowing_duration_histogram_does_not_panic() {
+    // `estimate_key` is public and `PitchEvidence` is a plain struct with public
+    // fields, so the estimator must not assume the histogram is summable. This
+    // is the "no unchecked integer sum on untrusted evidence" half — a panic
+    // here would be a crash where a typed refusal was promised.
+    let evidence = PitchEvidence {
+        scope: EvidenceScope::WholeScore,
+        note_count: 3,
+        onset_counts: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        duration_mass: [u64::MAX, u64::MAX, u64::MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        pitch_range: Some(PitchRange {
+            lowest: Pitch::new(60).expect("valid"),
+            highest: Pitch::new(60).expect("valid"),
+        }),
+    };
+
+    let estimate = estimate_key(&evidence).expect("a saturating total still estimates");
+    assert_eq!(estimate.candidates.len(), 24);
+    for candidate in &estimate.candidates {
+        assert!(
+            candidate.correlation.is_finite(),
+            "correlations stay finite at the top of the u64 range"
+        );
+    }
+}
+
+#[test]
+fn a_valid_measurement_passes_both_doors() {
+    // The gate must not have closed the road for real measurements.
+    let score = two_key_score();
+    let evidence = PitchEvidence::measure(&score, EvidenceScope::Track(0));
+
+    assert!(evidence.validate().is_ok());
+    assert_eq!(
+        TonalContext::from_evidence(&evidence).expect("valid evidence projects"),
+        TonalContext::measure(&score, EvidenceScope::Track(0)),
+        "both doors reach the same context"
+    );
+}
+
+/// A track whose notes carry their own `(pitch, duration)`.
+fn track_of_pairs(notes: &[(u8, u32)]) -> Track {
+    Track {
+        name: None,
+        channel: 0,
+        voices: vec![Voice {
+            id: 0,
+            event_groups: notes
+                .iter()
+                .enumerate()
+                .map(|(i, &(pitch, duration))| EventGroup {
+                    kind: EventGroupKind::Single,
+                    atoms: vec![note(
+                        u32::try_from(i).unwrap() * QUARTER,
+                        pitch,
+                        duration,
+                    )],
+                    technique_spans: Vec::new(),
+                })
+                .collect(),
+        }],
+        tuning: Tuning::standard_e(),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Whatever `PitchEvidence::measure` produces, the validator accepts. The
+    /// gate constrains forgeries, not reality — and this is the check that a
+    /// stricter invariant cannot quietly start rejecting real scores.
+    #[test]
+    fn measured_evidence_always_validates(
+        notes in prop::collection::vec((0_u8..=127_u8, 0_u32..=4096_u32), 0..40)
+    ) {
+        let score = score_of(vec![track_of_pairs(&notes)], 1);
+        for scope in [
+            EvidenceScope::WholeScore,
+            EvidenceScope::Track(0),
+            EvidenceScope::Voice { track: 0, voice: 0 },
+            EvidenceScope::Track(9),
+        ] {
+            let evidence = PitchEvidence::measure(&score, scope);
+            prop_assert!(
+                evidence.validate().is_ok(),
+                "measured evidence must validate at {scope:?}: {:?}",
+                evidence.validate()
+            );
+            prop_assert!(TonalContext::from_evidence(&evidence).is_ok());
+        }
+    }
 }
 
 // ── generation: the context is carried and ignored ───────────────────────────
