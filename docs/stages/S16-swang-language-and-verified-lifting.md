@@ -1,6 +1,9 @@
 # S16: Swang language and verified lifting
 
-Status: proposed
+Status: in progress — Phases 0–3 shipped, accepted, and frozen (PRs
+#109–#121); Phase 4-pre A (exact scalars, PR #140) and Phase 4-pre B (both
+semantic-equality contracts, PRs #142 and #146) landed; the next boundary is
+Phase 4A. Phases 4A–9 remain future work.
 Depends on: S1 (canonical score), S2/S3 (MIDI and Guitar Pro adapters), S4
 (phrase boundaries), S6 (rule generator)
 Builds on: S13 relation specs, S14 structure controls, S15 explicit tonal
@@ -9,6 +12,8 @@ Feeds: S7 graph/DP clients, S8 cockpit, S9 feedback, S11 regeneration, S12
 neural assistance, S13 ComplementArranger
 Decision: ADR-0029
 Normative semantics: [`../swang/spec.md`](../swang/spec.md)
+Execution plan (non-normative):
+[`../swang/foundation-backlog.md`](../swang/foundation-backlog.md)
 Tracking: #108
 
 ## Goal
@@ -263,15 +268,67 @@ set of rewrite rules makes it useful.
 
 ## Phases
 
-**Status:** Phases 0–3 are **shipped, accepted, and frozen** (PRs
-#109–#121). The Swang semantic core (spec §1) and surface grammar (spec §3)
-are frozen — further change requires a new language level. `griff swang
-check | fmt | expand | build` exist and are held to the seven §3.5 laws;
-the parser and pattern core are fuzzed on the blocking CI gate. Phases 4–9
-(exact score text, patches, structural recognizers, optimizing verified
-lift, recipes, script-generating composers, graph/DP recipes) remain future
-work under ADR-0029. The next scope is **S8 Swang Playground** — the
-authoring loop that lets a human actually play these four verbs.
+**Status.** Two boundaries have moved since this section was first written;
+they are stated separately so that no shipped work reads as future and no
+future work reads as shipped.
+
+*Shipped, accepted, and frozen.* Phases 0–3 (PRs #109–#121). The Swang
+semantic core (spec §1) and surface grammar (spec §3) are frozen — further
+change requires a new language level. `griff swang check | fmt | expand |
+build` exist and are held to the seven §3.5 laws; the parser and pattern
+core are fuzzed on the blocking CI gate.
+
+*Shipped.* Both preparatory phases of Phase 4:
+
+- **Phase 4-pre A** — rational `Tempo` and `ConfidenceBps` across the
+  workspace, `Tempo::new(f64)` removed, exact/nearest MIDI export split with
+  a typed approximation loss (PR #140; `core/src/event.rs`,
+  `core/tests/exact_scalars.rs`);
+- **Phase 4-pre B** — `ExactSemanticDiff` over the canonical score tree (PR
+  #142) and `NormalizedMusicalDiff` v1 as a named, versioned policy (PR
+  #146); both in `core/src/semantic_diff.rs`.
+
+*Also shipped, outside this stage.* The **S8 Swang Playground** Slices 1–3
+(editor, diagnostics, generation, in-cockpit playback, favorite/reject,
+history, provenance) — see
+[`S8-preview-app.md`](S8-preview-app.md). It is no longer the next scope.
+
+*Future work under ADR-0029.* Phases 4A–4D (exact score text, corpus
+acceptance, patches, MIDI projection) and Phases 5–9 (structural
+recognizers, optimizing verified lift, recipes, script-generating composers,
+graph/DP recipes).
+
+**The next boundary is Phase 4A.** Its ordering, and the parser-platform
+work that precedes it, are broken into tasks in
+[`../swang/foundation-backlog.md`](../swang/foundation-backlog.md) — an
+execution plan that binds nothing; this stage doc and the spec stay
+authoritative.
+
+**Phase 4 dependency map.** The sub-phases are ordered by what each one
+needs to already be true, not by convenience:
+
+```text
+4-pre A exact scalars ──┐
+                        ├──→ 4A exact canonical score text
+4-pre B diff contracts ─┘             │
+                                      ├──→ 4D MIDI playback projection
+                                      │        (a branch, never a gate)
+                                      │
+                                      └──→ 4B corpus acceptance harness
+                                                 │
+                                                 └──→ 4C stable selectors
+                                                      and exact patches
+                                                            │
+                                                            ↓
+                                              5 structural recognizers
+                                                            ↓
+                                              6 optimizing verified lift
+```
+
+4B depends on 4A because a corpus verdict needs an exact round trip to have
+a verdict *about*; 4C depends on 4B because the selector contract is decided
+on measured corpus ambiguity, not on taste; 4D branches off 4A and is never
+a gate on it.
 
 ### Phase 0 — design contract and golden fixture *(done)*
 
@@ -429,9 +486,10 @@ and normalized equality are two contracts, not one; patches are
 separated from dump/verify by the stable-identity problem; MIDI gets its
 own, deliberately weaker projection contract. Planning range, not a
 commitment: 8–12 PRs for 4-pre + 4A (the exact score contract alone),
-13–18 PRs for the full 4-pre A/B + 4A–4D set.
+13–18 PRs for the full 4-pre A/B + 4A–4D set. Three of those PRs are
+spent: 4-pre A and 4-pre B are done.
 
-#### Phase 4-pre A — exact scalar semantics
+#### Phase 4-pre A — exact scalar semantics *(done)*
 
 The canonical model currently carries two `f64` fields — `Tempo` and
 `TechniqueEvidence.confidence` — which keep the score tree at
@@ -455,7 +513,7 @@ already requires of Swang semantics. Before any canonical text:
 - characterization tests land first, then the migration; production
   musical behavior does not change.
 
-#### Phase 4-pre B — semantic equality contracts
+#### Phase 4-pre B — semantic equality contracts *(done)*
 
 Two independent comparison contracts, not one stretched type:
 
@@ -731,6 +789,8 @@ S16 closes only when all of the following are true:
 
 - [`../adr/0029-swang-authoring-and-verified-lifting.md`](../adr/0029-swang-authoring-and-verified-lifting.md)
 - [`../swang/spec.md`](../swang/spec.md)
+- [`../swang/foundation-backlog.md`](../swang/foundation-backlog.md) — the
+  non-normative Phase 4 execution plan
 - [`S6-rule-generator-v0.md`](S6-rule-generator-v0.md)
 - [`S7-graph-layer.md`](S7-graph-layer.md)
 - [`S9-feedback-layer.md`](S9-feedback-layer.md)

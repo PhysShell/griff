@@ -2011,3 +2011,23 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Decision 10). Verification is local `nix` evidence only (45/45 tests, clippy
   `all=deny`/`pedantic=warn`, fmt) — the crate is excluded from the workspace
   and not built by CI (ADR-0010 isolation posture).
+
+- 2026-08-16 — In the context of planning the work after Phase 4-pre B
+  (PRs #140/#142/#146 landed while the S16 status block still described
+  Phases 4–9 as future), facing an external review that proposed rebuilding
+  the Swang front end on `logos` and `rowan` before Phase 4A, we decided
+  for keeping the hand-written lexer → recursive-descent parser → typed AST
+  → evaluator chain (ADR-0029 §11's initial strategy) and against both
+  generators for now, and for recording the plan as a non-normative
+  execution backlog
+  ([`swang/foundation-backlog.md`](swang/foundation-backlog.md)) rather
+  than as new normative text, to achieve a next milestone that spends its
+  PRs on the exact score contract instead of on a front-end rewrite,
+  accepting that `logos` is refused only while the lexer stays at six token
+  categories and that `rowan` is refused only until the SWG-UI-07
+  admission gate (three demonstrated needs from the lossless-CST list:
+  comment-preserving refactor, incremental parsing, rename, semantic
+  selection, robust completion, external LSP) passes — at which point it
+  enters behind a differential gate asserting the old parser's AST, the
+  diagnostic codes, and the canonical formatter bytes are unchanged. Both
+  refusals are reversible by evidence and would be recorded here.
