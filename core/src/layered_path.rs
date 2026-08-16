@@ -336,7 +336,7 @@ pub fn solve_k_best(
     let mut queue: BinaryHeap<Reverse<Candidate>> = BinaryHeap::new();
 
     let optimum = prepared.walk_optimum();
-    if let Some(cost) = prepared.prefix_cost(&optimum, 0) {
+    if let Some(cost) = prepared.prefix_cost(&optimum, 0)? {
         queue.push(Reverse(Candidate {
             cost,
             ordinals: optimum,
@@ -369,7 +369,7 @@ pub fn solve_k_best(
                 let mut ordinals: Vec<usize> =
                     candidate.ordinals.get(..layer).unwrap_or_default().to_vec();
                 ordinals.extend(prepared.walk_from(layer, ordinal));
-                if let Some(cost) = prepared.prefix_cost(&ordinals, layer) {
+                if let Some(cost) = prepared.prefix_cost(&ordinals, layer)? {
                     queue.push(Reverse(Candidate {
                         cost,
                         ordinals,
@@ -522,17 +522,84 @@ impl Prepared {
     /// from the back, which is the recurrence's own grouping. A key computed as
     /// `prefix + suffix` would be a different function of the same terms, and
     /// would order alternatives by a number none of them reports.
+    ///
+    /// **Every addition is checked**, exactly as [`trace_total`] checks its own
+    /// and in the same two steps, so the two agree on both the value and the
+    /// state a failure names. The backward pass cannot stand in for this: it
+    /// only ever adds a local to the *cheapest* completion, so a non-optimal
+    /// enumerated path can leave `f64` on a sum the DP never formed. An
+    /// unchecked key would then order alternatives by a number no path can
+    /// report — and [`Candidate`]'s ordering states that every cost reaching it
+    /// is finite.
+    ///
+    /// `Ok(None)` is the structurally unaddressable candidate, which the caller
+    /// skips; `Err` is an accumulation that left `f64`, which it refuses. Two
+    /// different outcomes, so two different channels.
     // `total = x + total` is NOT `total += x`: see `trace_total`.
     #[allow(clippy::assign_op_pattern)]
-    fn prefix_cost(&self, ordinals: &[usize], through: usize) -> Option<f64> {
-        let mut total = *self.suffix.get(through)?.get(*ordinals.get(through)?)?;
+    fn prefix_cost(&self, ordinals: &[usize], through: usize) -> Result<Option<f64>, PathError> {
+        let Some(anchor) = ordinals.get(through).copied() else {
+            return Ok(None);
+        };
+        let Some(mut total) = self
+            .suffix
+            .get(through)
+            .and_then(|s| s.get(anchor))
+            .copied()
+        else {
+            return Ok(None);
+        };
+        check_accumulation(
+            total,
+            StateId {
+                layer: through,
+                ordinal: anchor,
+            },
+        )?;
+
         for layer in (0..through).rev() {
-            let from = *ordinals.get(layer)?;
-            let to = *ordinals.get(layer.saturating_add(1))?;
-            let edge = self.transition.get(layer)?.get(from)?.get(to)?.aggregate;
-            total = self.local.get(layer)?.get(from)?.aggregate + (edge + total);
+            let next = layer.saturating_add(1);
+            let (Some(from), Some(to)) =
+                (ordinals.get(layer).copied(), ordinals.get(next).copied())
+            else {
+                return Ok(None);
+            };
+            let Some(edge) = self
+                .transition
+                .get(layer)
+                .and_then(|t| t.get(from))
+                .and_then(|row| row.get(to))
+                .map(|c| c.aggregate)
+            else {
+                return Ok(None);
+            };
+            let Some(local) = self
+                .local
+                .get(layer)
+                .and_then(|states| states.get(from))
+                .map(|c| c.aggregate)
+            else {
+                return Ok(None);
+            };
+
+            total = edge + total;
+            check_accumulation(
+                total,
+                StateId {
+                    layer: next,
+                    ordinal: to,
+                },
+            )?;
+            total = local + total;
+            check_accumulation(
+                total,
+                StateId {
+                    layer,
+                    ordinal: from,
+                },
+            )?;
         }
-        Some(total)
+        Ok(Some(total))
     }
 
     /// Builds the full [`PathSolution`] for an ordinal vector.

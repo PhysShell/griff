@@ -307,8 +307,7 @@ fn the_engine_agrees_with_brute_force_on_every_shape_ragged_ones_included() {
     let mut ragged_checked = 0_usize;
     for layers in 1..=4_usize {
         for widths in width_vectors(layers, 3) {
-            let locals_raw: Vec<&[f64]> =
-                (0..layers).map(|l| &LOCALS[l][..widths[l]]).collect();
+            let locals_raw: Vec<&[f64]> = (0..layers).map(|l| &LOCALS[l][..widths[l]]).collect();
             // Row count is this layer's width, column count the next layer's.
             let owned_rows: Vec<Vec<&[f64]>> = (0..layers.saturating_sub(1))
                 .map(|l| {
@@ -354,7 +353,10 @@ fn the_engine_agrees_with_brute_force_on_every_shape_ragged_ones_included() {
             }
         }
     }
-    assert!(shapes_checked >= 1000, "the sweep actually ran: {shapes_checked}");
+    assert!(
+        shapes_checked >= 1000,
+        "the sweep actually ran: {shapes_checked}"
+    );
     assert!(
         ragged_checked >= 100,
         "and it really did cover layers of differing width: {ragged_checked}"
