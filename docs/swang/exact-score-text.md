@@ -114,7 +114,7 @@ are distinct and both must be spellable.
 | --- | --- | --- | --- | --- | --- |
 | `name` | `Option<String>` | optional | — | omitted when `None`; `Some("")` is distinct | arbitrary UTF-8 (H2) |
 | `channel` | `u8` | yes | — | — | `>15` is undocumented but type-legal |
-| `tuning` | `Tuning(Vec<Pitch>)` | yes | **positional — string 1 first** | empty vector is legal | — |
+| `tuning` | `Tuning(Vec<Pitch>)` | yes | **positional — string 1 first** | `tuning []` (§6.2) | — |
 | `voices` | `Vec<Voice>` | yes | **positional, load-bearing** | omitted when empty (§6.2) | — |
 
 `Tuning`'s vector is index 0 = string 1 (highest). Order is semantics, not
@@ -155,7 +155,7 @@ Two variants, distinguished in text; a rest is never an absence.
 | `Note.duration` | `Ticks(u32)` | yes | — | `0` is legal |
 | `Note.pitch` | `Pitch(u8)` | yes | — | `>127` violates `PitchOutOfRange` (H5) |
 | `Note.velocity` | `Velocity(u8)` | yes | — | `>127` violates `VelocityOutOfRange` (H5) |
-| `Note.marks` | `NoteMarks` (bitset) | yes | empty set written | — |
+| `Note.marks` | `NoteMarks` (bitset) | yes | `marks []` (§6.2) | — |
 | `Note.position` | `Option<NotePosition>` | optional | omitted when `None` | string may exceed the tuning |
 | `Rest.absolute_start` | `Ticks(u32)` | yes | — | — |
 | `Rest.duration` | `Ticks(u32)` | yes | — | `0` is legal |
@@ -223,6 +223,84 @@ exact walker distinguishes `TrackIndex`, `BarIndex`, `NearestMicros`, and
 
 Losses do not sound. They are still exact semantics, and the writer keeps
 them for the same reason a receipt keeps the tax line.
+
+### 2.8 Canonical field → syntax location
+
+The backlog's acceptance asks for a table mapping **every** canonical field
+to its syntax location, so it is written out mechanically rather than left
+to be inferred from the reference document. `*` marks a repeated block.
+Field renamings are visible here and nowhere else — `ticks_per_quarter`
+becomes `ppqn`, `tick_range` becomes `ticks`, `absolute_start` becomes `at`,
+`time_signature` becomes `meter`.
+
+```text
+Score.ticks_per_quarter                 score.ppqn <u16>
+Score.master_bars[]                     score.master_bar*
+Score.tracks[]                          score.track*
+Score.source_meta                       score.source              (optional block)
+Score.loss                              score.loss                (omitted when clean)
+
+MasterBar.index                         master_bar.index <index>
+MasterBar.tick_range.start/.end         master_bar.ticks <u32>..<u32>
+MasterBar.time_signature.numerator      master_bar.meter <u8>/…
+MasterBar.time_signature.denominator    master_bar.meter …/<u8>
+MasterBar.tempo                         master_bar.tempo <u32>/<u32>
+MasterBar.repeat.start                  master_bar.repeat.start <bool>
+MasterBar.repeat.play_count             master_bar.repeat.play_count <u8>
+
+Track.name                              track.name <string>       (optional)
+Track.channel                           track.channel <u8>
+Track.tuning                            track.tuning [<u8> …]
+Track.voices[]                          track.voice*
+
+Voice.id                                voice.id <u8>
+Voice.event_groups[]                    voice.group*
+
+EventGroup.kind                         group <kind>              (inline word)
+EventGroup.kind Tuplet.num/.den         group tuplet <u8>/<u8>
+EventGroup.atoms[] Note                 group.note*
+EventGroup.atoms[] Rest                 group.rest*
+EventGroup.technique_spans[]            group.span*
+
+AtomNote.absolute_start                 note.at <u32>
+AtomNote.duration                       note.duration <u32>
+AtomNote.pitch                          note.pitch <u8>
+AtomNote.velocity                       note.velocity <u8>
+AtomNote.marks                          note.marks [<mark> …]
+AtomNote.position                       note.position             (optional block)
+AtomRest.absolute_start                 rest.at <u32>
+AtomRest.duration                       rest.duration <u32>
+
+NotePosition.position.string            position.string <u8>
+NotePosition.position.fret              position.fret <u8>
+NotePosition.evidence                   position.evidence         (block)
+
+TechniqueSpan.technique                 span <technique>          (inline word)
+TechniqueSpan.tick_range.start/.end     span.ticks <u32>..<u32>
+TechniqueSpan.evidence                  span.evidence             (block)
+
+TechniqueEvidence.source                evidence.source <src>
+TechniqueEvidence.confidence            evidence.confidence <u16>
+
+SourceMeta.format                       source.format <string>    (optional)
+
+LossReport.warnings[]                   loss.<warning>*
+ImportWarning::TrackNameInvalidUtf8
+  .track_index                          loss.track_name_invalid_utf8 {
+                                          track_index <index> }
+ImportWarning::SmpteTimingUnsupported   loss.smpte_timing_unsupported
+                                          (bare word, no payload)
+ImportWarning::TempoApproximated
+  .bar_index                            loss.tempo_approximated {
+                                          bar_index <index> … }
+  .nearest_micros                       loss.tempo_approximated {
+                                          … nearest_micros <u32> }
+ImportWarning::Other.0                  loss.other { message <string> }
+```
+
+`<index>` is the `usize` of H3, written in decimal. Its width becomes a
+fixed one when SWG-CORE-01 closes; until then the text is as portable as the
+model is, which is the honest amount.
 
 ## 3. Writer domain — the decision
 
@@ -307,20 +385,36 @@ So `100/7` BPM exists (`micros = 4_200_000`); `7/2` does not — `7` does not
 divide `60e6`, and `den != 1` closes the integer branch.
 
 **Resolution, with no `griff-core` change.** Text spells the reduced
-rational. The builder reconstructs with three checks:
+rational. The builder is **normatively this**, and the branch comes before
+the divisibility test, not after it:
 
-1. `gcd(num, den) == 1` — the written fraction is already reduced;
-2. `(60e6 * den) % num == 0` — the division is exact;
-3. the quotient fits `u32`;
+```text
+require num > 0 and den > 0                       else SWG0507
+require gcd(num, den) == 1                        else SWG0505
 
-then `den == 1 → from_bpm_integer(num)`, otherwise
-`from_micros_per_quarter(micros)`, otherwise a typed diagnostic.
+if den == 1:
+    tempo = Tempo::from_bpm_integer(num)
+else:
+    total = 60_000_000_u64 * den
+    require total % num == 0                      else SWG0507
+    micros = total / num
+    require micros <= u32::MAX                    else SWG0507
+    tempo = Tempo::from_micros_per_quarter(micros)
+    require (tempo.bpm_numerator(), tempo.bpm_denominator()) == (num, den)
+```
 
-**Plus a readback assertion**: after `from_micros_per_quarter`, verify
-`bpm_numerator() == num && bpm_denominator() == den`. Check 1 already
-rejects an unreduced `200/14`, but the readback proves the different and
-stronger property — that the builder holds the tempo the *document
-asserted*, not merely some equivalent value reached through the API.
+The ordering is load-bearing. Hoisting `(60e6 * den) % num == 0` above the
+branch rejects `7/1` — `60_000_000 % 7 != 0` — even though
+`from_bpm_integer(7)` builds it and the inhabited set above says it exists.
+A correct theorem three lines above an incorrect `if` is the ordinary shape
+of this failure, which is why the algorithm is written out here rather than
+left as prose. `tempo 7/1` is a required regression witness in §7.
+
+The **readback** applies only to the micros branch, where reduction could
+have moved the value. Check 2 already rejects an unreduced `200/14`, but the
+readback proves the different and stronger property — that the builder holds
+the tempo the *document asserted*, not merely some equivalent value reached
+through the API.
 
 **Rejected alternative:** spelling the provenance form, `tempo micros
 4200000`. Reduction is not injective, so the originating `micros` is
@@ -489,7 +583,7 @@ score {
             id 0
 
             group chord {
-                note { at 0 duration 480 pitch 40 velocity 96 }
+                note { at 0 duration 480 pitch 40 velocity 96 marks [] }
                 note { at 0 duration 480 pitch 47 velocity 96 marks [accent] }
                 span palm_mute {
                     ticks 0..480
@@ -507,6 +601,7 @@ score {
                     duration 160
                     pitch 52
                     velocity 80
+                    marks []
                     position {
                         string 4
                         fret 2
@@ -532,18 +627,39 @@ census lists it; an author may write words in any order and `fmt` normalizes
 them. Collections are written in their vector order, which is semantics
 (§2.3, §2.7), never sorted.
 
+"Collection" is not self-evident here, so it is defined rather than
+assumed. Two kinds of repeated thing exist in the census and they behave
+differently:
+
+- **structural repeated blocks** — `master_bars`, `tracks`, `voices`,
+  `event_groups`, `atoms`, `technique_spans`, and `loss.warnings`. Each
+  element is its own block, so "no elements" is spelled by writing no
+  blocks;
+- **scalar list values** — `tuning` and `marks`. Each is a single value
+  that happens to be a sequence, carried by one word, so it is a required
+  word and its empty form is the empty list `[]`.
+
 Exactly three things are omitted, and none of them is an invented default:
 
 | Omitted when | Spells | Why it is not a default |
 | --- | --- | --- |
 | an `Option` is `None` | absence | `Some("")` is written as `""`, so absence is unambiguous |
-| a collection is empty | absence | a collection has no `None`, so absence can only mean empty |
+| a structural repeated block has no elements | absence | such a block has no `None`, so absence can only mean empty |
 | `repeat` equals `RepeatMarker::default()` | absence | the model itself documents `default()` as "no repeat barline" |
 
-Everything else is written every time. `ppqn`, `index`, `ticks`, `meter`,
-`tempo`, `channel`, `tuning`, `id`, `at`, `duration`, `pitch`, and
-`velocity` are required words: level 1 refuses to invent defaults over
-frozen semantics (spec §3.5 law 7) and level 2 does not get a discount.
+Everything else is written every time — including `tuning []` on a track
+with no tuning and `marks []` on a note with no marks. `ppqn`, `index`,
+`ticks`, `meter`, `tempo`, `channel`, `tuning`, `id`, `at`, `duration`,
+`pitch`, `velocity`, and `marks` are required words: level 1 refuses to
+invent defaults over frozen semantics (spec §3.5 law 7) and level 2 does not
+get a discount.
+
+The alternative — omitting `tuning` and `marks` when empty — is coherent
+too, and is rejected only because the two rules must not both be readable
+from one document. This one is chosen because `tuning` and `marks` are
+single fields to the comparator (`Tuning`, `Marks`), not repeated
+structures, and a required word keeps the text's shape aligned with the
+model's.
 
 ### 6.3 Scalars and their one spelling
 
@@ -586,6 +702,43 @@ atom          note | rest
 inline — `group tuplet 3/2` — because the payload is part of the kind, not
 a field of the group.
 
+### 6.4b Field words are closed — the unknown-field policy
+
+Every construct admits an **exhaustive, closed set of field words**. A word
+outside its construct's set is a typed refusal, never ignored and never
+stored: exact text with a field nobody understands is not exact.
+
+```text
+score                      ppqn | master_bar | track | source | loss
+master_bar                 index | ticks | meter | tempo | repeat
+repeat                     start | play_count
+track                      name | channel | tuning | voice
+voice                      id | group
+group                      note | rest | span
+note                       at | duration | pitch | velocity | marks | position
+rest                       at | duration
+position                   string | fret | evidence
+span                       ticks | evidence
+evidence                   source | confidence
+source                     format
+loss                       track_name_invalid_utf8 | smpte_timing_unsupported
+                           | tempo_approximated | other
+track_name_invalid_utf8    track_index
+tempo_approximated         bar_index | nearest_micros
+other                      message
+```
+
+An unknown field word is **`SWG0401`**, matching level 1, whose `scan_pairs`
+already raises `SWG0401` with "`{construct}` does not take a `{word}` word"
+for exactly this. `SWG0402` stays what it is at level 1 — an unknown *value*
+name in a closed set — because §5.10 forbids one number meaning two things
+across levels, and reusing a code for the same meaning is the point of
+reusing it at all. A repeated field word within one construct is `SWG0404`,
+also as at level 1.
+
+Forward compatibility is a level question, not a field question: a future
+canonical field arrives with level 3, not as a word level 2 tolerated.
+
 ### 6.5 Strings — the canonical encoding policy
 
 Level 2's string lexeme is the one piece of lexical machinery level 1 does
@@ -607,8 +760,10 @@ The escaped set is this frozen range list and nothing else. It is not
 `char::is_control()`, not `char::is_whitespace()`, and not any other
 Unicode-table predicate: §1.2 keeps table-dependent classification out of
 observable semantics, and a formatter whose fixed point moved when the
-build relinked a newer Unicode table would violate it. A malformed or
-non-canonical escape is `SWG0508`.
+build relinked a newer Unicode table would violate it. Both a malformed escape and a
+valid-but-non-canonical one are `SWG0508`: the specific code owns the whole
+string-literal surface, so `SWG0505` and `SWG0508` never contend for the
+same byte.
 
 ### 6.6 Diagnostics
 
@@ -627,43 +782,66 @@ Four codes are new, because these failures do not exist at level 1:
 
 | Code | Meaning |
 | --- | --- |
-| `SWG0505` | non-canonical spelling: leading zeros, an unreduced tempo, a mark list out of canonical order, or a written-out omissible default |
+| `SWG0505` | non-canonical spelling **outside string literals**: leading zeros, an unreduced tempo, a mark list out of canonical order, or a written-out omissible default |
 | `SWG0506` | a value violates a canonical-model invariant named in §3 (pitch or velocity above 127, zero `ppqn`, zero meter numerator, non-power-of-two meter denominator, inverted tick range) |
 | `SWG0507` | the tempo is a reduced fraction the canonical model cannot construct (H1's third branch) |
-| `SWG0508` | malformed or non-canonical string escape |
+| `SWG0508` | any string-literal escape fault — malformed (`\q`, an unterminated `\u{`) **and** valid-but-non-canonical (`\u{0a}` where `\n` is canonical, uppercase hex, leading zeros). Escapes are `SWG0508`'s alone; `SWG0505` never claims one |
 
 No block is reserved beyond these four. Errors that do not exist yet get
 numbers when they do.
 
-## 7. Negative matrix
+## 7. Fixture matrix
 
-Each row needs a positive fixture, a malformed negative fixture, and a
-recorded round-trip result. The list is the alphaTab #1484 expressibility
-checklist as S16 requires, plus the rows this census added.
+Two categories, kept apart because the previous draft mixed them and a table
+that calls a legal round-trip a "negative fixture" teaches the wrong reflex.
 
-| Feature | Canonical representation | Swang representation | Negative fixture |
+- an **adversarial legal witness** is a value the model permits, that looks
+  wrong, and that must round-trip unchanged;
+- a **rejected witness** is text the grammar must refuse, with the code it
+  refuses under.
+
+Every row needs both, plus a recorded round-trip result. Rows are the
+alphaTab #1484 expressibility checklist as S16 requires, plus the rows this
+census added.
+
+| Feature | Text representation | Adversarial legal witness (must round-trip) | Rejected witness |
 | --- | --- | --- | --- |
-| note crossing a barline | one `AtomNote`, duration spans the line | one `note`, no tie synthesized | a text that splits it into two notes must not compare equal |
-| tuplet | `Tuplet { num, den }` | `group tuplet 3/2` | `group tuplet 3` (missing den) |
-| degenerate tuplet | `Tuplet { 0, 0 }` | `group tuplet 0/0` | — (legal; must round-trip) |
-| multiple voices | `Vec<Voice>` | repeated `voice` blocks | duplicate `id` must round-trip, not be rejected |
-| rests | `AtomRest` | `rest { … }` | a text omitting the rest must not compare equal |
-| repeats | `RepeatMarker` | `repeat { start … play_count … }` | `repeat { start false play_count 0 }` written out → `SWG0505` |
-| alternate endings | *not in the model* | unrepresentable, by design | — |
-| bends and techniques | `TechniqueSpan` | `span bend { … }` | span range outside the group must round-trip |
-| fretboard positions | `NotePosition` | `position { … }` | `string` beyond the tuning must round-trip |
-| evidence | `TechniqueEvidence` | `evidence { source … confidence … }` | `explicit` at `0` bps must round-trip |
-| tempo changes | per-bar `Tempo` | `tempo num/den` | `tempo 200/14` → `SWG0505`; `tempo 7/2` → `SWG0507` |
-| unusual meters | `TimeSignature` | `meter 7/8` | `meter 4/3` → `SWG0506` |
-| loss metadata | `LossReport` | `loss { … }` | reordered warnings must not compare equal |
-| source metadata | `Option<SourceMeta>` | `source { … }` | `source { }` and an absent `source` are different |
-| strings | arbitrary UTF-8 | escaped literal | `"\u{0A}"` for LF → `SWG0505` (canonical is `\n`) |
+| note crossing a barline | one `note`, no tie synthesized | duration spanning two bars | text splitting it into two notes — must not compare equal |
+| tuplet | `group tuplet 3/2` | `group tuplet 7/11` | `group tuplet 3` → `SWG0401` |
+| degenerate tuplet | `group tuplet 0/0` | `Tuplet { 0, 0 }` itself | `group tuplet 00/0` → `SWG0505` |
+| multiple voices | repeated `voice` blocks | two voices sharing `id 0` | `voice { group … }` without `id` → `SWG0403` |
+| rests | `rest { … }` | zero-duration rest | text omitting the rest — must not compare equal |
+| repeats | `repeat { start … play_count … }` | `{ start false play_count 1 }` | `repeat { start false play_count 0 }` written out → `SWG0505` |
+| bends and techniques | `span bend { … }` | span range outside its group's atoms | `span shred { … }` → `SWG0402` |
+| fretboard positions | `position { … }` | `string 9` on a six-string tuning | `position { string 4 }` without `fret` → `SWG0403` |
+| evidence | `evidence { source … confidence … }` | `explicit` at `0` bps | `confidence 10001` → `SWG0506` |
+| tempo — integer | `tempo 7/1` | **`tempo 7/1`, the H1 regression witness** | `tempo 0/1` → `SWG0507` |
+| tempo — rational | `tempo 100/7` | `tempo 100/7` (`micros 4_200_000`) | `tempo 200/14` → `SWG0505`; `tempo 7/2` → `SWG0507` |
+| unusual meters | `meter 7/8` | `meter 255/128` | `meter 4/3` → `SWG0506` |
+| loss metadata | `loss { … }` | two identical warnings in sequence | reordered warnings — must not compare equal |
+| source metadata | `source { … }` | `source { }` versus absent `source` | `source { vendor "x" }` → `SWG0401` |
+| strings | escaped literal | `name ""`, and a name holding U+0085 | `"\u{0a}"` where `\n` is canonical → `SWG0508` |
+| tuning | `tuning [<u8> …]` | `tuning []` | `tuning` omitted → `SWG0403` |
+| marks | `marks [<mark> …]` | `marks []` | `marks [ghost accent]` out of order → `SWG0505` |
+| ppqn | `ppqn <u16>` | `ppqn 1` | `ppqn 0` → `SWG0506` |
+| bar index | `index <index>` | `index 17` at position 3 | `index 03` → `SWG0505` |
+| channel | `channel <u8>` | `channel 200` | `channel` omitted → `SWG0403` |
 
-Alternate endings and jump directions are absent from the canonical model
-(ADR-0022; `RepeatMarker`'s own documentation says an importer meeting them
-records a loss). Exact text cannot represent what the model does not hold,
-and inventing syntax for it here would promise a fact the round trip could
-never deliver.
+`tempo 7/1` earns its own row rather than a footnote. The inhabited set and
+the builder algorithm disagreed about it once already, in a draft where the
+prose was right and the procedure was wrong; a regression witness is cheaper
+than rediscovering that.
+
+### 7.1 Unrepresentable because absent from the canonical model
+
+Not holes, and not rows above — the model does not hold these facts, so
+exact text cannot carry them and inventing syntax would promise something
+the round trip could never deliver.
+
+| Fact | Where it goes instead |
+| --- | --- |
+| alternate endings (voltas) | an importer meeting one records a loss (ADR-0022, `RepeatMarker` docs) |
+| jump directions — D.C., D.S., coda, segno | same |
 
 ## 8. Acceptance
 
@@ -680,7 +858,13 @@ SWG-4A-01 is complete when:
   spellable;
 - each representability hole has either a resolution requiring no core
   change, or a filed prerequisite that this task does not perform;
-- §7 names a positive and a negative fixture per row.
+- §7 names an adversarial legal witness **and** a rejected witness for every
+  row, with the two never conflated;
+- **adding a canonical field or a `SemanticField` variant fails a committed
+  test until this census is updated** — the exhaustive witness the backlog
+  asked for, living in `swang/tests/exact_text_census.rs`, not in a commit
+  message. A one-off script proves today; a committed test proves tomorrow,
+  and it was tomorrow that the acceptance criterion was about.
 
 Level 2 freezes when Phase 4A is accepted — not with this document, and not
 before SWG-CORE-01 closes.
