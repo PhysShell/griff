@@ -242,6 +242,7 @@ fn an_explicit_palette_beats_the_corpus_and_keeps_its_silence() {
             bars: 2,
             variants_per_strategy: 1,
             gesture: false,
+            tonal: None,
         },
         Some(&palette),
     )
@@ -271,6 +272,7 @@ fn without_an_override_the_corpus_still_wins() {
             bars: 2,
             variants_per_strategy: 1,
             gesture: false,
+            tonal: None,
         },
         None,
     )

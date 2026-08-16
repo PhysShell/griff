@@ -137,6 +137,9 @@ impl GeneratePanel {
             bars: self.bars,
             variants_per_strategy: self.variants,
             gesture: self.gesture,
+            // The Generate panel exposes no scope control yet (S15 Phase 2 is
+            // the carriage, not the UI), so the ask carries no tonal context.
+            tonal: None,
         }
     }
 

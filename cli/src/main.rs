@@ -908,6 +908,10 @@ fn phrase_reasons(r: boundary::BoundaryReason) -> String {
 /// and novelty has nothing to measure against (all candidates read fully
 /// novel). With `--corpus`, rhythm templates, novelty references, and the
 /// burst/rest gesture ask come from the curated chunks.
+// `tonal: _` is deliberate over `..`: the field is named so a `RankedSet` shape
+// change still breaks this command's compilation, while the value is explicitly
+// not reported.
+#[allow(clippy::unneeded_field_pattern)]
 fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<(), CliError> {
     let GenerateOpts {
         seed,
@@ -960,6 +964,9 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
             bars,
             variants_per_strategy: candidates,
             gesture: !no_gesture,
+            // No `--tonal-scope` flag exists: the scope is a caller's choice
+            // and `griff generate` does not make one (S15 Phase 2).
+            tonal: None,
         },
         plan.as_ref().map(|p| p.templates.as_slice()),
     )?;
@@ -970,6 +977,10 @@ fn cmd_generate(input: &Path, output: &Path, opts: &GenerateOpts<'_>) -> Result<
         rhythm_explicit,
         gesture,
         policy,
+        // Carried through the pass but not reported: `griff generate` never
+        // supplies a tonal context (there is no scope flag), and printing an
+        // always-`None` line would be a CLI output change S15 Phase 2 forbids.
+        tonal: _,
     } = &set;
 
     if *rhythm_explicit {
