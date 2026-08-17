@@ -21,8 +21,8 @@
     clippy::missing_assert_message
 )]
 
-use griff_core::event::{Tempo, Ticks, TimeSignature, Tuning};
-use griff_core::score::{LossReport, MasterBar, RepeatMarker, Score, Track};
+use griff_core::event::{Tempo, Ticks, TimeSignature};
+use griff_core::score::{LossReport, MasterBar, RepeatMarker, Score, SourceMeta};
 use griff_core::slice::TickRange;
 use griff_swang::exact::{write_score, ExactWriteError};
 
@@ -259,22 +259,36 @@ fn an_inverted_tick_range_is_refused() {
 }
 
 #[test]
-fn a_score_with_tracks_is_refused_as_not_yet_written() {
-    // A build-stage limit, not a domain statement: tracks are SWG-4A-04.
-    // The distinction matters — refusing them as "outside the writer domain"
+fn a_score_with_source_metadata_is_refused_as_not_yet_written() {
+    // A build-stage limit, not a domain statement: `source` is SWG-4A-05.
+    // The distinction matters — refusing it as "outside the writer domain"
     // would contradict the census, which says every inhabited state is
     // spellable.
+    //
+    // This test guarded tracks until SWG-4A-04 wrote them. The frontier it
+    // watches moved; the property it states did not, so it follows the
+    // frontier rather than being deleted with the slice it outlived.
     let mut score = transport(480, Vec::new());
-    score.tracks.push(Track {
-        name: None,
-        channel: 0,
-        voices: Vec::new(),
-        tuning: Tuning::standard_e(),
+    score.source_meta = Some(SourceMeta {
+        format: Some("GP5".to_owned()),
     });
-    let err = write_score(&score).expect_err("tracks are not in this slice");
+    let err = write_score(&score).expect_err("source metadata is not in this slice");
     assert!(
         matches!(err, ExactWriteError::NotYetWritten { .. }),
         "a slice boundary is not a domain judgement: {err:?}"
+    );
+}
+
+#[test]
+fn a_transport_only_score_still_writes_the_same_bytes_with_tracks_available() {
+    // The 4A-03 goldens above are unconditional, but this states the reason
+    // they must stay so: a score with no tracks writes no `track` block, and
+    // SWG-4A-04 widening the writer must not have changed one byte of the
+    // transport slice's output.
+    let text = write(&transport(480, vec![bar(0, 0, 1920, bpm(120))]));
+    assert!(
+        !text.contains("track"),
+        "an empty `tracks` vector spells itself by absence: {text:?}"
     );
 }
 
