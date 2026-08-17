@@ -760,7 +760,10 @@ that holds both roots at once, and by §5.6 the admission is not automatic.
 
 The level-2 **body grammar is not defined here.** This section reserves the
 number and fences the scope so that the grammar task designs a score text
-rather than half a language. Level 2 freezes when Phase 4A is accepted, not
+rather than half a language. The body grammar, and the field census it is
+derived from, live in
+[`exact-score-text.md`](exact-score-text.md), which is normative for level 2
+and freezes with the phase. Level 2 freezes when Phase 4A is accepted, not
 before.
 
 ### 5.8 The formatter and the level

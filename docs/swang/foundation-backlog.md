@@ -111,6 +111,8 @@ recorded in `decisions.log.md` if reversed.
 | SWG-INF-05 | Deterministic multi-error recovery | code | INF-04 |
 | SWG-INF-06 | Parser resource gate and differential harness | code | INF-02, INF-03 |
 | SWG-4A-01 | Normative exact-score-text grammar | docs | INF-02 |
+| SWG-CORE-01 | Fixed-width migration for the three `usize` fields | code | 4A-01 |
+| SWG-CORE-02 | Decide whether the canonical newtypes seal their fields | docs | 4A-01 |
 | SWG-4A-02 | `ExactScoreDocument` as a transient syntax form | code | 4A-01 |
 | SWG-4A-03 | Writer: transport and master timeline | code | 4A-01 |
 | SWG-4A-04 | Writer: tracks, voices, groups, atoms | code | 4A-03 |
@@ -121,7 +123,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-4A-09 | Checked `ScoreBuilder` | code | 4A-08 |
 | SWG-4A-10 | `griff swang dump` | CLI | 4A-05 |
 | SWG-4A-11 | `griff swang verify` | CLI | 4A-09, 4A-10 |
-| SWG-4A-12 | The three round-trip laws + mutation matrix | code | 4A-09, 4A-05 |
+| SWG-4A-12 | The three round-trip laws + mutation matrix | code | 4A-09, 4A-05, CORE-01 |
 | SWG-4A-13 | Expressibility negative matrix | code | 4A-12 |
 | SWG-4A-14 | Fuzz targets for exact text | code | 4A-09, INF-06 |
 | SWG-4B-01 | Closed corpus result classification | code | 4A-11 |
@@ -410,6 +412,52 @@ Acceptance:
 - no field is left as "obvious";
 - every enum variant is listed — no wildcard arms in the table;
 - adding a field to the canonical model breaks an exhaustive witness test.
+
+Landing in [`exact-score-text.md`](exact-score-text.md). Census and
+representability decisions first; grammar second, in the same document.
+
+### SWG-CORE-01 — Fixed-width migration for the three `usize` fields
+
+**Kind:** code (`griff-core`). **Depends on:** 4A-01 (which discovered it)
+
+`MasterBar.index`, `ImportWarning::TrackNameInvalidUtf8.track_index`, and
+`ImportWarning::TempoApproximated.bar_index` are `usize` inside a graph that
+derives `Hash`, which spec §1.2 forbids. Until this closes, a document
+written on a 64-bit host is not guaranteed to round-trip on a 32-bit one,
+so Phase 4A's portability claim is false.
+
+**Blocks** the round-trip gate (4A-12) and the level-2 freeze. Does **not**
+block 4A-02, provided that task models these fields abstractly rather than
+baking a width in.
+
+Its own scope and commit chain — 4A-01 pinned the requirement and does not
+perform the migration. `u32` versus `u64` is this task's decision on
+evidence, never a width the grammar picked because it needed one.
+
+Acceptance:
+
+- no `usize` remains in any type reachable from `Score`;
+- characterization tests land before the migration (existing behaviour, so
+  no red phase required, but they must pass first);
+- adapters and the projection follow without a musical behaviour change;
+- a witness test fails if a `usize` reappears in the tree.
+
+### SWG-CORE-02 — Decide whether the canonical newtypes seal their fields
+
+**Kind:** docs, then possibly code. **Depends on:** 4A-01 (which found it)
+
+`Pitch(pub u8)`, `Velocity(pub u8)`, `TimeSignature`, `TickRange`, and
+`Score.ticks_per_quarter` expose their fields, so `Pitch::new`'s range
+check and its siblings are advisory: `Pitch(200)` compiles.
+
+Blocks nothing — 4A-01 §3 defines the writer domain as the
+invariant-valid set, so exact text is well defined either way. Recorded
+because a reader who sees `Pitch::new` and concludes pitches are always in
+range is wrong, and a builder that trusts the type instead of checking is
+wrong more expensively.
+
+Acceptance: a decision, written down, either sealing the fields behind
+constructors or stating why they stay open and what compensates.
 
 ### SWG-4A-02 — `ExactScoreDocument` as a transient syntax form
 
