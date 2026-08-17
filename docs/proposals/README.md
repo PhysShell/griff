@@ -51,6 +51,13 @@ live contract.
   — technique modules, a deterministic symbolic candidate terrain, and a
   transactional agent-editing contract for the cockpit. Status: for
   discussion.
+- [`song-curation-slice-2-transactional-apply.md`](song-curation-slice-2-transactional-apply.md)
+  — the acceptance contract for ADR-0033 Slice 2 (transactional Apply): exact
+  inputs/outputs, application-index and report v1 schemas, verification
+  ordering, chain equations, filesystem/transaction semantics, preservation
+  law, closed refusal taxonomy, and the preregistered RED→GREEN matrix.
+  Status: proposed — awaiting independent acceptance; implementation
+  prohibited until accepted (ADR-0033 Decision 10).
 - [`song-id-curation-workflow.md`](song-id-curation-workflow.md) — an offline,
   human-confirmed workflow (inventory → suggest → confirm → plan → apply →
   manifest → validate) for assigning `SongId` (ADR-0031) to corpus sources by
