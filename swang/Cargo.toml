@@ -15,5 +15,8 @@ griff-core    = { path = "../core", default-features = false }
 griff-pattern = { path = "../pattern" }
 serde_json    = { workspace = true }
 
+[dev-dependencies]
+griff-core    = { path = "../core", default-features = false }
+
 [lints]
 workspace = true

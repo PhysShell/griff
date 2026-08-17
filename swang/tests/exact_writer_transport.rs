@@ -12,10 +12,17 @@
 //! disagrees with its position — it is guarding a rule that a previous
 //! draft got wrong.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+// The allowances the repository's other test files take.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::missing_assert_message
+)]
 
-use griff_core::event::{Tempo, Ticks, TimeSignature};
-use griff_core::score::{LossReport, MasterBar, RepeatMarker, Score};
+use griff_core::event::{Tempo, Ticks, TimeSignature, Tuning};
+use griff_core::score::{LossReport, MasterBar, RepeatMarker, Score, Track};
 use griff_core::slice::TickRange;
 use griff_swang::exact::{write_score, ExactWriteError};
 
@@ -74,7 +81,10 @@ fn an_empty_timeline_has_one_canonical_spelling() {
         !text.contains("master_bar"),
         "an empty timeline writes no master_bar block: {text:?}"
     );
-    assert!(text.contains("ppqn 960"), "ppqn is a required word: {text:?}");
+    assert!(
+        text.contains("ppqn 960"),
+        "ppqn is a required word: {text:?}"
+    );
 }
 
 // ── line discipline ────────────────────────────────────────────────────────
@@ -130,7 +140,7 @@ fn bars_are_written_in_vector_order() {
         .map(|needle| text.find(needle).expect("every bar is written"))
         .collect();
     assert!(
-        positions.windows(2).all(|w| w[0] < w[1]),
+        positions.windows(2).all(|w| matches!(w, [a, b] if a < b)),
         "vector order is semantics and is never sorted: {text:?}"
     );
 }
@@ -213,8 +223,8 @@ fn an_opening_repeat_without_a_close_is_written() {
 
 #[test]
 fn a_zero_ppqn_is_refused_not_written() {
-    let err = write_score(&transport(0, Vec::new()))
-        .expect_err("ppqn 0 violates InvalidTicksPerQuarter");
+    let err =
+        write_score(&transport(0, Vec::new())).expect_err("ppqn 0 violates InvalidTicksPerQuarter");
     assert!(
         matches!(err, ExactWriteError::OutsideWriterDomain { .. }),
         "the refusal names the writer domain, not a formatting problem: {err:?}"
@@ -231,7 +241,10 @@ fn a_non_power_of_two_meter_denominator_is_refused() {
         denominator: 3,
     };
     let err = write_score(&transport(480, vec![only])).expect_err("4/3 is not a valid meter");
-    assert!(matches!(err, ExactWriteError::OutsideWriterDomain { .. }), "{err:?}");
+    assert!(
+        matches!(err, ExactWriteError::OutsideWriterDomain { .. }),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -242,7 +255,10 @@ fn an_inverted_tick_range_is_refused() {
         end: Ticks(0),
     };
     let err = write_score(&transport(480, vec![only])).expect_err("start > end");
-    assert!(matches!(err, ExactWriteError::OutsideWriterDomain { .. }), "{err:?}");
+    assert!(
+        matches!(err, ExactWriteError::OutsideWriterDomain { .. }),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -252,11 +268,11 @@ fn a_score_with_tracks_is_refused_as_not_yet_written() {
     // would contradict the census, which says every inhabited state is
     // spellable.
     let mut score = transport(480, Vec::new());
-    score.tracks.push(griff_core::score::Track {
+    score.tracks.push(Track {
         name: None,
         channel: 0,
         voices: Vec::new(),
-        tuning: griff_core::event::Tuning::standard_e(),
+        tuning: Tuning::standard_e(),
     });
     let err = write_score(&score).expect_err("tracks are not in this slice");
     assert!(
@@ -292,7 +308,7 @@ fn mutating_any_single_transport_fact_changes_the_text() {
     tempo.master_bars[0].tempo = bpm(121);
     assert_ne!(write(&tempo), baseline, "the tempo is observable");
 
-    let mut repeat = base.clone();
+    let mut repeat = base;
     repeat.master_bars[0].repeat = RepeatMarker {
         start: true,
         play_count: 2,
