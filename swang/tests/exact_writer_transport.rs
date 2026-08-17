@@ -74,16 +74,13 @@ fn the_header_is_exactly_the_level_two_line() {
 
 #[test]
 fn an_empty_timeline_has_one_canonical_spelling() {
-    let text = write(&transport(960, Vec::new()));
-    // No master_bar blocks at all — §6.2 omits a structural repeated block
-    // when it is empty, and omission is the only spelling of empty.
-    assert!(
-        !text.contains("master_bar"),
-        "an empty timeline writes no master_bar block: {text:?}"
-    );
-    assert!(
-        text.contains("ppqn 960"),
-        "ppqn is a required word: {text:?}"
+    // Byte-exact, because "one canonical spelling" is the claim. Asserting
+    // only that `master_bar` is absent and `ppqn 960` present would leave
+    // the layout free — and a canonical formatter with a free layout has no
+    // fixed point.
+    assert_eq!(
+        write(&transport(960, Vec::new())),
+        "swang 2\n\nscore {\n    ppqn 960\n}\n"
     );
 }
 
@@ -314,4 +311,61 @@ fn mutating_any_single_transport_fact_changes_the_text() {
         play_count: 2,
     };
     assert_ne!(write(&repeat), baseline, "the repeat marker is observable");
+}
+
+// ── the canonical document, byte for byte ──────────────────────────────────
+
+/// The whole point of a *canonical* text: one `Score`, one spelling.
+///
+/// The seventeen tests above prove every transport fact is observable in
+/// the output. None of them pins the layout, so all of these would still
+/// pass while the document drifted: `ticks` and `meter` swapped, `ppqn`
+/// moved after the bars, blank lines inserted anywhere, and — the one that
+/// actually happened — `repeat` written across four lines instead of one.
+///
+/// This fixture is the shape of §6.1's reference document, restricted to
+/// the transport slice.
+#[test]
+fn a_transport_document_matches_its_canonical_bytes() {
+    let mut second = bar(
+        2,
+        3840,
+        7680,
+        Tempo::from_micros_per_quarter(4_200_000).expect("100/7"),
+    );
+    second.time_signature = TimeSignature::new(7, 8).expect("7/8");
+    second.repeat = RepeatMarker {
+        start: true,
+        play_count: 2,
+    };
+
+    // Stored indices 5 and 2 at positions 0 and 1: the golden would change
+    // if either the stored value or the vector order were abandoned.
+    let score = transport(960, vec![bar(5, 0, 3840, bpm(7)), second]);
+
+    assert_eq!(
+        write(&score),
+        "\
+swang 2
+
+score {
+    ppqn 960
+
+    master_bar {
+        index 5
+        ticks 0..3840
+        meter 4/4
+        tempo 7/1
+    }
+
+    master_bar {
+        index 2
+        ticks 3840..7680
+        meter 7/8
+        tempo 100/7
+        repeat { start true play_count 2 }
+    }
+}
+"
+    );
 }
