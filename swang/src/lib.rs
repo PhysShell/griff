@@ -9,6 +9,7 @@
 //! spec §3).
 
 pub mod eval;
+pub mod exact;
 pub mod pattern_compile;
 pub mod syntax;
 
