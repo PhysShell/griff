@@ -514,6 +514,34 @@ fn a_velocity_beyond_the_midi_range_is_outside_the_writer_domain() {
 }
 
 #[test]
+fn a_tuning_pitch_beyond_the_midi_range_is_outside_the_writer_domain() {
+    // §3's clause is "every `Pitch` <= 127", not "every note's pitch". A
+    // `Tuning` is a `Vec<Pitch>` and `Tuning::new` re-checks nothing, so an
+    // out-of-range open string reaches the writer exactly like `Pitch(200)`
+    // on a note — and this slice writes the tuning, so it must refuse it.
+    //
+    // The first round of these tests missed this. It surfaced while writing
+    // the domain walk against §3's wording rather than against the tests.
+    let score = scored(vec![track(
+        None,
+        0,
+        Tuning::new(vec![Pitch(64), Pitch(200)]),
+        Vec::new(),
+    )]);
+    let err = write_score(&score).expect_err("an open string above 127");
+    assert!(
+        matches!(
+            err,
+            ExactWriteError::OutsideWriterDomain {
+                reason: ValidationError::PitchOutOfRange { value: 200 },
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
 fn the_domain_verdict_still_outranks_the_slice_frontier() {
     // The order 4A-03 fixed, re-checked now that both kinds of refusal can
     // originate in the same atom: "the finished writer will refuse this too"
