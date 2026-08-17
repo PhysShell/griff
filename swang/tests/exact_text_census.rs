@@ -299,17 +299,23 @@ fn flattened(section: &str) -> String {
 fn every_exact_walker_field_appears_in_the_census() {
     let diff = read("core/src/semantic_diff.rs");
     let doc = census();
+    // §2 only. The acceptance criterion is that each exact-walker variant
+    // maps to a row of Inventory *B*; a variant left behind in Inventory A
+    // is exactly the case that must fail, and a document-wide search would
+    // pass it on the strength of its own §1 listing. §2.9 is inside this
+    // span, so the opaque leaves stay covered.
+    let inventory_b = section(&doc, "## 2. Inventory B", "## 3. Writer domain");
     let missing: Vec<String> = exact_walker_variants(&diff)
         .into_iter()
         .filter(|variant| {
             let snake = snake_case(variant);
-            !doc.contains(&snake) && !doc.contains(variant)
+            !inventory_b.contains(&snake) && !inventory_b.contains(variant)
         })
         .collect();
     assert!(
         missing.is_empty(),
-        "these exact-walker fields are compared but absent from \
-         docs/swang/exact-score-text.md: {missing:?}. Add a census row \
+        "these exact-walker fields are compared but absent from Inventory B \
+         of docs/swang/exact-score-text.md: {missing:?}. Add a census row \
          before relaxing this test."
     );
 }
