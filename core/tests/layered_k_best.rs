@@ -363,6 +363,112 @@ fn the_engine_agrees_with_brute_force_on_every_shape_ragged_ones_included() {
     );
 }
 
+// ── the prefix already returned never changes ────────────────────────────────
+
+/// Everything a caller can observe about one alternative.
+///
+/// The `Debug` rendering carries the whole value — every step and edge with its
+/// axes, rationale entries, weights and provenance — and `f64` renders to its
+/// shortest round-trip form, so two costs differing in a single bit render
+/// differently. The ordinals and the raw cost bits ride along separately so a
+/// failure says *which* part moved instead of printing two walls of text.
+fn observable(path: &PathSolution) -> (Vec<usize>, u64, String) {
+    (
+        path.ordinals(),
+        path.total_cost.to_bits(),
+        format!("{path:?}"),
+    )
+}
+
+#[test]
+fn asking_for_more_alternatives_never_changes_the_ones_already_returned() {
+    // A caller that shows three alternatives and then asks for five must not
+    // watch the first three renumber themselves. The property holds by
+    // construction — neither the enumeration order nor the greedy diversity
+    // filter reads `k` — but "by construction" is exactly the kind of claim
+    // that stops being true one refactor later without anything failing.
+    //
+    // This is a characterization test: the accepted engine already satisfies
+    // it, and nothing in production changes. It pins a contract that was
+    // specified (the deterministic-search proposal asks for it in as many
+    // words) and left unasserted.
+    //
+    // `exhausted` is deliberately not part of the compared prefix: it describes
+    // the *search*, not the paths, and a request for fewer alternatives can
+    // legitimately stop before the space runs out.
+    const LOCALS: [&[f64]; 4] = [
+        &[1.0, 2.0, 4.0],
+        &[3.0, 1.0, 2.0],
+        &[2.0, 5.0, 1.0],
+        &[1.0, 3.0, 2.0],
+    ];
+    const TRANSITIONS: [&[&[f64]]; 3] = [
+        &[&[1.0, 2.0, 3.0], &[2.0, 1.0, 4.0], &[3.0, 3.0, 1.0]],
+        &[&[2.0, 1.0, 3.0], &[1.0, 4.0, 2.0], &[3.0, 2.0, 1.0]],
+        &[&[1.0, 3.0, 2.0], &[4.0, 1.0, 3.0], &[2.0, 2.0, 1.0]],
+    ];
+    const WIDEST: usize = 5;
+
+    let mut compared = 0_usize;
+    for layers in 1..=4_usize {
+        for widths in width_vectors(layers, 3) {
+            let locals_raw: Vec<&[f64]> = (0..layers).map(|l| &LOCALS[l][..widths[l]]).collect();
+            let owned_rows: Vec<Vec<&[f64]>> = (0..layers.saturating_sub(1))
+                .map(|l| {
+                    (0..widths[l])
+                        .map(|r| &TRANSITIONS[l][r][..widths[l + 1]])
+                        .collect()
+                })
+                .collect();
+            let transitions_raw: Vec<&[&[f64]]> = owned_rows.iter().map(Vec::as_slice).collect();
+
+            let locals = locals_of(&locals_raw);
+            let transitions = transitions_of(&transitions_raw);
+            let p = policy();
+            let problem = LayeredProblem {
+                locals: &locals,
+                transitions: &transitions,
+                policy: &p,
+            };
+
+            for min_distance in 1..=layers {
+                let widest = solve_k_best(&problem, request(WIDEST, min_distance))
+                    .expect("a well-formed problem solves");
+                for k in 1..WIDEST {
+                    let narrower = solve_k_best(&problem, request(k, min_distance))
+                        .expect("a well-formed problem solves");
+
+                    assert!(
+                        narrower.paths.len() <= widest.paths.len(),
+                        "a smaller k cannot yield more alternatives"
+                    );
+                    assert_eq!(
+                        narrower.paths.len(),
+                        widest.paths.len().min(k),
+                        "a smaller k yields exactly its share, widths {widths:?}, \
+                         distance {min_distance}"
+                    );
+                    for (rank, (narrow, wide)) in
+                        narrower.paths.iter().zip(widest.paths.iter()).enumerate()
+                    {
+                        assert_eq!(
+                            observable(narrow),
+                            observable(wide),
+                            "rank {rank} moved between k={k} and k={WIDEST}, \
+                             widths {widths:?}, distance {min_distance}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        compared >= 1000,
+        "the sweep actually compared paths: {compared}"
+    );
+}
+
 // ── the diversity rule is explicit and enforced ──────────────────────────────
 
 #[test]
