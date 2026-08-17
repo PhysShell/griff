@@ -48,7 +48,8 @@ application index record.
 
 ```text
 serialized DryRunPlan + corpus snapshot + application index
-  → strict artifact parsing                      (§6 step 1–2)
+  → path preflight + index single-writer lock   (§6 step 1, §8)
+  → strict artifact parsing                      (§6 step 2)
   → snapshot load + tree agreement               (§6 step 3)
   → application-index validation                 (§6 step 4)
   → plan verification (Slice-1 verify_plan)      (§6 step 5)
@@ -286,6 +287,7 @@ Schema id: `song-curation.apply-report.v1`. One JSON document, written at
   "curated_manifest_digest": "<hex>",
   "assignments_applied": 0,
   "assignments_unchanged": 0,
+  "sources_reviewed_unassigned": 0,
   "sources_untouched": 0,
   "coverage": {
     "unique_sources": 0,
@@ -322,9 +324,14 @@ Field laws — every field has a proof purpose; none duplicates another:
 - `assignments_applied` — assignments whose label was written (source was
   unlabelled or carried an authorized-superseded label);
   `assignments_unchanged` — assignments already correct on disk (ADR-0033
-  Decision 6: treated as unchanged); `sources_untouched` — sources the batch
-  did not reference. The three partition `{assigned} ∪ {untouched}` and are
-  cross-checkable against `coverage.unique_sources`.
+  Decision 6: treated as unchanged); `sources_reviewed_unassigned` — sources
+  whose final batch state is a review without assignment (the
+  `reject_suggestion` outcome: referenced and validated, no label produced —
+  ADR-0033 keeps this distinct from "never reviewed"); `sources_untouched` —
+  sources the batch did not reference at all. The four counts partition the
+  snapshot's sources exactly: their sum equals `coverage.unique_sources`
+  (a rejection-only batch has zero applied/unchanged and non-zero
+  reviewed-unassigned, §14 C6).
 - `coverage` — post-apply totals over the output snapshot.
 - `holdout_ready` / `holdout_refusals` — §11. `holdout_refusals` records the
   core preflight refusals observed on the curated output view (each as
@@ -400,7 +407,15 @@ never leave a partial output tree.
      or the staging root → `ApplicationIndexInsideTree { path }`;
    - resolved curated-manifest target equals a tree root's `manifest.json` →
      `CuratedManifestPathNotDistinct { path }` (structurally unreachable in
-     v1; kept as a hard guard, §4.3).
+     v1; kept as a hard guard, §4.3);
+   - every staging/temporary name is derived only from the output and index
+     paths (§8.1), never from plan content — so this step needs nothing
+     parsed, and a `batch_id` (an unrestricted Slice-1 `String`) can never
+     influence a filesystem path;
+   - finally, acquire the **index single-writer lock** (§8.1): atomically
+     create `<index_dir>/.<index_name>.lock`; a pre-existing lockfile →
+     `ApplicationIndexLocked { path }`. The lock is held through step 12 and
+     released on every exit (§8.2).
 2. **Strict artifact parsing.** Parse the plan file with the Slice-1 strict
    types (`MalformedPlanArtifact { detail }` on any failure, foreign fields
    included) and the index file with the strict §5.1 types
@@ -437,21 +452,25 @@ never leave a partial output tree.
 8. **Replacement authority** (§7.4): per assignment, against the on-disk
    label and the acting event's authorized supersession set →
    `ExistingLabelReplacementNotAuthorized`.
-9. **Stage** (§8): create the staging directory; write the complete output
-   tree — rewritten corpus files under the preservation law (§10), raw-copied
-   untouched files, curated manifest, application report. The preservation
-   guard (`NonCanonicalCorpusFile`) fires here, before any modified byte is
-   staged for the affected file. Any I/O failure →
+9. **Stage the snapshot** (§8): create the staging directory; write the
+   corpus files under the preservation law (§10) — rewritten touched files,
+   raw-copied untouched files — and the curated manifest. The report is
+   **not** written yet: its fields do not all exist before step 10. The
+   preservation guard (`NonCanonicalCorpusFile`) fires here, before any
+   modified byte is staged for the affected file. Any I/O failure →
    `ApplyIoError { path, op, detail }` and best-effort staging cleanup.
-10. **Staged self-check.** Re-read the staged root `manifest.json` and the
-    staged curated manifest from bytes; recompute the output fingerprint and
-    the curated-manifest digest; run the core `song_holdout_preflight` over
-    the curated view (§11). A divergence from the declared report values or a
-    non-`UncuratedSource` preflight refusal → `OutputPreflightInconsistent`
-    (abort, cleanup staging).
+10. **Staged self-check, then the report.** Re-read the staged root
+    `manifest.json` and the staged curated manifest from bytes; recompute the
+    output fingerprint and the curated-manifest digest; run the core
+    `song_holdout_preflight` — its single execution (§11) — over the curated
+    view. A recomputation divergence or a non-`UncuratedSource` preflight
+    refusal → `OutputPreflightInconsistent` (abort, cleanup staging). Only
+    then build the report (§5.2) from these verified values, compute
+    `report_digest`, and write the report into the staging tree.
 11. **Publish the snapshot**: one `rename(staging → output)`.
 12. **Commit**: append the index record via write-temp + `rename` over the
-    index path (§8). Only after this rename is the batch applied.
+    index path (§8), then release the index lock. Only after this rename is
+    the batch applied.
 
 ## 7. Chain, already-applied, and authority laws
 
@@ -530,6 +549,28 @@ Definitions, per assignment `A` in the verified plan:
   - `accept_suggestion` / `manual_define` → the empty set;
   - `reject_suggestion` → assigns nothing, so no authority question arises.
 
+**Supersession-evidence consistency (checked first).** The frozen Slice-1
+`Action` schema also carries a redundant `supersedes_song_ids` field on
+`accept_suggestion`, `merge`, and `split`. Before any per-assignment
+authority decision, Apply proves for **every** event of the embedded batch
+that this evidence cannot contradict the authority law:
+
+- `accept_suggestion`: `supersedes_song_ids` must be empty;
+- `merge`: `supersedes_song_ids`, sorted and deduplicated, must equal
+  `from_song_ids`, sorted and deduplicated;
+- `split`: `supersedes_song_ids` must equal exactly `[from_song_id]`;
+- `correct`: its `supersedes_song_ids` *is* the authority, so there is no
+  redundant claim to check; `manual_define` and `reject_suggestion` carry no
+  supersession field.
+
+Any violation is
+`SupersessionEvidenceContradiction { event_id, detail }`: a digest-bound
+event must never make two conflicting claims about replacement rights with
+Apply silently preferring one of them. This check is deliberately **not** in
+the frozen `verify_plan` (which stays untouched); it is part of Slice 2's
+authority law, and `authorized(E)` is evaluated only over events that passed
+it.
+
 The law, exhaustively by case:
 
 | Case | Condition | Outcome |
@@ -561,21 +602,48 @@ Notes with proof value:
 
 ### 8.1 Staging protocol
 
-- Staging root: `<output_parent>/.<output_name>.staging-<batch_id>` — a
-  sibling of the final output path, so the publication rename never crosses a
+- Staging root: `<output_parent>/.<output_name>.apply-staging` — a sibling
+  of the final output path, so the publication rename never crosses a
   filesystem. Its pre-existence refuses in step 1 (`OutputAlreadyExists`,
-  carrying the staging path).
+  carrying the staging path). **No filesystem name is ever derived from plan
+  content**: `batch_id` is an unrestricted Slice-1 `String` (it may contain
+  `/`, `..`, or anything else a curator can type), so it appears only inside
+  JSON artifacts, never in a path. The fixed staging name needs nothing
+  parsed — which is what lets step 1 run before step 2 — and needs no
+  uniqueness suffix, because pre-existence refuses and the index lock
+  serializes appliers.
 - The **complete** output — corpus files, curated manifest, report — is
-  written under staging (step 9–10). Nothing is ever written at the final
-  output path directly, and the input tree and index are untouched throughout
-  steps 1–11.
+  written under staging (steps 9–10; the report last, after the single
+  preflight, §6). Nothing is ever written at the final output path directly,
+  and the input tree and the index file are untouched throughout steps 1–11
+  (the lockfile and index temp file are siblings of the index, never the
+  index itself).
+- **Single-writer lock.** From before the index is first read (step 1) until
+  after the commit rename (step 12), Apply holds an exclusive lock: atomic
+  creation (`create_new`) of `<index_dir>/.<index_name>.lock`, an empty
+  file. A pre-existing lockfile refuses `ApplicationIndexLocked` —
+  fail-closed, no waiting, no lock-breaking. Without it, two concurrent
+  appliers could read one chain head, both pass every check, publish two
+  output trees, and each serialize the index from the same stale version:
+  the second commit rename would silently drop the first record after its
+  applier had already reported success — violating the very definition of
+  success (§8.2). The lock closes the read-to-commit window; a second
+  applier run *after* the first completes is still refused by the ordinary
+  chain equations (its input fingerprint no longer matches the new head).
+  The lock is released (deleted) on every exit, success or refusal,
+  best-effort; a crash can leave it, and the stale lock then refuses every
+  future apply until an operator verifies no apply is running and removes it
+  (§8.2). The lockfile is empty and transient — not a deliverable artifact,
+  excluded from the determinism law (§10.5).
 - Publication (step 11) is a single `rename(staging, output)`: the snapshot
   and its in-tree proof artifacts become visible atomically (POSIX rename
   semantics on one filesystem), or not at all.
 - Commit (step 12): serialize the updated index (§5.1), write it to
-  `<index_dir>/.applications.tmp-<batch_id>`, flush and sync the file, then
-  `rename` over the index path. The temp file lives in the index's own
-  directory, so this rename is also same-filesystem and atomic.
+  `<index_dir>/.<index_name>.tmp`, flush and sync the file, then `rename`
+  over the index path. The temp file lives in the index's own directory, so
+  this rename is also same-filesystem and atomic. A leftover temp file found
+  under a freshly acquired lock is crash debris of a previous run — the held
+  lock proves no live writer exists — and is deleted before writing.
 
 ### 8.2 The failure model — precisely what "transactional" means here
 
@@ -592,11 +660,12 @@ Enumerated states after a failure or crash, and the mandated recovery:
 
 | State | Observable as | Meaning | Recovery |
 |---|---|---|---|
-| failure in steps 1–8 | nothing written anywhere | not applied | none needed |
+| failure in steps 1–8 | nothing written anywhere (the lock, if already acquired, is released; a failed release leaves it — see the lock row) | not applied | none needed |
 | failure in steps 9–10 | staging dir present (cleanup is best-effort; a failed cleanup leaves it), output absent, index unchanged | not applied | delete the staging dir; a retry that finds it refuses `OutputAlreadyExists` rather than silently reusing it |
 | crash between steps 11 and 12 | output tree present **with** report, index has **no** matching record | **not applied** — the registry is the authority | delete the orphaned output tree; a retry refuses `OutputAlreadyExists`, forcing the operator to confront the orphan instead of stacking a second tree |
 | step 12 completed | index record present | applied | none |
 | failure during step 12's temp write | temp index file present, index unchanged | not applied | delete the temp file |
+| crash at any point after lock acquisition | lockfile `.<index_name>.lock` present, possibly alongside one of the states above | no apply may start against this index | verify no apply is running, then delete the lockfile (and any leftover `.<index_name>.tmp`), then perform the recovery of whichever state above also holds |
 
 Consequences stated plainly:
 
@@ -679,15 +748,23 @@ repeated):
    other than the assigned `source.song_id` members is preserved as a parsed
    value exactly; byte formatting of touched files is canonical, not
    input-verbatim.
-3. **Fail-closed laundering guard.** Before a touched file is modified, the
-   round-trip of its *unmodified* parsed record
-   (`to_value(parsed) == raw parse of the file as serde_json::Value`) must
-   hold. Any divergence — an unknown member the schema would drop, a
-   duplicate key, a numeric value the parse re-renders differently — is
-   `NonCanonicalCorpusFile { path, detail }` and refuses the whole apply
-   before staging that file's modified bytes. Tolerant core parsing therefore
-   can never silently launder a rewritten file; a file that would lose
-   anything refuses instead.
+3. **Fail-closed laundering guard** — two checks on every touched file, each
+   catching what the other cannot, both refusing
+   `NonCanonicalCorpusFile { path, detail }` before that file's modified
+   bytes are staged:
+   - **Duplicate-key rejection.** The file's raw text is parsed by a
+     duplicate-rejecting pass: a JSON deserialization whose map visitor
+     refuses a repeated object key at **any** depth (native code over
+     `serde`, no new dependency). This must be a distinct pass —
+     `serde_json::Value` is already a map that silently keeps the last
+     duplicate, so no comparison of `Value`s can ever prove duplicates were
+     absent.
+   - **Round-trip equality.** `to_value` of the *unmodified* parsed record
+     must equal the raw `serde_json::Value` parse of the file — catching an
+     unknown member the tolerant schema would drop, and any value the parse
+     re-renders differently (e.g. a numeric formatting change).
+   Tolerant core parsing therefore can never silently launder a rewritten
+   file; a file that would lose anything refuses instead.
 4. **Every-chunk-together.** All chunks sharing an assigned `sha256` are
    updated in the same apply — in every chunk file that carries them and in
    the root manifest — which tree agreement (§4.2) plus assignment
@@ -754,6 +831,7 @@ New Slice-2 refusals:
 | `OutputWouldModifyInput` | resolved output/staging equals, contains, or is contained by the input root | both resolved paths | step 1 | no |
 | `ApplicationIndexInsideTree` | resolved index path inside input, output, or staging root | the resolved index path | step 1 | no |
 | `CuratedManifestPathNotDistinct` | resolved curated target is a tree root's `manifest.json` (defense in depth; unreachable under the v1 fixed path) | the resolved path | step 1 | no |
+| `ApplicationIndexLocked` | the index lockfile already exists at acquisition (a concurrent apply, or a stale lock from a crash) | the lockfile path | step 1, before the index is read | no |
 | `MalformedPlanArtifact` | plan file unreadable, not valid JSON, or refused by the strict Slice-1 types (foreign field at any depth) | detail (path + parse error) | step 2 | no |
 | `MalformedApplicationIndex` | index file missing, unreadable, not valid JSON, or refused by the strict §5.1 types | detail (path + parse error) | step 2 | no |
 | `CorpusTreeDisagreement` | root `manifest.json` missing, or manifest chunks ≠ on-disk chunk records (§4.2) | detail: the first divergence (chunk id / path / field) | step 3 | no |
@@ -763,8 +841,9 @@ New Slice-2 refusals:
 | `ApplicationIndexChainInvalid` | adjacent index records break `input[i] == output[i-1]` | position + both fingerprints | step 4 | no |
 | `DecisionBatchAlreadyApplied` | plan batch's `batch_id` present in the index | the `batch_id` | step 6 — after plan verification, **before** chain equations (§6) | no |
 | `ApplicationChainMismatch` | any §7.1/§7.2 relation broken | relation name, expected, actual | step 7 | no |
-| `ExistingLabelReplacementNotAuthorized` | unauthorized-replacement case of §7.4 | `source_sha256`, on-disk label, new label, acting `event_id` | step 8 | no |
-| `NonCanonicalCorpusFile` | a touched file fails the §10.3 round-trip guard | path + divergence detail | step 9, before that file's modified bytes are staged | staging† |
+| `SupersessionEvidenceContradiction` | an event's redundant `supersedes_song_ids` contradicts its action's authority set (§7.4 consistency law) | `event_id` + detail | step 8, before any per-assignment authority decision | no |
+| `ExistingLabelReplacementNotAuthorized` | unauthorized-replacement case of §7.4 | `source_sha256`, on-disk label, new label, acting `event_id` | step 8, after the consistency law | no |
+| `NonCanonicalCorpusFile` | a touched file fails either §10.3 guard (duplicate object key at any depth, or round-trip divergence) | path + divergence detail | step 9, before that file's modified bytes are staged | staging† |
 | `ApplyIoError` | an I/O operation fails during staging/publication/commit | path, operation, OS error | steps 9–12 | staging†; after step 11, the §8.2 state table governs |
 | `OutputPreflightInconsistent` | staged self-check divergence, or a non-`UncuratedSource` preflight refusal on the curated view (§11) | the divergent value or the preflight refusals | step 10 | staging† |
 
@@ -791,12 +870,13 @@ explicitly:
 |---|---|
 | Apply verification order (§5.5 steps 1–6) | **Adopted, tightened** into the §6 total order: strict parsing and tree agreement precede everything; digest/fingerprint work is delegated to the reused `verify_plan`; already-applied precedes chain equations. |
 | Application-index record shape (§8.5) | **Adopted** verbatim (§5.1), with added laws the proposal left implicit: strictness, schema refusal, internal-chain validation, uniqueness refusal, no paths, deterministic rendering, and the explicit no-previous-report-field rule. |
-| Report schema (§8.4) | **Adopted, modified** (§5.2): `previous_application_report_digest` added (chain self-description); `refusals` renamed `holdout_refusals` with an extended total sort tuple (core refusal kinds carry more than a `sha256`); `applied`/`unchanged`/`untouched` counts made a partition; no timestamp. Rationale inline in §5.2. |
+| Report schema (§8.4) | **Adopted, modified** (§5.2): `previous_application_report_digest` added (chain self-description); `refusals` renamed `holdout_refusals` with an extended total sort tuple (core refusal kinds carry more than a `sha256`); `applied` / `unchanged` / `reviewed-unassigned` / `untouched` counts made an exact four-way partition (a `reject_suggestion` source is referenced yet unassigned, so a three-way split cannot place it); no timestamp. Rationale inline in §5.2. |
 | "Byte-for-byte" preservation (§5.5) | **Modified** to the bounded, evidence-backed §10 law: byte identity for untouched files, semantic-identity + canonical rendering + fail-closed laundering guard for touched files. The literal claim is refuted by `migrate/` re-rendering and tolerant core parsing. |
 | Curated-manifest path "e.g. `song-curation/manifest.json`" (§5.6) | **Adopted and fixed** (not configurable in v1): `<output>/song-curation/manifest.json`, inside the published snapshot, in a reserved area excluded from corpus enumeration; hard distinct-path refusal retained as defense in depth. |
 | Report/index transactionality (§5.5, §8.5) | **Adopted, made precise** (§8.2): single commit point at the index rename; enumerated crash states; no ACID vocabulary; the registry is the sole success authority. |
 | `IncompleteCoverage` as refusal under `--require-holdout-ready` (§10) | **Rejected for Slice 2**: no such mode in Apply v1; readiness is reported, not gated. Any gating belongs to the separately-accepted pilot. |
 | Validation counters (§5.7) | **Adopted** as the report's `coverage` block (§5.2). |
+| Redundant `supersedes_song_ids` on `accept` / `merge` / `split` (§8.2) | **Adopted as an enforced law** (§7.4): the proposal's implied equalities — `merge` ↔ its `from_song_ids`, `split` ↔ `[from_song_id]`, `accept` ↔ empty — become a per-event consistency check refusing `SupersessionEvidenceContradiction`. A digest-bound event may not carry a second, silently ignored claim about replacement rights. |
 | `applied_event_ids` in the report (§8.4) | **Adopted** (batch order). |
 | Index consulted at plan creation too (§8.5) | **Out of Slice-2 scope**: Slice 1's `build_plan` is frozen and takes no index; the apply-time check (§6 step 6) is the enforcement point. A planning-time convenience check may be proposed later without weakening apply. |
 
@@ -834,6 +914,8 @@ a law above; expected refusals are named.
 | C8 | index with duplicate internal `batch_id` | `DuplicateAppliedBatchId` |
 | C9 | index whose adjacent records do not chain | `ApplicationIndexChainInvalid` |
 | C10 | initial batch onto a fresh copy of the same corpus with its own empty index | success (independent lineage, §7.3) |
+| C11 | apply started while the index lockfile exists | `ApplicationIndexLocked`, nothing written, index byte-identical |
+| C12 | stale lockfile left by a crashed run *(fixture: fault injection)* | every subsequent apply refuses `ApplicationIndexLocked` until the lockfile is removed; after the §8.2 recovery, apply succeeds |
 
 **Labels**
 
@@ -846,6 +928,8 @@ a law above; expected refusals are named.
 | L5 | authorized `split` of an existing label | applied |
 | L6 | replacement whose on-disk label is outside the acting event's supersession set | `ExistingLabelReplacementNotAuthorized`, nothing written |
 | L7 | on-disk label differs from the plan's `expected_existing_song_id` (corpus relabelled after planning) | refused as drift: `PlanCorpusFingerprintMismatch` (§7.4 note) |
+| L8 | `merge` whose `supersedes_song_ids` ≠ its `from_song_ids`; `split` whose `supersedes_song_ids` ≠ `[from_song_id]` | `SupersessionEvidenceContradiction`, nothing written |
+| L9 | `accept_suggestion` carrying a non-empty `supersedes_song_ids` | `SupersessionEvidenceContradiction`, nothing written |
 
 **Filesystem**
 
@@ -857,6 +941,7 @@ a law above; expected refusals are named.
 | F4 | injected write failure during staging; injected failure between publication and commit *(fixture: fault injection)* | `ApplyIoError`; filesystem in exactly one enumerated §8.2 state; index without the record ⇒ provably not applied; retry refuses `OutputAlreadyExists` |
 | F5 | repeated execution from byte-identical independent input copies | byte-identical output tree, curated manifest, report, and updated index |
 | F6 | index path inside a corpus tree | `ApplicationIndexInsideTree` |
+| F7 | `batch_id` containing path-like content (`/`, `..`, an absolute path) | no filesystem path is influenced: staging, lockfile, and temp names are unchanged; nothing is created outside the declared roots; the apply otherwise proceeds or refuses purely by contract law |
 
 **Corpus completeness / preservation**
 
@@ -871,6 +956,7 @@ a law above; expected refusals are named.
 | K7 | curated manifest location | at `<output>/song-curation/manifest.json`; root output `manifest.json` still has no `songs` key |
 | K8 | partial curation (some sources still unlabelled) | success; `holdout_ready: false`; the unlabelled sources listed sorted in `holdout_refusals` |
 | K9 | fully curated consistent fixture | `holdout_ready: true` via the real core `song_holdout_preflight` on the curated view |
+| K10 | touched file whose raw text contains a duplicate JSON object key *(fixture: raw-bytes fixture)* | `NonCanonicalCorpusFile`, nothing published |
 
 **Report / index publication**
 
@@ -882,11 +968,12 @@ a law above; expected refusals are named.
 | R4 | report/index divergence cannot be presented as success | fault-injected commit failure yields an error naming the §8.2 state, never a success result *(fixture: fault injection)* |
 | R5 | curated-manifest digest | `sha256sum` of the published file equals `curated_manifest_digest` |
 
-Coverage notes: A1–A7, C1–C10, L1–L7, F1–F3, F5–F6, K1–K9, R1–R3, R5 are
-RED-eligible behavioural tests. F4 and R4 need fault-injection fixtures first
-(fixture commits are not red-phase). No silent caps: the matrix has no
-sampled or truncated sweeps; every refusal in §12 appears in at least one
-case, and every §6 step has at least one test crossing it.
+Coverage notes: A1–A7, C1–C11, L1–L9, F1–F3, F5–F7, K1–K10, R1–R3, R5 are
+RED-eligible behavioural tests. F4, R4, and C12 need fault-injection
+fixtures first, and K10 a raw-bytes fixture (fixture commits are not
+red-phase). No silent caps: the matrix has no sampled or truncated sweeps;
+every refusal in §12 appears in at least one case, and every §6 step has at
+least one test crossing it.
 
 ## 15. Prior art disposition
 
