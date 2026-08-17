@@ -101,11 +101,14 @@ fn write_master_bar(out: &mut String, bar: &MasterBar) {
     // combination is written literally, including the degenerate
     // `play_count 1` that `closes()` calls false.
     if bar.repeat != RepeatMarker::default() {
-        out.push_str("        repeat {\n");
-        field(out, "            ", "start", &bar.repeat.start.to_string());
-        let plays = bar.repeat.play_count.to_string();
-        field(out, "            ", "play_count", &plays);
-        out.push_str("        }\n");
+        // Inline, as §6.1 spells it. A block small enough to read on one
+        // line is written on one line; the layout is part of the canonical
+        // text, not a formatting preference.
+        out.push_str("        repeat { start ");
+        out.push_str(&bar.repeat.start.to_string());
+        out.push_str(" play_count ");
+        out.push_str(&bar.repeat.play_count.to_string());
+        out.push_str(" }\n");
     }
 
     out.push_str("    }\n");
