@@ -881,3 +881,100 @@ pub enum Warn {
         "a substring is not a type token"
     );
 }
+
+// ── review round: the no-`usize` witness does not cover what it claims ─────
+
+/// The scanner must read **tuple** enum payload types, not only named ones.
+///
+/// `declared_field_types` requires a `:` on the line, so `Other(String)` is
+/// skipped entirely and `Tuple(usize)` would be too. The doc comment on
+/// `the_canonical_tree_declares_no_platform_sized_integer` claims coverage
+/// "including inside an enum payload"; for tuple payloads that claim is
+/// false. The synthetic falsification did not notice, because it only used a
+/// named payload — a witness against vacuous witnesses that was itself a
+/// little vacuous.
+#[test]
+fn the_declaration_scanner_reads_tuple_payload_types() {
+    let synthetic = "\
+pub enum Probe {
+    Tuple(usize),
+    Two(String, u32),
+    Named {
+        alpha: u64,
+    },
+    Bare,
+}
+";
+    let declared = declared_field_types(synthetic);
+    assert_eq!(
+        declared,
+        vec![
+            "Probe.0: usize".to_owned(),
+            "Probe.0: String".to_owned(),
+            "Probe.1: u32".to_owned(),
+            "Probe.alpha: u64".to_owned(),
+        ],
+        "every tuple element is its own declared type"
+    );
+    assert!(
+        declared.iter().any(|d| mentions_type(d, "usize")),
+        "a `usize` in a tuple payload must be visible to the offender filter"
+    );
+}
+
+/// The scanner must read **tuple struct** types.
+///
+/// The same hole one level up: `pub struct Pitch(pub u8);` has no braced body,
+/// so the header match never fires. Those newtypes are canonical leaves —
+/// §2.9 lists them — and a `pub struct Ordinal(pub usize);` added tomorrow
+/// would be exact state the witness cannot see.
+#[test]
+fn the_declaration_scanner_reads_tuple_struct_types() {
+    let synthetic = "\
+pub struct Newtype(pub usize);
+
+pub struct Pair(pub u8, u32);
+
+pub struct Braced {
+    pub field: u64,
+}
+";
+    assert_eq!(
+        declared_field_types(synthetic),
+        vec![
+            "Newtype.0: usize".to_owned(),
+            "Pair.0: u8".to_owned(),
+            "Pair.1: u32".to_owned(),
+            "Braced.field: u64".to_owned(),
+        ]
+    );
+}
+
+/// The witness must scan every module the canonical tree reaches.
+///
+/// It reads `core/src/score.rs` and nothing else, but `Score` reaches
+/// `TimeSignature`, `Tuning`, `NoteMarks`, `NotePosition`,
+/// `FretboardPosition`, `TechniqueEvidence`, `ConfidenceBps`, `Pitch`,
+/// `Velocity`, and `Ticks` in `core/src/event.rs`, and `TickRange` in
+/// `core/src/slice.rs`. The backlog records the acceptance criterion as "no
+/// `usize` remains in any type reachable from `Score`" — which may well be
+/// true, but this witness does not show it.
+///
+/// The input expression below is the defect. It is the one the witness uses
+/// today; the repair replaces it with the aggregate and leaves these
+/// assertions where they are.
+#[test]
+fn the_no_usize_witness_scans_every_module_the_canonical_tree_reaches() {
+    let scanned = declared_field_types(&read("core/src/score.rs"));
+    for expected in [
+        "MasterBar.index: u64",
+        "TimeSignature.numerator: u8",
+        "TickRange.start: Ticks",
+    ] {
+        assert!(
+            scanned.iter().any(|d| d == expected),
+            "the scanned set must reach `{expected}`, found {} declarations",
+            scanned.len()
+        );
+    }
+}
