@@ -120,3 +120,35 @@ fn warning_payload_indices_above_u32_max_are_representable_on_every_target() {
     };
     assert_eq!(track_index, 4_294_967_296_u64);
 }
+
+// ── the ordinal → canonical conversion ─────────────────────────────────────
+
+/// `index_from_ordinal` must widen, never narrow.
+///
+/// Added after the fact, because the migration's own falsification pass found
+/// this hole: replacing the function's body with `(ordinal as u32) as u64`
+/// left the entire suite green. Nothing else could catch it — reaching the
+/// truncation through a real `Vec` needs four billion elements, which no test
+/// can build.
+///
+/// Calling the conversion directly does reach it, because the input is a
+/// `usize` rather than a collection. That is also why the test is gated: on a
+/// 32-bit target the offending input does not exist, so there is nothing to
+/// check and nothing to truncate.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn the_ordinal_conversion_widens_rather_than_truncating() {
+    use griff_core::score::index_from_ordinal;
+
+    let beyond = usize::try_from(u64::from(u32::MAX) + 1).expect("64-bit host");
+    assert_eq!(
+        index_from_ordinal(beyond),
+        4_294_967_296_u64,
+        "an ordinal above u32::MAX must survive the widening whole"
+    );
+    assert_eq!(index_from_ordinal(0), 0_u64);
+    assert_eq!(
+        index_from_ordinal(usize::try_from(u32::MAX).expect("fits")),
+        4_294_967_295_u64
+    );
+}
