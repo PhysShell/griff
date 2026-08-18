@@ -110,14 +110,14 @@ recorded in `decisions.log.md` if reversed.
 | SWG-INF-04 | Replace `ProgramSpans` with a `SourceMap` | code | INF-03 |
 | SWG-INF-05 | Deterministic multi-error recovery | code | INF-04 |
 | SWG-INF-06 | Parser resource gate and differential harness | code | INF-02, INF-03 |
-| SWG-4A-01 | Normative exact-score-text grammar | docs | INF-02 |
+| SWG-4A-01 | Normative exact-score-text grammar *(done)* | docs | INF-02 |
 | SWG-CORE-01 | Fixed-width migration for the three `usize` fields | code | 4A-01 |
 | SWG-CORE-02 | Decide whether the canonical newtypes seal their fields | docs | 4A-01 |
 | SWG-4A-02 | `ExactScoreDocument` as a transient syntax form | code | 4A-01 |
 | SWG-4A-03 | Writer: transport and master timeline | code | 4A-01 |
 | SWG-4A-04 | Writer: tracks, voices, groups, atoms | code | 4A-03 |
-| SWG-4A-05 | Writer: techniques, positions, evidence, losses | code | 4A-04 |
-| SWG-4A-06 | Parser skeleton and level/root dispatch | code | 4A-01, INF-04 |
+| SWG-4A-05 | Writer: techniques, positions, evidence, losses | code | 4A-04, CORE-01 |
+| SWG-4A-06 | Parser skeleton and level/root dispatch | code | 4A-01, INF-04, INF-06 |
 | SWG-4A-07 | Parser: exact scalar types | code | 4A-06 |
 | SWG-4A-08 | Parser: structural tree | code | 4A-07, 4A-02 |
 | SWG-4A-09 | Checked `ScoreBuilder` | code | 4A-08 |
@@ -418,7 +418,9 @@ representability decisions first; grammar second, in the same document.
 
 ### SWG-CORE-01 — Fixed-width migration for the three `usize` fields
 
-**Kind:** code (`griff-core`). **Depends on:** 4A-01 (which discovered it)
+**Kind:** code (`griff-core`). **Depends on:** 4A-01 (which discovered it).
+Scheduled after 4A-04 — a sequencing choice, not a dependency; nothing in
+this task needs the writer to exist.
 
 `MasterBar.index`, `ImportWarning::TrackNameInvalidUtf8.track_index`, and
 `ImportWarning::TempoApproximated.bar_index` are `usize` inside a graph that
@@ -426,9 +428,18 @@ derives `Hash`, which spec §1.2 forbids. Until this closes, a document
 written on a 64-bit host is not guaranteed to round-trip on a 32-bit one,
 so Phase 4A's portability claim is false.
 
-**Blocks** the round-trip gate (4A-12) and the level-2 freeze. Does **not**
-block 4A-02, provided that task models these fields abstractly rather than
-baking a width in.
+**Blocks** the round-trip gate (4A-12), the level-2 freeze, and — since the
+scheduling refinement below — 4A-05. Does **not** block 4A-02, provided that
+task models these fields abstractly rather than baking a width in.
+
+**Why it now sits between 4A-04 and 4A-05.** Two of the three fields live in
+`ImportWarning`, and 4A-05 is the first task that serializes `LossReport` at
+all. Running the migration first means the metadata writer is built on the
+final fixed-width types; running it after means writing that code twice —
+once against `usize`, once against whatever width this task chooses — and
+the second pass would land as a mechanical rewrite of freshly reviewed code.
+4A-03 and 4A-04 are unaffected either way: `MasterBar.index` is written
+through `to_string()`, which does not care about the width.
 
 Its own scope and commit chain — 4A-01 pinned the requirement and does not
 perform the migration. `u32` versus `u64` is this task's decision on
@@ -538,7 +549,13 @@ Acceptance:
 
 ### SWG-4A-06 — Parser skeleton and level/root dispatch
 
-**Kind:** code. **Depends on:** 4A-01, INF-04
+**Kind:** code. **Depends on:** 4A-01, INF-04, **INF-06**
+
+INF-06 is a hard prerequisite, not a neighbour. This task lets the exact
+parser accept a minimal level-2 score, and spec §5.11 requires level 2's
+input bounds to be declared **before its first accepted program**. Bounds
+introduced afterwards would either narrow an already-accepted set or admit
+a program the contract had not yet bounded.
 
 ```text
 header_level -> level dispatch -> root dispatch (pattern | score)
@@ -589,11 +606,38 @@ source of unreproducible bugs and is not available here.
 
 **Kind:** code. **Depends on:** 4A-08
 
-The builder independently re-checks: voice id uniqueness; ordered,
-non-overlapping master bars per the canonical contract; valid tick ranges;
-positive durations; MIDI pitch bounds; tuning; position/string/fret
-consistency; group invariants; technique-span ranges; timeline containment;
-and every existing `Score` validation law.
+**Rewritten after SWG-4A-01.** An earlier version of this entry required
+the builder to enforce voice-id uniqueness, ordered non-overlapping master
+bars, positive durations, and position/string/fret consistency. The accepted
+census establishes the opposite for every one of those: duplicate `Voice.id`,
+zero-duration notes and rests, overlapping or unordered master-bar ranges,
+spans outside their group's atoms, and a `string` beyond the tuning are all
+**inhabited canonical states and must be spellable**
+([`exact-score-text.md`](exact-score-text.md) §3). A builder enforcing the
+old list would refuse text its own writer had just produced.
+
+> Writer domain is the inhabited canonical model, not the subset considered
+> musically well-formed by the author of the text grammar.
+
+So the builder re-checks **exactly the model's own existing invariants** —
+the six clauses of §3, each backed by a `ValidationError` variant that
+`griff-core` already declares:
+
+```text
+ticks_per_quarter > 0
+every Pitch <= 127
+every Velocity <= 127
+every TimeSignature numerator > 0
+every TimeSignature denominator is a non-zero power of two
+every TickRange start <= end
+```
+
+It may enforce any further invariant `griff-core` itself states, and it may
+**not** invent musical correctness — otherwise Swang quietly becomes a
+`Score` validator, which is not the job it was given. After seven review
+rounds spent establishing that a zero-duration note legitimately exists in
+the canonical model, killing it in the builder two tasks later would be a
+poor use of the argument.
 
 Errors point at the Swang source field through the `SourceMap`.
 
@@ -636,7 +680,12 @@ later; the human rendering is never the source of truth.
 
 ### SWG-4A-12 — The three round-trip laws and the mutation matrix
 
-**Kind:** code. **Depends on:** 4A-09, 4A-05
+**Kind:** code. **Depends on:** 4A-09, 4A-05, **CORE-01**
+
+CORE-01 is listed in the task index and names this task as what it blocks;
+the dependency is repeated here so the entry and the index cannot drift
+apart. Until the three `usize` fields are fixed-width, a round-trip law
+proved on a 64-bit host says nothing about a 32-bit one.
 
 Over synthetic and real fixtures:
 
@@ -1132,9 +1181,13 @@ INF-01 status sync                    (done)
   -> INF-03 syntax split              (done)
   -> INF-02 level-2 contract          (done)
        │
-       ├─→ INF-04 SourceMap ──→ INF-05 recovery ──┐
-       │                                          ├─→ 4A-06 parser skeleton
-       └─→ 4A-01 exact grammar ───────────────────┘
+       └─→ 4A-01 exact grammar             (done)
+                │
+                ├─→ 4A-03 → 4A-04 → CORE-01 → 4A-05 → 4A-10   writer lane
+                │                      │
+                │                      └─→ also gates 4A-12 and the level-2 freeze
+                │
+                └─→ 4A-02 → INF-04 → INF-06 → 4A-06 parser skeleton
   -> 4A-02..4A-09 writer / parser / builder
   -> 4A-10..4A-14 dump / verify / laws / fuzz
   -> 4B corpus acceptance
@@ -1144,6 +1197,17 @@ INF-01 status sync                    (done)
   -> UI richer Playground
   -> LIFT recognizers and verified lift
 ```
+
+The writer lane runs from the canonical `Score` outwards to bytes: its
+input already exists, the grammar is accepted, and every result is checkable
+byte-for-byte, so it carries almost no structural uncertainty and it
+exercises the sharpest 4A-01 decisions — stored `MasterBar.index`, `7/1`
+and `100/7`, repeat omission — against real code. The parser-prep lane
+models a text that the writer has by then actually produced, rather than one
+inferred from a markdown table. `4A-02` and `INF-04` are kept on the *same*
+lane on purpose: they have no formal dependency, but both shape
+parser-side structure, and two agents designing `AstId`/`FieldRef`
+independently would meet at a merge conflict.
 
 INF-03 comes before INF-02 deliberately. The split is pure cleanup with an
 acceptance that can only fail one way, and it moves nothing into the design
@@ -1159,6 +1223,10 @@ exact writer (4A-03..05) ─────┐
 parser platform (INF-04..06)  ├─→ Phase 4A integration
 CLI shell (4A-10 skeleton) ───┘
 ```
+
+CORE-01 is the exception on the writer lane and does not join that table: it
+is the only task here that edits `griff-core`, and it edits types every
+other lane reads. Run it alone.
 
 Inventing patch syntax before the selector contract, or adding ten operators
 before the typed IR, produces a collection of attractive verbs each holding
