@@ -514,22 +514,42 @@ SWG-4A-01 exact grammar
    │ discovers and pins the requirement
    ↓
 fixed-width core migration          (SWG-CORE-01, its own scope)
-   ├──────────────┐
-   ↓              ↓
-4A writer       4A builder
-   └──────┬───────┘
-          ↓
-   round-trip gate (SWG-4A-12)
-          ↓
-   level 2 freeze
+   │
+   ↓
+complete writer / parser-builder round trip
+   ↓
+round-trip gate (SWG-4A-12)
+   ↓
+level 2 freeze
+
+   incremental pre-freeze writer and parser-builder slices may land on
+   either side of the migration, so long as they keep the width abstract
 ```
 
-Scope of the block, precisely: SWG-4A-02 (`ExactScoreDocument`, a transient
-syntax form) need **not** wait, provided it models these integer fields
-abstractly instead of baking a width in. The migration must close before
-the production writer/parser-builder round trip, and certainly before
-SWG-4A-12 and Phase 4A acceptance — until then the portability claim is
-false.
+Scope of the block, precisely, in three parts:
+
+1. **Incremental pre-freeze slices are not blocked.** A writer or
+   parser-builder slice may land before the migration provided it keeps the
+   width abstract — `<index>` written in decimal, no width baked into a
+   format string, a type alias, or a fixture. SWG-4A-02
+   (`ExactScoreDocument`, a transient syntax form) is the named case, and
+   the same licence covers the writer slices that spell `<index>` through
+   ordinary decimal conversion.
+2. **The migration must close before the completed round trip.** Before the
+   production writer/parser-builder round trip, and certainly before
+   SWG-4A-12 and Phase 4A acceptance — until then the portability claim is
+   false.
+3. **Where exactly it lands inside that window is not this document's
+   call.** Sequencing among unblocked tasks is an execution-plan decision
+   and lives in the non-normative backlog. That the migration currently
+   sits immediately before SWG-4A-05 is one such decision, made so the
+   metadata writer is not built twice; it is recorded there and must not be
+   read back out of this document.
+
+The previous rendering of the diagram drew the migration into "4A writer"
+and "4A builder" as a whole, which said something stronger than the prose
+beneath it and stronger than any task index has ever claimed. An ASCII edge
+is a normative statement when it sits in a normative document.
 
 Whether the replacement is `u32` or `u64` is that task's decision on
 evidence, never the grammar picking a width because it needed one.
@@ -716,6 +736,53 @@ Exactly three things are omitted, and none of them is an invented default:
 | an `Option` is `None` | absence | `Some("")` is written as `""`, so absence is unambiguous |
 | a structural repeated block has no elements | absence | such a block has no `None`, so absence can only mean empty |
 | `repeat` equals `RepeatMarker::default()` | absence | the model itself documents `default()` as "no repeat barline" |
+
+The first two rows are about the **contents** of a construct — an `Option`'s
+value, the elements of a repeated slot — never about the construct that
+contains them. Stated as one rule:
+
+> Empty child slots do not determine the layout of their containing
+> construct. The construct's own canonical layout does.
+
+Absence of child fields therefore never collapses a present canonical value
+and never changes that construct's established outer layout. Two constructs
+can reach an empty body, and §6.1 already fixes a different outer layout for
+each:
+
+**`EventGroup`** — §6.1 shows it multiline in every case. `kind` lives on
+the header line, so a group with no `atoms` and no `technique_spans` has an
+empty body and stays multiline:
+
+```text
+group single {
+}
+```
+
+`group single { }` is not the formatter's canonical output.
+
+**`SourceMeta`** — §6.1 shows it inline, `source { format "GP5" }`, and
+`format` is its only slot and is optional. §2.1 requires `source_meta: None`
+and `Some(SourceMeta { format: None })` to have different spellings: the
+first is omission, the second is a present canonical value the exact walker
+compares as its own `SourceMeta` field. It stays inline:
+
+```text
+source { }
+```
+
+Neither `source {}` nor a multiline form is the formatter's canonical
+output.
+
+That these are the only two is checkable rather than asserted, and the check
+is §2.8's syntax map read straight down. `score`, `master_bar`, `repeat`,
+`track`, `voice`, `note`, `rest`, `position`, `evidence`, `span`, and the
+three payload-carrying warning blocks each carry at least one required word,
+so their bodies are never empty; `smpte_timing_unsupported` is a bare word
+with no body at all; and `loss` is omitted entirely when the report is
+clean, so it is never written with no warnings in it.
+
+No diagnostic code is assigned to the alternative whitespace in either case;
+that is parser territory and belongs to the task that writes the parser.
 
 Everything else is written every time — including `tuning []` on a track
 with no tuning and `marks []` on a note with no marks. `ppqn`, `index`,
