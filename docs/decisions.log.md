@@ -2340,7 +2340,26 @@ Architectural decisions go to [`adr/`](adr/) instead.
   deliberately no inverse, because the inverse is not total. Operational
   `usize` — `Vec` positions, lengths, slice indices, and MIDI's
   `MAX_MASTER_BARS` resource bound — is untouched and was never part of the
-  argument. Verified by 1339 tests plus a falsification pass over nine
-  mutations; two of them, a truncating widening inside the conversion and a
-  clamp inside `LossReport::add`, survived the original suite and are now
-  covered by witnesses written for exactly those seams.
+  argument. Verified by 1341 tests plus a falsification pass over **twelve**
+  mutations — the entry first said nine, which was a miscount of my own
+  standalone runs and is corrected here rather than left to propagate. Two of
+  the twelve, a truncating widening inside `index_from_ordinal` and a clamp
+  inside `LossReport::add`, survived the original suite and are now covered by
+  witnesses written for exactly those seams.
+
+- 2026-08-18 — In the context of the same closure, facing an independent review
+  that found the acceptance witness for "no `usize` remains in any type
+  reachable from `Score`" weaker than the criterion it was recorded against, we
+  decided for repairing the witness in three further commits — red, green,
+  this correction — and against amending the six already made, to achieve a
+  history in which the gap and its repair are both legible, accepting three
+  more commits on the branch. The witness scanned `core/src/score.rs` only,
+  while the tree also reaches `event.rs` and `slice.rs`; and its scanner could
+  not see tuple forms at all, so `Other(String)` and every `pub struct
+  Pitch(pub u8);` were invisible — including a hypothetical `usize` inside
+  either. The migration itself is not implicated: the tree had no `usize` left,
+  the witness simply could not have shown it. Five further mutations confirm
+  the repair. Accepting that the module list is written out rather than
+  discovered, because discovering it means resolving `use` paths and type
+  aliases — a half-compiler to check three files — and that the list can rot,
+  which is why the coverage test asserts each listed module contributes.

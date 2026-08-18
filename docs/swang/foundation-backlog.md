@@ -455,8 +455,19 @@ Acceptance, all met:
   no red phase required, but they had to pass first);
 - adapters and the projection followed without a musical behaviour change;
 - a witness test fails if a `usize` reappears in the tree —
-  `exact_text_census::the_canonical_tree_declares_no_platform_sized_integer`,
-  which discovers the declarations rather than taking a list.
+  `exact_text_census::the_canonical_tree_declares_no_platform_sized_integer`.
+  It scans `score.rs`, `event.rs`, and `slice.rs`, which is where every type
+  reachable from `Score` is declared, and reads named fields, tuple enum
+  payloads, and tuple structs alike. The module list is written out;
+  `…scans_every_module_the_canonical_tree_reaches` checks that each entry
+  contributes, so a rotted list fails rather than silently narrowing the
+  witness.
+
+The last of those was weaker when first recorded — one module, no tuple forms
+— and an independent review caught it after closure. The gap was in the
+acceptance witness, not in the migration: the tree had no `usize` left either
+way. Repaired in three follow-up commits on the same branch, with five
+mutations confirming the repair.
 
 ### SWG-CORE-02 — Decide whether the canonical newtypes seal their fields
 
