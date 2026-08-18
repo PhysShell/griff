@@ -116,7 +116,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-4A-02 | `ExactScoreDocument` as a transient syntax form | code | 4A-01 |
 | SWG-4A-03 | Writer: transport and master timeline | code | 4A-01 |
 | SWG-4A-04 | Writer: tracks, voices, groups, atoms | code | 4A-03 |
-| SWG-4A-05 | Writer: techniques, positions, evidence, losses | code | 4A-04 |
+| SWG-4A-05 | Writer: techniques, positions, evidence, losses | code | 4A-04, CORE-01 |
 | SWG-4A-06 | Parser skeleton and level/root dispatch | code | 4A-01, INF-04, INF-06 |
 | SWG-4A-07 | Parser: exact scalar types | code | 4A-06 |
 | SWG-4A-08 | Parser: structural tree | code | 4A-07, 4A-02 |
@@ -418,7 +418,9 @@ representability decisions first; grammar second, in the same document.
 
 ### SWG-CORE-01 — Fixed-width migration for the three `usize` fields
 
-**Kind:** code (`griff-core`). **Depends on:** 4A-01 (which discovered it)
+**Kind:** code (`griff-core`). **Depends on:** 4A-01 (which discovered it).
+Scheduled after 4A-04 — a sequencing choice, not a dependency; nothing in
+this task needs the writer to exist.
 
 `MasterBar.index`, `ImportWarning::TrackNameInvalidUtf8.track_index`, and
 `ImportWarning::TempoApproximated.bar_index` are `usize` inside a graph that
@@ -426,9 +428,18 @@ derives `Hash`, which spec §1.2 forbids. Until this closes, a document
 written on a 64-bit host is not guaranteed to round-trip on a 32-bit one,
 so Phase 4A's portability claim is false.
 
-**Blocks** the round-trip gate (4A-12) and the level-2 freeze. Does **not**
-block 4A-02, provided that task models these fields abstractly rather than
-baking a width in.
+**Blocks** the round-trip gate (4A-12), the level-2 freeze, and — since the
+scheduling refinement below — 4A-05. Does **not** block 4A-02, provided that
+task models these fields abstractly rather than baking a width in.
+
+**Why it now sits between 4A-04 and 4A-05.** Two of the three fields live in
+`ImportWarning`, and 4A-05 is the first task that serializes `LossReport` at
+all. Running the migration first means the metadata writer is built on the
+final fixed-width types; running it after means writing that code twice —
+once against `usize`, once against whatever width this task chooses — and
+the second pass would land as a mechanical rewrite of freshly reviewed code.
+4A-03 and 4A-04 are unaffected either way: `MasterBar.index` is written
+through `to_string()`, which does not care about the width.
 
 Its own scope and commit chain — 4A-01 pinned the requirement and does not
 perform the migration. `u32` versus `u64` is this task's decision on
@@ -1172,11 +1183,11 @@ INF-01 status sync                    (done)
        │
        └─→ 4A-01 exact grammar             (done)
                 │
-                ├─→ 4A-03 → 4A-04 → 4A-05 → 4A-10   writer lane
+                ├─→ 4A-03 → 4A-04 → CORE-01 → 4A-05 → 4A-10   writer lane
+                │                      │
+                │                      └─→ also gates 4A-12 and the level-2 freeze
                 │
-                └─→ 4A-02 → INF-04 → INF-06 ──┐     parser-prep lane
-                                              ├─→ 4A-06 parser skeleton
-                    CORE-01 fixed-width ──────┘     (also gates 4A-12)
+                └─→ 4A-02 → INF-04 → INF-06 → 4A-06 parser skeleton
   -> 4A-02..4A-09 writer / parser / builder
   -> 4A-10..4A-14 dump / verify / laws / fuzz
   -> 4B corpus acceptance
@@ -1212,6 +1223,10 @@ exact writer (4A-03..05) ─────┐
 parser platform (INF-04..06)  ├─→ Phase 4A integration
 CLI shell (4A-10 skeleton) ───┘
 ```
+
+CORE-01 is the exception on the writer lane and does not join that table: it
+is the only task here that edits `griff-core`, and it edits types every
+other lane reads. Run it alone.
 
 Inventing patch syntax before the selector contract, or adding ten operators
 before the typed IR, produces a collection of attractive verbs each holding
