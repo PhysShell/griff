@@ -175,20 +175,55 @@ fn field_name(declaration: &str) -> Option<String> {
 /// Commas nested inside `<…>` or `(…)` belong to a type argument, not to
 /// the payload: `Vec<(u8, u8)>` is one element, `String, u32` is two.
 fn tuple_arity(inner: &str) -> usize {
+    tuple_elements(inner).len()
+}
+
+/// The top-level elements of a tuple payload, in order.
+///
+/// The splitter `tuple_arity` counts, kept as one function so the count and
+/// the types can never disagree about where an element ends. Commas nested
+/// inside `<…>`, `(…)`, or `[…]` belong to a type argument, not to the
+/// payload: `Vec<(u8, u8)>` is one element, `String, u32` is two.
+fn tuple_elements(inner: &str) -> Vec<String> {
     if inner.trim().is_empty() {
-        return 0;
+        return Vec::new();
     }
+    let mut out = Vec::new();
     let mut depth = 0_i32;
-    let mut count = 1_usize;
+    let mut current = String::new();
     for c in inner.chars() {
         match c {
             '<' | '(' | '[' => depth += 1,
             '>' | ')' | ']' => depth -= 1,
-            ',' if depth == 0 => count += 1,
+            ',' if depth == 0 => {
+                out.push(current.trim().to_owned());
+                current = String::new();
+                continue;
+            }
             _ => {}
         }
+        current.push(c);
     }
-    count
+    out.push(current.trim().to_owned());
+    out
+}
+
+/// A declaration with any visibility prefix removed, leaving the type.
+///
+/// `pub u8` and `pub(crate) u8` both reduce to `u8`; a bare `u8` is already
+/// there. Visibility is not part of the type and would otherwise make the
+/// same width look like two different declarations.
+fn without_visibility(declaration: &str) -> String {
+    let trimmed = declaration.trim();
+    if let Some(rest) = trimmed.strip_prefix("pub ") {
+        return rest.trim().to_owned();
+    }
+    if trimmed.starts_with("pub(") {
+        if let Some((_, tail)) = trimmed.split_once(") ") {
+            return tail.trim().to_owned();
+        }
+    }
+    trimmed.to_owned()
 }
 
 /// Payload fields of every variant of an enum, keyed `Enum::Variant.field`.
@@ -765,6 +800,32 @@ fn declared_field_types(source: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (offset, _) in body.match_indices("pub ") {
         let rest = &body[offset..];
+        let Some(line_end) = rest.find('\n') else {
+            continue;
+        };
+        let header_line = &rest[..line_end];
+
+        // A tuple struct declares its whole payload on one line and has no
+        // braced body at all, so the braced scan below never sees it. These
+        // are the transparent newtypes of §2.9 — canonical leaves.
+        if let Some(declaration) = header_line.strip_prefix("pub struct ") {
+            if declaration.trim_end().ends_with(");") {
+                if let (Some(open), Some(close)) = (declaration.find('('), declaration.rfind(')')) {
+                    let name = declaration.get(..open).unwrap_or_default().trim();
+                    let inner = declaration
+                        .get(open.saturating_add(1)..close)
+                        .unwrap_or_default();
+                    for (position, element) in tuple_elements(inner).into_iter().enumerate() {
+                        out.push(format!(
+                            "{name}.{position}: {}",
+                            without_visibility(&element)
+                        ));
+                    }
+                    continue;
+                }
+            }
+        }
+
         let Some(header_end) = rest.find(" {\n") else {
             continue;
         };
@@ -788,17 +849,58 @@ fn declared_field_types(source: &str) -> Vec<String> {
             if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
                 continue;
             }
-            let Some(field) = field_name(line) else {
+            if let Some((field, declared)) = line.split_once(':') {
+                let Some(field) = field_name(field) else {
+                    continue;
+                };
+                let declared = declared.trim().trim_end_matches(',').trim();
+                out.push(format!("{name}.{field}: {declared}"));
                 continue;
-            };
-            let Some((_, declared)) = line.split_once(':') else {
-                continue;
-            };
-            let declared = declared.trim().trim_end_matches(',').trim();
-            out.push(format!("{name}.{field}: {declared}"));
+            }
+            // A tuple variant: `Other(String)`, `Two(String, u32)`. It carries
+            // no `:`, so the branch above skips it and every element of it
+            // used to vanish — including a `usize`.
+            if let (Some(open), Some(close)) = (line.find('('), line.rfind(')')) {
+                if open < close {
+                    let payload = line.get(open.saturating_add(1)..close).unwrap_or_default();
+                    for (position, element) in tuple_elements(payload).into_iter().enumerate() {
+                        out.push(format!(
+                            "{name}.{position}: {}",
+                            without_visibility(&element)
+                        ));
+                    }
+                }
+            }
         }
     }
     out
+}
+
+/// Every module that declares a type reachable from `Score`.
+///
+/// `score.rs` holds the tree's own structs and enums; `event.rs` holds the
+/// leaves it is built from — `TimeSignature`, `Tuning`, `NoteMarks`,
+/// `NotePosition`, `FretboardPosition`, `TechniqueEvidence`, `ConfidenceBps`,
+/// `Pitch`, `Velocity`, `Ticks`, `Tempo` — and `slice.rs` holds `TickRange`,
+/// which sits directly in `MasterBar` and `TechniqueSpan`.
+///
+/// Listed rather than discovered: a module list is short, checkable by
+/// reading `score.rs`'s imports, and cheaper than the alias-resolving
+/// half-compiler that discovering it would need. The list is load-bearing, so
+/// `the_no_usize_witness_scans_every_module_the_canonical_tree_reaches`
+/// checks that each entry actually contributes.
+const CANONICAL_SOURCES: [&str; 3] = [
+    "core/src/score.rs",
+    "core/src/event.rs",
+    "core/src/slice.rs",
+];
+
+/// Every field declaration of the canonical tree, across all its modules.
+fn canonical_field_types() -> Vec<String> {
+    CANONICAL_SOURCES
+        .iter()
+        .flat_map(|path| declared_field_types(&read(path)))
+        .collect()
 }
 
 /// Whether `haystack` uses `needle` as a whole type token.
@@ -819,7 +921,7 @@ fn the_canonical_tree_declares_no_platform_sized_integer() {
     // violated it; SWG-CORE-01 closed them. This witness is what keeps a
     // fourth from arriving quietly — including inside an enum payload, which
     // no struct-field scan reaches.
-    let offenders: Vec<String> = declared_field_types(&read("core/src/score.rs"))
+    let offenders: Vec<String> = canonical_field_types()
         .into_iter()
         .filter(|declaration| mentions_type(declaration, "usize"))
         .collect();
@@ -834,7 +936,7 @@ fn the_three_migrated_index_fields_are_u64() {
     // The general witness above would stay green if a field were widened to
     // `u128` or narrowed to `u32`. These three carry the decision SWG-CORE-01
     // actually made, so they are named.
-    let declarations = declared_field_types(&read("core/src/score.rs"));
+    let declarations = canonical_field_types();
     for expected in [
         "MasterBar.index: u64",
         "ImportWarning.track_index: u64",
@@ -965,7 +1067,7 @@ pub struct Braced {
 /// assertions where they are.
 #[test]
 fn the_no_usize_witness_scans_every_module_the_canonical_tree_reaches() {
-    let scanned = declared_field_types(&read("core/src/score.rs"));
+    let scanned = canonical_field_types();
     for expected in [
         "MasterBar.index: u64",
         "TimeSignature.numerator: u8",
@@ -975,6 +1077,17 @@ fn the_no_usize_witness_scans_every_module_the_canonical_tree_reaches() {
             scanned.iter().any(|d| d == expected),
             "the scanned set must reach `{expected}`, found {} declarations",
             scanned.len()
+        );
+    }
+
+    // Every listed module must actually contribute. Without this, dropping an
+    // entry from `CANONICAL_SOURCES` would narrow the witness back to where
+    // it started and only the three probes above would notice — and they
+    // would stop noticing the moment someone moved a type between modules.
+    for path in CANONICAL_SOURCES {
+        assert!(
+            !declared_field_types(&read(path)).is_empty(),
+            "{path} is listed as a canonical source but declares nothing"
         );
     }
 }
