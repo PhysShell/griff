@@ -427,17 +427,16 @@ artifact. A malformed input can therefore never leave a partial output tree.
      hardlink aliases are invisible to `canonicalize`, would derive distinct
      lockfiles, and commit-by-rename would split the aliases into divergent
      registries (§8.1);
-   - the temp coordination path must not already exist: a pre-existing
-     `<canonical_index_dir>/.<canonical_index_name>.tmp` refuses
-     `ApplicationIndexTempExists { path }` — the lock proves only that no
-     writer holds *this* index's lock, never that a file already sitting at
-     the temp name belongs to this Apply, so nothing there is ever silently
-     unlinked (§8.1); crash recovery deletes it explicitly (§8.2);
    - resolved output (or staging) equals the canonical index file, its
      lockfile path, or its temp path →
      `OutputCollidesWithIndexArtifacts { path, artifact }` — checked
      **before** lock acquisition, so the lock can never be created at a
      declared output path and step 12 can never collide with the output;
+   - the resolved output's final component must not lie in the **reserved
+     staging namespace** (`.<name>.apply-staging`, §8.1) →
+     `OutputNameReserved { path }` — this is what makes overlap between two
+     *compliant* appliers impossible: no compliant output can ever equal
+     another apply's derived staging path (§8.1 publication law);
    - output path already exists, or the staging path (§8) already exists →
      `OutputAlreadyExists { path }`;
    - resolved output (or staging) equals, contains, or is contained by the
@@ -452,13 +451,28 @@ artifact. A malformed input can therefore never leave a partial output tree.
      paths (§8.1), never from plan content — so this step needs nothing
      parsed, and a `batch_id` (an unrestricted Slice-1 `String`) can never
      influence a filesystem path;
-   - finally, acquire the **index single-writer lock** (§8.1): atomically
-     create the lockfile at the already-derived coordination path; a
-     pre-existing lockfile → `ApplicationIndexLocked { path }`; a create
-     failure that is *not* pre-existence (permissions, read-only filesystem,
-     …) → `ApplyIoError { path, op, detail }`. The lock is held through
-     step 12 and released on every exit; release failures are never
-     refusals — they are the structured release warning of §8.2.
+   - acquire the **index single-writer lock** (§8.1): atomically
+     create-new the lockfile at the already-derived coordination path,
+     writing the §8.1 ownership marker. If the path is already occupied,
+     classify by content (§8.1): a Griff lock marker or an empty file →
+     `ApplicationIndexLocked { path }`; anything else →
+     `ApplicationIndexLockPathOccupied { path }` — the occupant is not
+     provably a lock and recovery must never delete it. A create failure
+     that is *not* pre-existence (permissions, read-only filesystem, …) →
+     `ApplyIoError { path, op, detail }`. The lock is held through step 12
+     and released on every exit; release failures are never refusals — they
+     are the structured release warning of §8.2;
+   - **only now, under the held lock**, inspect the temp coordination path:
+     a pre-existing `<canonical_index_dir>/.<canonical_index_name>.tmp`
+     refuses `ApplicationIndexTempExists { path }`. The ordering is
+     load-bearing: during a live writer's step 12 the temp legitimately
+     exists *while the lock is held*, so a second applier always loses at
+     the lock boundary first (`ApplicationIndexLocked`) and can never
+     misclassify a live commit's temp as debris. Only a holder of the lock
+     may observe a pre-existing temp, and even then it is never silently
+     unlinked — the lock proves no live writer, not ownership of bytes
+     already at that name (§8.1); recovery is explicit operator inspection
+     (§8.2).
 2. **Strict artifact parsing.** Parse the plan file with the Slice-1 strict
    types (`MalformedPlanArtifact { detail }` on any failure, foreign fields
    included) and the index file with the strict §5.1 types
@@ -662,7 +676,14 @@ Notes with proof value:
   JSON artifacts, never in a path. The fixed staging name needs nothing
   parsed — which is what lets step 1 run before step 2 — and needs no
   uniqueness suffix, because pre-existence refuses and the index lock
-  serializes appliers.
+  serializes appliers. The staging directory is created with an atomic
+  no-clobber `create_dir` (never `create_dir_all` over an existing path):
+  if two runs ever derive the same staging path, exactly one creation
+  succeeds and the loser refuses. The `.<name>.apply-staging` pattern is a
+  **reserved namespace**: step 1 refuses any output whose final component
+  matches it (`OutputNameReserved`), so no compliant apply's output can
+  ever coincide with any apply's staging path — see the publication bullet
+  for why this is load-bearing.
 - The **complete** output — corpus files, curated manifest, report — is
   written under staging (steps 9–10; the report last, after the single
   preflight, §6). Nothing is ever written at the final output path directly,
@@ -671,8 +692,18 @@ Notes with proof value:
   index itself).
 - **Single-writer lock.** From before the index is first read (step 1) until
   after the commit rename (step 12), Apply holds an exclusive lock: atomic
-  creation (`create_new`) of an empty lockfile,
-  `<canonical_index_dir>/.<canonical_index_name>.lock`. **The canonical
+  creation (`create_new`) of the lockfile
+  `<canonical_index_dir>/.<canonical_index_name>.lock`, immediately written
+  with the fixed **ownership marker** — one line,
+  `{"schema":"song-curation.lock.v1"}` — so a later observer can prove what
+  the file is. On contention the occupant is classified by content: the
+  marker, or a zero-byte file (an acquisition interrupted between creation
+  and marker write — deleting an empty file destroys no data), is a Griff
+  lock → `ApplicationIndexLocked`; **any other content** →
+  `ApplicationIndexLockPathOccupied`, because an unproven occupant may be a
+  real file — even a second index whose own name happens to equal this
+  index's lock name — and stale-lock recovery must never be able to delete
+  it (§8.2 validates content before any deletion). **The canonical
   resolved index file is the one and only index identity**: the supplied
   index path is `canonicalize`d at step 1 (symlinks fully resolved; the file
   must already exist, §4.1), and that resolved path alone is used for the
@@ -686,15 +717,17 @@ Notes with proof value:
   entry with a new inode while every other hardlink keeps naming the old
   one, so two "successful" runs could leave divergent registries. Slice 2
   therefore refuses them outright: step 1 requires the canonical index
-  file's link count to be exactly one (`ApplicationIndexHardLinked`), the
-  fail-closed alternative to a file-identity lock such as `flock`, which
-  would need a non-`std` dependency (§15 permits none). The check runs at
-  step 1 of **every** applier, so two appliers entering through different
-  hardlinks of one index both refuse. A
-  pre-existing lockfile refuses `ApplicationIndexLocked` — fail-closed, no
-  waiting, no lock-breaking; any other lock **create** failure is
-  `ApplyIoError`. A **release** failure is never a refusal (§8.2 result
-  shape). Without it, two concurrent
+  file's link count to be exactly one (`ApplicationIndexHardLinked`). A
+  file-identity lock (`std::fs::File::{lock, try_lock}`, stable since Rust
+  1.89 and within this repository's MSRV) would serialize the appliers but
+  would **not** repair commit-by-rename alias splitting — the committed
+  inode still replaces only one directory entry — so the `nlink == 1`
+  refusal is the chosen design on its merits, not for lack of a primitive.
+  The check runs at step 1 of **every** applier, so two appliers entering
+  through different hardlinks of one index both refuse. Lock contention
+  refuses as classified above — fail-closed, no waiting, no lock-breaking;
+  any other lock **create** failure is `ApplyIoError`. A **release**
+  failure is never a refusal (§8.2 result shape). Without it, two concurrent
   appliers could read one chain head, both pass every check, publish two
   output trees, and each serialize the index from the same stale version:
   the second commit rename would silently drop the first record after its
@@ -710,24 +743,51 @@ Notes with proof value:
   future apply until an operator verifies no apply is running and removes it
   (§8.2). A failed best-effort release is reported **only** through the
   release-warning channel of the §8.2 result shape — never as a refusal and
-  never by changing the primary outcome. The lockfile is empty
-  and transient — not a deliverable artifact, excluded from the determinism
-  law (§10.5).
+  never by changing the primary outcome. The lockfile is a fixed one-line
+  marker and transient — not a deliverable artifact, excluded from the
+  determinism law (§10.5).
 - Publication (step 11) is a single `rename(staging, output)`: the snapshot
   and its in-tree proof artifacts become visible atomically (POSIX rename
-  semantics on one filesystem), or not at all.
+  semantics on one filesystem), or not at all. **`rename` is not a
+  no-clobber primitive**, and the contract does not pretend otherwise: on
+  POSIX it replaces an existing *empty* directory at the destination (a
+  non-empty directory fails `ENOTEMPTY`; a file destination fails), and
+  `std` offers no `RENAME_NOREPLACE` equivalent. Two consequences, stated
+  honestly:
+  - *Compliant overlap is impossible by construction*: the only path a
+    compliant apply ever `rename`s onto is its declared output, which step 1
+    proves is outside the reserved staging namespace (`OutputNameReserved`)
+    — so it can never equal another apply's staging directory; and two
+    applies deriving the same staging path are serialized by the atomic
+    no-clobber staging `create_dir`. No pair of contract-following appliers
+    can replace each other's directories, whatever their indexes.
+  - *The accepted residual*: an **external actor** creating an *empty
+    directory* at the output path between step-1 preflight and step 11
+    would be silently replaced by the publication rename. Any other foreign
+    occupant (a file, a non-empty tree) makes the rename fail —
+    `ApplyIoError`, occupant untouched (§8.2). This residual is accepted
+    and documented rather than papered over: an actor mutating the apply's
+    declared paths mid-run is already outside every other guarantee here
+    (it could as easily mutate the corpus mid-read), and closing it would
+    need a platform-specific `renameat2(RENAME_NOREPLACE)` outside `std`.
 - Commit (step 12): serialize the updated index (§5.1), write it to
   `<canonical_index_dir>/.<canonical_index_name>.tmp`, flush and sync the
   file, then `rename`
   over the index path. The temp file lives in the index's own directory, so
-  this rename is also same-filesystem and atomic. The temp path was proven
-  **absent** at step 1 (`ApplicationIndexTempExists` otherwise), so the
-  write never overwrites a pre-existing file: the held lock proves no live
-  writer exists, but it cannot prove that bytes already sitting at the temp
-  name belong to this Apply — that pathname could be an unrelated file or
-  even another index whose own name happens to equal this index's temp name
-  — so nothing pre-existing is ever silently unlinked. Crash debris at the
-  temp path is removed only by the explicit operator recovery (§8.2).
+  this rename is also same-filesystem and atomic. The temp write itself is
+  an atomic no-clobber creation (`OpenOptions::create_new(true)` — `std`'s
+  own answer to exactly this TOCTOU): the step-1 under-lock absence check
+  (`ApplicationIndexTempExists`) is a fail-fast courtesy, **not** the
+  safety argument, because absence at step 1 cannot prove absence at
+  step 12 — a non-Apply actor can create that pathname later. If the
+  creation hits `AlreadyExists`, the run refuses with a pre-commit
+  `ApplyIoError` and the occupying entity is left untouched. The held lock
+  proves no live writer exists, but it cannot prove that bytes already
+  sitting at the temp name belong to this Apply — that pathname could be an
+  unrelated file or even another index whose own name happens to equal this
+  index's temp name — so nothing pre-existing is ever overwritten or
+  unlinked. Crash debris at the temp path is removed only by the explicit
+  operator recovery (§8.2).
 
 ### 8.2 The failure model — precisely what "transactional" means here
 
@@ -766,11 +826,11 @@ Enumerated states after a failure or crash, and the mandated recovery:
 |---|---|---|---|
 | failure in steps 1–8 | nothing written anywhere (the lock, if already acquired, is released; a failed release leaves it — see the lock row) | not applied | none needed |
 | failure in steps 9–10 | staging dir present (cleanup is best-effort; a failed cleanup leaves it), output absent, index unchanged | not applied | delete the staging dir; a retry that finds it refuses `OutputAlreadyExists` rather than silently reusing it |
-| failure of the step-11 publication rename itself | staging still present, output absent, index unchanged — or, under an external race, the output path newly occupied by an entity this run did not create | not applied (`ApplyIoError`) | best-effort staging cleanup applies (a failed cleanup leaves staging, refused on retry via `OutputAlreadyExists`); an externally occupied output path is **never** deleted — this run did not publish it — and a retry refuses `OutputAlreadyExists` until the operator resolves it |
+| failure of the step-11 publication rename itself (including a rename failed by a foreign non-empty occupant at the output path) | output absent (or still occupied by the foreign entity), index unchanged; staging **may** remain — best-effort cleanup runs and may succeed | not applied (`ApplyIoError`) | if cleanup left staging, delete it (a leftover staging is refused on retry via `OutputAlreadyExists`); a foreign occupant of the output path is **never** deleted — this run did not publish it — and a retry refuses `OutputAlreadyExists` until the operator resolves it |
 | crash between steps 11 and 12 | output tree present **with** report, index has **no** matching record | **not applied** — the registry is the authority | delete the orphaned output tree; a retry refuses `OutputAlreadyExists`, forcing the operator to confront the orphan instead of stacking a second tree |
 | step 12 completed | index record present | applied | none |
 | failure inside step 12 (temp write, fsync, or commit rename) | output tree already published **with** report (step 11 preceded step 12), old index unchanged, temp index file possibly present | not applied | delete the temp file **and** the orphaned published output tree — this is the previous row's state plus temp debris; a retry refuses `OutputAlreadyExists` until the orphan is removed |
-| crash at any point after lock acquisition | lockfile `.<canonical_index_name>.lock` present, possibly alongside one of the states above | no apply may start against this index | verify no apply is running, then delete the lockfile (and any leftover `.<canonical_index_name>.tmp`), then perform the recovery of whichever state above also holds |
+| crash at any point after lock acquisition | lockfile `.<canonical_index_name>.lock` present, possibly alongside one of the states above | no apply may start against this index | verify no apply is running **and** that the lockfile's content is the Griff ownership marker or empty — any other content is not provably a lock (`ApplicationIndexLockPathOccupied` semantics) and must **not** be deleted; then delete the validated lockfile; delete a leftover `.<canonical_index_name>.tmp` only after inspecting that it is crash debris of this index's interrupted commit and not an unrelated real file; then perform the recovery of whichever state above also holds |
 
 Consequences stated plainly:
 
@@ -951,9 +1011,11 @@ New Slice-2 refusals:
 | `ApplicationIndexInsideTree` | canonical index file equals or lies inside the input, output, or staging root | the resolved index path | step 1 | no |
 | `OutputCollidesWithIndexArtifacts` | resolved output or staging path equals the canonical index file, its lockfile path, or its temp path | the colliding path + which artifact | step 1, **before** lock acquisition (so the lock is never created at a declared output path) | no |
 | `ApplicationIndexHardLinked` | the canonical index file has link count > 1 — hardlink aliases defeat path-derived locking and split under commit-by-rename (§8.1) | the resolved path + `nlink` | step 1, before the lock | no |
-| `ApplicationIndexTempExists` | a file already exists at the temp coordination path — the lock cannot prove it belongs to this Apply, so it is never silently unlinked (§8.1) | the temp path | step 1, before the lock | no |
+| `ApplicationIndexTempExists` | a file already exists at the temp coordination path — the lock proves no live writer, not ownership of those bytes, so nothing is silently unlinked (§8.1) | the temp path | step 1, **under the held lock** — a live writer's temp is unreachable here because its lock refuses first | no |
 | `CuratedManifestPathNotDistinct` | resolved curated target is a tree root's `manifest.json` (defense in depth; unreachable under the v1 fixed path) | the resolved path | step 1 | no |
-| `ApplicationIndexLocked` | the index lockfile already exists at acquisition (a concurrent apply, or a stale lock from a crash) | the lockfile path | step 1, before the index is read | no |
+| `ApplicationIndexLocked` | the lock path is occupied by a **proven Griff lock** — the §8.1 ownership marker or an empty file (a concurrent apply, or a stale lock from a crash) | the lockfile path | step 1, before the index is read; always wins over `ApplicationIndexTempExists` at the lock boundary | no |
+| `ApplicationIndexLockPathOccupied` | the lock path is occupied by an entity whose content is **not** a Griff lock marker (an unrelated file — possibly a real second index whose name equals this index's lock name); recovery must never delete it | the occupied path | step 1, at lock acquisition | no |
+| `OutputNameReserved` | the resolved output's final component lies in the reserved staging namespace (`.<name>.apply-staging`) — what makes compliant-applier overlap at publication impossible (§8.1) | the output path | step 1 | no |
 | `MalformedPlanArtifact` | plan file unreadable, not valid JSON, or refused by the strict Slice-1 types (foreign field at any depth) | detail (path + parse error) | step 2 | no |
 | `MalformedApplicationIndex` | index file missing or unresolvable (step 1, before canonicalization and the lock — §6); unreadable, not valid JSON, or refused by the strict §5.1 types (step 2) | detail (path + resolution/parse error) | step 1 (missing/unresolvable) and step 2 (parse) | no |
 | `CorpusTreeDisagreement` | root `manifest.json` missing; manifest chunks ≠ on-disk chunk records; or a foreign reserved-area entry — anything besides the two tool-owned proof artifacts as regular files at the reserved root, nested entries and subdirectories included (§4.2 shape law) | detail: the first divergence (chunk id / path / field) or the foreign path | step 3 | no |
@@ -966,7 +1028,7 @@ New Slice-2 refusals:
 | `SupersessionEvidenceContradiction` | an event's redundant `supersedes_song_ids` contradicts its action's authority set (§7.4 consistency law) | `event_id` + detail | step 8, before any per-assignment authority decision | no |
 | `ExistingLabelReplacementNotAuthorized` | unauthorized-replacement case of §7.4 | `source_sha256`, on-disk label, new label, acting `event_id` | step 8, after the consistency law | no |
 | `NonCanonicalCorpusFile` | a touched file fails either §10.3 guard (duplicate object key at any depth, or round-trip divergence) | path + divergence detail | step 9, before that file's modified bytes are staged | staging† |
-| `ApplyIoError` | an I/O operation fails during lock **acquisition** (any cause but pre-existence) or during staging/publication/commit; a lock-**release** failure is never an `ApplyIoError` — it is the §8.2 release warning, orthogonal to the primary outcome | path, operation, OS error | step 1 (lock acquisition) and steps 9–12; always before the commit point (§8.2 result shape) | no for lock I/O; staging† during staging; after step 11, the §8.2 state table governs |
+| `ApplyIoError` | an I/O operation fails during lock **acquisition** (any cause but pre-existence) or during staging/publication/commit — including `AlreadyExists` from the step-12 no-clobber temp creation (a late-appearing occupant, left untouched); a lock-**release** failure is never an `ApplyIoError` — it is the §8.2 release warning, orthogonal to the primary outcome | path, operation, OS error | step 1 (lock acquisition) and steps 9–12; always before the commit point (§8.2 result shape) | no for lock I/O; staging† during staging; after step 11, the §8.2 state table governs |
 | `OutputPreflightInconsistent` | staged tree-agreement violation (§4.2 law re-run over the staged tree), recomputation divergence, or a non-`UncuratedSource` preflight refusal on the curated view (§6 step 10, §11) | the divergent value, the disagreeing chunk, or the preflight refusals | step 10 | staging† |
 
 Historical names reconciled: `PlanDigestMismatch`, `DecisionDigestMismatch`,
@@ -1038,8 +1100,10 @@ a law above; expected refusals are named.
 | C9 | index whose adjacent records do not chain | `ApplicationIndexChainInvalid` |
 | C10 | initial batch onto a fresh copy of the same corpus with its own empty index | success (independent lineage, §7.3) |
 | C11 | apply started while the index lockfile exists | `ApplicationIndexLocked`, nothing written, index byte-identical |
-| C12 | stale lockfile left by a crashed run *(fixture: fault injection)* | every subsequent apply refuses `ApplicationIndexLocked` until the lockfile is removed; after the §8.2 recovery, apply succeeds |
-| C13 | a real second index file whose name equals this index's temp coordination name (e.g. indexes `d/foo` and `d/.foo.tmp`), applying against `d/foo` | `ApplicationIndexTempExists` at step 1; the second index is never unlinked or overwritten; nothing created |
+| C12 | stale lockfile left by a crashed run *(fixture: fault injection)* | every subsequent apply refuses `ApplicationIndexLocked` until the lockfile is removed; the §8.2 recovery validates the lockfile content (marker or empty) before deletion; after recovery, apply succeeds |
+| C13 | a real second index file whose name equals this index's temp coordination name (e.g. indexes `d/foo` and `d/.foo.tmp`), applying against `d/foo` | `ApplicationIndexTempExists` at step 1 under the held lock; the second index is never unlinked or overwritten; the lock is released; nothing else created |
+| C14 | second applier arrives while the first is inside step 12 — the temp legitimately exists and the lock is legitimately held *(fixture: fault injection / pause point)* | the second applier refuses `ApplicationIndexLocked` at the lock boundary and never observes the live temp — `ApplicationIndexTempExists` is unreachable for a non-holder |
+| C15 | a real second index file whose name equals this index's **lock** coordination name (e.g. indexes `d/foo` and `d/.foo.lock`), applying against `d/foo` | `ApplicationIndexLockPathOccupied` (content is not a Griff lock marker); the second index is never deleted, and the §8.2 stale-lock recovery does not mandate deleting it |
 
 **Labels**
 
@@ -1062,7 +1126,7 @@ a law above; expected refusals are named.
 | F1 | output path equals / inside / containing the input root (incl. via symlink) | `OutputWouldModifyInput`, nothing written |
 | F2 | pre-existing output path; pre-existing staging path | `OutputAlreadyExists`, nothing written |
 | F3 | any refusal from steps 2–8 | no staging dir, no output, index byte-identical |
-| F4 | injected write failure during staging; injected failure of the step-11 publication rename itself; injected failure between publication and commit *(fixture: fault injection)* | `ApplyIoError`; filesystem in exactly one enumerated §8.2 state (the publication-rename failure leaves staging present, output absent, index unchanged); index without the record ⇒ provably not applied; retry refuses `OutputAlreadyExists` |
+| F4 | injected write failure during staging; injected failure of the step-11 publication rename itself; injected failure between publication and commit *(fixture: fault injection)* | `ApplyIoError`; filesystem in exactly one enumerated §8.2 state (the publication-rename failure leaves output absent and index unchanged; staging **may** remain if best-effort cleanup also failed); index without the record ⇒ provably not applied; a retry refuses `OutputAlreadyExists` only where §8.2 says residue exists |
 | F5 | repeated execution from byte-identical independent input copies | byte-identical output tree, curated manifest, report, and updated index |
 | F6 | index path inside a corpus tree | `ApplicationIndexInsideTree` |
 | F7 | `batch_id` containing path-like content (`/`, `..`, an absolute path) | no filesystem path is influenced: staging, lockfile, and temp names are unchanged; nothing is created outside the declared roots; the apply otherwise proceeds or refuses purely by contract law |
@@ -1070,6 +1134,8 @@ a law above; expected refusals are named.
 | F9 | fault-injected lock-release failure, once after a committed apply and once after a refusal *(fixture: fault injection)* | §8.2 result shape holds in both: the committed apply stays success (index record present) and the refusal stays that refusal; the release warning is attached, naming the leftover lockfile; never converted to an `ApplyIoError` |
 | F10 | output or staging path equal to the canonical index file, its lockfile path, or its temp path | `OutputCollidesWithIndexArtifacts` at step 1, before lock creation; nothing created anywhere |
 | F11 | index reachable through more than one hardlinked directory entry (`nlink > 1`), applied through either entry | `ApplicationIndexHardLinked` at step 1, before the lock; nothing created; both concurrent appliers entering through different hardlinks refuse |
+| F12 | a file appears at the temp coordination path **after** the step-1 under-lock check and before step 12 *(fixture: fault injection)* | the step-12 `create_new` hits `AlreadyExists` → pre-commit `ApplyIoError`; the late occupant is left untouched; not applied |
+| F13 | output whose final component lies in the reserved staging namespace (`.x.apply-staging`) | `OutputNameReserved` at step 1; nothing created — no compliant output can coincide with any apply's staging path |
 
 **Corpus completeness / preservation**
 
@@ -1098,11 +1164,11 @@ a law above; expected refusals are named.
 | R4 | report/index divergence cannot be presented as success | fault-injected commit failure yields an error naming the §8.2 state, never a success result *(fixture: fault injection)* |
 | R5 | curated-manifest digest | `sha256sum` of the published file equals `curated_manifest_digest` |
 
-Coverage notes: A1–A8, C1–C11, C13, L1–L9, F1–F3, F5–F8, F10–F11, K1–K10,
-K12, R1–R3, R5 are RED-eligible behavioural tests. F4, R4, C12, F9, and K11
-need fault-injection fixtures first, and K10 a raw-bytes fixture (fixture
-commits are not red-phase). No silent caps: the matrix has no sampled or
-truncated sweeps;
+Coverage notes: A1–A8, C1–C11, C13, C15, L1–L9, F1–F3, F5–F8, F10–F11, F13,
+K1–K10, K12, R1–R3, R5 are RED-eligible behavioural tests. F4, R4, C12,
+C14, F9, F12, and K11 need fault-injection fixtures first, and K10 a
+raw-bytes fixture (fixture commits are not red-phase). No silent caps: the
+matrix has no sampled or truncated sweeps;
 every refusal in §12's **Apply-reachable surface** (the three intentionally
 unreachable ledger-side members excluded, §12) appears in at least one case,
 and every §6 step has at least one test crossing it.
