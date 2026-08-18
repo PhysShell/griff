@@ -461,8 +461,8 @@ mod tests {
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::generation_input::{ranked_candidates, select_ranked, GenerationAsk};
     use griff_core::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     };
     use griff_core::slice::TickRange;
 
@@ -477,7 +477,7 @@ mod tests {
             .map(|i| {
                 let start = u32::try_from(i).unwrap() * BAR;
                 MasterBar {
-                    index: i,
+                    index: index_from_ordinal(i),
                     tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                     time_signature: TimeSignature {
                         numerator: 4,

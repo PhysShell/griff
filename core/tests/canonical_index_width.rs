@@ -37,7 +37,7 @@ fn range(start: u32, end: u32) -> TickRange {
 }
 
 /// A bar whose stored index is given explicitly, never derived.
-fn bar(index: usize, start: u32, end: u32) -> MasterBar {
+fn bar(index: u64, start: u32, end: u32) -> MasterBar {
     MasterBar {
         index,
         tick_range: range(start, end),
@@ -108,7 +108,7 @@ fn the_exact_diff_reports_a_changed_stored_index() {
 #[test]
 fn the_normalized_projection_carries_the_stored_index_not_the_ordinal() {
     let projected = normalize(&score_with_track(vec![bar(5, 0, 1920), bar(2, 1920, 3840)]));
-    let indices: Vec<usize> = projected.tracks[0].bars.iter().map(|b| b.index).collect();
+    let indices: Vec<u64> = projected.tracks[0].bars.iter().map(|b| b.index).collect();
     assert_eq!(
         indices,
         vec![5, 2],
@@ -174,23 +174,25 @@ fn the_exact_diff_reports_changed_warning_payload_indices() {
 
 // ── the inhabited range today, and why `u32` would shrink it ───────────────
 
-/// A stored index above `u32::MAX` is representable **now**, on a 64-bit host.
+/// A stored index above `u32::MAX`, checked rather than asserted in prose.
 ///
-/// This is the whole argument for `u64` over `u32`, so it is checked rather
-/// than asserted in prose. The `cfg` is the defect itself: the same score is
-/// unrepresentable on a 32-bit target today, which is what H3 called a false
-/// portability claim. SWG-CORE-01 removes the `cfg`'s reason to exist; this
-/// test records that the value was already inside the model before it did, so
-/// the migration cannot be read as having widened the canonical domain.
-#[cfg(target_pointer_width = "64")]
+/// This is the whole argument for `u64` over `u32`: the value was already
+/// inside the model before the migration, so `u32` would have shrunk an
+/// inhabited canonical domain rather than merely fixing a portability defect.
+///
+/// Written under `#[cfg(target_pointer_width = "64")]`, because while the
+/// fields were `usize` that is the only place these scores could be built —
+/// exactly the false portability claim H3 recorded. SWG-CORE-01 removed the
+/// `cfg`'s reason to exist and the `cfg` with it; every assertion below is
+/// unchanged from the pre-migration commit and now runs on every target.
 mod above_u32_max {
     use super::{bar, differing_fields, exact_semantic_diff, normalize, score, score_with_track};
     use griff_core::score::ImportWarning;
 
-    /// `u32::MAX + 1`, spelled through arithmetic on `u64` so the constant is
-    /// unambiguous, then narrowed to the field's current `usize`.
-    fn beyond_u32() -> usize {
-        usize::try_from(u64::from(u32::MAX) + 1).expect("64-bit host")
+    /// `u32::MAX + 1`, spelled through arithmetic so the constant is
+    /// unambiguous. No narrowing step any more — that was the `usize` era.
+    fn beyond_u32() -> u64 {
+        u64::from(u32::MAX) + 1
     }
 
     #[test]

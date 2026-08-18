@@ -23,7 +23,7 @@ use griff_core::score::{LossReport, MasterBar, RepeatMarker, Score};
 use griff_core::slice::TickRange;
 use griff_swang::exact::write_score;
 
-fn score_with_index(index: usize) -> Score {
+fn score_with_index(index: u64) -> Score {
     Score {
         ticks_per_quarter: 480,
         master_bars: vec![MasterBar {
@@ -39,7 +39,7 @@ fn score_with_index(index: usize) -> Score {
     }
 }
 
-fn write(index: usize) -> String {
+fn write(index: u64) -> String {
     write_score(&score_with_index(index)).expect("inside the writer domain")
 }
 
@@ -54,25 +54,24 @@ fn a_small_index_is_written_as_plain_decimal() {
 /// Nothing in the writer narrows here today, and nothing may start to.
 #[test]
 fn an_index_at_u32_max_is_written_whole() {
-    let text = write(usize::try_from(u32::MAX).expect("u32::MAX fits every supported usize"));
+    let text = write(u64::from(u32::MAX));
     assert!(
         text.contains("index 4294967295\n"),
         "the stored index is written in full: {text:?}"
     );
 }
 
-/// Above `u32::MAX` — inhabited today on a 64-bit host, and the reason the
-/// migration targets `u64` rather than `u32`.
+/// Above `u32::MAX` — inhabited before the migration on a 64-bit host, and
+/// the reason it targets `u64` rather than `u32`.
 ///
-/// The `cfg` is the defect SWG-CORE-01 removes: this score cannot be built at
-/// all on a 32-bit target while the field is `usize`, which is exactly the
-/// portability claim H3 called false. Recording it here means the migration
-/// can be shown to have changed the field's *width* without changing the
-/// writer's *bytes* for any value that already fit.
-#[cfg(target_pointer_width = "64")]
+/// Written under `#[cfg(target_pointer_width = "64")]` while the field was
+/// `usize`, because that is the only place this score could be built — the
+/// portability claim H3 called false. SWG-CORE-01 removed the `cfg`'s reason
+/// to exist and the `cfg` with it; the assertion is unchanged and now runs on
+/// every target.
 #[test]
 fn an_index_above_u32_max_is_written_whole() {
-    let index = usize::try_from(u64::from(u32::MAX) + 1).expect("64-bit host");
+    let index = u64::from(u32::MAX) + 1;
     let text = write(index);
     assert!(
         text.contains("index 4294967296\n"),
@@ -84,7 +83,7 @@ fn an_index_above_u32_max_is_written_whole() {
 #[test]
 fn a_large_index_document_matches_its_canonical_bytes() {
     assert_eq!(
-        write(usize::try_from(u32::MAX).expect("u32::MAX fits every supported usize")),
+        write(u64::from(u32::MAX)),
         "\
 swang 2
 

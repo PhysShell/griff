@@ -49,8 +49,12 @@ pub struct NormTrack {
 /// A normalized bar: shared transport plus the track's voices in it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NormBar {
-    /// Zero-based bar index.
-    pub index: usize,
+    /// Zero-based bar index, copied from the stored `MasterBar::index`.
+    ///
+    /// Carries a canonical value, so it carries the canonical width: reducing
+    /// it to `usize` here would be a truncating conversion on a 32-bit target,
+    /// inside a type that is serialized (spec §1.2, SWG-CORE-01).
+    pub index: u64,
     /// Meter as `[numerator, denominator]`.
     pub time_sig: [u8; 2],
     /// Tempo in BPM at the bar start.

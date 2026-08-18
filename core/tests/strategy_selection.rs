@@ -19,8 +19,8 @@ use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, V
 use griff_core::generate::GenerationStrategy;
 use griff_core::generation_input::{ranked_candidates, select_ranked, GenerationAsk, RankedSet};
 use griff_core::score::{
-    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
-    Track, Voice,
+    index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+    RepeatMarker, Score, Track, Voice,
 };
 use griff_core::slice::TickRange;
 
@@ -34,7 +34,7 @@ fn seed_score(bar_count: usize) -> Score {
         .map(|i| {
             let start = u32::try_from(i).unwrap() * BAR;
             MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,

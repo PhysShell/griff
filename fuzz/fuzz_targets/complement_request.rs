@@ -23,8 +23,8 @@ use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     generate::GenerationSeed,
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
-        Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     },
     slice::TickRange,
 };
@@ -64,7 +64,7 @@ fn build_part_a(bar_count: usize, ppqn: u16, pitches: &[u8]) -> Option<Score> {
         let end = start.checked_add(bar)?;
         let range = TickRange::new(Ticks(start), Ticks(end)).ok()?;
         master_bars.push(MasterBar {
-            index: i,
+            index: index_from_ordinal(i),
             tick_range: range,
             time_signature: TimeSignature::new(4, 4).ok()?,
             tempo: Tempo::from_bpm_integer(120).ok()?,

@@ -521,8 +521,8 @@ mod tests {
     use crate::corpus::{ChunkId, ChunkMeta, SourceFormat, SourceRef};
     use crate::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use crate::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     };
     use crate::slice::TickRange;
 
@@ -562,7 +562,7 @@ mod tests {
             .map(|i| {
                 let start = u32::try_from(i).expect("small").saturating_mul(1920);
                 MasterBar {
-                    index: i,
+                    index: index_from_ordinal(i),
                     tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
                         .expect("ordered"),
                     time_signature: TimeSignature {

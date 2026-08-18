@@ -36,7 +36,7 @@ fn note(start: u32, pitch: u8) -> AtomEvent {
     })
 }
 
-fn bar(index: usize, start: u32) -> MasterBar {
+fn bar(index: u64, start: u32) -> MasterBar {
     MasterBar {
         index,
         tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),

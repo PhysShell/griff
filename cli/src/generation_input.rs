@@ -114,8 +114,8 @@ mod tests {
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::midi;
     use griff_core::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Track, Voice,
     };
     use griff_core::slice::TickRange;
     use std::cell::Cell;
@@ -137,7 +137,7 @@ mod tests {
             .map(|i| {
                 let start = u32::try_from(i).unwrap().saturating_mul(1920);
                 MasterBar {
-                    index: i,
+                    index: index_from_ordinal(i),
                     tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
                         .unwrap(),
                     time_signature: TimeSignature {

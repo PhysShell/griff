@@ -5,8 +5,8 @@ use std::ops::Range;
 
 use crate::event::{Ticks, ValidationError};
 use crate::score::{
-    AtomEvent, AtomNote, AtomRest, EventGroup, LossReport, MasterBar, Score, TechniqueSpan, Track,
-    Voice,
+    index_from_ordinal, AtomEvent, AtomNote, AtomRest, EventGroup, LossReport, MasterBar, Score,
+    TechniqueSpan, Track, Voice,
 };
 
 /// Half-open tick range: `start <= tick < end`.
@@ -71,7 +71,7 @@ pub fn extract_bars(score: &Score, bars: Range<usize>) -> Score {
         .iter()
         .enumerate()
         .map(|(i, b)| MasterBar {
-            index: i,
+            index: index_from_ordinal(i),
             tick_range: rebased_range(b.tick_range, offset),
             time_signature: b.time_signature,
             tempo: b.tempo,

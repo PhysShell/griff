@@ -5,8 +5,8 @@ use crate::event::{
 };
 use crate::pitch::{PitchClassSet, PitchRange, PitchSelectionError, ScaleLadder};
 use crate::score::{
-    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
-    Track, Voice,
+    index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+    RepeatMarker, Score, Track, Voice,
 };
 use crate::slice::TickRange;
 
@@ -447,7 +447,7 @@ fn bars_to_score(
         let tick_range =
             TickRange::new(bar_start, bar_end).map_err(|_| GenerationError::InvalidConstraints)?;
         master_bars.push(MasterBar {
-            index,
+            index: index_from_ordinal(index),
             tick_range,
             time_signature: c.time_signature,
             tempo: c.tempo,

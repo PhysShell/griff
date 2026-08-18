@@ -25,6 +25,24 @@ use crate::{
     slice::TickRange,
 };
 
+// ── ordinal ↔ canonical index ──────────────────────────────────────────────
+
+/// Widens an operational vector position into the canonical index width.
+///
+/// The two are different things and the census says so (H4): an ordinal is
+/// where an element sits in a `Vec`, a canonical index is a stored exact fact
+/// that may disagree with it. Importers legitimately derive the second from
+/// the first, and this is the only sanctioned way to do it.
+///
+/// Total and lossless: `usize` is at most 64 bits on every target Rust
+/// supports. It is a named function rather than a bare cast so that each
+/// ordinal → canonical crossing is greppable, and so that the reverse
+/// direction — which is *not* total — cannot be written by accident.
+#[must_use]
+pub const fn index_from_ordinal(ordinal: usize) -> u64 {
+    ordinal as u64
+}
+
 // ── loss reporting ─────────────────────────────────────────────────────────────
 
 /// A loss or approximation incurred during format import or export.
@@ -32,8 +50,9 @@ use crate::{
 pub enum ImportWarning {
     /// A track name was present but could not be decoded as UTF-8.
     TrackNameInvalidUtf8 {
-        /// Zero-based index of the affected track.
-        track_index: usize,
+        /// Zero-based index of the affected track. Fixed-width so the value
+        /// means the same thing on every target (SWG-CORE-01).
+        track_index: u64,
     },
     /// The MIDI file used SMPTE/timecode timing; `griff` does not yet support
     /// it.
@@ -43,7 +62,8 @@ pub enum ImportWarning {
     /// approximation is a reported fact, never a silent rounding).
     TempoApproximated {
         /// Zero-based master-bar index whose tempo was approximated.
-        bar_index: usize,
+        /// Fixed-width (SWG-CORE-01).
+        bar_index: u64,
         /// The microseconds-per-quarter value actually written.
         nearest_micros: u32,
     },
@@ -258,8 +278,13 @@ impl RepeatMarker {
 /// `MasterBar` is the single source of truth for transport (ADR-0003).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MasterBar {
-    /// Zero-based bar index.
-    pub index: usize,
+    /// Zero-based bar index, as stored.
+    ///
+    /// Not the vector position: an importer may disagree with the ordinal and
+    /// the disagreement is itself an exact fact. Fixed-width rather than
+    /// platform-sized, so a score written on a 64-bit host means the same
+    /// thing on a 32-bit one (spec §1.2, SWG-CORE-01).
+    pub index: u64,
     /// Absolute half-open tick range `[start, end)` of this bar.
     pub tick_range: TickRange,
     /// Meter of this bar.

@@ -38,8 +38,8 @@ use griff_core::{
     generation_input::{ranked_candidates, GenerationAsk},
     rerank::{rerank_weights_v1, RERANK_AXIS_LABELS},
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     },
     scoring::Scored,
     slice::TickRange,
@@ -78,7 +78,7 @@ fn source() -> Score {
     for (index, notes) in bars.iter().enumerate() {
         let start = u32::try_from(index).unwrap() * BAR;
         master_bars.push(MasterBar {
-            index,
+            index: index_from_ordinal(index),
             tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).unwrap(),
             time_signature: TimeSignature::new(4, 4).unwrap(),
             tempo: Tempo::from_bpm_integer(120).unwrap(),

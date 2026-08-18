@@ -4044,7 +4044,7 @@ mod tests {
         const BAR: u32 = 3840;
         let master_bars = (0..bars)
             .map(|i| MasterBar {
-                index: i as usize,
+                index: u64::from(i),
                 tick_range: TickRange::new(Ticks(i * BAR), Ticks((i + 1) * BAR)).expect("range"),
                 time_signature: TimeSignature::new(4, 4).expect("4/4"),
                 tempo: Tempo::from_bpm_integer(120).expect("120"),

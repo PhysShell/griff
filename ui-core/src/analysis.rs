@@ -21,9 +21,12 @@ pub struct Section {
     /// The classification shared by every bar in the run.
     pub class: BarClass,
     /// First bar index (inclusive).
-    pub bar_start: usize,
-    /// One past the last bar index (exclusive).
-    pub bar_end: usize,
+    ///
+    /// Copied from the stored `MasterBar::index`, so it carries the canonical
+    /// width rather than a platform-sized one (SWG-CORE-01).
+    pub bar_start: u64,
+    /// One past the last bar index (exclusive), in the same width.
+    pub bar_end: u64,
     /// Absolute onset tick of the section.
     pub tick_start: u32,
     /// Absolute end tick of the section (exclusive).
@@ -33,7 +36,7 @@ pub struct Section {
 impl Section {
     /// Number of bars covered by the section.
     #[must_use]
-    pub const fn bar_count(&self) -> usize {
+    pub const fn bar_count(&self) -> u64 {
         self.bar_end.saturating_sub(self.bar_start)
     }
 }
@@ -154,6 +157,7 @@ mod tests {
 
     use super::*;
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+    use griff_core::score::index_from_ordinal;
     use griff_core::score::{
         AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Track, Voice,
     };
@@ -165,7 +169,7 @@ mod tests {
     fn bar_of_notes(index: usize, pitches: &[(u8, u8)]) -> (MasterBar, Vec<AtomEvent>) {
         let start = u32::try_from(index).expect("small") * BAR;
         let mb = MasterBar {
-            index,
+            index: index_from_ordinal(index),
             tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
             time_signature: TimeSignature::new(4, 4).expect("4/4"),
             tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),

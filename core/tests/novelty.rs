@@ -36,8 +36,8 @@ use griff_core::{
         NOVELTY_AXIS_LABELS,
     },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     },
     scoring::{rank_indices, Scored},
     slice::TickRange,
@@ -92,7 +92,7 @@ fn build_score(ppqn: u16, tracks: Vec<Track>) -> Score {
         .map(|i| {
             let start = u32::try_from(i).unwrap() * bar;
             MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + bar)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,

@@ -15,8 +15,8 @@ use crate::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, ValidationError, Velocity},
     fretboard::{self, assign_inferred_positions, FingeringWeights},
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, ImportWarning, LossReport, MasterBar,
-        RepeatMarker, Score, SourceMeta, Track as ScoreTrack, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, ImportWarning,
+        LossReport, MasterBar, RepeatMarker, Score, SourceMeta, Track as ScoreTrack, Voice,
     },
     slice::TickRange,
 };
@@ -345,7 +345,7 @@ fn abs_to_delta(
 /// other tempo converts to its nearest in-range value and records a
 /// [`ImportWarning::TempoApproximated`] on `loss` (S16 Phase 4-pre A: an
 /// approximation is a reported fact, never a silent rounding).
-fn tempo_to_micros(tempo: Tempo, bar_index: usize, loss: &mut LossReport) -> u32 {
+fn tempo_to_micros(tempo: Tempo, bar_index: u64, loss: &mut LossReport) -> u32 {
     let max_u24 = u32::from(u24::max_value());
     if let Some(exact) = tempo.to_micros_per_quarter_exact() {
         if (1..=max_u24).contains(&exact) {
@@ -513,7 +513,7 @@ fn build_master_bars(
             .map_err(|_| MidiError::TickOverflow)?;
 
         master_bars.push(MasterBar {
-            index,
+            index: index_from_ordinal(index),
             tick_range,
             time_signature: sig,
             tempo,
@@ -545,7 +545,7 @@ fn build_score_track(
     let mut loss = LossReport::new();
     let name = name_result.unwrap_or_else(|()| {
         loss.add(ImportWarning::TrackNameInvalidUtf8 {
-            track_index: raw_idx,
+            track_index: index_from_ordinal(raw_idx),
         });
         None
     });
@@ -829,6 +829,7 @@ mod tests {
         bar_ticks, build_master_bars, build_score_meta_track, export_score, import_score,
         tempo_to_micros, MidiError, Ppqn,
     };
+    use crate::score::index_from_ordinal;
     use crate::{
         event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
         score::{
@@ -893,7 +894,7 @@ mod tests {
         // different exact tempo — projected again (clean), no second event.
         let tempo_same_mpq = Tempo::from_micros_per_quarter(495_868).expect("495 868 µs is valid");
         let bar = |index: usize, tempo: Tempo| MasterBar {
-            index,
+            index: index_from_ordinal(index),
             tick_range: TickRange::new(
                 Ticks(u32::try_from(index).expect("small") * 1920),
                 Ticks((u32::try_from(index).expect("small") + 1) * 1920),
@@ -953,7 +954,7 @@ mod tests {
         );
 
         let bar = |index: usize, tempo: Tempo| MasterBar {
-            index,
+            index: index_from_ordinal(index),
             tick_range: TickRange::new(
                 Ticks(u32::try_from(index).expect("small") * 1920),
                 Ticks((u32::try_from(index).expect("small") + 1) * 1920),

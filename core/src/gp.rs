@@ -31,8 +31,9 @@ use crate::{
         TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
     },
     score::{
-        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
-        MasterBar, RepeatMarker, Score, SourceMeta, TechniqueSpan, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind,
+        ImportWarning, LossReport, MasterBar, RepeatMarker, Score, SourceMeta, TechniqueSpan,
+        Track, Voice,
     },
     slice::TickRange,
 };
@@ -279,7 +280,7 @@ fn build_gp_master_bars(
                     .unwrap_or(Tempo::FALLBACK_120);
 
             MasterBar {
-                index: idx,
+                index: index_from_ordinal(idx),
                 tick_range: TickRange {
                     start: Ticks(start),
                     end: Ticks(end),

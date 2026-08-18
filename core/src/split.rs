@@ -114,7 +114,7 @@ mod tests {
 
     use super::{bar_segments, cap_segment_bars, is_trivial_phrase};
     use crate::event::{Tempo, Ticks, TimeSignature};
-    use crate::score::{MasterBar, RepeatMarker};
+    use crate::score::{index_from_ordinal, MasterBar, RepeatMarker};
     use crate::slice::TickRange;
 
     /// `n` consecutive 4/4 bars of 1920 ticks each.
@@ -123,7 +123,7 @@ mod tests {
         let mut start = 0_u32;
         for index in 0..n {
             out.push(MasterBar {
-                index,
+                index: index_from_ordinal(index),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + 1920)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,
