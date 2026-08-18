@@ -165,7 +165,9 @@ A snapshot is a directory tree containing:
   under it is never read as corpus content. **Shape law:** when present in an
   input snapshot (every previously applied output has one), it may contain
   **only** the two tool-owned proof artifacts, `manifest.json` and
-  `apply-report.json`; any other file there is `CorpusTreeDisagreement` —
+  `apply-report.json`, as regular files directly at the reserved root —
+  recursively: any other entry, including any subdirectory or nested file,
+  is foreign; a foreign entry is `CorpusTreeDisagreement` —
   the area is tool-owned, and an unknown file would otherwise be either
   silently dropped or blindly carried by whichever preservation rule
   happened to win (§10.1 defines what happens to the two known artifacts).
@@ -419,6 +421,18 @@ artifact. A malformed input can therefore never leave a partial output tree.
      index path canonicalized into the **canonical resolved index file**
      (§8.1) and the two coordination names (`.lock` / `.tmp`, §8.1) derived
      from it;
+   - the canonical index file must have a **link count of exactly one**: an
+     index reachable through more than one hardlinked directory entry
+     (`nlink > 1`) refuses `ApplicationIndexHardLinked { path, nlink }` —
+     hardlink aliases are invisible to `canonicalize`, would derive distinct
+     lockfiles, and commit-by-rename would split the aliases into divergent
+     registries (§8.1);
+   - the temp coordination path must not already exist: a pre-existing
+     `<canonical_index_dir>/.<canonical_index_name>.tmp` refuses
+     `ApplicationIndexTempExists { path }` — the lock proves only that no
+     writer holds *this* index's lock, never that a file already sitting at
+     the temp name belongs to this Apply, so nothing there is ever silently
+     unlinked (§8.1); crash recovery deletes it explicitly (§8.2);
    - resolved output (or staging) equals the canonical index file, its
      lockfile path, or its temp path →
      `OutputCollidesWithIndexArtifacts { path, artifact }` — checked
@@ -451,9 +465,12 @@ artifact. A malformed input can therefore never leave a partial output tree.
    (`MalformedApplicationIndex { detail }`). Parsing precedes every
    filesystem mutation and every digest/projection computation.
 3. **Snapshot load and agreement.** Read the root `manifest.json` and every
-   corpus `*.chunk.json` (reserved area excluded); enforce tree agreement and
-   the no-root-`songs` law (§4.2): `CorpusTreeDisagreement` /
-   `OrdinaryManifestCarriesSongs`.
+   corpus `*.chunk.json` (reserved area excluded); enforce tree agreement,
+   the **reserved-area shape law** (recursively: the reserved directory,
+   when present, holds exactly at most the two tool-owned proof artifacts as
+   regular files at its root — any other entry, nested entries and
+   subdirectories included, is foreign), and the no-root-`songs` law (§4.2):
+   `CorpusTreeDisagreement` / `OrdinaryManifestCarriesSongs`.
 4. **Application-index validation** (§5.1): schema, uniqueness, internal
    chain: `UnsupportedApplicationIndexSchema` / `DuplicateAppliedBatchId` /
    `ApplicationIndexChainInvalid`.
@@ -660,8 +677,20 @@ Notes with proof value:
   index path is `canonicalize`d at step 1 (symlinks fully resolved; the file
   must already exist, §4.1), and that resolved path alone is used for the
   lock name, the index read, the temp file, the fsync, the commit rename,
-  and the release — so two aliases of one index always contend on one lock,
-  and the commit rename replaces the real file, never a symlink alias. A
+  and the release. **Symlink** aliases of one index therefore converge on
+  one lock, and the commit rename replaces the real file, never a symlink
+  alias. **Hardlink** aliases are a different animal: `canonicalize` cannot
+  collapse them, two hardlinked directory entries would derive two distinct
+  lockfiles (reviving the lost update), and commit-by-rename would then
+  split the aliases — the first commit replaces only its own directory
+  entry with a new inode while every other hardlink keeps naming the old
+  one, so two "successful" runs could leave divergent registries. Slice 2
+  therefore refuses them outright: step 1 requires the canonical index
+  file's link count to be exactly one (`ApplicationIndexHardLinked`), the
+  fail-closed alternative to a file-identity lock such as `flock`, which
+  would need a non-`std` dependency (§15 permits none). The check runs at
+  step 1 of **every** applier, so two appliers entering through different
+  hardlinks of one index both refuse. A
   pre-existing lockfile refuses `ApplicationIndexLocked` — fail-closed, no
   waiting, no lock-breaking; any other lock **create** failure is
   `ApplyIoError`. A **release** failure is never a refusal (§8.2 result
@@ -691,9 +720,14 @@ Notes with proof value:
   `<canonical_index_dir>/.<canonical_index_name>.tmp`, flush and sync the
   file, then `rename`
   over the index path. The temp file lives in the index's own directory, so
-  this rename is also same-filesystem and atomic. A leftover temp file found
-  under a freshly acquired lock is crash debris of a previous run — the held
-  lock proves no live writer exists — and is deleted before writing.
+  this rename is also same-filesystem and atomic. The temp path was proven
+  **absent** at step 1 (`ApplicationIndexTempExists` otherwise), so the
+  write never overwrites a pre-existing file: the held lock proves no live
+  writer exists, but it cannot prove that bytes already sitting at the temp
+  name belong to this Apply — that pathname could be an unrelated file or
+  even another index whose own name happens to equal this index's temp name
+  — so nothing pre-existing is ever silently unlinked. Crash debris at the
+  temp path is removed only by the explicit operator recovery (§8.2).
 
 ### 8.2 The failure model — precisely what "transactional" means here
 
@@ -732,6 +766,7 @@ Enumerated states after a failure or crash, and the mandated recovery:
 |---|---|---|---|
 | failure in steps 1–8 | nothing written anywhere (the lock, if already acquired, is released; a failed release leaves it — see the lock row) | not applied | none needed |
 | failure in steps 9–10 | staging dir present (cleanup is best-effort; a failed cleanup leaves it), output absent, index unchanged | not applied | delete the staging dir; a retry that finds it refuses `OutputAlreadyExists` rather than silently reusing it |
+| failure of the step-11 publication rename itself | staging still present, output absent, index unchanged — or, under an external race, the output path newly occupied by an entity this run did not create | not applied (`ApplyIoError`) | best-effort staging cleanup applies (a failed cleanup leaves staging, refused on retry via `OutputAlreadyExists`); an externally occupied output path is **never** deleted — this run did not publish it — and a retry refuses `OutputAlreadyExists` until the operator resolves it |
 | crash between steps 11 and 12 | output tree present **with** report, index has **no** matching record | **not applied** — the registry is the authority | delete the orphaned output tree; a retry refuses `OutputAlreadyExists`, forcing the operator to confront the orphan instead of stacking a second tree |
 | step 12 completed | index record present | applied | none |
 | failure inside step 12 (temp write, fsync, or commit rename) | output tree already published **with** report (step 11 preceded step 12), old index unchanged, temp index file possibly present | not applied | delete the temp file **and** the orphaned published output tree — this is the previous row's state plus temp debris; a retry refuses `OutputAlreadyExists` until the orphan is removed |
@@ -915,11 +950,13 @@ New Slice-2 refusals:
 | `OutputWouldModifyInput` | resolved output/staging equals, contains, or is contained by the input root | both resolved paths | step 1 | no |
 | `ApplicationIndexInsideTree` | canonical index file equals or lies inside the input, output, or staging root | the resolved index path | step 1 | no |
 | `OutputCollidesWithIndexArtifacts` | resolved output or staging path equals the canonical index file, its lockfile path, or its temp path | the colliding path + which artifact | step 1, **before** lock acquisition (so the lock is never created at a declared output path) | no |
+| `ApplicationIndexHardLinked` | the canonical index file has link count > 1 — hardlink aliases defeat path-derived locking and split under commit-by-rename (§8.1) | the resolved path + `nlink` | step 1, before the lock | no |
+| `ApplicationIndexTempExists` | a file already exists at the temp coordination path — the lock cannot prove it belongs to this Apply, so it is never silently unlinked (§8.1) | the temp path | step 1, before the lock | no |
 | `CuratedManifestPathNotDistinct` | resolved curated target is a tree root's `manifest.json` (defense in depth; unreachable under the v1 fixed path) | the resolved path | step 1 | no |
 | `ApplicationIndexLocked` | the index lockfile already exists at acquisition (a concurrent apply, or a stale lock from a crash) | the lockfile path | step 1, before the index is read | no |
 | `MalformedPlanArtifact` | plan file unreadable, not valid JSON, or refused by the strict Slice-1 types (foreign field at any depth) | detail (path + parse error) | step 2 | no |
 | `MalformedApplicationIndex` | index file missing or unresolvable (step 1, before canonicalization and the lock — §6); unreadable, not valid JSON, or refused by the strict §5.1 types (step 2) | detail (path + resolution/parse error) | step 1 (missing/unresolvable) and step 2 (parse) | no |
-| `CorpusTreeDisagreement` | root `manifest.json` missing, or manifest chunks ≠ on-disk chunk records (§4.2) | detail: the first divergence (chunk id / path / field) | step 3 | no |
+| `CorpusTreeDisagreement` | root `manifest.json` missing; manifest chunks ≠ on-disk chunk records; or a foreign reserved-area entry — anything besides the two tool-owned proof artifacts as regular files at the reserved root, nested entries and subdirectories included (§4.2 shape law) | detail: the first divergence (chunk id / path / field) or the foreign path | step 3 | no |
 | `OrdinaryManifestCarriesSongs` | root `manifest.json` has `songs: Some(..)` | — | step 3 | no |
 | `UnsupportedApplicationIndexSchema` | index `schema` ≠ `song-curation.applications.v1` | the rejected schema string | step 4 | no |
 | `DuplicateAppliedBatchId` | one `batch_id` twice **within** the index (internal corruption) | the duplicated `batch_id` | step 4 | no |
@@ -1002,6 +1039,7 @@ a law above; expected refusals are named.
 | C10 | initial batch onto a fresh copy of the same corpus with its own empty index | success (independent lineage, §7.3) |
 | C11 | apply started while the index lockfile exists | `ApplicationIndexLocked`, nothing written, index byte-identical |
 | C12 | stale lockfile left by a crashed run *(fixture: fault injection)* | every subsequent apply refuses `ApplicationIndexLocked` until the lockfile is removed; after the §8.2 recovery, apply succeeds |
+| C13 | a real second index file whose name equals this index's temp coordination name (e.g. indexes `d/foo` and `d/.foo.tmp`), applying against `d/foo` | `ApplicationIndexTempExists` at step 1; the second index is never unlinked or overwritten; nothing created |
 
 **Labels**
 
@@ -1024,13 +1062,14 @@ a law above; expected refusals are named.
 | F1 | output path equals / inside / containing the input root (incl. via symlink) | `OutputWouldModifyInput`, nothing written |
 | F2 | pre-existing output path; pre-existing staging path | `OutputAlreadyExists`, nothing written |
 | F3 | any refusal from steps 2–8 | no staging dir, no output, index byte-identical |
-| F4 | injected write failure during staging; injected failure between publication and commit *(fixture: fault injection)* | `ApplyIoError`; filesystem in exactly one enumerated §8.2 state; index without the record ⇒ provably not applied; retry refuses `OutputAlreadyExists` |
+| F4 | injected write failure during staging; injected failure of the step-11 publication rename itself; injected failure between publication and commit *(fixture: fault injection)* | `ApplyIoError`; filesystem in exactly one enumerated §8.2 state (the publication-rename failure leaves staging present, output absent, index unchanged); index without the record ⇒ provably not applied; retry refuses `OutputAlreadyExists` |
 | F5 | repeated execution from byte-identical independent input copies | byte-identical output tree, curated manifest, report, and updated index |
 | F6 | index path inside a corpus tree | `ApplicationIndexInsideTree` |
 | F7 | `batch_id` containing path-like content (`/`, `..`, an absolute path) | no filesystem path is influenced: staging, lockfile, and temp names are unchanged; nothing is created outside the declared roots; the apply otherwise proceeds or refuses purely by contract law |
 | F8 | index supplied through a symlink alias | lock, read, temp, and commit rename all act on the canonical resolved index file; a concurrent apply through another alias of the same index refuses `ApplicationIndexLocked`; after commit the real file is replaced and every alias still resolves to the updated index |
 | F9 | fault-injected lock-release failure, once after a committed apply and once after a refusal *(fixture: fault injection)* | §8.2 result shape holds in both: the committed apply stays success (index record present) and the refusal stays that refusal; the release warning is attached, naming the leftover lockfile; never converted to an `ApplyIoError` |
 | F10 | output or staging path equal to the canonical index file, its lockfile path, or its temp path | `OutputCollidesWithIndexArtifacts` at step 1, before lock creation; nothing created anywhere |
+| F11 | index reachable through more than one hardlinked directory entry (`nlink > 1`), applied through either entry | `ApplicationIndexHardLinked` at step 1, before the lock; nothing created; both concurrent appliers entering through different hardlinks refuse |
 
 **Corpus completeness / preservation**
 
@@ -1047,6 +1086,7 @@ a law above; expected refusals are named.
 | K9 | fully curated consistent fixture | `holdout_ready: true` via the real core `song_holdout_preflight` on the curated view |
 | K10 | touched file whose raw text contains a duplicate JSON object key *(fixture: raw-bytes fixture)* | `NonCanonicalCorpusFile`, nothing published |
 | K11 | fault-injected staged write that updates the root and curated manifests but leaves one affected `*.chunk.json` stale *(fixture: fault injection)* | `OutputPreflightInconsistent` from the staged tree-agreement re-check, nothing published |
+| K12 | input snapshot whose reserved area carries a foreign entry — one directly at the reserved root (`song-curation/notes.txt`) and one nested (`song-curation/extra/x.json`) | `CorpusTreeDisagreement` at step 3 naming the foreign path, in both variants; nothing written |
 
 **Report / index publication**
 
@@ -1058,11 +1098,11 @@ a law above; expected refusals are named.
 | R4 | report/index divergence cannot be presented as success | fault-injected commit failure yields an error naming the §8.2 state, never a success result *(fixture: fault injection)* |
 | R5 | curated-manifest digest | `sha256sum` of the published file equals `curated_manifest_digest` |
 
-Coverage notes: A1–A8, C1–C11, L1–L9, F1–F3, F5–F8, F10, K1–K10, R1–R3, R5
-are RED-eligible behavioural tests. F4, R4, C12, F9, and K11 need
-fault-injection fixtures first, and K10 a raw-bytes fixture (fixture commits
-are not red-phase). No silent caps: the matrix has no sampled or truncated
-sweeps;
+Coverage notes: A1–A8, C1–C11, C13, L1–L9, F1–F3, F5–F8, F10–F11, K1–K10,
+K12, R1–R3, R5 are RED-eligible behavioural tests. F4, R4, C12, F9, and K11
+need fault-injection fixtures first, and K10 a raw-bytes fixture (fixture
+commits are not red-phase). No silent caps: the matrix has no sampled or
+truncated sweeps;
 every refusal in §12's **Apply-reachable surface** (the three intentionally
 unreachable ledger-side members excluded, §12) appears in at least one case,
 and every §6 step has at least one test crossing it.
