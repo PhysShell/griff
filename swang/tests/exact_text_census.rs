@@ -751,3 +751,133 @@ pub enum Probe {
         "a widened tuple payload must yield one key per element"
     );
 }
+
+// ── SWG-CORE-01: no platform-sized integer in the canonical tree ───────────
+
+/// Every field declaration inside every `pub struct` / `pub enum` body in
+/// `source`, as `Type.field: type` strings.
+///
+/// Declarations are discovered rather than listed, so a canonical type added
+/// to the file later is covered without anyone remembering to add it here.
+/// The `#[cfg(test)]` tail is cut first: its fixtures are not canonical state.
+fn declared_field_types(source: &str) -> Vec<String> {
+    let body = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let mut out = Vec::new();
+    for (offset, _) in body.match_indices("pub ") {
+        let rest = &body[offset..];
+        let Some(header_end) = rest.find(" {\n") else {
+            continue;
+        };
+        let header = &rest[..header_end];
+        let Some(name) = header
+            .strip_prefix("pub struct ")
+            .or_else(|| header.strip_prefix("pub enum "))
+        else {
+            continue;
+        };
+        if name.contains(char::is_whitespace) {
+            continue;
+        }
+        // `\n}` closes a top-level item; nested variant braces are indented.
+        let inner_start = offset.saturating_add(header_end).saturating_add(3);
+        let inner = &body[inner_start..];
+        let Some(inner_end) = inner.find("\n}") else {
+            continue;
+        };
+        for line in inner[..inner_end].lines().map(str::trim) {
+            if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
+                continue;
+            }
+            let Some(field) = field_name(line) else {
+                continue;
+            };
+            let Some((_, declared)) = line.split_once(':') else {
+                continue;
+            };
+            let declared = declared.trim().trim_end_matches(',').trim();
+            out.push(format!("{name}.{field}: {declared}"));
+        }
+    }
+    out
+}
+
+/// Whether `haystack` uses `needle` as a whole type token.
+///
+/// A substring match would let `MyUsizeAlias` count as `usize`, and — more
+/// to the point — would let a genuine `usize` hide inside a longer name that
+/// happens to contain it.
+fn mentions_type(haystack: &str, needle: &str) -> bool {
+    haystack
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|token| token == needle)
+}
+
+#[test]
+fn the_canonical_tree_declares_no_platform_sized_integer() {
+    // Spec §1.2 forbids platform-sized integers in hashed or serialized
+    // state, and `Score` derives `Hash`. H3 recorded the three fields that
+    // violated it; SWG-CORE-01 closed them. This witness is what keeps a
+    // fourth from arriving quietly — including inside an enum payload, which
+    // no struct-field scan reaches.
+    let offenders: Vec<String> = declared_field_types(&read("core/src/score.rs"))
+        .into_iter()
+        .filter(|declaration| mentions_type(declaration, "usize"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`usize` is not a canonical width — spec §1.2, H3: {offenders:?}"
+    );
+}
+
+#[test]
+fn the_three_migrated_index_fields_are_u64() {
+    // The general witness above would stay green if a field were widened to
+    // `u128` or narrowed to `u32`. These three carry the decision SWG-CORE-01
+    // actually made, so they are named.
+    let declarations = declared_field_types(&read("core/src/score.rs"));
+    for expected in [
+        "MasterBar.index: u64",
+        "ImportWarning.track_index: u64",
+        "ImportWarning.bar_index: u64",
+    ] {
+        assert!(
+            declarations.iter().any(|d| d == expected),
+            "expected `{expected}` among {declarations:?}"
+        );
+    }
+}
+
+#[test]
+fn the_declaration_scanner_reads_the_type_side() {
+    // Falsified against a synthetic source, because a scanner that silently
+    // found nothing would make both witnesses above vacuously green — the
+    // exact failure this suite has already hit twice.
+    let synthetic = "\
+pub struct Probe {
+    pub ordinal: usize,
+    pub index: u64,
+}
+
+pub enum Warn {
+    Named {
+        track_index: usize,
+    },
+    Bare,
+}
+";
+    let declared = declared_field_types(synthetic);
+    assert_eq!(
+        declared,
+        vec![
+            "Probe.ordinal: usize".to_owned(),
+            "Probe.index: u64".to_owned(),
+            "Warn.track_index: usize".to_owned(),
+        ]
+    );
+    assert!(mentions_type("Probe.ordinal: usize", "usize"));
+    assert!(!mentions_type("Probe.index: u64", "usize"));
+    assert!(
+        !mentions_type("Probe.x: MyUsizeAlias", "usize"),
+        "a substring is not a type token"
+    );
+}
