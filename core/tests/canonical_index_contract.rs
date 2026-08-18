@@ -152,3 +152,50 @@ fn the_ordinal_conversion_widens_rather_than_truncating() {
         4_294_967_295_u64
     );
 }
+
+/// A payload index above `u32::MAX` survives the path an importer actually
+/// takes.
+///
+/// The second hole the falsification pass found. Every other test here builds
+/// an `ImportWarning` and inspects it immediately; none of them goes through
+/// `LossReport::add`, so a narrowing inserted *there* — clamping `bar_index`
+/// to `u32::MAX` on the way into the report — left the whole suite green.
+///
+/// Importers never construct the variant and read it back; they hand it to
+/// `add`. This checks the path they use.
+#[test]
+fn a_payload_index_above_u32_max_survives_being_added_to_a_report() {
+    use griff_core::score::LossReport;
+
+    let beyond: u64 = u64::from(u32::MAX) + 1;
+    let mut report = LossReport::new();
+    report.add(ImportWarning::TempoApproximated {
+        bar_index: beyond,
+        nearest_micros: 500_000,
+    });
+    report.add(ImportWarning::TrackNameInvalidUtf8 {
+        track_index: beyond,
+    });
+
+    assert_eq!(
+        report.warnings,
+        vec![
+            ImportWarning::TempoApproximated {
+                bar_index: 4_294_967_296,
+                nearest_micros: 500_000,
+            },
+            ImportWarning::TrackNameInvalidUtf8 {
+                track_index: 4_294_967_296,
+            },
+        ],
+        "`add` records the payload as given and narrows nothing"
+    );
+
+    // `absorb` concatenates through the same door.
+    let mut outer = LossReport::new();
+    outer.absorb(report);
+    let ImportWarning::TempoApproximated { bar_index, .. } = outer.warnings[0] else {
+        panic!("first warning")
+    };
+    assert_eq!(bar_index, 4_294_967_296_u64);
+}
