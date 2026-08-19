@@ -454,8 +454,9 @@ artifact. A malformed input can therefore never leave a partial output tree.
    - acquire the **index single-writer lock** (§8.1): atomically
      create-new the lockfile at the already-derived coordination path,
      writing the §8.1 ownership marker. If the path is already occupied,
-     classify by content (§8.1): a Griff lock marker or an empty file →
-     `ApplicationIndexLocked { path }`; anything else →
+     classify by content (§8.1): any **byte-prefix of the marker** — empty,
+     partial, or complete — → `ApplicationIndexLocked { path }` (a live
+     writer mid-publication always lands here); anything else →
      `ApplicationIndexLockPathOccupied { path }` — the occupant is not
      provably a lock and recovery must never delete it. A create failure
      that is *not* pre-existence (permissions, read-only filesystem, …) →
@@ -696,14 +697,39 @@ Notes with proof value:
   `<canonical_index_dir>/.<canonical_index_name>.lock`, immediately written
   with the fixed **ownership marker** — one line,
   `{"schema":"song-curation.lock.v1"}` — so a later observer can prove what
-  the file is. On contention the occupant is classified by content: the
-  marker, or a zero-byte file (an acquisition interrupted between creation
-  and marker write — deleting an empty file destroys no data), is a Griff
-  lock → `ApplicationIndexLocked`; **any other content** →
-  `ApplicationIndexLockPathOccupied`, because an unproven occupant may be a
-  real file — even a second index whose own name happens to equal this
-  index's lock name — and stale-lock recovery must never be able to delete
-  it (§8.2 validates content before any deletion). **The canonical
+  the file is. `create_new` is atomic; **marker publication is not**: a
+  short or partial `write`, and a crash mid-write, can both leave a
+  non-empty *prefix* of the marker at the lock path, and both states are
+  producible by a compliant applier. The state machine is therefore closed
+  over all prefixes, with **contention classification** and **recovery
+  authority** deliberately separated:
+  - *Contention classification (live-safe, conservative).* An occupant
+    whose content is a **byte-prefix of the canonical marker** — empty,
+    partial, or complete — classifies as a Griff lock →
+    `ApplicationIndexLocked`. A live compliant writer can only ever be
+    observed in a prefix state, so live ownership can **never** be
+    misclassified as foreign occupancy. Content that is *not* a prefix of
+    the marker → `ApplicationIndexLockPathOccupied`: the occupant may be a
+    real file — even a second index whose own name happens to equal this
+    index's lock name.
+  - *Recovery authority (provenance-gated, §8.2).* Only the **exact,
+    complete marker** is automatically deletable by stale-lock recovery.
+    An empty or partial-prefix occupant is *ambiguous* — interrupted Griff
+    acquisition, or an unrelated pre-existing file that merely resembles
+    one (pathname existence and metadata can themselves be meaningful, so
+    "deleting it loses no bytes" is not a provenance proof) — and takes the
+    explicit operator-proven path: after confirming no apply is running,
+    the operator either establishes Griff provenance by independent means
+    and deletes, or **relocates** the occupant out of the coordination
+    namespace, which unblocks the lock path without destroying anything.
+    A non-prefix occupant is never deleted and never relocated by any
+    mandated recovery.
+  An atomic-visibility alternative (write the marker to a private name,
+  publish via `std::fs::hard_link`, which fails on an existing destination
+  — the classic mail-spool lockfile protocol) was considered and not
+  chosen: it adds a second transient coordination namespace with its own
+  debris states, while prefix-closed classification needs no new names and
+  is mechanically testable. **The canonical
   resolved index file is the one and only index identity**: the supplied
   index path is `canonicalize`d at step 1 (symlinks fully resolved; the file
   must already exist, §4.1), and that resolved path alone is used for the
@@ -830,7 +856,7 @@ Enumerated states after a failure or crash, and the mandated recovery:
 | crash between steps 11 and 12 | output tree present **with** report, index has **no** matching record | **not applied** — the registry is the authority | delete the orphaned output tree; a retry refuses `OutputAlreadyExists`, forcing the operator to confront the orphan instead of stacking a second tree |
 | step 12 completed | index record present | applied | none |
 | failure inside step 12 (temp write, fsync, or commit rename) | output tree already published **with** report (step 11 preceded step 12), old index unchanged, temp index file possibly present | not applied | delete the temp file **and** the orphaned published output tree — this is the previous row's state plus temp debris; a retry refuses `OutputAlreadyExists` until the orphan is removed |
-| crash at any point after lock acquisition | lockfile `.<canonical_index_name>.lock` present, possibly alongside one of the states above | no apply may start against this index | verify no apply is running **and** that the lockfile's content is the Griff ownership marker or empty — any other content is not provably a lock (`ApplicationIndexLockPathOccupied` semantics) and must **not** be deleted; then delete the validated lockfile; delete a leftover `.<canonical_index_name>.tmp` only after inspecting that it is crash debris of this index's interrupted commit and not an unrelated real file; then perform the recovery of whichever state above also holds |
+| crash at any point after lock acquisition (including mid-marker-write) | lockfile `.<canonical_index_name>.lock` present with the exact marker, or an empty/partial-prefix content; possibly alongside one of the states above | no apply may start against this index | verify no apply is running, then apply the §8.1 recovery-authority rule: the **exact complete marker** may be deleted; an **empty or partial-prefix** occupant is ambiguous — delete only with independently established Griff provenance, otherwise relocate it out of the coordination namespace (non-destructive); content that is **not** a marker prefix is `ApplicationIndexLockPathOccupied` semantics and is never deleted or relocated by mandate; delete a leftover `.<canonical_index_name>.tmp` only after inspecting that it is crash debris of this index's interrupted commit and not an unrelated real file; then perform the recovery of whichever state above also holds |
 
 Consequences stated plainly:
 
@@ -1013,8 +1039,8 @@ New Slice-2 refusals:
 | `ApplicationIndexHardLinked` | the canonical index file has link count > 1 — hardlink aliases defeat path-derived locking and split under commit-by-rename (§8.1) | the resolved path + `nlink` | step 1, before the lock | no |
 | `ApplicationIndexTempExists` | a file already exists at the temp coordination path — the lock proves no live writer, not ownership of those bytes, so nothing is silently unlinked (§8.1) | the temp path | step 1, **under the held lock** — a live writer's temp is unreachable here because its lock refuses first | no |
 | `CuratedManifestPathNotDistinct` | resolved curated target is a tree root's `manifest.json` (defense in depth; unreachable under the v1 fixed path) | the resolved path | step 1 | no |
-| `ApplicationIndexLocked` | the lock path is occupied by a **proven Griff lock** — the §8.1 ownership marker or an empty file (a concurrent apply, or a stale lock from a crash) | the lockfile path | step 1, before the index is read; always wins over `ApplicationIndexTempExists` at the lock boundary | no |
-| `ApplicationIndexLockPathOccupied` | the lock path is occupied by an entity whose content is **not** a Griff lock marker (an unrelated file — possibly a real second index whose name equals this index's lock name); recovery must never delete it | the occupied path | step 1, at lock acquisition | no |
+| `ApplicationIndexLocked` | the lock path is occupied by content that is a **byte-prefix of the §8.1 marker** — empty, partial, or complete (a concurrent apply, possibly mid-marker-write, or a stale lock from a crash); conservative by design so live ownership is never misclassified | the lockfile path | step 1, before the index is read; always wins over `ApplicationIndexTempExists` at the lock boundary | no |
+| `ApplicationIndexLockPathOccupied` | the lock path is occupied by content that is **not** a byte-prefix of the marker (an unrelated file — possibly a real second index whose name equals this index's lock name); no mandated recovery may delete or relocate it | the occupied path | step 1, at lock acquisition | no |
 | `OutputNameReserved` | the resolved output's final component lies in the reserved staging namespace (`.<name>.apply-staging`) — what makes compliant-applier overlap at publication impossible (§8.1) | the output path | step 1 | no |
 | `MalformedPlanArtifact` | plan file unreadable, not valid JSON, or refused by the strict Slice-1 types (foreign field at any depth) | detail (path + parse error) | step 2 | no |
 | `MalformedApplicationIndex` | index file missing or unresolvable (step 1, before canonicalization and the lock — §6); unreadable, not valid JSON, or refused by the strict §5.1 types (step 2) | detail (path + resolution/parse error) | step 1 (missing/unresolvable) and step 2 (parse) | no |
@@ -1100,10 +1126,11 @@ a law above; expected refusals are named.
 | C9 | index whose adjacent records do not chain | `ApplicationIndexChainInvalid` |
 | C10 | initial batch onto a fresh copy of the same corpus with its own empty index | success (independent lineage, §7.3) |
 | C11 | apply started while the index lockfile exists | `ApplicationIndexLocked`, nothing written, index byte-identical |
-| C12 | stale lockfile left by a crashed run *(fixture: fault injection)* | every subsequent apply refuses `ApplicationIndexLocked` until the lockfile is removed; the §8.2 recovery validates the lockfile content (marker or empty) before deletion; after recovery, apply succeeds |
+| C12 | stale lockfile left by a crashed run *(fixture: fault injection)* | every subsequent apply refuses `ApplicationIndexLocked` until the lockfile is removed; the §8.2 recovery auto-deletes only an **exact complete marker**; after recovery, apply succeeds |
 | C13 | a real second index file whose name equals this index's temp coordination name (e.g. indexes `d/foo` and `d/.foo.tmp`), applying against `d/foo` | `ApplicationIndexTempExists` at step 1 under the held lock; the second index is never unlinked or overwritten; the lock is released; nothing else created |
 | C14 | second applier arrives while the first is inside step 12 — the temp legitimately exists and the lock is legitimately held *(fixture: fault injection / pause point)* | the second applier refuses `ApplicationIndexLocked` at the lock boundary and never observes the live temp — `ApplicationIndexTempExists` is unreachable for a non-holder |
-| C15 | a real second index file whose name equals this index's **lock** coordination name (e.g. indexes `d/foo` and `d/.foo.lock`), applying against `d/foo` | `ApplicationIndexLockPathOccupied` (content is not a Griff lock marker); the second index is never deleted, and the §8.2 stale-lock recovery does not mandate deleting it |
+| C15 | a real second index file whose name equals this index's **lock** coordination name (e.g. indexes `d/foo` and `d/.foo.lock`), applying against `d/foo` | `ApplicationIndexLockPathOccupied` (an index document is not a byte-prefix of the marker); the second index is never deleted or relocated by any mandated recovery |
+| C16 | pause/fault between lock creation and completed marker publication, leaving a **non-empty partial marker** — (a) a concurrent applier observes it live; (b) a crash leaves it permanently *(fixture: fault injection / pause point)* | (a) the concurrent applier refuses `ApplicationIndexLocked` — a prefix state is never `ApplicationIndexLockPathOccupied`; (b) subsequent applies refuse `ApplicationIndexLocked`; recovery does **not** auto-delete the partial marker — the §8.2 operator-proven path (provenance-established deletion or non-destructive relocation) unblocks, after which apply succeeds |
 
 **Labels**
 
@@ -1166,7 +1193,7 @@ a law above; expected refusals are named.
 
 Coverage notes: A1–A8, C1–C11, C13, C15, L1–L9, F1–F3, F5–F8, F10–F11, F13,
 K1–K10, K12, R1–R3, R5 are RED-eligible behavioural tests. F4, R4, C12,
-C14, F9, F12, and K11 need fault-injection fixtures first, and K10 a
+C14, C16, F9, F12, and K11 need fault-injection fixtures first, and K10 a
 raw-bytes fixture (fixture commits are not red-phase). No silent caps: the
 matrix has no sampled or truncated sweeps;
 every refusal in §12's **Apply-reachable surface** (the three intentionally
