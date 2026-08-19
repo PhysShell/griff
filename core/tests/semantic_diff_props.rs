@@ -24,8 +24,8 @@
 use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     score::{
-        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
-        MasterBar, RepeatMarker, Score, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind,
+        ImportWarning, LossReport, MasterBar, RepeatMarker, Score, Track, Voice,
     },
     semantic_diff::{exact_semantic_diff, SemanticDifferenceKind},
     slice::TickRange,
@@ -62,7 +62,7 @@ fn build_score(bpms: &[u32], tracks: &[Vec<AtomSpec>], warnings: usize) -> Score
         .map(|(index, &bpm)| {
             let start = u32::try_from(index).expect("few bars") * BAR;
             MasterBar {
-                index,
+                index: index_from_ordinal(index),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature::new(4, 4).expect("4/4"),
                 tempo: Tempo::from_bpm_integer(bpm.max(1)).expect("positive BPM"),

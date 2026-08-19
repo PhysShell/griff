@@ -1028,8 +1028,9 @@ mod tests {
     use crate::layered_path::{PathError, StateId};
     use crate::rerank::SetCandidate;
     use crate::score::{
-        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, ImportWarning, LossReport,
-        MasterBar, RepeatMarker, Score, SourceMeta, TechniqueSpan, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind,
+        ImportWarning, LossReport, MasterBar, RepeatMarker, Score, SourceMeta, TechniqueSpan,
+        Track, Voice,
     };
     use crate::scoring::{Axes, Axis, Scored, WeightPolicy};
     use crate::slice::TickRange;
@@ -1049,7 +1050,7 @@ mod tests {
         for (index, notes) in bars.iter().enumerate() {
             let start = u32::try_from(index).unwrap() * BAR;
             master_bars.push(MasterBar {
-                index,
+                index: index_from_ordinal(index),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).unwrap(),
                 time_signature: TimeSignature::new(4, 4).unwrap(),
                 tempo: Tempo::from_bpm_integer(120).unwrap(),
@@ -1512,7 +1513,7 @@ mod tests {
 
     /// Every fact of a master bar, in a comparable form (`MasterBar` is not
     /// `PartialEq`, and `Tempo` holds an `f64`).
-    fn bar_facts(bar: &MasterBar) -> (usize, TickRange, TimeSignature, Tempo, RepeatMarker) {
+    fn bar_facts(bar: &MasterBar) -> (u64, TickRange, TimeSignature, Tempo, RepeatMarker) {
         (
             bar.index,
             bar.tick_range,

@@ -424,6 +424,7 @@ mod tests {
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::generate::{GenerationSeed, GenerationStrategy};
     use griff_core::rerank::SetCandidate;
+    use griff_core::score::index_from_ordinal;
     use griff_core::score::{
         AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Track, Voice,
     };
@@ -528,7 +529,7 @@ mod tests {
         for (i, &pitch) in pitches.iter().enumerate() {
             let start = u32::try_from(i).expect("small") * BAR;
             master_bars.push(MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature::new(4, 4).expect("4/4"),
                 tempo: Tempo::from_bpm_integer(120).expect("120"),

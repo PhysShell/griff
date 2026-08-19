@@ -111,7 +111,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-INF-05 | Deterministic multi-error recovery | code | INF-04 |
 | SWG-INF-06 | Parser resource gate and differential harness | code | INF-02, INF-03 |
 | SWG-4A-01 | Normative exact-score-text grammar *(done)* | docs | INF-02 |
-| SWG-CORE-01 | Fixed-width migration for the three `usize` fields | code | 4A-01 |
+| SWG-CORE-01 | Fixed-width migration for the three `usize` fields *(done)* | code | 4A-01 |
 | SWG-CORE-02 | Decide whether the canonical newtypes seal their fields | docs | 4A-01 |
 | SWG-4A-02 | `ExactScoreDocument` as a transient syntax form | code | 4A-01 |
 | SWG-4A-03 | Writer: transport and master timeline | code | 4A-01 |
@@ -416,21 +416,22 @@ Acceptance:
 Landing in [`exact-score-text.md`](exact-score-text.md). Census and
 representability decisions first; grammar second, in the same document.
 
-### SWG-CORE-01 — Fixed-width migration for the three `usize` fields
+### SWG-CORE-01 — Fixed-width migration for the three `usize` fields *(done)*
 
 **Kind:** code (`griff-core`). **Depends on:** 4A-01 (which discovered it).
-Scheduled after 4A-04 — a sequencing choice, not a dependency; nothing in
-this task needs the writer to exist.
+Ran after 4A-04 — a sequencing choice, not a dependency; nothing in this task
+needed the writer to exist.
 
-`MasterBar.index`, `ImportWarning::TrackNameInvalidUtf8.track_index`, and
-`ImportWarning::TempoApproximated.bar_index` are `usize` inside a graph that
-derives `Hash`, which spec §1.2 forbids. Until this closes, a document
-written on a 64-bit host is not guaranteed to round-trip on a 32-bit one,
-so Phase 4A's portability claim is false.
+**Outcome: `u64`.** `MasterBar.index`,
+`ImportWarning::TrackNameInvalidUtf8.track_index`, and
+`ImportWarning::TempoApproximated.bar_index` were `usize` inside a graph that
+derives `Hash`, which spec §1.2 forbids: a document written on a 64-bit host
+was not guaranteed to round-trip on a 32-bit one. All three are `u64` now and
+H3 is closed; the normative record of the width and its reasoning lives in
+[`exact-score-text.md`](exact-score-text.md) H3, not here.
 
-**Blocks** the round-trip gate (4A-12), the level-2 freeze, and — since the
-scheduling refinement below — 4A-05. Does **not** block 4A-02, provided that
-task models these fields abstractly rather than baking a width in.
+**Unblocked** the round-trip gate (4A-12), the level-2 freeze, and 4A-05.
+Never blocked 4A-02, which models these fields abstractly.
 
 **Why it now sits between 4A-04 and 4A-05.** Two of the three fields live in
 `ImportWarning`, and 4A-05 is the first task that serializes `LossReport` at
@@ -441,17 +442,32 @@ the second pass would land as a mechanical rewrite of freshly reviewed code.
 4A-03 and 4A-04 are unaffected either way: `MasterBar.index` is written
 through `to_string()`, which does not care about the width.
 
-Its own scope and commit chain — 4A-01 pinned the requirement and does not
-perform the migration. `u32` versus `u64` is this task's decision on
-evidence, never a width the grammar picked because it needed one.
+Its own scope and commit chain — 4A-01 pinned the requirement and did not
+perform the migration. `u32` versus `u64` was this task's decision on
+evidence, never a width the grammar picked because it needed one; `u64` won
+because values above `u32::MAX` were already inhabited and `u32` would have
+shrunk the canonical model rather than merely making it portable.
 
-Acceptance:
+Acceptance, all met:
 
 - no `usize` remains in any type reachable from `Score`;
-- characterization tests land before the migration (existing behaviour, so
-  no red phase required, but they must pass first);
-- adapters and the projection follow without a musical behaviour change;
-- a witness test fails if a `usize` reappears in the tree.
+- characterization tests landed before the migration (existing behaviour, so
+  no red phase required, but they had to pass first);
+- adapters and the projection followed without a musical behaviour change;
+- a witness test fails if a `usize` reappears in the tree —
+  `exact_text_census::the_canonical_tree_declares_no_platform_sized_integer`.
+  It scans `score.rs`, `event.rs`, and `slice.rs`, which is where every type
+  reachable from `Score` is declared, and reads named fields, tuple enum
+  payloads, and tuple structs alike. The module list is written out;
+  `…scans_every_module_the_canonical_tree_reaches` checks that each entry
+  contributes, so a rotted list fails rather than silently narrowing the
+  witness.
+
+The last of those was weaker when first recorded — one module, no tuple forms
+— and an independent review caught it after closure. The gap was in the
+acceptance witness, not in the migration: the tree had no `usize` left either
+way. Repaired in three follow-up commits on the same branch, with five
+mutations confirming the repair.
 
 ### SWG-CORE-02 — Decide whether the canonical newtypes seal their fields
 
@@ -534,7 +550,9 @@ about right".
 
 ### SWG-4A-05 — Writer: techniques, positions, evidence, metadata, losses
 
-**Kind:** code. **Depends on:** 4A-04
+**Kind:** code. **Depends on:** 4A-04, CORE-01 — both **done**, so this task
+is unblocked. CORE-01 ran first so the metadata writer is built on the final
+`u64` payload indices rather than rewritten onto them.
 
 The remaining facts: note marks, technique spans and their ranges, evidence,
 string/fret position, position evidence and confidence (`ConfidenceBps`),
@@ -1184,8 +1202,9 @@ INF-01 status sync                    (done)
        └─→ 4A-01 exact grammar             (done)
                 │
                 ├─→ 4A-03 → 4A-04 → CORE-01 → 4A-05 → 4A-10   writer lane
-                │                      │
-                │                      └─→ also gates 4A-12 and the level-2 freeze
+                │     (done)   (done)   (done)      ↑
+                │                      │            next
+                │                      └─→ also gated 4A-12 and the level-2 freeze
                 │
                 └─→ 4A-02 → INF-04 → INF-06 → 4A-06 parser skeleton
   -> 4A-02..4A-09 writer / parser / builder

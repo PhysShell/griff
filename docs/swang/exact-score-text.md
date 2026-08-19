@@ -97,7 +97,7 @@ loss the diff can see.
 
 | Field | Type | Req | Order | Empty | Malformed |
 | --- | --- | --- | --- | --- | --- |
-| `index` | `usize` | yes | — | — | may disagree with position (H4); platform-sized (H3) |
+| `index` | `u64` | yes | — | — | may disagree with position (H4) |
 | `tick_range` | `TickRange { start, end }` | yes | — | `start == end` legal | `start > end` violates `InvalidTickRange` (H5) |
 | `time_signature` | `{ numerator: u8, denominator: u8 }` | yes | — | — | numerator `0`, non-power-of-two denominator (H5) |
 | `tempo` | `Tempo` (private rational) | yes | — | — | see H1 |
@@ -210,9 +210,9 @@ combination.
 `ImportWarning` has four variants, three with payloads:
 
 ```text
-TrackNameInvalidUtf8 { track_index: usize }          ← H3
+TrackNameInvalidUtf8 { track_index: u64 }
 SmpteTimingUnsupported
-TempoApproximated { bar_index: usize, nearest_micros: u32 }   ← H3
+TempoApproximated { bar_index: u64, nearest_micros: u32 }
 Other(String)                                         ← H2
 ```
 
@@ -313,9 +313,9 @@ A payload field added to either enum is canonical state that adds no
 `SemanticField` variant and no struct field, so only an entry here — and the
 witness that checks it — stands between such a field and silent loss.
 
-`<index>` is the `usize` of H3, written in decimal. Its width becomes a
-fixed one when SWG-CORE-01 closes; until then the text is as portable as the
-model is, which is the honest amount.
+`<index>` is a `u64`, written in decimal — fixed-width since SWG-CORE-01
+closed H3, so the same document means the same thing on a 32-bit target as on
+a 64-bit one. It is still not an ordinal: see H4.
 
 ### 2.9 Opaque exact leaves and their decomposition
 
@@ -491,21 +491,44 @@ managed to make even string escaping a reproducibility question.
 
 The policy itself is fixed in the grammar section of this document.
 
-### H3 — three `usize` fields in a hashed tree — **prerequisite blocker**
+### H3 — three `usize` fields in a hashed tree — **CLOSED by SWG-CORE-01**
 
 `MasterBar.index`, `ImportWarning::TrackNameInvalidUtf8.track_index`, and
-`ImportWarning::TempoApproximated.bar_index` are `usize`, inside a graph
+`ImportWarning::TempoApproximated.bar_index` were `usize`, inside a graph
 that derives `Hash`. Spec §1.2 forbids platform-sized integers in hashed or
-serialized state. A document written on a 64-bit host with an index above
-`u32::MAX` cannot exact-round-trip on a 32-bit target, so the portable
-exact format is, today, not portable.
+serialized state, so a document written on a 64-bit host with an index above
+`u32::MAX` could not exact-round-trip on a 32-bit target: the portable exact
+format was not portable.
+
+All three are **`u64`** since SWG-CORE-01. The hole is recorded rather than
+deleted, because the width it settled is a normative fact and the reasoning
+behind it constrains what a later change may do.
 
 ```text
 discovered pre-existing model violation (spec §1.2)
 → out of scope to repair in SWG-4A-01
-→ BLOCKS the round-trip gate and the level-2 freeze
-→ separate fixed-width migration, its own scope and commit chain
+→ blocked the round-trip gate and the level-2 freeze
+→ closed by SWG-CORE-01, its own scope and commit chain
 ```
+
+**Why `u64` and not `u32`.** The narrower type would not merely have removed
+a platform dependence; it would have shrunk an inhabited canonical domain.
+The fields are public, so values above `u32::MAX` were already constructible
+on a 64-bit host, and `MasterBar.index` is a stored exact fact that need not
+agree with its vector position (H4) — it is not a bounded ordinal that could
+be argued into 32 bits. `u64` keeps every value the model already admitted
+and makes the set of admitted values the same on every target.
+
+Two consequences worth naming, because they are easy to undo:
+
+- an ordinal and a canonical index are different things and now have
+  different types. `core::score::index_from_ordinal` is the one sanctioned
+  widening; there is deliberately no inverse, because the inverse is not
+  total;
+- `usize` remains correct for `Vec` positions, lengths, and slice indices.
+  Nothing in this hole was ever an argument about those, and MIDI's
+  `MAX_MASTER_BARS` is an operational resource bound rather than a claim
+  about canonical width.
 
 Dependency shape:
 
@@ -535,10 +558,10 @@ Scope of the block, precisely, in three parts:
    (`ExactScoreDocument`, a transient syntax form) is the named case, and
    the same licence covers the writer slices that spell `<index>` through
    ordinary decimal conversion.
-2. **The migration must close before the completed round trip.** Before the
-   production writer/parser-builder round trip, and certainly before
-   SWG-4A-12 and Phase 4A acceptance — until then the portability claim is
-   false.
+2. **The migration had to close before the completed round trip.** Before
+   the production writer/parser-builder round trip, and certainly before
+   SWG-4A-12 and Phase 4A acceptance. It did; the portability claim is no
+   longer false.
 3. **Where exactly it lands inside that window is not this document's
    call.** Sequencing among unblocked tasks is an execution-plan decision
    and lives in the non-normative backlog. That the migration currently
@@ -551,11 +574,13 @@ and "4A builder" as a whole, which said something stronger than the prose
 beneath it and stronger than any task index has ever claimed. An ASCII edge
 is a normative statement when it sits in a normative document.
 
-Whether the replacement is `u32` or `u64` is that task's decision on
-evidence, never the grammar picking a width because it needed one.
+The width was left to that task on evidence rather than picked here, so that
+the grammar could not choose a number because it happened to need one. It
+chose `u64`, for the reason recorded above.
 
-Level 2 remains *allocated* while this stands. It cannot honestly be
-*frozen*, which is precisely the distinction spec §5.3 exists to keep
+Level 2 remains *allocated*. Closing this hole removed the portability
+objection to freezing it, not the phase-acceptance requirement: the freeze
+still waits on Phase 4A, which is the distinction spec §5.3 exists to keep
 available.
 
 ### H4 — `MasterBar.index` is not the vector position
@@ -588,8 +613,8 @@ discovered pre-existing encapsulation gap
 → filed as SWG-CORE-02; a later decision on sealing these newtypes
 ```
 
-Unlike H3 this is not a freeze blocker: exact text is well defined over the
-invariant-valid domain either way. It is recorded because a reader who sees
+Unlike H3 this was never a freeze blocker: exact text is well defined over
+the invariant-valid domain either way. It is recorded because a reader who sees
 `Pitch::new` and concludes pitches are always in range will be wrong, and
 because a future builder that trusts the type instead of checking will be
 wrong in a more expensive way.
@@ -598,11 +623,12 @@ wrong in a more expensive way.
 
 | ID | What | Blocks |
 | --- | --- | --- |
-| SWG-CORE-01 | Replace the three `usize` fields with a fixed width (H3) | round-trip gate, level-2 freeze |
+| SWG-CORE-01 | Replace the three `usize` fields with a fixed width (H3) — **closed**: `u64` | round-trip gate, level-2 freeze |
 | SWG-CORE-02 | Decide whether the canonical newtypes seal their fields (H5) | nothing; recorded for a later decision |
 
-Both are `griff-core` scopes with their own commit chains. Neither is
-touched by SWG-4A-01.
+Both are `griff-core` scopes with their own commit chains. Neither was
+touched by SWG-4A-01, which is the point of listing them here rather than
+performing them.
 
 ## 6. The grammar
 

@@ -32,7 +32,7 @@ fn range(start: u32, end: u32) -> TickRange {
     TickRange::new(Ticks(start), Ticks(end)).expect("ordered range")
 }
 
-fn bar(index: usize, start: u32, end: u32, tempo: Tempo) -> MasterBar {
+fn bar(index: u64, start: u32, end: u32, tempo: Tempo) -> MasterBar {
     MasterBar {
         index,
         tick_range: range(start, end),

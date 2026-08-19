@@ -30,8 +30,8 @@ use griff_core::{
     },
     generate::GenerationSeed,
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, TechniqueSpan, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
 };
@@ -66,7 +66,7 @@ fn score_with_part_a(bar_count: usize, pitches: &[u8]) -> Score {
         .map(|i| {
             let start = u32::try_from(i).unwrap() * BAR;
             MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,

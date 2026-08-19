@@ -27,7 +27,7 @@ use griff_core::{
     ingest,
     midi::{self, MidiError},
     novelty, rerank,
-    score::{AtomEvent, LossReport, Score, Track, Voice},
+    score::{index_from_ordinal, AtomEvent, LossReport, Score, Track, Voice},
     scoring,
     slice::{self, TickRange},
     split, structure, syncopation, technique, unfold,
@@ -860,12 +860,20 @@ fn cmd_phrases(path: &Path) -> Result<(), CliError> {
 
 /// The index of the master bar containing `tick`, or the last bar when the tick
 /// falls at or past the end of the timeline.
-fn bar_at_tick(score: &Score, tick: u32) -> usize {
+///
+/// Display only. The two branches are not quite the same kind of number — the
+/// hit returns a stored canonical index, the fallback the last *ordinal* — and
+/// that pre-existing conflation is left alone here; SWG-CORE-01 only makes
+/// both sides the same width so neither has to be narrowed to meet the other.
+fn bar_at_tick(score: &Score, tick: u32) -> u64 {
     score
         .master_bars
         .iter()
         .find(|mb| tick >= mb.tick_range.start.0 && tick < mb.tick_range.end.0)
-        .map_or_else(|| score.master_bars.len().saturating_sub(1), |mb| mb.index)
+        .map_or_else(
+            || index_from_ordinal(score.master_bars.len().saturating_sub(1)),
+            |mb| mb.index,
+        )
 }
 
 /// Renders the heuristic signals that fired at a phrase boundary as a comma
@@ -2328,8 +2336,8 @@ mod tests {
     use griff_core::generate::RhythmTemplate;
     use griff_core::gesture;
     use griff_core::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, SourceMeta, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, SourceMeta, Voice,
     };
     use griff_core::slice::TickRange;
 
@@ -2567,7 +2575,7 @@ mod tests {
     }
 
     /// One 4/4 bar with explicit bounds (no arithmetic in the fixture).
-    fn mbar(index: usize, start: u32, end: u32) -> MasterBar {
+    fn mbar(index: u64, start: u32, end: u32) -> MasterBar {
         MasterBar {
             index,
             tick_range: TickRange::new(Ticks(start), Ticks(end)).expect("ordered"),
@@ -2732,7 +2740,7 @@ mod tests {
             .map(|i| {
                 let start = u32::try_from(i).unwrap_or(0).saturating_mul(1920);
                 MasterBar {
-                    index: i,
+                    index: index_from_ordinal(i),
                     tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
                         .expect("ordered"),
                     time_signature: TimeSignature {
@@ -3039,7 +3047,7 @@ mod tests {
             .map(|i| {
                 let start = u32::try_from(i).expect("small index").saturating_mul(1920);
                 MasterBar {
-                    index: i,
+                    index: index_from_ordinal(i),
                     tick_range: TickRange::new(Ticks(start), Ticks(start.saturating_add(1920)))
                         .expect("ordered"),
                     time_signature: TimeSignature {

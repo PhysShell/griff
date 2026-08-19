@@ -34,8 +34,8 @@ use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     generate::PitchMaterial,
     score::{
-        AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar,
-        RepeatMarker, Score, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport,
+        MasterBar, RepeatMarker, Score, Track, Voice,
     },
     scoring::{rank_indices, Scored},
     slice::TickRange,
@@ -76,7 +76,7 @@ fn build_score(bar_count: usize, atoms: Vec<AtomEvent>) -> Score {
         .map(|i| {
             let start = u32::try_from(i).unwrap() * BAR;
             MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,

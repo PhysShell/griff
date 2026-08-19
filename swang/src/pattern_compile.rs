@@ -626,8 +626,8 @@ mod tests {
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::generate::explicit_rhythm_diagnostics;
     use griff_core::score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     };
     use griff_core::slice::TickRange;
 
@@ -651,7 +651,7 @@ mod tests {
             .map(|(i, &(numerator, denominator))| {
                 let len = 480 * 4 * u32::from(numerator) / u32::from(denominator);
                 let mb = MasterBar {
-                    index: i,
+                    index: index_from_ordinal(i),
                     tick_range: TickRange::new(Ticks(start), Ticks(start + len))
                         .expect("ordered range"),
                     time_signature: TimeSignature {

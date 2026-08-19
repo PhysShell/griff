@@ -56,8 +56,8 @@ use crate::generate::{
     GenerationStrategy, PitchMaterial, RhythmTemplate, RuleGenerationRequest,
 };
 use crate::score::{
-    AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
-    TechniqueSpan, Track, Voice,
+    index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+    RepeatMarker, Score, TechniqueSpan, Track, Voice,
 };
 use crate::scoring::{rank_indices, Axes, Axis, Scored, WeightPolicy};
 use crate::slice::TickRange;
@@ -779,7 +779,7 @@ fn tile_and_vary(
         let start = i_u32.checked_mul(bar_dur.0).ok_or_else(invalid)?;
         let end = start.checked_add(bar_dur.0).ok_or_else(invalid)?;
         master_bars.push(MasterBar {
-            index: i,
+            index: index_from_ordinal(i),
             tick_range: TickRange::new(Ticks(start), Ticks(end)).map_err(|_| invalid())?,
             time_signature: c.time_signature,
             tempo: c.tempo,

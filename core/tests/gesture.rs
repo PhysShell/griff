@@ -32,8 +32,8 @@ use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     gesture::{measure_gesture, GestureError},
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     },
     slice::TickRange,
 };
@@ -50,7 +50,7 @@ fn score_with_notes(bar_count: usize, notes: &[(u32, u32, u8)]) -> Score {
         .map(|i| {
             let start = u32::try_from(i).unwrap() * BAR;
             MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,

@@ -77,7 +77,7 @@ mod tests {
     use crate::slice::TickRange;
 
     /// A 4/4 bar at `index`, laid out back-to-back, carrying `repeat`.
-    fn bar(index: usize, repeat: RepeatMarker) -> MasterBar {
+    fn bar(index: u64, repeat: RepeatMarker) -> MasterBar {
         let start = u32::try_from(index).unwrap_or(0).saturating_mul(1920);
         MasterBar {
             index,

@@ -51,7 +51,7 @@ fn bpm(n: u32) -> Tempo {
     Tempo::from_bpm_integer(n).expect("a positive integer BPM")
 }
 
-fn bar(index: usize, start: u32, end: u32) -> MasterBar {
+fn bar(index: u64, start: u32, end: u32) -> MasterBar {
     MasterBar {
         index,
         tick_range: range(start, end),

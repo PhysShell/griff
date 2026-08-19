@@ -20,8 +20,8 @@ use libfuzzer_sys::fuzz_target;
 use griff_core::{
     event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity},
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker, Score,
-        Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, Track, Voice,
     },
     slice::TickRange,
     structure::measure_structure,
@@ -46,7 +46,7 @@ fn build_score(bar_count: usize, ppqn: u16, pitches: &[u8]) -> Option<Score> {
         let start = u32::try_from(i).ok()?.checked_mul(bar)?;
         let end = start.checked_add(bar)?;
         master_bars.push(MasterBar {
-            index: i,
+            index: index_from_ordinal(i),
             tick_range: TickRange::new(Ticks(start), Ticks(end)).ok()?,
             time_signature: TimeSignature::new(4, 4).ok()?,
             tempo: Tempo::from_bpm_integer(120).ok()?,

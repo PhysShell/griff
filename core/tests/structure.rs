@@ -26,8 +26,8 @@ use griff_core::{
         Tuning, Velocity,
     },
     score::{
-        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, TechniqueSpan, Track, Voice,
+        index_from_ordinal, AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar,
+        RepeatMarker, Score, TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
     structure::{measure_complexity, measure_structure, StructureError},
@@ -55,7 +55,7 @@ fn build_score(bars: &[Vec<u8>]) -> Score {
         .map(|i| {
             let start = u32::try_from(i).unwrap() * BAR;
             MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,
@@ -268,7 +268,7 @@ fn measures_all_voices_of_a_track() {
         .map(|i| {
             let start = u32::try_from(i).unwrap() * BAR;
             MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,
@@ -348,7 +348,7 @@ fn loopability_penalizes_leading_silence() {
         .map(|i| {
             let start = u32::try_from(i).unwrap() * BAR;
             MasterBar {
-                index: i,
+                index: index_from_ordinal(i),
                 tick_range: TickRange::new(Ticks(start), Ticks(start + BAR)).expect("ordered"),
                 time_signature: TimeSignature {
                     numerator: 4,

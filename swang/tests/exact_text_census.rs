@@ -175,20 +175,55 @@ fn field_name(declaration: &str) -> Option<String> {
 /// Commas nested inside `<…>` or `(…)` belong to a type argument, not to
 /// the payload: `Vec<(u8, u8)>` is one element, `String, u32` is two.
 fn tuple_arity(inner: &str) -> usize {
+    tuple_elements(inner).len()
+}
+
+/// The top-level elements of a tuple payload, in order.
+///
+/// The splitter `tuple_arity` counts, kept as one function so the count and
+/// the types can never disagree about where an element ends. Commas nested
+/// inside `<…>`, `(…)`, or `[…]` belong to a type argument, not to the
+/// payload: `Vec<(u8, u8)>` is one element, `String, u32` is two.
+fn tuple_elements(inner: &str) -> Vec<String> {
     if inner.trim().is_empty() {
-        return 0;
+        return Vec::new();
     }
+    let mut out = Vec::new();
     let mut depth = 0_i32;
-    let mut count = 1_usize;
+    let mut current = String::new();
     for c in inner.chars() {
         match c {
             '<' | '(' | '[' => depth += 1,
             '>' | ')' | ']' => depth -= 1,
-            ',' if depth == 0 => count += 1,
+            ',' if depth == 0 => {
+                out.push(current.trim().to_owned());
+                current = String::new();
+                continue;
+            }
             _ => {}
         }
+        current.push(c);
     }
-    count
+    out.push(current.trim().to_owned());
+    out
+}
+
+/// A declaration with any visibility prefix removed, leaving the type.
+///
+/// `pub u8` and `pub(crate) u8` both reduce to `u8`; a bare `u8` is already
+/// there. Visibility is not part of the type and would otherwise make the
+/// same width look like two different declarations.
+fn without_visibility(declaration: &str) -> String {
+    let trimmed = declaration.trim();
+    if let Some(rest) = trimmed.strip_prefix("pub ") {
+        return rest.trim().to_owned();
+    }
+    if trimmed.starts_with("pub(") {
+        if let Some((_, tail)) = trimmed.split_once(") ") {
+            return tail.trim().to_owned();
+        }
+    }
+    trimmed.to_owned()
 }
 
 /// Payload fields of every variant of an enum, keyed `Enum::Variant.field`.
@@ -750,4 +785,309 @@ pub enum Probe {
         ],
         "a widened tuple payload must yield one key per element"
     );
+}
+
+// ── SWG-CORE-01: no platform-sized integer in the canonical tree ───────────
+
+/// Every field declaration inside every `pub struct` / `pub enum` body in
+/// `source`, as `Type.field: type` strings.
+///
+/// Declarations are discovered rather than listed, so a canonical type added
+/// to the file later is covered without anyone remembering to add it here.
+/// The `#[cfg(test)]` tail is cut first: its fixtures are not canonical state.
+fn declared_field_types(source: &str) -> Vec<String> {
+    let body = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let mut out = Vec::new();
+    for (offset, _) in body.match_indices("pub ") {
+        let rest = &body[offset..];
+        let Some(line_end) = rest.find('\n') else {
+            continue;
+        };
+        let header_line = &rest[..line_end];
+
+        // A tuple struct declares its whole payload on one line and has no
+        // braced body at all, so the braced scan below never sees it. These
+        // are the transparent newtypes of §2.9 — canonical leaves.
+        if let Some(declaration) = header_line.strip_prefix("pub struct ") {
+            if declaration.trim_end().ends_with(");") {
+                if let (Some(open), Some(close)) = (declaration.find('('), declaration.rfind(')')) {
+                    let name = declaration.get(..open).unwrap_or_default().trim();
+                    let inner = declaration
+                        .get(open.saturating_add(1)..close)
+                        .unwrap_or_default();
+                    for (position, element) in tuple_elements(inner).into_iter().enumerate() {
+                        out.push(format!(
+                            "{name}.{position}: {}",
+                            without_visibility(&element)
+                        ));
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let Some(header_end) = rest.find(" {\n") else {
+            continue;
+        };
+        let header = &rest[..header_end];
+        let Some(name) = header
+            .strip_prefix("pub struct ")
+            .or_else(|| header.strip_prefix("pub enum "))
+        else {
+            continue;
+        };
+        if name.contains(char::is_whitespace) {
+            continue;
+        }
+        // `\n}` closes a top-level item; nested variant braces are indented.
+        let inner_start = offset.saturating_add(header_end).saturating_add(3);
+        let inner = &body[inner_start..];
+        let Some(inner_end) = inner.find("\n}") else {
+            continue;
+        };
+        for line in inner[..inner_end].lines().map(str::trim) {
+            if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
+                continue;
+            }
+            if let Some((field, declared)) = line.split_once(':') {
+                let Some(field) = field_name(field) else {
+                    continue;
+                };
+                let declared = declared.trim().trim_end_matches(',').trim();
+                out.push(format!("{name}.{field}: {declared}"));
+                continue;
+            }
+            // A tuple variant: `Other(String)`, `Two(String, u32)`. It carries
+            // no `:`, so the branch above skips it and every element of it
+            // used to vanish — including a `usize`.
+            if let (Some(open), Some(close)) = (line.find('('), line.rfind(')')) {
+                if open < close {
+                    let payload = line.get(open.saturating_add(1)..close).unwrap_or_default();
+                    for (position, element) in tuple_elements(payload).into_iter().enumerate() {
+                        out.push(format!(
+                            "{name}.{position}: {}",
+                            without_visibility(&element)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every module that declares a type reachable from `Score`.
+///
+/// `score.rs` holds the tree's own structs and enums; `event.rs` holds the
+/// leaves it is built from — `TimeSignature`, `Tuning`, `NoteMarks`,
+/// `NotePosition`, `FretboardPosition`, `TechniqueEvidence`, `ConfidenceBps`,
+/// `Pitch`, `Velocity`, `Ticks`, `Tempo` — and `slice.rs` holds `TickRange`,
+/// which sits directly in `MasterBar` and `TechniqueSpan`.
+///
+/// Listed rather than discovered: a module list is short, checkable by
+/// reading `score.rs`'s imports, and cheaper than the alias-resolving
+/// half-compiler that discovering it would need. The list is load-bearing, so
+/// `the_no_usize_witness_scans_every_module_the_canonical_tree_reaches`
+/// checks that each entry actually contributes.
+const CANONICAL_SOURCES: [&str; 3] = [
+    "core/src/score.rs",
+    "core/src/event.rs",
+    "core/src/slice.rs",
+];
+
+/// Every field declaration of the canonical tree, across all its modules.
+fn canonical_field_types() -> Vec<String> {
+    CANONICAL_SOURCES
+        .iter()
+        .flat_map(|path| declared_field_types(&read(path)))
+        .collect()
+}
+
+/// Whether `haystack` uses `needle` as a whole type token.
+///
+/// A substring match would let `MyUsizeAlias` count as `usize`, and — more
+/// to the point — would let a genuine `usize` hide inside a longer name that
+/// happens to contain it.
+fn mentions_type(haystack: &str, needle: &str) -> bool {
+    haystack
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|token| token == needle)
+}
+
+#[test]
+fn the_canonical_tree_declares_no_platform_sized_integer() {
+    // Spec §1.2 forbids platform-sized integers in hashed or serialized
+    // state, and `Score` derives `Hash`. H3 recorded the three fields that
+    // violated it; SWG-CORE-01 closed them. This witness is what keeps a
+    // fourth from arriving quietly — including inside an enum payload, which
+    // no struct-field scan reaches.
+    let offenders: Vec<String> = canonical_field_types()
+        .into_iter()
+        .filter(|declaration| mentions_type(declaration, "usize"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`usize` is not a canonical width — spec §1.2, H3: {offenders:?}"
+    );
+}
+
+#[test]
+fn the_three_migrated_index_fields_are_u64() {
+    // The general witness above would stay green if a field were widened to
+    // `u128` or narrowed to `u32`. These three carry the decision SWG-CORE-01
+    // actually made, so they are named.
+    let declarations = canonical_field_types();
+    for expected in [
+        "MasterBar.index: u64",
+        "ImportWarning.track_index: u64",
+        "ImportWarning.bar_index: u64",
+    ] {
+        assert!(
+            declarations.iter().any(|d| d == expected),
+            "expected `{expected}` among {declarations:?}"
+        );
+    }
+}
+
+#[test]
+fn the_declaration_scanner_reads_the_type_side() {
+    // Falsified against a synthetic source, because a scanner that silently
+    // found nothing would make both witnesses above vacuously green — the
+    // exact failure this suite has already hit twice.
+    let synthetic = "\
+pub struct Probe {
+    pub ordinal: usize,
+    pub index: u64,
+}
+
+pub enum Warn {
+    Named {
+        track_index: usize,
+    },
+    Bare,
+}
+";
+    let declared = declared_field_types(synthetic);
+    assert_eq!(
+        declared,
+        vec![
+            "Probe.ordinal: usize".to_owned(),
+            "Probe.index: u64".to_owned(),
+            "Warn.track_index: usize".to_owned(),
+        ]
+    );
+    assert!(mentions_type("Probe.ordinal: usize", "usize"));
+    assert!(!mentions_type("Probe.index: u64", "usize"));
+    assert!(
+        !mentions_type("Probe.x: MyUsizeAlias", "usize"),
+        "a substring is not a type token"
+    );
+}
+
+// ── review round: the no-`usize` witness does not cover what it claims ─────
+
+/// The scanner must read **tuple** enum payload types, not only named ones.
+///
+/// `declared_field_types` requires a `:` on the line, so `Other(String)` is
+/// skipped entirely and `Tuple(usize)` would be too. The doc comment on
+/// `the_canonical_tree_declares_no_platform_sized_integer` claims coverage
+/// "including inside an enum payload"; for tuple payloads that claim is
+/// false. The synthetic falsification did not notice, because it only used a
+/// named payload — a witness against vacuous witnesses that was itself a
+/// little vacuous.
+#[test]
+fn the_declaration_scanner_reads_tuple_payload_types() {
+    let synthetic = "\
+pub enum Probe {
+    Tuple(usize),
+    Two(String, u32),
+    Named {
+        alpha: u64,
+    },
+    Bare,
+}
+";
+    let declared = declared_field_types(synthetic);
+    assert_eq!(
+        declared,
+        vec![
+            "Probe.0: usize".to_owned(),
+            "Probe.0: String".to_owned(),
+            "Probe.1: u32".to_owned(),
+            "Probe.alpha: u64".to_owned(),
+        ],
+        "every tuple element is its own declared type"
+    );
+    assert!(
+        declared.iter().any(|d| mentions_type(d, "usize")),
+        "a `usize` in a tuple payload must be visible to the offender filter"
+    );
+}
+
+/// The scanner must read **tuple struct** types.
+///
+/// The same hole one level up: `pub struct Pitch(pub u8);` has no braced body,
+/// so the header match never fires. Those newtypes are canonical leaves —
+/// §2.9 lists them — and a `pub struct Ordinal(pub usize);` added tomorrow
+/// would be exact state the witness cannot see.
+#[test]
+fn the_declaration_scanner_reads_tuple_struct_types() {
+    let synthetic = "\
+pub struct Newtype(pub usize);
+
+pub struct Pair(pub u8, u32);
+
+pub struct Braced {
+    pub field: u64,
+}
+";
+    assert_eq!(
+        declared_field_types(synthetic),
+        vec![
+            "Newtype.0: usize".to_owned(),
+            "Pair.0: u8".to_owned(),
+            "Pair.1: u32".to_owned(),
+            "Braced.field: u64".to_owned(),
+        ]
+    );
+}
+
+/// The witness must scan every module the canonical tree reaches.
+///
+/// It reads `core/src/score.rs` and nothing else, but `Score` reaches
+/// `TimeSignature`, `Tuning`, `NoteMarks`, `NotePosition`,
+/// `FretboardPosition`, `TechniqueEvidence`, `ConfidenceBps`, `Pitch`,
+/// `Velocity`, and `Ticks` in `core/src/event.rs`, and `TickRange` in
+/// `core/src/slice.rs`. The backlog records the acceptance criterion as "no
+/// `usize` remains in any type reachable from `Score`" — which may well be
+/// true, but this witness does not show it.
+///
+/// The input expression below is the defect. It is the one the witness uses
+/// today; the repair replaces it with the aggregate and leaves these
+/// assertions where they are.
+#[test]
+fn the_no_usize_witness_scans_every_module_the_canonical_tree_reaches() {
+    let scanned = canonical_field_types();
+    for expected in [
+        "MasterBar.index: u64",
+        "TimeSignature.numerator: u8",
+        "TickRange.start: Ticks",
+    ] {
+        assert!(
+            scanned.iter().any(|d| d == expected),
+            "the scanned set must reach `{expected}`, found {} declarations",
+            scanned.len()
+        );
+    }
+
+    // Every listed module must actually contribute. Without this, dropping an
+    // entry from `CANONICAL_SOURCES` would narrow the witness back to where
+    // it started and only the three probes above would notice — and they
+    // would stop noticing the moment someone moved a type between modules.
+    for path in CANONICAL_SOURCES {
+        assert!(
+            !declared_field_types(&read(path)).is_empty(),
+            "{path} is listed as a canonical source but declares nothing"
+        );
+    }
 }

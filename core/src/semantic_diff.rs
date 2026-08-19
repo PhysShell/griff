@@ -176,7 +176,10 @@ pub enum SemanticPathSegment {
         ordinal: usize,
         /// The agreed stored bar index; `None` when the index itself
         /// differs, so both diff directions render the same path.
-        index: Option<usize>,
+        ///
+        /// A canonical value, so the canonical width (SWG-CORE-01) — the
+        /// `ordinal` beside it is an operational position and stays `usize`.
+        index: Option<u64>,
     },
     /// A track, by position.
     Track {
@@ -218,7 +221,9 @@ pub enum SemanticPathSegment {
         /// Zero-based position in the projection's `bars`.
         ordinal: usize,
         /// The agreed stored bar index; `None` when it differs.
-        index: Option<usize>,
+        ///
+        /// Canonical width, for the same reason as the exact segment above.
+        index: Option<u64>,
     },
     /// A normalized-projection note, by position.
     Note {
