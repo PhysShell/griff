@@ -2363,3 +2363,32 @@ Architectural decisions go to [`adr/`](adr/) instead.
   discovered, because discovering it means resolving `use` paths and type
   aliases — a half-compiler to check three files — and that the list can rot,
   which is why the coverage test asserts each listed module contributes.
+
+- 2026-08-20 — In the context of ADR-0033 Decision 10, which gates every
+  song-curation slice after Slice 1 behind separate independent acceptance,
+  facing the Slice 2 transactional-Apply acceptance contract
+  ([`proposals/song-curation-slice-2-transactional-apply.md`](proposals/song-curation-slice-2-transactional-apply.md),
+  PR #184) having survived six hostile review rounds with CI 14/14 green, we
+  decided for recording the contract as **independently ACCEPTED at exact
+  reviewed head `47e734cfbf1a6bd90c1bd2a035cdc68692378e96`** and against
+  treating a GitHub APPROVE as the acceptance primitive, to achieve an
+  acceptance act per this repository's own governance — AGENTS.md routes
+  decisions to this log, and the S7 Slice C closure at `7d0c0cb` is the
+  precedent: accepted here with no pull request at all. The review record is
+  the PR #184 thread: rounds one through six found 24 contract-level
+  blockers (audited finding-by-finding in the PR comments), each resolved by
+  a dedicated docs-only revision (r2–r7); the final re-review found none.
+  Independence is substantive, not ceremonial: the contract was authored by
+  one agent and falsified across six rounds by the repository owner, whose
+  GitHub identity also opened the PR — so GitHub's
+  cannot-approve-your-own-pull-request rule (a 422) blocks a formal APPROVE
+  as an interface constraint, not a governance one. Merging PR #184
+  (`31e5939`) did not itself constitute acceptance; this entry is the
+  acceptance act. Accepting that this acceptance authorizes **only** the
+  Slice 2 implementation — strict RED→GREEN against the contract's frozen
+  §14 matrix (63 preregistered cases) and closed §12 refusal surface, with
+  the frozen Slice 1 public API, semantics, and test suite staying
+  untouched and green — while Slice 3 suggestions, the controlled pilot,
+  and any real-/full-corpus labeling remain separately gated (ADR-0033
+  Decision 10), and any implementation deviation from the accepted contract
+  reopens acceptance rather than being decided in code.
