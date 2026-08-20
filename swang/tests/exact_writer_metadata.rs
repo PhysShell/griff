@@ -39,6 +39,7 @@ use griff_core::score::{
     AtomEvent, AtomNote, AtomRest, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
     Score, TechniqueSpan, Track, Voice,
 };
+use griff_core::semantic_diff::exact_semantic_diff;
 use griff_core::slice::TickRange;
 use griff_swang::exact::{write_score, ExactWriteError};
 
@@ -470,25 +471,6 @@ fn rich() -> Score {
     })
 }
 
-/// `rich()` with its one note replaced by `edit`'s result.
-fn with_note(edit: impl FnOnce(&mut AtomNote)) -> Score {
-    let mut score = rich();
-    let group = &mut score.tracks[0].voices[0].event_groups[0];
-    let AtomEvent::Note(mut atom) = group.atoms[0] else {
-        panic!("the fixture holds a note")
-    };
-    edit(&mut atom);
-    group.atoms[0] = AtomEvent::Note(atom);
-    score
-}
-
-/// `rich()` with its span vector replaced by `edit`'s result.
-fn with_spans(edit: impl FnOnce(&mut Vec<TechniqueSpan>)) -> Score {
-    let mut score = rich();
-    edit(&mut score.tracks[0].voices[0].event_groups[0].technique_spans);
-    score
-}
-
 fn a_position(string: u8, fret: u8, source: TechniqueSource, bps: u16) -> NotePosition {
     NotePosition {
         position: FretboardPosition { string, fret },
@@ -496,88 +478,192 @@ fn a_position(string: u8, fret: u8, source: TechniqueSource, bps: u16) -> NotePo
     }
 }
 
-#[test]
-fn mutating_any_note_leaf_changes_the_text() {
-    let baseline = write(&rich());
+/// The path prefix every fact in `rich()` hangs from.
+const IN_GROUP: &str = "score.tracks[0].voices[id=0,ordinal=0].event_groups[0]";
 
-    assert_ne!(
-        write(&with_note(|n| n.marks = marks_of(&[NoteMark::Ghost]))),
-        baseline,
-        "the mark set is observable"
+/// The three things one canonical fact must satisfy **together**.
+///
+/// The first version of this matrix checked only the third: the bytes moved.
+/// That is half the acceptance contract. `ExactSemanticDiff` is separately
+/// well covered in `core/tests/semantic_diff.rs`, but two independent suites
+/// agreeing is not a composition witness — nothing said the fact the writer
+/// spells and the fact the comparator sees are the *same* fact. This binds
+/// them at one mutation.
+///
+/// Expected paths are read off the walker rather than off its output:
+/// `diff_note` compares `NotePosition` under one `Position` option leaf and
+/// records the fretboard mismatch inside that scope with no further segment,
+/// so `string` and `fret` both surface at `.position`. `diff_span` compares
+/// `TechniqueEvidence` whole. Neither is a defect to route around — the
+/// comparator's composite fields are deliberate, and 4A-05 does not touch it.
+fn assert_observable(label: &str, expected_path: &str, edit: impl FnOnce(&mut Score)) {
+    let before = rich();
+    let mut after = before.clone();
+    edit(&mut after);
+
+    let paths: Vec<String> = exact_semantic_diff(&before, &after)
+        .differences
+        .iter()
+        .map(|difference| difference.path.to_string())
+        .collect();
+    assert!(
+        paths.iter().any(|path| path == expected_path),
+        "{label}: the exact diff must report `{expected_path}`, got {paths:?}"
     );
     assert_ne!(
-        write(&with_note(|n| n.position = None)),
-        baseline,
-        "position presence is observable"
-    );
-    assert_ne!(
-        write(&with_note(|n| {
-            n.position = Some(a_position(5, 2, TechniqueSource::InferredFromMidi, 5_000));
-        })),
-        baseline,
-        "the string is observable"
-    );
-    assert_ne!(
-        write(&with_note(|n| {
-            n.position = Some(a_position(4, 3, TechniqueSource::InferredFromMidi, 5_000));
-        })),
-        baseline,
-        "the fret is observable"
-    );
-    assert_ne!(
-        write(&with_note(|n| {
-            n.position = Some(a_position(4, 2, TechniqueSource::Explicit, 5_000));
-        })),
-        baseline,
-        "the position's evidence source is observable"
-    );
-    assert_ne!(
-        write(&with_note(|n| {
-            n.position = Some(a_position(4, 2, TechniqueSource::InferredFromMidi, 5_001));
-        })),
-        baseline,
-        "the position's confidence is observable"
+        write(&before),
+        write(&after),
+        "{label}: the writer's bytes must move too"
     );
 }
 
 #[test]
-fn mutating_any_span_fact_changes_the_text() {
-    let baseline = write(&rich());
+fn every_note_leaf_is_one_fact_to_the_diff_and_to_the_writer() {
+    assert_observable("marks", &format!("{IN_GROUP}.atoms[0].marks"), |score| {
+        edit_note(score, |n| n.marks = marks_of(&[NoteMark::Ghost]));
+    });
+    assert_observable(
+        "position presence",
+        &format!("{IN_GROUP}.atoms[0].position"),
+        |score| {
+            edit_note(score, |n| n.position = None);
+        },
+    );
+    assert_observable(
+        "position string",
+        &format!("{IN_GROUP}.atoms[0].position"),
+        |score| {
+            edit_note(score, |n| {
+                n.position = Some(a_position(5, 2, TechniqueSource::InferredFromMidi, 5_000));
+            });
+        },
+    );
+    assert_observable(
+        "position fret",
+        &format!("{IN_GROUP}.atoms[0].position"),
+        |score| {
+            edit_note(score, |n| {
+                n.position = Some(a_position(4, 3, TechniqueSource::InferredFromMidi, 5_000));
+            });
+        },
+    );
+    assert_observable(
+        "position evidence source",
+        &format!("{IN_GROUP}.atoms[0].position.evidence"),
+        |score| {
+            edit_note(score, |n| {
+                n.position = Some(a_position(4, 2, TechniqueSource::Explicit, 5_000));
+            });
+        },
+    );
+    assert_observable(
+        "position evidence confidence",
+        &format!("{IN_GROUP}.atoms[0].position.evidence"),
+        |score| {
+            edit_note(score, |n| {
+                n.position = Some(a_position(4, 2, TechniqueSource::InferredFromMidi, 5_001));
+            });
+        },
+    );
+}
 
-    assert_ne!(
-        write(&with_spans(|spans| {
-            spans.pop();
-        })),
-        baseline,
-        "span presence is observable"
+#[test]
+fn every_span_fact_is_one_fact_to_the_diff_and_to_the_writer() {
+    assert_observable(
+        "span presence",
+        &format!("{IN_GROUP}.technique_spans"),
+        |score| {
+            edit_spans(score, |spans| {
+                spans.pop();
+            });
+        },
     );
-    assert_ne!(
-        write(&with_spans(
-            |spans| spans[0].technique = SpanTechnique::Legato
-        )),
-        baseline,
-        "the technique is observable"
+    assert_observable(
+        "span technique",
+        &format!("{IN_GROUP}.technique_spans[0].technique"),
+        |score| {
+            edit_spans(score, |spans| spans[0].technique = SpanTechnique::Legato);
+        },
     );
-    assert_ne!(
-        write(&with_spans(|spans| spans[0].tick_range = range(24, 480))),
-        baseline,
-        "the span start is observable"
+    assert_observable(
+        "span tick start",
+        &format!("{IN_GROUP}.technique_spans[0].tick_range"),
+        |score| {
+            edit_spans(score, |spans| spans[0].tick_range = range(24, 480));
+        },
     );
-    assert_ne!(
-        write(&with_spans(|spans| spans[0].tick_range = range(0, 481))),
-        baseline,
-        "the span end is observable"
+    assert_observable(
+        "span tick end",
+        &format!("{IN_GROUP}.technique_spans[0].tick_range"),
+        |score| {
+            edit_spans(score, |spans| spans[0].tick_range = range(0, 481));
+        },
     );
-    assert_ne!(
-        write(&with_spans(|spans| {
-            spans[0].evidence = evidence(TechniqueSource::InferredFromMidi, 10_000);
-        })),
-        baseline,
-        "span evidence is observable"
+    assert_observable(
+        "span evidence source",
+        &format!("{IN_GROUP}.technique_spans[0].evidence"),
+        |score| {
+            edit_spans(score, |spans| {
+                spans[0].evidence = evidence(TechniqueSource::InferredFromMidi, 10_000);
+            });
+        },
     );
-    assert_ne!(
-        write(&with_spans(|spans| spans.swap(0, 1))),
-        baseline,
-        "span order is observable"
+}
+
+/// The gap an independent review found: the matrix moved `source` **and**
+/// confidence together, so nothing separated them.
+///
+/// `rich()`'s spans carry `Explicit` at 10 000. This holds the source still
+/// and moves only the confidence, which is the mutation the old
+/// `span evidence` row silently did not perform.
+#[test]
+fn a_span_confidence_alone_is_one_fact_to_the_diff_and_to_the_writer() {
+    assert_observable(
+        "span evidence confidence",
+        &format!("{IN_GROUP}.technique_spans[0].evidence"),
+        |score| {
+            edit_spans(score, |spans| {
+                spans[0].evidence = evidence(TechniqueSource::Explicit, 9_999);
+            });
+        },
     );
+}
+
+/// Order and cardinality do not reduce to one leaf, and should not be forced
+/// to: swapping two spans changes both elements, so the honest expectation is
+/// that the diff reports under both ordinals and the bytes move.
+#[test]
+fn span_order_is_visible_to_both_the_diff_and_the_writer() {
+    let before = rich();
+    let mut after = before.clone();
+    edit_spans(&mut after, |spans| spans.swap(0, 1));
+
+    let paths: Vec<String> = exact_semantic_diff(&before, &after)
+        .differences
+        .iter()
+        .map(|difference| difference.path.to_string())
+        .collect();
+    for ordinal in 0..2 {
+        let prefix = format!("{IN_GROUP}.technique_spans[{ordinal}]");
+        assert!(
+            paths.iter().any(|path| path.starts_with(&prefix)),
+            "a swap must be reported under `{prefix}`, got {paths:?}"
+        );
+    }
+    assert_ne!(write(&before), write(&after));
+}
+
+/// `rich()` with its one note edited in place.
+fn edit_note(score: &mut Score, edit: impl FnOnce(&mut AtomNote)) {
+    let group = &mut score.tracks[0].voices[0].event_groups[0];
+    let AtomEvent::Note(mut atom) = group.atoms[0] else {
+        panic!("the fixture holds a note")
+    };
+    edit(&mut atom);
+    group.atoms[0] = AtomEvent::Note(atom);
+}
+
+/// `rich()` with its span vector edited in place.
+fn edit_spans(score: &mut Score, edit: impl FnOnce(&mut Vec<TechniqueSpan>)) {
+    edit(&mut score.tracks[0].voices[0].event_groups[0].technique_spans);
 }
