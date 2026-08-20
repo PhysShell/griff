@@ -12,9 +12,7 @@ use common::{
     accept, batch_for, event, layout, lock_path_of, read_value, staging_path_of, temp_path_of,
     write_corpus, write_empty_index, write_plan, Chunk, Layout, EMPTY_INDEX,
 };
-use griff_song_curation::apply::{
-    apply, fault, ApplyPaths, ApplyRefusal, ApplyRun, LOCK_MARKER,
-};
+use griff_song_curation::apply::{apply, fault, ApplyPaths, ApplyRefusal, ApplyRun, LOCK_MARKER};
 use std::cell::RefCell;
 use std::fs;
 use std::io;
@@ -220,7 +218,10 @@ fn f7_path_like_batch_id_influences_no_filesystem_path() {
         l.td.path.join("griff-f7-escape"),
         l.td.path.parent().expect("parent").join("griff-f7-escape"),
     ] {
-        assert!(!escape.exists(), "no path derived from batch_id: {escape:?}");
+        assert!(
+            !escape.exists(),
+            "no path derived from batch_id: {escape:?}"
+        );
     }
 }
 
@@ -295,7 +296,10 @@ fn f9_lock_release_failure_is_a_warning_never_the_primary_outcome() {
     fault::clear();
     let refusal = result.primary.expect_err("refusal preserved");
     assert!(
-        matches!(refusal, ApplyRefusal::ExistingLabelReplacementNotAuthorized { .. }),
+        matches!(
+            refusal,
+            ApplyRefusal::ExistingLabelReplacementNotAuthorized { .. }
+        ),
         "never masked by the release failure, got {refusal:?}"
     );
     assert!(result.lock_release_warning.is_some());
@@ -311,7 +315,10 @@ fn f10_output_colliding_with_index_artifacts_refuses_before_the_lock() {
     let result = run_paths(&l.plan, &l.corpus, &l.index, &output);
     let refusal = result.primary.expect_err("must refuse");
     assert!(
-        matches!(refusal, ApplyRefusal::OutputCollidesWithIndexArtifacts { .. }),
+        matches!(
+            refusal,
+            ApplyRefusal::OutputCollidesWithIndexArtifacts { .. }
+        ),
         "got {refusal:?}"
     );
     assert!(
@@ -445,7 +452,10 @@ fn c12_stale_lock_blocks_until_validated_recovery() {
     valid_setup(&l);
     fs::write(lock_path_of(&l.index), LOCK_MARKER).expect("stale lock");
     let refusal = refuse(&l);
-    assert!(matches!(refusal, ApplyRefusal::ApplicationIndexLocked { .. }));
+    assert!(matches!(
+        refusal,
+        ApplyRefusal::ApplicationIndexLocked { .. }
+    ));
 
     // §8.2 recovery: only an exact complete marker may be auto-deleted.
     let content = fs::read(lock_path_of(&l.index)).expect("read lock");
@@ -517,7 +527,10 @@ fn c15_real_second_index_at_lock_name_is_occupied_not_locked() {
     fs::write(&second, EMPTY_INDEX).expect("second index");
     let refusal = refuse(&l);
     assert!(
-        matches!(refusal, ApplyRefusal::ApplicationIndexLockPathOccupied { .. }),
+        matches!(
+            refusal,
+            ApplyRefusal::ApplicationIndexLockPathOccupied { .. }
+        ),
         "an index document is not a byte-prefix of the marker, got {refusal:?}"
     );
     assert_eq!(
@@ -591,21 +604,48 @@ fn c16_partial_lock_marker_classifies_locked_and_recovery_is_gated() {
 
 #[test]
 fn k10_duplicate_json_keys_in_touched_file_refuse() {
-    let l = layout("k10");
+    // (i) A duplicate key the tolerant derive parse cannot see: inside an
+    // unknown member, which serde's derived deserializer skips wholesale.
+    // Value comparison cannot prove duplicates absent either (last wins), so
+    // only the distinct §10.3 duplicate-rejecting pass can catch it — and it
+    // must run before the round-trip guard, so the refusal names the
+    // duplicate, not the unknown member.
+    let l = layout("k10a");
     valid_setup(&l);
-    // Raw-bytes fixture: duplicate the "title" member with the same value —
-    // Value comparison cannot see it; only a duplicate-rejecting pass can.
+    let path = l.corpus.join("a1.chunk.json");
+    let text = fs::read_to_string(&path).expect("read");
+    let with_rogue = text.replacen("{\n", "{\n  \"rogue\": {\"k\": 1, \"k\": 1},\n", 1);
+    assert_ne!(with_rogue, text, "fixture shape changed");
+    fs::write(&path, with_rogue).expect("write");
+    let refusal = refuse(&l);
+    match &refusal {
+        ApplyRefusal::NonCanonicalCorpusFile { path, detail } => {
+            assert!(path.contains("a1.chunk.json"));
+            assert!(
+                detail.contains("duplicate"),
+                "the duplicate-rejecting pass must fire first: {detail}"
+            );
+        }
+        other => panic!("expected NonCanonicalCorpusFile, got {other:?}"),
+    }
+    assert!(!l.output.exists(), "nothing published");
+
+    // (ii) A duplicated KNOWN field is refused even earlier: the derived
+    // parse itself rejects it during step-3 tree agreement, so the file
+    // never reaches the rewrite path at all. Fail-closed both ways — no
+    // duplicate is ever silently laundered.
+    let l = layout("k10b");
+    valid_setup(&l);
     let path = l.corpus.join("a1.chunk.json");
     let text = fs::read_to_string(&path).expect("read");
     let needle = "\"title\": \"Title a1\",";
     assert!(text.contains(needle), "fixture shape changed");
     let dup = format!("\"title\": \"Title a1\",\n  {needle}");
     fs::write(&path, text.replacen(needle, &dup, 1)).expect("write");
-
     let refusal = refuse(&l);
     assert!(
-        matches!(&refusal, ApplyRefusal::NonCanonicalCorpusFile { path, .. }
-            if path.contains("a1.chunk.json")),
+        matches!(&refusal, ApplyRefusal::CorpusTreeDisagreement { detail }
+            if detail.contains("duplicate field")),
         "got {refusal:?}"
     );
     assert!(!l.output.exists(), "nothing published");
@@ -664,5 +704,9 @@ fn r4_commit_failure_is_never_success_and_orphan_blocks_retry() {
     // Mandated recovery: delete the orphan, then the apply succeeds.
     fs::remove_dir_all(&l.output).expect("operator removes orphan");
     let after_recovery = run(&l);
-    assert!(after_recovery.primary.is_ok(), "{:?}", after_recovery.primary);
+    assert!(
+        after_recovery.primary.is_ok(),
+        "{:?}",
+        after_recovery.primary
+    );
 }
