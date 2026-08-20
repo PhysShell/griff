@@ -124,10 +124,53 @@ fn review2_directory_lock_occupant_classifies_occupied() {
     assert!(!l.output.exists(), "nothing written");
 }
 
-// Keep the fault import referenced so the harness stays linked for the
-// blocker-3 witness added in the next tests-only commit.
-#[allow(dead_code)]
-fn _fault_link() {
+fn io_fail() -> io::Result<()> {
+    Err(io::Error::other("injected fault"))
+}
+
+/// Review blocker 3: after `create_new` succeeds the lock IS acquired, so a
+/// marker-publication failure is a post-acquisition exit — §8.2's result
+/// shape applies in full: the I/O refusal stays the primary outcome, and a
+/// failed release is attached as the orthogonal warning, never silently
+/// discarded by a `let _ = remove_file`.
+#[test]
+fn review3_marker_failure_with_release_failure_keeps_the_warning() {
+    // (a) double fault: marker publication fails AND the release fails —
+    // the stale lock remains and the warning must say so.
+    let l = layout("rev3-double");
+    valid_setup(&l);
+    fault::set("lock:after_create", io_fail);
+    fault::set("lock:release", io_fail);
+    let result = run(&l);
     fault::clear();
-    let _ = io::Error::other("unused");
+    let refusal = result
+        .primary
+        .expect_err("marker failure is the primary refusal");
+    assert!(
+        matches!(refusal, ApplyRefusal::ApplyIoError { .. }),
+        "got {refusal:?}"
+    );
+    let warning = result
+        .lock_release_warning
+        .expect("the failed release must surface as the orthogonal warning");
+    assert!(warning.lockfile.contains(".lock"));
+    assert!(
+        lock_path_of(&l.index).exists(),
+        "the stale lock remains for §8.2 recovery"
+    );
+    fs::remove_file(lock_path_of(&l.index)).expect("operator recovery");
+
+    // (b) single fault: marker publication fails, release succeeds — no
+    // warning, no stale lock.
+    let l = layout("rev3-single");
+    valid_setup(&l);
+    fault::set("lock:after_create", io_fail);
+    let result = run(&l);
+    fault::clear();
+    assert!(result.primary.is_err());
+    assert!(
+        result.lock_release_warning.is_none(),
+        "a successful release attaches no warning"
+    );
+    assert!(!lock_path_of(&l.index).exists(), "lock released");
 }
