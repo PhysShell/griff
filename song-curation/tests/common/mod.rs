@@ -233,7 +233,8 @@ pub fn tamper_plan(plan_path: &Path, f: impl FnOnce(&mut Value)) {
 
 // ── application index files ────────────────────────────────────────────────────
 
-pub const EMPTY_INDEX: &str = "{\n  \"schema\": \"song-curation.applications.v1\",\n  \"applications\": []\n}";
+pub const EMPTY_INDEX: &str =
+    "{\n  \"schema\": \"song-curation.applications.v1\",\n  \"applications\": []\n}";
 
 pub fn write_empty_index(path: &Path) {
     fs::write(path, EMPTY_INDEX).expect("write index");

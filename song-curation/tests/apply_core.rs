@@ -13,7 +13,7 @@ use common::{
     Chunk, Layout,
 };
 use griff_song_curation::apply::{
-    apply, ApplicationIndex, ApplyPaths, ApplyRefusal, ApplyRun, AppliedReceipt,
+    apply, ApplicationIndex, AppliedReceipt, ApplyPaths, ApplyRefusal, ApplyRun,
     APPLICATIONS_SCHEMA, CURATED_MANIFEST_RELPATH, REPORT_RELPATH,
 };
 use griff_song_curation::{decisions_digest, plan_digest, CurationError, DryRunPlan};
@@ -300,7 +300,10 @@ fn a7_invalid_embedded_batch_short_circuits_before_digests() {
             .iter()
             .any(|e| matches!(e, CurationError::DecisionProjectionMismatch { .. })),
     ] {
-        assert!(!forbidden, "digest/projection work must not run: {errors:?}");
+        assert!(
+            !forbidden,
+            "digest/projection work must not run: {errors:?}"
+        );
     }
 }
 
@@ -319,6 +322,7 @@ fn a8_reachable_slice1_refusals_surface_through_step5() {
         );
         write_plan(&l.corpus, b, &l.plan);
         write_empty_index(&l.index);
+        fs::remove_dir_all(&l.corpus).expect("clear corpus");
         write_corpus(
             &l.corpus,
             &[
@@ -352,6 +356,7 @@ fn a8_reachable_slice1_refusals_surface_through_step5() {
         );
         write_plan(&l.corpus, b, &l.plan);
         write_empty_index(&l.index);
+        fs::remove_dir_all(&l.corpus).expect("clear corpus");
         write_corpus(
             &l.corpus,
             &[
@@ -888,7 +893,10 @@ fn l4_authorized_merge_replaces_labels() {
     write_empty_index(&l.index);
     let receipt = succeed(&l);
     assert_eq!(receipt.report.assignments_applied, 1, "shaB changed");
-    assert_eq!(receipt.report.assignments_unchanged, 1, "shaA already song-1");
+    assert_eq!(
+        receipt.report.assignments_unchanged, 1,
+        "shaA already song-1"
+    );
     let v = read_value(&l.output.join("b1.chunk.json"));
     assert_eq!(v["source"]["song_id"], json!("song-1"));
 }
@@ -1133,7 +1141,10 @@ fn l9_accept_with_nonempty_supersedes_refuses() {
     write_empty_index(&l.index);
     let refusal = refuse(&l);
     assert!(
-        matches!(refusal, ApplyRefusal::SupersessionEvidenceContradiction { .. }),
+        matches!(
+            refusal,
+            ApplyRefusal::SupersessionEvidenceContradiction { .. }
+        ),
         "got {refusal:?}"
     );
 }

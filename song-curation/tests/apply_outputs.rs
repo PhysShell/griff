@@ -11,8 +11,8 @@ use common::{
 };
 use griff_core::corpus::{CorpusManifest, SongId};
 use griff_song_curation::apply::{
-    apply, report_digest, ApplicationIndex, ApplicationReport, ApplyPaths, ApplyRefusal, ApplyRun,
-    AppliedReceipt, CURATED_MANIFEST_RELPATH, REPORT_RELPATH,
+    apply, report_digest, ApplicationIndex, ApplicationReport, AppliedReceipt, ApplyPaths,
+    ApplyRefusal, ApplyRun, CURATED_MANIFEST_RELPATH, REPORT_RELPATH,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -200,7 +200,10 @@ fn k5_tree_disagreement_and_missing_manifest_refuse() {
     plan_accept_sha_a(&l);
     fs::remove_file(l.corpus.join("manifest.json")).expect("rm manifest");
     let refusal = refuse(&l);
-    assert!(matches!(refusal, ApplyRefusal::CorpusTreeDisagreement { .. }));
+    assert!(matches!(
+        refusal,
+        ApplyRefusal::CorpusTreeDisagreement { .. }
+    ));
 }
 
 #[test]
@@ -285,7 +288,10 @@ fn k9_fully_curated_fixture_is_holdout_ready() {
     write_plan(&l.corpus, b, &l.plan);
     write_empty_index(&l.index);
     let receipt = succeed(&l);
-    assert!(receipt.report.holdout_ready, "the real core preflight passes");
+    assert!(
+        receipt.report.holdout_ready,
+        "the real core preflight passes"
+    );
     assert!(receipt.report.holdout_refusals.is_empty());
 }
 
@@ -369,7 +375,10 @@ fn r3_success_publishes_report_and_record_refusal_publishes_neither() {
     assert!(l.output.join(REPORT_RELPATH).exists());
     let index: ApplicationIndex =
         serde_json::from_str(&fs::read_to_string(&l.index).expect("read")).expect("parse");
-    assert_eq!(index.applications[0].report_digest, receipt.report.report_digest);
+    assert_eq!(
+        index.applications[0].report_digest,
+        receipt.report.report_digest
+    );
 
     // Pre-publication refusal half: neither a record nor a published tree.
     let l = layout("r3b");
@@ -424,7 +433,11 @@ fn f3_pre_staging_refusal_leaves_no_trace() {
     assert!(!l.output.exists(), "no output");
     assert!(!staging_path_of(&l.output).exists(), "no staging");
     assert!(!lock_path_of(&l.index).exists(), "no lock left");
-    assert_eq!(fs::read(&l.index).expect("index"), before, "index identical");
+    assert_eq!(
+        fs::read(&l.index).expect("index"),
+        before,
+        "index identical"
+    );
 }
 
 #[test]
