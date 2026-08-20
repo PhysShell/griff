@@ -1,11 +1,17 @@
 # ADR-0033 Slice 2 — transactional Apply: acceptance contract
 
-Status: **proposed — awaiting independent acceptance**. ADR-0033 Decision 10
-gates every slice after Slice 1 behind separate independent acceptance; this
-document is the executable contract that a later RED→GREEN implementation of
-Slice 2 must satisfy. **Implementation of Slice 2 remains prohibited until this
-contract is independently accepted.** Nothing here reopens ADR-0033, ADR-0031,
-or ADR-0032, and nothing here modifies the accepted, frozen Slice 1.
+Status: **accepted** — implementation authorized by the acceptance record in
+[`../decisions.log.md`](../decisions.log.md) @ `bad7b44`; the **normative
+reviewed contract is the exact artifact at
+`47e734cfbf1a6bd90c1bd2a035cdc68692378e96`** (PR #184, six hostile review
+rounds). This status paragraph is **lifecycle metadata only**: no contract
+law below differs from the reviewed artifact, and this edit does not reopen
+acceptance. ADR-0033 Decision 10 gates every slice after Slice 1 behind
+separate independent acceptance; this document is the executable contract
+the Slice 2 RED→GREEN implementation must satisfy. Nothing here reopens
+ADR-0033, ADR-0031, or ADR-0032, and nothing here modifies the accepted,
+frozen Slice 1. Slice 3, the controlled pilot, and real-/full-corpus
+labeling remain separately gated.
 
 ## 1. Authority and dependencies
 

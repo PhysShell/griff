@@ -56,8 +56,11 @@ live contract.
   inputs/outputs, application-index and report v1 schemas, verification
   ordering, chain equations, filesystem/transaction semantics, preservation
   law, closed refusal taxonomy, and the preregistered RED→GREEN matrix.
-  Status: proposed — awaiting independent acceptance; implementation
-  prohibited until accepted (ADR-0033 Decision 10).
+  Status: accepted — implementation authorized by
+  [`../decisions.log.md`](../decisions.log.md) @ `bad7b44`; normative
+  reviewed contract: `47e734c` (this status line is lifecycle metadata
+  only). Slice 3, the pilot, and corpus labeling remain separately gated
+  (ADR-0033 Decision 10).
 - [`song-id-curation-workflow.md`](song-id-curation-workflow.md) — an offline,
   human-confirmed workflow (inventory → suggest → confirm → plan → apply →
   manifest → validate) for assigning `SongId` (ADR-0031) to corpus sources by
