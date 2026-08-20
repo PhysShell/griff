@@ -14,6 +14,8 @@
 //! index temp+`rename` is the single commit point. Every refusal — I/O
 //! included — is returned only by a run that did not reach that commit.
 
+pub mod fault;
+
 use crate::{
     corpus_fingerprint, inventory, replay, verify_plan, Action, CurationError, DryRunPlan,
 };
@@ -360,6 +362,11 @@ fn acquire_lock(ctx: &Ctx) -> Result<(), ApplyRefusal> {
         }
         Err(e) => return Err(io_refusal(&ctx.lock_path, "lock create_new", &e)),
     };
+    if let Err(e) = fault::hit("lock:after_create") {
+        let refusal = io_refusal(&ctx.lock_path, "lock marker write", &e);
+        let _ = fs::remove_file(&ctx.lock_path);
+        return Err(refusal);
+    }
     if let Err(e) = file.write_all(LOCK_MARKER.as_bytes()) {
         let refusal = io_refusal(&ctx.lock_path, "lock marker write", &e);
         let _ = fs::remove_file(&ctx.lock_path);
@@ -369,6 +376,15 @@ fn acquire_lock(ctx: &Ctx) -> Result<(), ApplyRefusal> {
 }
 
 fn release_lock(lock_path: &Path) -> Option<LockReleaseWarning> {
+    if let Err(e) = fault::hit("lock:release") {
+        return Some(LockReleaseWarning {
+            lockfile: lock_path.display().to_string(),
+            detail: format!(
+                "lock release failed ({e}); the stale lock refuses future applies until \
+                 the §8.2 recovery removes it"
+            ),
+        });
+    }
     match fs::remove_file(lock_path) {
         Ok(()) => None,
         Err(e) => Some(LockReleaseWarning {
@@ -851,6 +867,11 @@ fn stage_publish_commit(
 
     // Step 10: staged self-check from bytes, the single preflight, then the
     // report.
+    if let Err(e) = fault::hit("stage:before_selfcheck") {
+        let refusal = io_refusal(&ctx.staging, "staging", &e);
+        cleanup_staging(&ctx.staging);
+        return Err(refusal);
+    }
     let step10 = staged_selfcheck_and_report(ctx, plan, counts, &staged_manifest);
     let report = match step10 {
         Ok(report) => report,
@@ -861,6 +882,11 @@ fn stage_publish_commit(
     };
 
     // Step 11: publish the snapshot with one rename.
+    if let Err(e) = fault::hit("publish:rename") {
+        let refusal = io_refusal(&paths.output, "publish rename", &e);
+        cleanup_staging(&ctx.staging);
+        return Err(refusal);
+    }
     if let Err(e) = fs::rename(&ctx.staging, &paths.output) {
         let refusal = io_refusal(&paths.output, "publish rename", &e);
         cleanup_staging(&ctx.staging);
@@ -882,13 +908,20 @@ fn stage_publish_commit(
             op: "serialize index".to_owned(),
             detail: e.to_string(),
         })?;
+    fault::hit("commit:before_temp").map_err(|e| io_refusal(&ctx.temp_path, "temp create", &e))?;
     let mut temp = fs::File::create(&ctx.temp_path)
         .map_err(|e| io_refusal(&ctx.temp_path, "temp create", &e))?;
+    fault::hit("commit:temp_write").map_err(|e| io_refusal(&ctx.temp_path, "temp write", &e))?;
     temp.write_all(index_json.as_bytes())
         .map_err(|e| io_refusal(&ctx.temp_path, "temp write", &e))?;
     temp.sync_all()
         .map_err(|e| io_refusal(&ctx.temp_path, "temp sync", &e))?;
     drop(temp);
+    if let Err(e) = fault::hit("commit:rename") {
+        let refusal = io_refusal(&ctx.canonical_index, "commit rename", &e);
+        let _ = fs::remove_file(&ctx.temp_path);
+        return Err(refusal);
+    }
     fs::rename(&ctx.temp_path, &ctx.canonical_index).map_err(|e| {
         let refusal = io_refusal(&ctx.canonical_index, "commit rename", &e);
         let _ = fs::remove_file(&ctx.temp_path);
@@ -918,6 +951,7 @@ fn stage_snapshot(
     }
 
     for (rel, abs) in &snapshot.files {
+        fault::hit("stage:write").map_err(|e| io_refusal(&ctx.staging, "staging write", &e))?;
         let dest = ctx.staging.join(rel);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|e| io_refusal(parent, "staging mkdir", &e))?;
