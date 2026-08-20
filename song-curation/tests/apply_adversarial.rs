@@ -542,8 +542,12 @@ fn c15_real_second_index_at_lock_name_is_occupied_not_locked() {
 
 #[test]
 fn c16_partial_lock_marker_classifies_locked_and_recovery_is_gated() {
-    // (a) live window: a concurrent applier observing the lock between
-    // create_new and marker publication (empty prefix) refuses Locked.
+    // (a) live window, the exact preregistered case: a concurrent applier
+    // observes a NON-EMPTY strict prefix of the marker while the first
+    // writer's marker publication is still incomplete. The hook fires
+    // between create_new and the marker write; it materializes the partial
+    // state at the held lock path, proves it is really non-empty and
+    // partial, and only then runs the second applier inline.
     let l = layout("c16a");
     valid_setup(&l);
     let second_result: Rc<RefCell<Option<ApplyRefusal>>> = Rc::new(RefCell::new(None));
@@ -553,7 +557,15 @@ fn c16_partial_lock_marker_classifies_locked_and_recovery_is_gated() {
         let corpus = l.corpus.clone();
         let index = l.index.clone();
         let output2 = l.td.path.join("out2");
+        let lock = lock_path_of(&l.index);
         fault::set("lock:after_create", move || {
+            let partial = &LOCK_MARKER.as_bytes()[..10];
+            fs::write(&lock, partial).expect("materialize live partial marker");
+            let observed = fs::read(&lock).expect("read live lock");
+            assert_eq!(
+                observed, partial,
+                "the live state is a non-empty strict prefix"
+            );
             let second = run_paths(&plan, &corpus, &index, &output2);
             *second_result.borrow_mut() =
                 Some(second.primary.expect_err("second applier must refuse"));
@@ -562,11 +574,16 @@ fn c16_partial_lock_marker_classifies_locked_and_recovery_is_gated() {
     }
     let first = run(&l);
     fault::clear();
-    assert!(first.primary.is_ok(), "{:?}", first.primary);
+    assert!(
+        first.primary.is_ok(),
+        "the first writer completes: {:?}",
+        first.primary
+    );
     let second = second_result.borrow_mut().take().expect("second ran");
     assert!(
         matches!(second, ApplyRefusal::ApplicationIndexLocked { .. }),
-        "an empty prefix is a Griff lock, never foreign occupancy, got {second:?}"
+        "a live NON-EMPTY partial marker is a Griff lock, never foreign \
+         occupancy, got {second:?}"
     );
 
     // (b) crashed non-empty partial marker: classified Locked; never
