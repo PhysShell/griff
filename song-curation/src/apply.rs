@@ -281,6 +281,8 @@ struct Ctx {
     canonical_index: PathBuf,
     lock_path: PathBuf,
     temp_path: PathBuf,
+    /// The resolved output path (canonical parent + final component).
+    output: PathBuf,
     staging: PathBuf,
 }
 
@@ -313,15 +315,124 @@ fn preflight(paths: &ApplyPaths) -> Result<Ctx, ApplyRefusal> {
             detail: format!("index {} is not a regular file", canonical_index.display()),
         });
     }
+    // The canonical index file must have a link count of exactly one:
+    // hardlink aliases defeat path-derived locking and split under
+    // commit-by-rename (§8.1).
+    let nlink = std::os::unix::fs::MetadataExt::nlink(&meta);
+    if nlink != 1 {
+        return Err(ApplyRefusal::ApplicationIndexHardLinked {
+            path: canonical_index.display().to_string(),
+            nlink,
+        });
+    }
     let lock_path = coordination_path(&canonical_index, "lock");
     let temp_path = coordination_path(&canonical_index, "tmp");
-    let staging = staging_path(&paths.output);
+
+    // Resolve the not-yet-existing output and staging paths as canonical
+    // parent + final component (the migrate discipline).
+    let output = resolve_fresh(&paths.output)?;
+    let staging = staging_path(&output);
+
+    // Output/staging must not equal any coordination artifact — checked
+    // BEFORE lock acquisition, so the lock is never created at a declared
+    // output path and step 12 can never collide with the output.
+    for target in [&output, &staging] {
+        for (artifact, path) in [
+            ("index", &canonical_index),
+            ("lock", &lock_path),
+            ("temp", &temp_path),
+        ] {
+            if target == path {
+                return Err(ApplyRefusal::OutputCollidesWithIndexArtifacts {
+                    path: target.display().to_string(),
+                    artifact: artifact.to_owned(),
+                });
+            }
+        }
+    }
+
+    // The reserved staging namespace: no compliant output may lie in it —
+    // this is what makes compliant-applier publication overlap impossible.
+    let output_name = output
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if output_name.starts_with('.') && output_name.ends_with(".apply-staging") {
+        return Err(ApplyRefusal::OutputNameReserved {
+            path: output.display().to_string(),
+        });
+    }
+
+    // Pre-existence refusals for output and staging.
+    for target in [&output, &staging] {
+        if target.symlink_metadata().is_ok() {
+            return Err(ApplyRefusal::OutputAlreadyExists {
+                path: target.display().to_string(),
+            });
+        }
+    }
+
+    // Containment laws against the resolved input corpus root.
+    let corpus = paths
+        .corpus
+        .canonicalize()
+        .map_err(|e| io_refusal(&paths.corpus, "canonicalize corpus", &e))?;
+    for target in [&output, &staging] {
+        if target == &corpus || target.starts_with(&corpus) || corpus.starts_with(target) {
+            return Err(ApplyRefusal::OutputWouldModifyInput {
+                detail: format!(
+                    "output/staging {} equals, contains, or is contained by the input                      corpus root {}",
+                    target.display(),
+                    corpus.display()
+                ),
+            });
+        }
+    }
+
+    // The canonical index must not equal or lie inside any tree root.
+    for root in [&corpus, &output, &staging] {
+        if &canonical_index == root || canonical_index.starts_with(root) {
+            return Err(ApplyRefusal::ApplicationIndexInsideTree {
+                path: canonical_index.display().to_string(),
+            });
+        }
+    }
+
+    // Distinct curated-manifest guard (§4.3): structurally unreachable under
+    // the fixed v1 path, kept as a hard guard.
+    let curated_target = output.join(CURATED_MANIFEST_RELPATH);
+    for root in [&corpus, &output] {
+        if curated_target == root.join("manifest.json") {
+            return Err(ApplyRefusal::CuratedManifestPathNotDistinct {
+                path: curated_target.display().to_string(),
+            });
+        }
+    }
+
     Ok(Ctx {
         canonical_index,
         lock_path,
         temp_path,
+        output,
         staging,
     })
+}
+
+/// Resolve a not-yet-existing path as canonical parent + final component.
+fn resolve_fresh(path: &Path) -> Result<PathBuf, ApplyRefusal> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let parent = parent
+        .canonicalize()
+        .map_err(|e| io_refusal(parent, "canonicalize parent", &e))?;
+    let name = path.file_name().ok_or_else(|| ApplyRefusal::ApplyIoError {
+        path: path.display().to_string(),
+        op: "resolve".to_owned(),
+        detail: "path has no final component".to_owned(),
+    })?;
+    Ok(parent.join(name))
 }
 
 /// `.<canonical_index_name>.<ext>` next to the canonical index file (§8.1).
@@ -356,7 +467,19 @@ fn acquire_lock(ctx: &Ctx) -> Result<(), ApplyRefusal> {
     {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(ApplyRefusal::ApplicationIndexLocked {
+            // Contention classification is prefix-closed (§8.1): any byte
+            // prefix of the canonical marker — empty, partial, or complete —
+            // is a Griff lock (a live writer can only ever be observed in a
+            // prefix state); anything else is an unproven occupant that no
+            // mandated recovery may delete or relocate.
+            let content = fs::read(&ctx.lock_path)
+                .map_err(|e| io_refusal(&ctx.lock_path, "lock read", &e))?;
+            if LOCK_MARKER.as_bytes().starts_with(content.as_slice()) {
+                return Err(ApplyRefusal::ApplicationIndexLocked {
+                    path: ctx.lock_path.display().to_string(),
+                });
+            }
+            return Err(ApplyRefusal::ApplicationIndexLockPathOccupied {
                 path: ctx.lock_path.display().to_string(),
             });
         }
@@ -401,6 +524,19 @@ fn release_lock(lock_path: &Path) -> Option<LockReleaseWarning> {
 
 #[allow(clippy::too_many_lines)]
 fn locked_apply(paths: &ApplyPaths, ctx: &Ctx) -> Result<AppliedReceipt, ApplyRefusal> {
+    // Step 1 (end), only now under the held lock: inspect the temp
+    // coordination path. The ordering is load-bearing — during a live
+    // writer's step 12 the temp legitimately exists while the lock is held,
+    // so a non-holder always loses at the lock boundary first and can never
+    // misclassify a live commit's temp. Nothing pre-existing there is ever
+    // unlinked: the lock proves no live writer, not ownership of those
+    // bytes (§8.1); recovery is explicit operator inspection (§8.2).
+    if ctx.temp_path.symlink_metadata().is_ok() {
+        return Err(ApplyRefusal::ApplicationIndexTempExists {
+            path: ctx.temp_path.display().to_string(),
+        });
+    }
+
     // Step 2: strict artifact parsing, before any filesystem mutation.
     let plan_text =
         fs::read_to_string(&paths.plan).map_err(|e| ApplyRefusal::MalformedPlanArtifact {
@@ -460,7 +596,6 @@ fn locked_apply(paths: &ApplyPaths, ctx: &Ctx) -> Result<AppliedReceipt, ApplyRe
 
     // Steps 9–12: the filesystem protocol (§8).
     stage_publish_commit(
-        paths,
         ctx,
         &StageInput {
             plan: &plan,
@@ -837,11 +972,7 @@ fn cleanup_staging(staging: &Path) {
 }
 
 #[allow(clippy::too_many_lines)]
-fn stage_publish_commit(
-    paths: &ApplyPaths,
-    ctx: &Ctx,
-    input: &StageInput<'_>,
-) -> Result<AppliedReceipt, ApplyRefusal> {
+fn stage_publish_commit(ctx: &Ctx, input: &StageInput<'_>) -> Result<AppliedReceipt, ApplyRefusal> {
     let StageInput {
         plan,
         index,
@@ -883,12 +1014,12 @@ fn stage_publish_commit(
 
     // Step 11: publish the snapshot with one rename.
     if let Err(e) = fault::hit("publish:rename") {
-        let refusal = io_refusal(&paths.output, "publish rename", &e);
+        let refusal = io_refusal(&ctx.output, "publish rename", &e);
         cleanup_staging(&ctx.staging);
         return Err(refusal);
     }
-    if let Err(e) = fs::rename(&ctx.staging, &paths.output) {
-        let refusal = io_refusal(&paths.output, "publish rename", &e);
+    if let Err(e) = fs::rename(&ctx.staging, &ctx.output) {
+        let refusal = io_refusal(&ctx.output, "publish rename", &e);
         cleanup_staging(&ctx.staging);
         return Err(refusal);
     }
@@ -909,8 +1040,15 @@ fn stage_publish_commit(
             detail: e.to_string(),
         })?;
     fault::hit("commit:before_temp").map_err(|e| io_refusal(&ctx.temp_path, "temp create", &e))?;
-    let mut temp = fs::File::create(&ctx.temp_path)
-        .map_err(|e| io_refusal(&ctx.temp_path, "temp create", &e))?;
+    // Atomic no-clobber creation (std's answer to exactly this TOCTOU): the
+    // step-1 under-lock absence check was a fail-fast courtesy, not the
+    // safety argument. AlreadyExists here is a pre-commit ApplyIoError and
+    // the late-appearing occupant is left untouched (§8.1).
+    let mut temp = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&ctx.temp_path)
+        .map_err(|e| io_refusal(&ctx.temp_path, "temp create_new", &e))?;
     fault::hit("commit:temp_write").map_err(|e| io_refusal(&ctx.temp_path, "temp write", &e))?;
     temp.write_all(index_json.as_bytes())
         .map_err(|e| io_refusal(&ctx.temp_path, "temp write", &e))?;
@@ -1013,6 +1151,15 @@ fn write_touched(
     modified_manifest: &CorpusManifest,
 ) -> Result<(), ApplyRefusal> {
     let text = fs::read_to_string(abs).map_err(|e| io_refusal(abs, "read", &e))?;
+    // Duplicate-key rejection is a DISTINCT pass (§10.3): serde_json::Value
+    // is already a map that silently keeps the last duplicate, so no
+    // comparison of Values can ever prove duplicates were absent.
+    if let Err(detail) = reject_duplicate_keys(&text) {
+        return Err(ApplyRefusal::NonCanonicalCorpusFile {
+            path: rel.to_owned(),
+            detail,
+        });
+    }
     let raw: Value =
         serde_json::from_str(&text).map_err(|e| tree_disagreement(format!("{rel}: {e}")))?;
     let rendered = if rel == "manifest.json" {
@@ -1074,11 +1221,14 @@ fn staged_selfcheck_and_report(
 ) -> Result<ApplicationReport, ApplyRefusal> {
     let inconsistent = |detail: String| ApplyRefusal::OutputPreflightInconsistent { detail };
 
-    // Re-read the staged root manifest from bytes.
-    let staged_manifest_text = fs::read_to_string(ctx.staging.join("manifest.json"))
-        .map_err(|e| inconsistent(format!("staged manifest.json unreadable: {e}")))?;
-    let staged_manifest: CorpusManifest = serde_json::from_str(&staged_manifest_text)
-        .map_err(|e| inconsistent(format!("staged manifest.json unparseable: {e}")))?;
+    // Re-read the staged tree from bytes and RE-RUN the §4.2 tree-agreement
+    // law over it (staged root manifest ↔ staged chunk files — the same
+    // multiset check as step 3, not a second preflight), so a write that
+    // updated the manifests but missed an affected chunk file, or the
+    // reverse, can never publish.
+    let staged_snapshot = load_snapshot(&ctx.staging)
+        .map_err(|e| inconsistent(format!("staged tree agreement failed: {e:?}")))?;
+    let staged_manifest = staged_snapshot.manifest;
     let expected_value = serde_json::to_value(expected_manifest).unwrap_or(Value::Null);
     let staged_value = serde_json::to_value(&staged_manifest).unwrap_or(Value::Null);
     if expected_value != staged_value {
@@ -1186,4 +1336,73 @@ fn staged_selfcheck_and_report(
     fs::write(&report_path, report_json).map_err(|e| io_refusal(&report_path, "write", &e))?;
 
     Ok(report)
+}
+
+// ── duplicate-key rejection (§10.3) ────────────────────────────────────────────
+
+/// A deserialization target whose only job is to refuse a repeated object key
+/// at any depth. Native `serde` visitor; no new dependency.
+struct NoDupKeys;
+
+impl<'de> serde::Deserialize<'de> for NoDupKeys {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = NoDupKeys;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("any JSON value without duplicate object keys")
+            }
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut seen: BTreeSet<String> = BTreeSet::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate object key {key:?}"
+                        )));
+                    }
+                    let NoDupKeys = map.next_value::<NoDupKeys>()?;
+                }
+                Ok(NoDupKeys)
+            }
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                while seq.next_element::<NoDupKeys>()?.is_some() {}
+                Ok(NoDupKeys)
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(NoDupKeys)
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+/// Prove `text` contains no repeated object key at any depth.
+fn reject_duplicate_keys(text: &str) -> Result<(), String> {
+    serde_json::from_str::<NoDupKeys>(text)
+        .map(|NoDupKeys| ())
+        .map_err(|e| e.to_string())
 }
