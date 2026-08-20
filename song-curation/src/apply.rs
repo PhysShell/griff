@@ -261,14 +261,21 @@ pub fn apply(paths: &ApplyPaths) -> ApplyRun {
             }
         }
     };
-    // Step 1 (lock): acquire the single-writer lock; held through step 12.
-    if let Err(refusal) = acquire_lock(&ctx) {
-        return ApplyRun {
-            primary: Err(refusal),
-            lock_release_warning: None,
-        };
-    }
-    let primary = locked_apply(paths, &ctx);
+    // Step 1 (lock): create the lockfile. A failure here means the lock was
+    // never acquired, so no release (and no warning channel) applies.
+    let lock_file = match create_lock(&ctx) {
+        Ok(file) => file,
+        Err(refusal) => {
+            return ApplyRun {
+                primary: Err(refusal),
+                lock_release_warning: None,
+            }
+        }
+    };
+    // From this point the lock IS acquired: every exit — marker-publication
+    // failure included — releases through the one §8.2 channel, so a failed
+    // release always surfaces as the orthogonal warning.
+    let primary = publish_marker(lock_file, &ctx).and_then(|()| locked_apply(paths, &ctx));
     let lock_release_warning = release_lock(&ctx.lock_path);
     ApplyRun {
         primary,
@@ -459,43 +466,59 @@ fn staging_path(output: &Path) -> PathBuf {
         .join(format!(".{name}.apply-staging"))
 }
 
-fn acquire_lock(ctx: &Ctx) -> Result<(), ApplyRefusal> {
-    let mut file = match fs::OpenOptions::new()
+fn create_lock(ctx: &Ctx) -> Result<fs::File, ApplyRefusal> {
+    match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&ctx.lock_path)
     {
-        Ok(file) => file,
+        Ok(file) => Ok(file),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Contention classification is prefix-closed (§8.1): any byte
-            // prefix of the canonical marker — empty, partial, or complete —
-            // is a Griff lock (a live writer can only ever be observed in a
-            // prefix state); anything else is an unproven occupant that no
-            // mandated recovery may delete or relocate.
-            let content = fs::read(&ctx.lock_path)
-                .map_err(|e| io_refusal(&ctx.lock_path, "lock read", &e))?;
-            if LOCK_MARKER.as_bytes().starts_with(content.as_slice()) {
-                return Err(ApplyRefusal::ApplicationIndexLocked {
-                    path: ctx.lock_path.display().to_string(),
-                });
-            }
-            return Err(ApplyRefusal::ApplicationIndexLockPathOccupied {
-                path: ctx.lock_path.display().to_string(),
-            });
+            Err(classify_lock_occupant(&ctx.lock_path))
         }
-        Err(e) => return Err(io_refusal(&ctx.lock_path, "lock create_new", &e)),
+        Err(e) => Err(io_refusal(&ctx.lock_path, "lock create_new", &e)),
+    }
+}
+
+/// Pre-existence at the lock path is CLASSIFIED, never an I/O error (§12
+/// reserves `ApplyIoError` for lock-acquisition causes other than
+/// pre-existence). Contention classification is prefix-closed (§8.1): any
+/// byte prefix of the canonical marker — empty, partial, or complete — is a
+/// Griff lock (a live writer can only ever be observed in a prefix state).
+/// Anything else — a non-regular occupant (a directory; a FIFO, which a read
+/// could even block on, breaking the no-wait protocol), an unreadable or
+/// unstatable occupant, or non-prefix content — is unproven and fails closed
+/// as `ApplicationIndexLockPathOccupied`; no mandated recovery may delete or
+/// relocate it, and it is never read unless it is a regular file.
+fn classify_lock_occupant(lock_path: &Path) -> ApplyRefusal {
+    let occupied = ApplyRefusal::ApplicationIndexLockPathOccupied {
+        path: lock_path.display().to_string(),
     };
-    if let Err(e) = fault::hit("lock:after_create") {
-        let refusal = io_refusal(&ctx.lock_path, "lock marker write", &e);
-        let _ = fs::remove_file(&ctx.lock_path);
-        return Err(refusal);
+    let Ok(meta) = lock_path.symlink_metadata() else {
+        return occupied;
+    };
+    if !meta.is_file() {
+        return occupied;
     }
-    if let Err(e) = file.write_all(LOCK_MARKER.as_bytes()) {
-        let refusal = io_refusal(&ctx.lock_path, "lock marker write", &e);
-        let _ = fs::remove_file(&ctx.lock_path);
-        return Err(refusal);
+    let Ok(content) = fs::read(lock_path) else {
+        return occupied;
+    };
+    if LOCK_MARKER.as_bytes().starts_with(content.as_slice()) {
+        return ApplyRefusal::ApplicationIndexLocked {
+            path: lock_path.display().to_string(),
+        };
     }
-    Ok(())
+    occupied
+}
+
+/// Publish the ownership marker into the already-acquired lock. A failure is
+/// a post-acquisition refusal: the caller releases through [`release_lock`],
+/// so a failed cleanup surfaces as the §8.2 warning instead of vanishing.
+fn publish_marker(mut file: fs::File, ctx: &Ctx) -> Result<(), ApplyRefusal> {
+    fault::hit("lock:after_create")
+        .map_err(|e| io_refusal(&ctx.lock_path, "lock marker write", &e))?;
+    file.write_all(LOCK_MARKER.as_bytes())
+        .map_err(|e| io_refusal(&ctx.lock_path, "lock marker write", &e))
 }
 
 fn release_lock(lock_path: &Path) -> Option<LockReleaseWarning> {
@@ -639,8 +662,8 @@ fn load_snapshot(corpus: &Path) -> Result<Snapshot, ApplyRefusal> {
     walk(corpus, corpus, &mut files).map_err(|(p, e)| io_refusal(&p, "walk", &e))?;
     files.sort();
     let reserved_root = corpus.join(RESERVED_DIR);
-    if reserved_root.exists() {
-        check_reserved_shape(corpus, &files)?;
+    if reserved_root.symlink_metadata().is_ok() {
+        check_reserved_shape(&reserved_root)?;
     }
     let files: Vec<(String, PathBuf)> = files
         .into_iter()
@@ -713,17 +736,34 @@ fn walk(
     Ok(())
 }
 
-/// The reserved-area shape law (§4.2): recursively, at most the two tool-owned
-/// proof artifacts as regular files at the reserved root.
-fn check_reserved_shape(_corpus: &Path, files: &[(String, PathBuf)]) -> Result<(), ApplyRefusal> {
-    let allowed = [
-        format!("{RESERVED_DIR}/manifest.json"),
-        format!("{RESERVED_DIR}/apply-report.json"),
-    ];
-    for (rel, _) in files.iter().filter(|(rel, _)| is_reserved(rel)) {
-        if !allowed.contains(rel) {
+/// The reserved-area shape law (§4.2): the reserved directory holds exactly
+/// at most the two tool-owned proof artifacts as REGULAR FILES directly at
+/// its root. Inspected at the directory-entry level — a file-only walk would
+/// miss an empty foreign subdirectory, and an allowed NAME is not enough
+/// when the entry is a symlink or any other non-regular type.
+fn check_reserved_shape(reserved_root: &Path) -> Result<(), ApplyRefusal> {
+    if !reserved_root.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+        return Err(tree_disagreement(format!(
+            "reserved area {RESERVED_DIR} is not a directory"
+        )));
+    }
+    let allowed = ["manifest.json", "apply-report.json"];
+    let entries = fs::read_dir(reserved_root)
+        .map_err(|e| tree_disagreement(format!("reserved area {RESERVED_DIR}: {e}")))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| tree_disagreement(format!("reserved area {RESERVED_DIR}: {e}")))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = format!("{RESERVED_DIR}/{name}");
+        if !allowed.contains(&name.as_str()) {
             return Err(tree_disagreement(format!(
                 "foreign reserved-area entry: {rel}"
+            )));
+        }
+        let is_regular = entry.path().symlink_metadata().is_ok_and(|m| m.is_file());
+        if !is_regular {
+            return Err(tree_disagreement(format!(
+                "reserved-area entry is not a regular file: {rel}"
             )));
         }
     }
