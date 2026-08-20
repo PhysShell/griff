@@ -810,6 +810,54 @@ clean, so it is never written with no warnings in it.
 No diagnostic code is assigned to the alternative whitespace in either case;
 that is parser territory and belongs to the task that writes the parser.
 
+#### The `loss` block and its warnings
+
+§6.1's reference document shows one warning, `tempo_approximated`, inline.
+The other three are named by §2.8 and §6.4 but were never shown, so their
+outer layout was left to be guessed — the same gap that let a `repeat` be
+written across four lines where §6.1 spells it on one. Settled here, before
+the slice that has to emit them:
+
+```text
+loss
+  outer layout    multiline when the report is non-clean
+                  omitted entirely when it is clean
+
+warning element   one warning, one physical line
+
+  track_name_invalid_utf8   inline payload block
+  smpte_timing_unsupported  bare word, no block
+  tempo_approximated        inline payload block
+  other                     inline payload block
+```
+
+Exhaustive over the four variants, at the nesting §6.1 uses:
+
+```text
+    loss {
+        track_name_invalid_utf8 { track_index 4294967296 }
+        smpte_timing_unsupported
+        tempo_approximated { bar_index 1 nearest_micros 4200000 }
+        other { message "example" }
+    }
+```
+
+Warning order is vector order and is preserved exactly (§2.7): `LossReport`
+appends and concatenates, the exact walker compares positionally, and
+duplicates are duplicates. Nothing here sorts, groups by variant, or
+deduplicates.
+
+`other` stays one physical line whatever its message contains. A U+000A in
+the value is written `\n` under §6.5's frozen escape policy, never as a real
+line break — so "one warning, one line" is a property of the grammar rather
+than a hope about the data.
+
+The illustration above is not folded into §6.1's reference document, which
+stays a single coherent score: its one `tempo_approximated` belongs to the
+`tempo 100/7` bar above it, and three unrelated warnings bolted on would
+make the reference less readable while adding nothing this block does not
+already say.
+
 Everything else is written every time — including `tuning []` on a track
 with no tuning and `marks []` on a note with no marks. `ppqn`, `index`,
 `ticks`, `meter`, `tempo`, `channel`, `tuning`, `id`, `at`, `duration`,
