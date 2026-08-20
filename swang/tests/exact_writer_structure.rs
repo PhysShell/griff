@@ -9,12 +9,14 @@
 //! wrote them without checking them would emit text its own builder must
 //! later refuse.
 //!
-//! Still refused, and refused by name: `marks` beyond the empty set,
-//! `position`, technique spans, `source`, `loss`, and any string needing an
-//! escape. Those are SWG-4A-05. The empty forms that a *canonical* document
-//! cannot leave out — `marks []`, `tuning []` — are written here, because
-//! §6.2 makes them required words and omitting them would make every golden
-//! in this file non-canonical text.
+//! Marks, positions, spans, `source`, `loss`, and escaped strings were
+//! refused by name here and written by SWG-4A-05; the four tests that
+//! guarded those refusals now check the structural half of what they owned,
+//! and the leaves themselves are pinned by `exact_writer_metadata.rs`. The
+//! empty forms a *canonical* document cannot leave out — `marks []`,
+//! `tuning []` — were written from the start, because §6.2 makes them
+//! required words and omitting them would make every golden here
+//! non-canonical text.
 //!
 //! Every expectation is a decision `docs/swang/exact-score-text.md` already
 //! made. The ugly ones — `channel 200`, duplicate `voice.id`, `tuplet 0/0`,
@@ -290,33 +292,6 @@ fn a_plain_track_name_is_written_through() {
     assert!(text.contains("name \"Guitar\""), "{text:?}");
 }
 
-#[test]
-fn a_track_name_needing_an_escape_is_not_yet_written() {
-    // The 4A-04/4A-05 boundary, chosen deliberately: this slice writes only
-    // names that need no escape, and hands the rest to the slice that owns
-    // §6.5's encoding policy. Refusing is honest; inventing half an escape
-    // policy here would not be.
-    for name in ["Gui\"tar", "back\\slash", "two\nlines", "bell\u{7}"] {
-        let score = scored(vec![track(
-            Some(name),
-            0,
-            Tuning::new(Vec::new()),
-            Vec::new(),
-        )]);
-        let err = write_score(&score).expect_err("this name needs an escape");
-        assert!(
-            matches!(
-                err,
-                ExactWriteError::NotYetWritten {
-                    task: "SWG-4A-05",
-                    ..
-                }
-            ),
-            "a name needing an escape names the slice that will write it, {name:?}: {err:?}"
-        );
-    }
-}
-
 // ── group kinds: all six, payload opened ───────────────────────────────────
 
 #[test]
@@ -565,62 +540,46 @@ fn the_domain_verdict_still_outranks_the_slice_frontier() {
     );
 }
 
-// ── this slice's frontier: what 4A-05 will write ───────────────────────────
+// ── what this slice's frontier once refused ───────────────────────────────
+//
+// These four guarded `NotYetWritten` until SWG-4A-05 wrote the facts they
+// named. The frontier is gone and so is the error variant; what each test
+// owned is a *structural* property, and that is what survives here — the
+// leaves themselves are pinned by `exact_writer_metadata.rs`.
 
 #[test]
-fn a_non_empty_mark_set_is_not_yet_written() {
-    // `marks []` is written here because §6.2 makes it a required word. The
-    // mark vocabulary itself is 4A-05's, so a set with anything in it is
-    // refused rather than guessed at.
+fn a_marked_note_still_belongs_to_its_group() {
     let marked = AtomEvent::Note(AtomNote {
-        absolute_start: Ticks(0),
-        duration: Ticks(480),
-        pitch: Pitch::new(60).expect("a MIDI pitch"),
-        velocity: Velocity::new(96).expect("a MIDI velocity"),
         marks: NoteMarks::empty().with(NoteMark::Accent),
-        position: None,
+        ..match note(0, 480, 60, 96) {
+            AtomEvent::Note(n) => n,
+            AtomEvent::Rest(_) => panic!("a note"),
+        }
     });
-    let err = write_score(&one_atom(marked)).expect_err("marks are 4A-05");
-    assert!(
-        matches!(
-            err,
-            ExactWriteError::NotYetWritten {
-                task: "SWG-4A-05",
-                ..
-            }
-        ),
-        "{err:?}"
-    );
+    let text = write(&one_atom(marked));
+    assert!(text.contains("group single {"), "{text:?}");
+    assert!(text.contains("marks [accent]"), "{text:?}");
 }
 
 #[test]
-fn a_note_position_is_not_yet_written() {
+fn a_positioned_note_still_belongs_to_its_group() {
     let positioned = AtomEvent::Note(AtomNote {
-        absolute_start: Ticks(0),
-        duration: Ticks(480),
-        pitch: Pitch::new(60).expect("a MIDI pitch"),
-        velocity: Velocity::new(96).expect("a MIDI velocity"),
-        marks: NoteMarks::empty(),
         position: Some(NotePosition::explicit(FretboardPosition {
             string: 4,
             fret: 2,
         })),
+        ..match note(0, 480, 60, 96) {
+            AtomEvent::Note(n) => n,
+            AtomEvent::Rest(_) => panic!("a note"),
+        }
     });
-    let err = write_score(&one_atom(positioned)).expect_err("positions are 4A-05");
-    assert!(
-        matches!(
-            err,
-            ExactWriteError::NotYetWritten {
-                task: "SWG-4A-05",
-                ..
-            }
-        ),
-        "{err:?}"
-    );
+    let text = write(&one_atom(positioned));
+    assert!(text.contains("group single {"), "{text:?}");
+    assert!(text.contains("position {"), "{text:?}");
 }
 
 #[test]
-fn a_technique_span_is_not_yet_written() {
+fn a_technique_span_belongs_to_its_group_after_the_atoms() {
     let mut only = group(EventGroupKind::Chord, vec![note(0, 480, 40, 96)]);
     only.technique_spans.push(TechniqueSpan {
         technique: SpanTechnique::PalmMute,
@@ -633,17 +592,35 @@ fn a_technique_span_is_not_yet_written() {
         Tuning::new(Vec::new()),
         vec![voice(0, vec![only])],
     )]);
-    let err = write_score(&score).expect_err("spans are 4A-05");
+    let text = write(&score);
+    let atom = text.find("note {").expect("the atom");
+    let span = text.find("span palm_mute").expect("the span");
     assert!(
-        matches!(
-            err,
-            ExactWriteError::NotYetWritten {
-                task: "SWG-4A-05",
-                ..
-            }
-        ),
-        "{err:?}"
+        atom < span,
+        "atoms precede spans within one group: {text:?}"
     );
+}
+
+#[test]
+fn a_track_name_needing_an_escape_is_written_escaped() {
+    // Option 1's boundary in SWG-4A-04: names needing an escape were refused
+    // and handed to SWG-4A-05, which wrote them. `Some("")` and `None` stay
+    // distinguishable, which was the part that mattered all along.
+    for (name, expected) in [
+        ("Gui\"tar", r#"name "Gui\"tar""#),
+        ("back\\slash", r#"name "back\\slash""#),
+        ("two\nlines", r#"name "two\nlines""#),
+        ("bell\u{7}", r#"name "bell\u{7}""#),
+    ] {
+        let score = scored(vec![track(
+            Some(name),
+            0,
+            Tuning::new(Vec::new()),
+            Vec::new(),
+        )]);
+        let text = write(&score);
+        assert!(text.contains(expected), "{name:?} -> {text:?}");
+    }
 }
 
 // ── mutation matrix: every structural fact is observable in the bytes ──────

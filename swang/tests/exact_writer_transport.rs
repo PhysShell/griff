@@ -1,10 +1,11 @@
 //! SWG-4A-03 contract tests: the exact-text writer's transport and master
 //! timeline, committed failing before any implementation.
 //!
-//! Scope is deliberately the first writer slice only — header, `ppqn`, and
-//! `master_bar` with its `ticks`, `meter`, `tempo`, and `repeat`. Tracks,
-//! strings, and everything downstream belong to SWG-4A-04 and later, and a
-//! score carrying them must be refused rather than half-written.
+//! Scope was deliberately the first writer slice only — header, `ppqn`, and
+//! `master_bar` with its `ticks`, `meter`, `tempo`, and `repeat` — and the
+//! rest of the tree was refused rather than half-written. Later slices wrote
+//! all of it; these tests stayed, and their goldens are what say the writer
+//! grew without moving a transport byte.
 //!
 //! Every expectation here is a decision the accepted census already made
 //! (`docs/swang/exact-score-text.md`); none of them is invented by this
@@ -258,24 +259,31 @@ fn an_inverted_tick_range_is_refused() {
     );
 }
 
+/// The frontier this test watched is gone.
+///
+/// It refused tracks until SWG-4A-04 wrote them, then `source` until
+/// SWG-4A-05 wrote that. The writer is complete, so there is no build-stage
+/// limit left to state and `NotYetWritten` no longer exists. What survives is
+/// the property the transport slice actually owns: a `source` sits after
+/// every track, at the document's own level, and does not disturb the bytes
+/// above it.
 #[test]
-fn a_score_with_source_metadata_is_refused_as_not_yet_written() {
-    // A build-stage limit, not a domain statement: `source` is SWG-4A-05.
-    // The distinction matters — refusing it as "outside the writer domain"
-    // would contradict the census, which says every inhabited state is
-    // spellable.
-    //
-    // This test guarded tracks until SWG-4A-04 wrote them. The frontier it
-    // watches moved; the property it states did not, so it follows the
-    // frontier rather than being deleted with the slice it outlived.
-    let mut score = transport(480, Vec::new());
+fn source_metadata_follows_the_transport_it_annotates() {
+    let mut score = transport(480, vec![bar(0, 0, 1920, bpm(120))]);
+    let transport_only = write(&score);
     score.source_meta = Some(SourceMeta {
         format: Some("GP5".to_owned()),
     });
-    let err = write_score(&score).expect_err("source metadata is not in this slice");
+    let with_source = write(&score);
+
+    assert!(with_source.starts_with(
+        transport_only
+            .strip_suffix("}\n")
+            .expect("the document closes")
+    ));
     assert!(
-        matches!(err, ExactWriteError::NotYetWritten { .. }),
-        "a slice boundary is not a domain judgement: {err:?}"
+        with_source.ends_with("\n    source { format \"GP5\" }\n}\n"),
+        "{with_source:?}"
     );
 }
 

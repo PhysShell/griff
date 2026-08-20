@@ -7,9 +7,12 @@ use griff_core::event::ValidationError;
 
 /// A refusal from the exact-text writer.
 ///
-/// The two variants say different things and must not be collapsed. One is
-/// a judgement about the `Score`; the other is a statement about how much
-/// of the writer exists yet.
+/// One variant, and that is the point. While the writer was built in slices
+/// this enum also carried `NotYetWritten`, a statement about how much of the
+/// writer existed rather than about the score. SWG-4A-05 finished the writer,
+/// so that variant described nothing and retired with the frontier it named:
+/// a refusal now means exactly one thing, and no caller has to handle a case
+/// that cannot occur.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExactWriteError {
     /// The `Score` violates an invariant `griff-core` itself declares, so
@@ -26,30 +29,12 @@ pub enum ExactWriteError {
         /// The model's own verdict.
         reason: ValidationError,
     },
-    /// The `Score` is perfectly writable in principle; this increment of
-    /// the writer does not reach that part of the tree yet.
-    ///
-    /// A slice boundary, never a claim that an inhabited state is
-    /// unspellable — the census forbids the latter, and reporting a
-    /// build-stage limit as a domain judgement would smuggle it in.
-    NotYetWritten {
-        /// The part of the tree that is still unimplemented.
-        what: &'static str,
-        /// The task that will write it.
-        task: &'static str,
-    },
 }
 
 impl Display for ExactWriteError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Self::OutsideWriterDomain { at, reason } => {
-                write!(f, "{at} is outside the exact writer's domain: {reason:?}")
-            }
-            Self::NotYetWritten { what, task } => {
-                write!(f, "{what} is not written yet; {task} adds it")
-            }
-        }
+        let Self::OutsideWriterDomain { at, reason } = self;
+        write!(f, "{at} is outside the exact writer's domain: {reason:?}")
     }
 }
 
