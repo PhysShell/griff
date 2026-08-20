@@ -230,3 +230,41 @@ output containment (such an output necessarily exists and refuses
 The isolated crate remains a non-workspace member (root `Cargo.toml`
 `exclude` unchanged) and is verified by the dedicated commands above, per
 the ADR-0010 isolation posture.
+
+## Repair round 1 — hostile implementation review of `bbc7928`
+
+The independent implementation review (PR #191) FAILED acceptance at
+`bbc7928` with three implementation blockers and one acceptance-evidence
+blocker — all repairable inside the accepted law; none reopened `47e734c`.
+Repairs follow the mandated history discipline; the original nine commits
+are untouched.
+
+| # | Commit | Kind | Content |
+|---|---|---|---|
+| 10 | `8de362a` | RED | Witnesses for blockers 1–2: empty foreign reserved subdirectory; allowed reserved name that is a symlink; directory occupant at the lock path. Evidence in the message: 0 passed / 3 failed (the two shape cases wrongly *applied*; the lock case returned `ApplyIoError`). |
+| 11 | `9d505cd` | RED | Witness for blocker 3: marker-publication failure is a post-acquisition exit — primary `ApplyIoError` + orthogonal release warning on a double fault; no warning and no stale lock on a single fault. 0 passed / 1 failed. |
+| 12 | `987d0a3` | GREEN | `check_reserved_shape` inspects the reserved root at the directory-entry level (empty subdirectory = foreign; allowed names must be regular files); `classify_lock_occupant` stats before ever reading (non-regular / unstatable / unreadable occupants fail closed as `ApplicationIndexLockPathOccupied`, never read — a FIFO can no longer block the no-wait protocol); lock acquisition split at the true acquisition point (`create_lock` / `publish_marker`) so every post-create exit releases through the single §8.2 warning channel. |
+| 13 | `92c97d6` | TEST-FIX | C16(a) made exact: the live window now materializes a **non-empty strict prefix** of the marker at the held lock path (asserted as such) before the inline second applier observes it — the preregistered case as accepted, not the empty-state approximation. |
+| 14 | (this commit) | DOCS | This evidence update. |
+
+Corrected matrix statement: **63/63 holds as of `92c97d6`** — before it,
+C16's live half was an approximation and the claim was overstated, exactly
+as the review found. The four review witnesses in
+`tests/apply_review_repairs.rs` are additional to the preregistered 63.
+
+Updated totals: isolated crate suite **116 passed / 0 failed** (45 frozen
+Slice 1 + 71 Slice 2); crate clippy `deny(all)` clean; fmt clean;
+`cargo +1.92 check --all-targets` clean. The repairs touch only the
+isolated crate, so the workspace results recorded above are unaffected
+(the workspace does not build this crate).
+
+What the review confirmed intact is recorded in its comment on PR #191:
+the 12-step ordering, literal `verify_plan` reuse, the single replay
+attribution, hardlink refusal, under-lock temp inspection, `create_new`
+temp, the preservation split, the duplicate-key pass, the staged re-read,
+the single real preflight, and the commit-point semantics.
+
+Acceptance state: implementation acceptance remains **pending independent
+re-review** at the new head. Contract acceptance at `47e734c` is
+unaffected; Slice 3, the controlled pilot, and real-/full-corpus labeling
+remain BLOCKED.
