@@ -2409,3 +2409,19 @@ Architectural decisions go to [`adr/`](adr/) instead.
   those goldens exist to say. Verified by nineteen writer mutations, none of
   which survived; the attempt to reintroduce a `NotYetWritten` path is now a
   compile error rather than a test failure.
+
+- 2026-08-20 — In the context of closing SWG-4A-05, facing an independent
+  review that found the acceptance evidence weaker than the closure claimed,
+  we decided for two tests-only continuation commits and against amending the
+  four already made, to achieve a history where the gap and its repair are
+  both legible, accepting two more commits on the branch. Two findings, both
+  in the evidence rather than in the writer — no production line changed. The
+  musical mutation matrix asserted only that the bytes moved, never that
+  `ExactSemanticDiff` saw the same fact: the comparator is separately well
+  covered, and two suites agreeing independently is not the composition
+  witness the contract asked for. And the span-evidence row moved `source` and
+  confidence together, so "a matrix over every added fact" was false by one
+  field. Accepting that the bound assertions state the comparator's *coarse*
+  paths — `NotePosition` and `TechniqueEvidence` are composite canonical
+  fields to the exact walker on purpose, and improving the comparator to make
+  the test prettier would be 4A-05 editing something it was told not to touch.

@@ -567,8 +567,10 @@ cannot occur.
 
 Acceptance, all met:
 
-- mutating any one of these fields changes the exact text — a matrix over
-  every added fact, plus nineteen writer mutations of which none survived;
+- mutating any one of these fields changes the exact text **and** is
+  reported by `ExactSemanticDiff` at its expected path — one mutation
+  binding both, over every added fact, plus twenty writer mutations of which
+  none survived;
 - `NormalizedMusicalDiff` may call some of those mutations equal;
   `ExactSemanticDiff` must see every one of them;
 - source and loss facts do not disappear merely because they make no sound —
