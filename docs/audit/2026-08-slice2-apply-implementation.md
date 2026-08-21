@@ -268,3 +268,40 @@ Acceptance state: implementation acceptance remains **pending independent
 re-review** at the new head. Contract acceptance at `47e734c` is
 unaffected; Slice 3, the controlled pilot, and real-/full-corpus labeling
 remain BLOCKED.
+
+## Repair round 2 — re-review of `5aca93a`
+
+The independent re-review confirmed all four round-1 repairs and the
+validity of the repair history, then FAILED acceptance on one remaining
+blocker: the reserved subtree was excluded from corpus-content
+enumeration only *after* the recursive walk — `load_snapshot` ran
+`walk()` over the whole tree (and `Path::is_dir()` follows directory
+symlinks) before `check_reserved_shape`, so a foreign reserved subtree
+was traversed before the §4.2 / §6 step-3 shape law could refuse it. A
+reserved root symlinked to an external directory was even enumerated
+*outside* the corpus, and alias loops could degrade into `ApplyIoError`
+or path-length failures instead of the immediate `CorpusTreeDisagreement`
+the accepted law assigns. Repairable inside the accepted law; `47e734c`
+not reopened.
+
+| # | Commit | Kind | Content |
+|---|---|---|---|
+| 15 | `94e5c38` | FIXTURE | `walk:descend` trace point — fires before every descent below the corpus root, making "this subtree was never traversed" observable; inert in production like every other fault point. |
+| 16 | `60fc228` | RED | Two witnesses, both armed with the trace hook over fixture corpora that have no legitimate subdirectory: a foreign subtree `song-curation/extra/deep/…` and a reserved root symlinked to an external directory. Evidence in the message: both FAILED with the identical defect signature `ApplyIoError { path: ".../corpus/song-curation", op: "walk", detail: "injected fault" }` — the walk descended into / followed the symlinked reserved root. |
+| 17 | `96ca755` | GREEN | The walk computes each entry's relative name first and skips the reserved root before any type check or descent (`is_dir` would follow a symlink merely to answer). Both witnesses flip to the shape law's own `CorpusTreeDisagreement` with the hook never reached; the post-walk `is_reserved` filter remains only as a redundant invariant. No refusal, schema, or ordering change. |
+| 18 | (this commit) | DOCS | This evidence update + PR-body refresh (the review's non-blocking cleanup: the body still described the pre-repair head). |
+
+The §14 matrix is unchanged by this round: **63/63 continues to hold**
+(the round-2 witnesses are additional, like the round-1 ones), and the
+refusals involved are the ones the taxonomy already assigned — no new
+refusal, no law change, no stop condition triggered.
+
+Updated totals: isolated crate suite **118 passed / 0 failed** (45 frozen
+Slice 1 + 73 Slice 2); crate clippy `deny(all)` clean; fmt clean;
+`cargo +1.92 check --all-targets` clean. Only the isolated crate is
+touched; the workspace results recorded above are unaffected.
+
+Acceptance state: implementation acceptance remains **pending independent
+re-review** of this round. Contract acceptance at `47e734c` is
+unaffected; Slice 3, the controlled pilot, and real-/full-corpus labeling
+remain BLOCKED.
