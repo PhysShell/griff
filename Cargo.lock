@@ -1828,6 +1828,7 @@ dependencies = [
  "griff-core",
  "griff-pattern",
  "griff-swang",
+ "guitarpro",
  "midly",
  "serde_json",
  "thiserror 2.0.18",
