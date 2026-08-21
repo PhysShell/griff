@@ -3,10 +3,11 @@
 //! This module is the writer half: a canonical `Score` in, one canonical
 //! level-2 document out. The parser half arrives later and separately.
 //!
-//! Written incrementally by slice. SWG-4A-03 covers the header, `ppqn`, and
-//! the master timeline; tracks and everything below them are SWG-4A-04 and
-//! after, and a `Score` carrying them is refused with
-//! [`ExactWriteError::NotYetWritten`] rather than half-written.
+//! Built in slices — SWG-4A-03 the transport, 4A-04 the structure, 4A-05 the
+//! leaves and metadata — and **complete** since the last of them. There is no
+//! part of the canonical tree it declines to spell, so the only refusal left
+//! is [`ExactWriteError::OutsideWriterDomain`]: your `Score` breaks an
+//! invariant `griff-core` itself declares.
 
 mod error;
 mod write;

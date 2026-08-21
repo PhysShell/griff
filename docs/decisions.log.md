@@ -2392,3 +2392,36 @@ Architectural decisions go to [`adr/`](adr/) instead.
   and any real-/full-corpus labeling remain separately gated (ADR-0033
   Decision 10), and any implementation deviation from the accepted contract
   reopens acceptance rather than being decided in code.
+
+- 2026-08-18 — In the context of SWG-4A-05 completing the exact writer, facing
+  an `ExactWriteError::NotYetWritten` variant that had described the writer's
+  build progress rather than any property of a `Score`, we decided for
+  **removing it now**, together with `check_slice_frontier`, and against
+  keeping it until SWG-4A-10 or later, to achieve a refusal that means exactly
+  one thing — your `Score` violates an invariant `griff-core` itself declares
+  — and to spare the CLI a match arm for a case that cannot occur. Accepting
+  that this is a breaking change to a public enum, which is why it is made now
+  rather than after the level-2 freeze: the variant is unreachable the moment
+  the writer is complete, and an API that outlives its meaning is harder to
+  retire the longer it waits. The five tests that guarded it are sunset rather
+  than deleted — each owned a structural property that survives the
+  refusal — and no SWG-4A-03 or 4A-04 byte-golden changed, which is what
+  those goldens exist to say. Verified by nineteen writer mutations, none of
+  which survived; the attempt to reintroduce a `NotYetWritten` path is now a
+  compile error rather than a test failure.
+
+- 2026-08-20 — In the context of closing SWG-4A-05, facing an independent
+  review that found the acceptance evidence weaker than the closure claimed,
+  we decided for two tests-only continuation commits and against amending the
+  four already made, to achieve a history where the gap and its repair are
+  both legible, accepting two more commits on the branch. Two findings, both
+  in the evidence rather than in the writer — no production line changed. The
+  musical mutation matrix asserted only that the bytes moved, never that
+  `ExactSemanticDiff` saw the same fact: the comparator is separately well
+  covered, and two suites agreeing independently is not the composition
+  witness the contract asked for. And the span-evidence row moved `source` and
+  confidence together, so "a matrix over every added fact" was false by one
+  field. Accepting that the bound assertions state the comparator's *coarse*
+  paths — `NotePosition` and `TechniqueEvidence` are composite canonical
+  fields to the exact walker on purpose, and improving the comparator to make
+  the test prettier would be 4A-05 editing something it was told not to touch.

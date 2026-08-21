@@ -116,7 +116,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-4A-02 | `ExactScoreDocument` as a transient syntax form | code | 4A-01 |
 | SWG-4A-03 | Writer: transport and master timeline | code | 4A-01 |
 | SWG-4A-04 | Writer: tracks, voices, groups, atoms | code | 4A-03 |
-| SWG-4A-05 | Writer: techniques, positions, evidence, losses | code | 4A-04, CORE-01 |
+| SWG-4A-05 | Writer: techniques, positions, evidence, losses *(done)* | code | 4A-04, CORE-01 |
 | SWG-4A-06 | Parser skeleton and level/root dispatch | code | 4A-01, INF-04, INF-06 |
 | SWG-4A-07 | Parser: exact scalar types | code | 4A-06 |
 | SWG-4A-08 | Parser: structural tree | code | 4A-07, 4A-02 |
@@ -548,22 +548,36 @@ Non-negotiable:
 Acceptance is measured by `ExactSemanticDiff`, not by "the MIDI sounds
 about right".
 
-### SWG-4A-05 — Writer: techniques, positions, evidence, metadata, losses
+### SWG-4A-05 — Writer: techniques, positions, evidence, metadata, losses *(done)*
 
-**Kind:** code. **Depends on:** 4A-04, CORE-01 — both **done**, so this task
-is unblocked. CORE-01 ran first so the metadata writer is built on the final
-`u64` payload indices rather than rewritten onto them.
+**Kind:** code. **Depends on:** 4A-04, CORE-01 — both done before it.
+CORE-01 ran first so the metadata writer was built on the final `u64` payload
+indices rather than rewritten onto them.
 
-The remaining facts: note marks, technique spans and their ranges, evidence,
+The facts it added: note marks, technique spans and their ranges, evidence,
 string/fret position, position evidence and confidence (`ConfidenceBps`),
-source metadata, import warnings, loss facts.
+escaped strings, source metadata, import warnings, loss facts.
 
-Acceptance:
+**The exact writer is complete.** This was the last slice, so
+`check_slice_frontier` and `ExactWriteError::NotYetWritten` were removed with
+it: the writer no longer declines any part of the canonical tree, and its one
+remaining refusal is a judgement about the `Score` rather than about itself.
+Removing the variant here rather than after 4A-10 spares the CLI a case that
+cannot occur.
 
-- mutating any one of these fields changes the exact text;
+Acceptance, all met:
+
+- mutating any one of these fields changes the exact text **and** is
+  reported by `ExactSemanticDiff` at its expected path — one mutation
+  binding both, over every added fact, plus twenty writer mutations of which
+  none survived;
 - `NormalizedMusicalDiff` may call some of those mutations equal;
   `ExactSemanticDiff` must see every one of them;
-- source and loss facts do not disappear merely because they make no sound.
+- source and loss facts do not disappear merely because they make no sound —
+  checked as the triple it actually is: normalized-equal, exact-different,
+  bytes-different;
+- §6.1's reference document is produced whole and compared byte for byte,
+  which is the first proof that every part composes.
 
 ### SWG-4A-06 — Parser skeleton and level/root dispatch
 
@@ -1202,9 +1216,12 @@ INF-01 status sync                    (done)
        └─→ 4A-01 exact grammar             (done)
                 │
                 ├─→ 4A-03 → 4A-04 → CORE-01 → 4A-05 → 4A-10   writer lane
-                │     (done)   (done)   (done)      ↑
-                │                      │            next
+                │     (done)   (done)   (done)   (done)   ↑
+                │                      │                  next
                 │                      └─→ also gated 4A-12 and the level-2 freeze
+                │
+                │   the exact writer is complete at 4A-05; 4A-10 is a CLI
+                │   surface over it, not another slice of it
                 │
                 └─→ 4A-02 → INF-04 → INF-06 → 4A-06 parser skeleton
   -> 4A-02..4A-09 writer / parser / builder
