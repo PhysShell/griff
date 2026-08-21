@@ -429,7 +429,10 @@ fn cmd_swang_fmt(path: &Path) -> Result<(), CliError> {
 /// canonical level-2 exact text (SWG-4A-10).
 ///
 /// Two surfaces, and the split is the whole contract. The document goes to
-/// stdout and only to stdout; import warnings and diagnostics go to stderr.
+/// stdout and only to stdout; import warnings and diagnostics go to stderr,
+/// one rendered entry per warning and in the loss report's order. An entry
+/// is not promised to occupy one physical line — an `Other` message may hold
+/// a line break, and nothing here escapes it.
 /// A warning stays in the document's `loss` block whether or not stderr also
 /// mentioned it — `griff_cli::swang_dump` renders the two independently, and
 /// this function only decides which stream each reaches.

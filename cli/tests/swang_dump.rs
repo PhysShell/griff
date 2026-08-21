@@ -10,7 +10,7 @@
 //!
 //! A warning that reached `Score.loss` is *not* dropped from the exact text
 //! because a human already saw it on stderr. The loss report is a canonical
-//! fact; the stderr line is a courtesy. Conflating them would undo what
+//! fact; the stderr rendering is a courtesy. Conflating them would undo what
 //! SWG-4A-05 spent twenty mutations establishing.
 
 // Reason: integration-test code. `unwrap`/`expect`/`panic` abort loudly with
@@ -503,7 +503,7 @@ fn a_dumped_score_carries_its_document_and_its_warnings_together() {
     assert_eq!(
         dumped.warnings.len(),
         score.loss.warnings.len(),
-        "one stderr line per canonical warning — rendered, never consumed"
+        "one stderr entry per canonical warning — rendered, never consumed"
     );
 }
 
@@ -533,7 +533,7 @@ fn the_cli_prints_exactly_what_the_writer_produces() {
 
 #[test]
 fn the_warning_lines_keep_the_loss_report_order() {
-    // Found by falsification: sorting the stderr lines survived the first
+    // Found by falsification: sorting the stderr entries survived the first
     // pass, because nothing here looked at their order. `LossReport` appends
     // and the exact walker compares positionally (§2.7); the human rendering
     // is a rendering, so it inherits that order rather than choosing one.

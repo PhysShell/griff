@@ -2440,3 +2440,16 @@ Architectural decisions go to [`adr/`](adr/) instead.
   The composition returns both surfaces together or neither, which is why "no
   partial document" is structural here rather than a rule someone has to
   remember.
+
+- 2026-08-21 — In the context of closing SWG-4A-10, facing an independent
+  review that found the entry above overclaiming its own surface, we decided
+  to correct the wording and against inventing the behaviour that would have
+  made it true, to achieve a documented contract the code actually keeps.
+  "One line per warning on stderr" is not something 4A-10 can promise:
+  `ImportWarning::Other(String)` is unrestricted and may contain an embedded
+  LF — SWG-4A-05 pinned exactly that case in the exact text, where the
+  grammar escapes it. The terminal rendering has no such grammar, and 4A-10
+  introduces no escaping or sanitization policy of its own. The invariant is
+  one rendered entry per `LossReport` element, preserving vector order.
+  Production behavior is unchanged; so is the test suite, because freezing a
+  stderr line policy the contract never asked for is the defect, not the fix.

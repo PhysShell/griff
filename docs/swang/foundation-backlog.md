@@ -708,8 +708,11 @@ Acceptance, all met:
   the CLI and the writer drift together into agreeing about something wrong;
 - an import warning is reported on stderr **and** kept in the exact text.
   Two surfaces, not one: stdout carries a canonical fact, stderr a courtesy;
-- the stderr lines keep the loss report's vector order (§2.7), on a fixture
-  built so that sorted order and vector order visibly disagree;
+- one rendered stderr entry per `ImportWarning`, keeping the loss report's
+  vector order (§2.7), on a fixture built so that sorted order and vector
+  order visibly disagree. An entry, not a physical line: `Other(String)` is
+  unrestricted and may contain a line break, and this task adds no escaping
+  policy for the terminal;
 - two runs of one file produce byte-identical stdout;
 - an unimportable file exits non-zero with an empty stdout;
 - a score outside the writer's domain yields no document at all. Proved at
@@ -718,7 +721,7 @@ Acceptance, all met:
   numerator to 4/4 before the writer ever sees them. The composition returns
   the whole document or nothing, so there is no partial value to print;
 - eleven mutations of the dump path, ten caught on the first pass. The
-  eleventh — alphabetising the stderr lines — survived, and its guard is
+  eleventh — alphabetising the stderr entries — survived, and its guard is
   the fourth commit.
 
 The exact writer is unchanged: the diff is one `griff-cli` module, one clap
