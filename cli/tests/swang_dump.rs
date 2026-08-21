@@ -169,6 +169,75 @@ fn midi_with_a_lossy_name() -> Vec<u8> {
     )
 }
 
+/// Eleven note tracks, of which the ones at raw index 2 and 10 carry names
+/// that are not valid UTF-8. Two warnings, in that order — and "track 10"
+/// sorts *before* "track 2", so any tidying of the list is visible.
+fn midi_with_two_lossy_names() -> Vec<u8> {
+    use midly::{
+        num::{u15, u24, u28, u4, u7},
+        Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
+    };
+
+    let track = |name: &'static [u8], key: u8| -> Vec<TrackEvent<'static>> {
+        vec![
+            TrackEvent {
+                delta: u28::from_int_lossy(0),
+                kind: TrackEventKind::Meta(MetaMessage::TrackName(name)),
+            },
+            TrackEvent {
+                delta: u28::from_int_lossy(0),
+                kind: TrackEventKind::Meta(MetaMessage::TimeSignature(4, 2, 24, 8)),
+            },
+            TrackEvent {
+                delta: u28::from_int_lossy(0),
+                kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::from_int_lossy(500_000))),
+            },
+            TrackEvent {
+                delta: u28::from_int_lossy(0),
+                kind: TrackEventKind::Midi {
+                    channel: u4::new(0),
+                    message: MidiMessage::NoteOn {
+                        key: u7::new(key),
+                        vel: u7::new(90),
+                    },
+                },
+            },
+            TrackEvent {
+                delta: u28::from_int_lossy(480),
+                kind: TrackEventKind::Midi {
+                    channel: u4::new(0),
+                    message: MidiMessage::NoteOff {
+                        key: u7::new(key),
+                        vel: u7::new(0),
+                    },
+                },
+            },
+            TrackEvent {
+                delta: u28::from_int_lossy(0),
+                kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
+            },
+        ]
+    };
+
+    let mut smf = Smf::new(Header {
+        format: Format::Parallel,
+        timing: Timing::Metrical(u15::new(480)),
+    });
+    smf.tracks = (0..11_u8)
+        .map(|i| {
+            let name: &'static [u8] = if i == 2 || i == 10 {
+                b"Bad \xff"
+            } else {
+                b"Fine"
+            };
+            track(name, 40_u8.saturating_add(i))
+        })
+        .collect();
+    let mut bytes = Vec::new();
+    smf.write_std(&mut bytes).expect("fixture must serialise");
+    bytes
+}
+
 /// A Guitar Pro (GP7 `.gp`) fixture, written by the `guitarpro` crate's own
 /// serializer — an encoder independent of griff's importer.
 fn guitar_pro_bytes() -> Vec<u8> {
@@ -459,5 +528,56 @@ fn the_cli_prints_exactly_what_the_writer_produces() {
         stdout_of(&out),
         expected,
         "the CLI is a transport: no sorting, no tidying, no second formatter"
+    );
+}
+
+#[test]
+fn the_warning_lines_keep_the_loss_report_order() {
+    // Found by falsification: sorting the stderr lines survived the first
+    // pass, because nothing here looked at their order. `LossReport` appends
+    // and the exact walker compares positionally (§2.7); the human rendering
+    // is a rendering, so it inherits that order rather than choosing one.
+    let bytes = midi_with_two_lossy_names();
+    let score = import_score_auto(&bytes).expect("the fixture imports");
+    assert_eq!(
+        score.loss.warnings.len(),
+        2,
+        "the fixture must produce exactly the two warnings this test reads"
+    );
+
+    let dumped = dump_score(&score).expect("the fixture is inside the writer's domain");
+    let first = dumped.warnings.first().expect("two warnings were reported");
+    let second = dumped.warnings.get(1).expect("two warnings were reported");
+    assert!(
+        first.contains("track 2 "),
+        "vector order puts the lower raw index first: {first:?}"
+    );
+    assert!(
+        second.contains("track 10 "),
+        "and the higher one second: {second:?}"
+    );
+
+    let mut tidied = dumped.warnings.clone();
+    tidied.sort();
+    assert_ne!(
+        tidied, dumped.warnings,
+        "the fixture must discriminate: if sorted order equalled vector \
+         order, this test could not see the difference it exists to see"
+    );
+
+    // The same order survives the trip through the terminal.
+    let path = input("warning_order.mid", &bytes);
+    let out = dump(&path);
+    fs::remove_file(&path).ok();
+    let errs = stderr_of(&out);
+    let at_two = errs
+        .find("track 2 ")
+        .expect("the first warning reached stderr");
+    let at_ten = errs
+        .find("track 10 ")
+        .expect("the second warning reached stderr");
+    assert!(
+        at_two < at_ten,
+        "stderr keeps the loss report's order too: {errs:?}"
     );
 }
