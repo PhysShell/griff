@@ -656,8 +656,10 @@ fn load_snapshot(corpus: &Path) -> Result<Snapshot, ApplyRefusal> {
     let manifest: CorpusManifest = serde_json::from_str(&manifest_text)
         .map_err(|e| tree_disagreement(format!("root manifest.json: {e}")))?;
 
-    // Recursive sorted walk, the migrate discipline; the reserved area is
-    // excluded from corpus-content enumeration and shape-checked instead.
+    // Recursive sorted walk, the migrate discipline. The walk itself skips
+    // the reserved root before any descent (§4.2) and the shape law below
+    // classifies it independently; the post-walk filter stays only as a
+    // redundant invariant.
     let mut files = Vec::new();
     walk(corpus, corpus, &mut files).map_err(|(p, e)| io_refusal(&p, "walk", &e))?;
     files.sort();
@@ -722,6 +724,19 @@ fn walk(
     let entries = fs::read_dir(dir).map_err(|e| (dir.to_path_buf(), e))?;
     for entry in entries {
         let path = entry.map_err(|e| (dir.to_path_buf(), e))?.path();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        // §4.2: the reserved subtree is excluded from corpus-content
+        // enumeration BEFORE any type check or descent — `is_dir` follows
+        // directory symlinks, so even asking would traverse a symlinked
+        // reserved root. Its shape is classified independently, no-follow,
+        // at the directory-entry level.
+        if rel == RESERVED_DIR {
+            continue;
+        }
         if path.is_dir() {
             // Trace point: fires before every descent below the corpus root,
             // so a witness can prove a subtree was NOT traversed. Inert in
@@ -729,11 +744,6 @@ fn walk(
             fault::hit("walk:descend").map_err(|e| (path.clone(), e))?;
             walk(root, &path, out)?;
         } else {
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
             out.push((rel, path));
         }
     }
