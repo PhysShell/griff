@@ -723,6 +723,10 @@ fn walk(
     for entry in entries {
         let path = entry.map_err(|e| (dir.to_path_buf(), e))?.path();
         if path.is_dir() {
+            // Trace point: fires before every descent below the corpus root,
+            // so a witness can prove a subtree was NOT traversed. Inert in
+            // production (no hook registered).
+            fault::hit("walk:descend").map_err(|e| (path.clone(), e))?;
             walk(root, &path, out)?;
         } else {
             let rel = path
