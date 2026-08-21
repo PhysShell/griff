@@ -128,6 +128,76 @@ fn io_fail() -> io::Result<()> {
     Err(io::Error::other("injected fault"))
 }
 
+/// Re-review blocker (round 2): the reserved subtree must be excluded from
+/// corpus-content enumeration BEFORE any descent (§4.2 / §6 step 3) — shape
+/// classification of the immediate reserved-root entry is already sufficient
+/// to refuse, so a foreign subtree is never traversed. The armed
+/// `walk:descend` trace hook makes traversal observable: if the walk
+/// descends anywhere (the fixture corpus has no legitimate subdirectory),
+/// the run degrades to `ApplyIoError`; the required outcome is the shape
+/// law's own `CorpusTreeDisagreement` with the hook never reached.
+#[test]
+fn rereview_foreign_reserved_subtree_refused_without_traversal() {
+    let l = layout("rerev-subtree");
+    valid_setup(&l);
+    let deep = l.corpus.join("song-curation/extra/deep");
+    fs::create_dir_all(&deep).expect("mk foreign subtree");
+    fs::write(deep.join("foreign.json"), "{}").expect("foreign content");
+    fault::set("walk:descend", io_fail);
+    let result = run(&l);
+    fault::clear();
+    let refusal = result.primary.expect_err("expected a refusal");
+    match &refusal {
+        ApplyRefusal::CorpusTreeDisagreement { detail } => {
+            assert!(
+                detail.contains("extra"),
+                "the immediate foreign entry is named without traversal: {detail}"
+            );
+        }
+        other => panic!(
+            "expected CorpusTreeDisagreement without traversal, got {other:?} \
+             (ApplyIoError here means the walk descended)"
+        ),
+    }
+    assert!(!l.output.exists(), "nothing written");
+}
+
+/// Re-review blocker (round 2), symlink half: `Path::is_dir()` follows a
+/// directory symlink, so a reserved root that is a symlink to an external
+/// directory was traversed OUTSIDE the corpus before the shape law ran. The
+/// no-follow shape classification of the reserved root itself must refuse
+/// first; the external target is never entered.
+#[test]
+fn rereview_reserved_root_symlink_refused_without_traversal() {
+    let l = layout("rerev-symlink");
+    valid_setup(&l);
+    let outside = l.td.path.join("outside");
+    fs::create_dir_all(outside.join("inner")).expect("mk external tree");
+    fs::write(outside.join("inner/marker.json"), "{}").expect("external content");
+    std::os::unix::fs::symlink(&outside, l.corpus.join("song-curation")).expect("symlink");
+    fault::set("walk:descend", io_fail);
+    let result = run(&l);
+    fault::clear();
+    let refusal = result.primary.expect_err("expected a refusal");
+    match &refusal {
+        ApplyRefusal::CorpusTreeDisagreement { detail } => {
+            assert!(
+                detail.contains("not a directory"),
+                "the symlinked reserved root is classified no-follow: {detail}"
+            );
+        }
+        other => panic!(
+            "expected CorpusTreeDisagreement without traversal, got {other:?} \
+             (ApplyIoError here means the walk followed the symlink)"
+        ),
+    }
+    assert!(!l.output.exists(), "nothing written");
+    assert!(
+        outside.join("inner/marker.json").exists(),
+        "the external tree is untouched"
+    );
+}
+
 /// Review blocker 3: after `create_new` succeeds the lock IS acquired, so a
 /// marker-publication failure is a post-acquisition exit — §8.2's result
 /// shape applies in full: the I/O refusal stays the primary outcome, and a
