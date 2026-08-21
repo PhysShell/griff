@@ -121,7 +121,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-4A-07 | Parser: exact scalar types | code | 4A-06 |
 | SWG-4A-08 | Parser: structural tree | code | 4A-07, 4A-02 |
 | SWG-4A-09 | Checked `ScoreBuilder` | code | 4A-08 |
-| SWG-4A-10 | `griff swang dump` | CLI | 4A-05 |
+| SWG-4A-10 | `griff swang dump` *(done)* | CLI | 4A-05 |
 | SWG-4A-11 | `griff swang verify` | CLI | 4A-09, 4A-10 |
 | SWG-4A-12 | The three round-trip laws + mutation matrix | code | 4A-09, 4A-05, CORE-01 |
 | SWG-4A-13 | Expressibility negative matrix | code | 4A-12 |
@@ -683,7 +683,7 @@ syntactically valid text
 
 There is no third outcome, and no partially valid `Score` is ever returned.
 
-### SWG-4A-10 — `griff swang dump`
+### SWG-4A-10 — `griff swang dump` *(done)*
 
 **Kind:** CLI. **Depends on:** 4A-05
 
@@ -696,6 +696,35 @@ Contract: import runs through the existing adapters; the loss report stays
 in the exact text; the score goes to stdout and only to stdout; diagnostics
 and import warnings go to stderr; no hidden normalization; two runs produce
 byte-identical output.
+
+Acceptance, all met:
+
+- both importer branches reach the writer — a Guitar Pro fixture and a MIDI
+  fixture each produce a document opening `swang 2`, from encoders
+  independent of griff (`guitarpro`'s own serializer and `midly`);
+- stdout carries the document and nothing else, checked as the absence of
+  CLI chatter **and**, more strongly, as equality with
+  `write_score(import_score_auto(bytes))` — a hand-copied golden would let
+  the CLI and the writer drift together into agreeing about something wrong;
+- an import warning is reported on stderr **and** kept in the exact text.
+  Two surfaces, not one: stdout carries a canonical fact, stderr a courtesy;
+- the stderr lines keep the loss report's vector order (§2.7), on a fixture
+  built so that sorted order and vector order visibly disagree;
+- two runs of one file produce byte-identical stdout;
+- an unimportable file exits non-zero with an empty stdout;
+- a score outside the writer's domain yields no document at all. Proved at
+  the `griff_cli::swang_dump` seam, because no file reaching `dump` is
+  refused — the MIDI reader rejects ppqn 0 and normalises a zero meter
+  numerator to 4/4 before the writer ever sees them. The composition returns
+  the whole document or nothing, so there is no partial value to print;
+- eleven mutations of the dump path, ten caught on the first pass. The
+  eleventh — alphabetising the stderr lines — survived, and its guard is
+  the fourth commit.
+
+The exact writer is unchanged: the diff is one `griff-cli` module, one clap
+subcommand, one dispatch arm, and one `CliError` variant. `griff swang
+verify` (4A-11) now has its CLI-side dependency; its other one, 4A-09, is
+still open.
 
 ### SWG-4A-11 — `griff swang verify`
 
@@ -1216,14 +1245,16 @@ INF-01 status sync                    (done)
        └─→ 4A-01 exact grammar             (done)
                 │
                 ├─→ 4A-03 → 4A-04 → CORE-01 → 4A-05 → 4A-10   writer lane
-                │     (done)   (done)   (done)   (done)   ↑
-                │                      │                  next
+                │     (done)   (done)   (done)   (done)   (done)
+                │                      │
                 │                      └─→ also gated 4A-12 and the level-2 freeze
                 │
                 │   the exact writer is complete at 4A-05; 4A-10 is a CLI
                 │   surface over it, not another slice of it
                 │
                 └─→ 4A-02 → INF-04 → INF-06 → 4A-06 parser skeleton
+                      ↑
+                      next
   -> 4A-02..4A-09 writer / parser / builder
   -> 4A-10..4A-14 dump / verify / laws / fuzz
   -> 4B corpus acceptance
