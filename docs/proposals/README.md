@@ -36,6 +36,11 @@ live contract.
 - [`hard-constraint-contract.md`](hard-constraint-contract.md) — one typed
   rule layer separating legality from preference, plus MiniZinc as a strictly
   offline oracle (Constraint Lab). Status: for discussion.
+- [`deterministic-search-and-llm-boundary.md`](deterministic-search-and-llm-boundary.md)
+  — one-best DP as the baseline; deterministic k-best and measurable diversity
+  before A*; `ArrangementIntent` as the only optional LLM-facing generation
+  contract; explicit provenance, oracle, benchmark, and kill criteria. Status:
+  for discussion.
 - [`preference-and-similarity-learning.md`](preference-and-similarity-learning.md)
   — the staged, benchmark-gated order in which ML enters Griff: preference
   evidence, retrieval-only embeddings, a human similarity benchmark, then a
