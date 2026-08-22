@@ -2453,3 +2453,27 @@ Architectural decisions go to [`adr/`](adr/) instead.
   one rendered entry per `LossReport` element, preserving vector order.
   Production behavior is unchanged; so is the test suite, because freezing a
   stderr line policy the contract never asked for is the defect, not the fix.
+
+- 2026-08-22 — In the context of SWG-4A-02, facing a note's `marks` word
+  whose canonical counterpart is a set, we decided to store the marks as a
+  sequence in the syntax form and against a set or a bitset, to achieve a
+  document that can hold `marks [tap accent]` and `marks [accent accent]`
+  exactly as written, accepting that the syntax form is then able to spell
+  something the builder must refuse. A set would have accepted both and
+  handed back `[accent tap]`: normalization performed by a struct
+  definition, with no diagnostic, no author, and no place for 4A-09 to say
+  which rule was broken. This is the one field where §6.2's "order within a
+  repeated slot is semantic" does not apply — a set has no author order —
+  and the sequence is still the right shape, because the alternative is not
+  "no order" but "an order chosen silently".
+
+- 2026-08-22 — In the context of SWG-4A-02's closure, facing the acceptance
+  bullet "after lowering, the evaluator sees only `Score`", we decided to
+  split it into a structural half discharged now and a dynamic half left to
+  SWG-4A-09, and against marking it met, to achieve a record that does not
+  claim a property of code that has not been written. Lowering does not
+  exist at 4A-02, so no test here can observe what the evaluator receives
+  after it. What can be observed — and is — is that the document cannot
+  reach the evaluator at all: `mod ast` is private to `syntax`, so naming
+  the type from outside is `E0603`. Accepting that the bullet stays open in
+  the backlog until 4A-09 closes it.
