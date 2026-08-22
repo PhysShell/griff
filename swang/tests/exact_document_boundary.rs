@@ -203,29 +203,85 @@ fn the_module_itself_is_crate_private() {
 
 // ── C. nothing outside the AST is coupled to it ─────────────────────────────
 
+/// Every `.rs` file under `relative`, at any depth.
+fn rust_files_under(relative: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![workspace_root().join(relative)];
+    while let Some(dir) = pending.pop() {
+        let entries = fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{} must be readable: {e}", dir.display()));
+        for entry in entries {
+            let path = entry.expect("a readable directory entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
 #[test]
 fn no_production_code_outside_the_ast_mentions_the_document() {
-    // 4A-02 adds a type; it does not wire one in. The evaluator and the
-    // pattern compiler keep taking exactly what they took before, and the
-    // generation path never learns this type exists.
+    // 4A-02 adds a type; it does not wire one in.
+    //
+    // Two different prohibitions, because they really are different, and
+    // collapsing them into one crate-wide scan would break the next two
+    // tasks. `griff-core` and the CLI must never see this type at any depth,
+    // now or later — so those are walked recursively and a module added
+    // tomorrow is covered without anyone remembering to list it. Inside
+    // `griff-swang` the prohibition is *not* crate-wide: 4A-08's parser will
+    // legitimately produce an `ExactScoreDocument` and 4A-09's builder will
+    // legitimately consume one. They are the pipeline this task exists to
+    // feed. Banning the name across `swang/src` would fail on exactly the
+    // work 4A-02 is a prerequisite for — the same shape of defect as a check
+    // that banned the token `v2` outright.
+    let mut checked = 0_usize;
+
+    for tree in ["core/src", "cli/src"] {
+        let files = rust_files_under(tree);
+        assert!(
+            files.len() >= 3,
+            "{tree} should hold several modules; a walk that found {} has \
+             stopped being a witness",
+            files.len()
+        );
+        for path in files {
+            let text = code_of(&fs::read_to_string(&path).expect("a readable source file"));
+            assert!(
+                !mentions(&text, "ExactScoreDocument"),
+                "{} must not mention the transient syntax form: the document \
+                 never crosses into the model crate or the CLI",
+                path.display()
+            );
+            checked = checked.saturating_add(1);
+        }
+    }
+
+    // The named `griff-swang` surfaces that stay clear of it: the evaluator
+    // and the pattern compiler keep taking what they took before, the exact
+    // writer works from a `Score`, and neither entry point re-exports it.
     for file in [
         "swang/src/eval.rs",
         "swang/src/pattern_compile.rs",
         "swang/src/lib.rs",
         "swang/src/exact.rs",
         "swang/src/syntax.rs",
-        "core/src/score.rs",
-        "core/src/event.rs",
-        "core/src/lib.rs",
-        "cli/src/main.rs",
-        "cli/src/lib.rs",
     ] {
         let text = code_of(&read(file));
         assert!(
             !mentions(&text, "ExactScoreDocument"),
             "{file} must not mention the transient syntax form"
         );
+        checked = checked.saturating_add(1);
     }
+
+    assert!(
+        checked >= 15,
+        "only {checked} files were examined; the witness is not reaching the \
+         tree it claims to cover"
+    );
 }
 
 // ── D. no serialization format of its own ───────────────────────────────────
