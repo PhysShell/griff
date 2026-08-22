@@ -539,7 +539,10 @@ not exist yet. It splits in two:
 ```
 
 Proving the second half with code that does not exist is how a backlog
-starts believing its own plans.
+starts believing its own plans. The open half is carried as an acceptance
+bullet of SWG-4A-09, not as a remark here: moving an obligation out of a
+task that is closing, without moving the point at which someone must
+discharge it, only makes it easier to lose.
 
 ### SWG-4A-03 — Writer: transport and master timeline
 
@@ -714,6 +717,19 @@ syntactically valid text
 ```
 
 There is no third outcome, and no partially valid `Score` is ever returned.
+
+- **Inherited from SWG-4A-02.** Lowering consumes an `ExactScoreDocument`
+  and returns a canonical `Score`; no evaluator, generator, or other
+  downstream semantic consumer accepts or observes an `ExactScoreDocument`.
+
+  4A-02 built the syntax form and proved the half of this that could be
+  proved without lowering: the type cannot escape the syntax module, because
+  `mod ast` is private to `syntax` and naming it from outside is `E0603`.
+  The other half is dynamic and could not be tested against code that did
+  not exist. It lands here because this is the task that writes that code,
+  and it is written as an acceptance bullet rather than as a note in a
+  closed task's prose, because a criterion nobody has to satisfy is not a
+  criterion.
 
 ### SWG-4A-10 — `griff swang dump` *(done)*
 
