@@ -1,13 +1,18 @@
-# griff-song-curation — Slice 1: decision & validation core (ADR-0033)
+# griff-song-curation — ADR-0033 Slices 1–2
 
 An **isolated** offline tool (ADR-0010 / ADR-0033 isolation posture): deliberately
 **not** a workspace member, so production builds, CI, `--workspace` clippy, the
 CLI, and the cockpit never acquire curation policy. `griff-core` supplies only
 reusable schema/validation contracts.
 
-This crate implements **Slice 1** of the accepted ADR-0033 workflow: the
-**read-only decision & validation core**. It reads synthetic/fixture inputs and
-**writes no corpus** — there is no apply path here.
+This crate implements **Slice 1** of the accepted ADR-0033 workflow — the
+**read-only decision & validation core** (accepted and frozen) — and
+**Slice 2**, the **transactional Apply** (`apply` module), implemented
+against the independently accepted Slice-2 contract
+([`../docs/proposals/song-curation-slice-2-transactional-apply.md`](../docs/proposals/song-curation-slice-2-transactional-apply.md),
+normative reviewed artifact `47e734c`; acceptance recorded in
+`docs/decisions.log.md` @ `bad7b44`). Implementation evidence:
+[`../docs/audit/2026-08-slice2-apply-implementation.md`](../docs/audit/2026-08-slice2-apply-implementation.md).
 
 ## What Slice 1 does
 
@@ -95,14 +100,32 @@ curator decisions*, not asserted.
 `PlanCorpusFingerprintMismatch`, `DecisionBatchFingerprintMismatch`,
 `DecisionDigestMismatch`, `PlanDigestMismatch`, `DecisionProjectionMismatch`.
 
+## Slice 2: transactional Apply (`apply` module)
+
+`apply(&ApplyPaths) -> ApplyRun` consumes a **serialized** Slice-1 plan,
+the current corpus snapshot (a directory tree), and the application index,
+and — under the contract's 12-step fail-closed verification order —
+publishes the curated snapshot with its proof artifacts: the curated
+manifest at the protected `song-curation/manifest.json` path, the
+application report, and the appended `song-curation.applications.v1` index
+record. **The batch is applied iff its record is in the index**: one
+publication `rename` makes the snapshot visible; the index temp+`rename`
+under a marker-bearing single-writer lock is the single commit point, and
+every refusal — the closed 24-member typed surface plus the Slice-1
+refusals reused verbatim through `verify_plan` — proves the run did not
+commit. Untouched files are raw byte copies; touched JSON is rewritten
+under a fail-closed laundering guard (duplicate-key pass + round-trip
+equality); the real core `song_holdout_preflight` runs exactly once, over
+the staged curated view.
+
 ## Out of scope (later, separately-accepted slices)
 
-No corpus writes, output tree, transactional apply, application report/index,
-manifest generation, holdout-readiness execution over a changed corpus,
-suggestion generation or metadata normalization, interactive confirmation UI,
-CLI/cockpit integration, or any real corpus files/labels. Slices 2–4 each need
-separate independent acceptance; corpus labeling stays prohibited until the
-controlled pilot is independently accepted (ADR-0033 Decision 10).
+No suggestion generation or metadata normalization, no interactive
+confirmation UI, no CLI/cockpit integration, and **no real corpus
+files/labels** — every input this crate has ever touched is a synthetic
+fixture. Slices 3–4 each need separate independent acceptance; corpus
+labeling stays prohibited until the controlled pilot is independently
+accepted (ADR-0033 Decision 10).
 
 ## Run
 
