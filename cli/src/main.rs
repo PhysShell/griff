@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use griff_cli::generation_input::{load_corpus_material, CorpusMaterial, GenerationInputError};
 use griff_cli::primary_voice_note_count;
 use griff_cli::rhythm_pattern;
+use griff_cli::swang_dump::dump_score;
 use griff_core::generation_input::{ranked_candidates, GenerationAsk, RankedSet};
 use griff_core::{
     boundary,
@@ -33,6 +34,7 @@ use griff_core::{
     split, structure, syncopation, technique, unfold,
 };
 use griff_pattern::NodePath;
+use griff_swang::exact::ExactWriteError;
 use griff_swang::{eval, syntax};
 
 /// griff — guitar riff engine.
@@ -299,6 +301,15 @@ enum SwangCommand {
         #[arg(value_name = "INPUT")]
         input: PathBuf,
     },
+    /// Import a MIDI or Guitar Pro file and print its canonical Swang
+    /// level-2 exact text to stdout. Import warnings and diagnostics go to
+    /// stderr; the document goes to stdout and nowhere else.
+    Dump {
+        /// Path to the MIDI (`.mid`) or Guitar Pro
+        /// (`.gp3`/`.gp4`/`.gp5`/`.gpx`/`.gp`) file.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+    },
 }
 
 fn run() -> Result<(), CliError> {
@@ -379,6 +390,7 @@ fn run() -> Result<(), CliError> {
             SwangCommand::Fmt { input } => cmd_swang_fmt(&input),
             SwangCommand::Expand { input } => cmd_swang_expand(&input),
             SwangCommand::Build { input } => cmd_swang_build(&input),
+            SwangCommand::Dump { input } => cmd_swang_dump(&input),
         },
     }
 }
@@ -410,6 +422,31 @@ fn cmd_swang_fmt(path: &Path) -> Result<(), CliError> {
     let compiled = eval::compile_program(&source)
         .map_err(|diagnostics| swang_error(path, &source, &diagnostics))?;
     print!("{}", syntax::format(compiled.program()));
+    Ok(())
+}
+
+/// `griff swang dump`: import through the existing adapters and print the
+/// canonical level-2 exact text (SWG-4A-10).
+///
+/// Two surfaces, and the split is the whole contract. The document goes to
+/// stdout and only to stdout; import warnings and diagnostics go to stderr,
+/// one rendered entry per warning and in the loss report's order. An entry
+/// is not promised to occupy one physical line — an `Other` message may hold
+/// a line break, and nothing here escapes it.
+/// A warning stays in the document's `loss` block whether or not stderr also
+/// mentioned it — `griff_cli::swang_dump` renders the two independently, and
+/// this function only decides which stream each reaches.
+///
+/// Both are computed before either is written, so a refusal prints nothing
+/// at all rather than a truncated document.
+fn cmd_swang_dump(path: &Path) -> Result<(), CliError> {
+    let data = fs::read(path)?;
+    let score = import::import_score_auto(&data)?;
+    let dumped = dump_score(&score)?;
+    for warning in &dumped.warnings {
+        eprintln!("warning: {warning}");
+    }
+    print!("{}", dumped.document);
     Ok(())
 }
 
@@ -2238,6 +2275,9 @@ enum CliError {
     /// A Swang syntax diagnostic, already rendered against its script:
     /// `error[SWG____] (<path>:<line>:<col>): <message>`.
     Swang(String),
+    /// The imported score is outside the exact writer's domain, so there is
+    /// no document to print (`docs/swang/exact-score-text.md` §3).
+    ExactWrite(ExactWriteError),
 }
 
 impl fmt::Display for CliError {
@@ -2256,6 +2296,7 @@ impl fmt::Display for CliError {
             Self::Complement(e) => write!(f, "complement error: {e:?}"),
             Self::Pattern(d) => write!(f, "{d}"),
             Self::Swang(rendered) => write!(f, "{rendered}"),
+            Self::ExactWrite(e) => write!(f, "exact-text error: {e}"),
         }
     }
 }
@@ -2263,6 +2304,12 @@ impl fmt::Display for CliError {
 impl From<IoError> for CliError {
     fn from(e: IoError) -> Self {
         Self::Io(e)
+    }
+}
+
+impl From<ExactWriteError> for CliError {
+    fn from(e: ExactWriteError) -> Self {
+        Self::ExactWrite(e)
     }
 }
 

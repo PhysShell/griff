@@ -13,5 +13,6 @@
 pub mod curation_fs;
 pub mod generation_input;
 pub mod rhythm_pattern;
+pub mod swang_dump;
 
 pub use griff_core::generation_input::primary_voice_note_count;

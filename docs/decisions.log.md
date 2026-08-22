@@ -2425,3 +2425,31 @@ Architectural decisions go to [`adr/`](adr/) instead.
   paths — `NotePosition` and `TechniqueEvidence` are composite canonical
   fields to the exact walker on purpose, and improving the comparator to make
   the test prettier would be 4A-05 editing something it was told not to touch.
+
+- 2026-08-21 — In the context of SWG-4A-10, facing a command that must show a
+  human what went wrong during import while also printing a document obliged
+  to carry the same facts, we decided to render `Score.loss` **twice** — as
+  the exact text's `loss` block on stdout and as one line per warning on
+  stderr — and against letting either surface consume the other, to achieve a
+  document that is a function of the score alone, accepting the apparent
+  redundancy of saying the same thing in two places. They are not the same
+  thing: stdout carries a canonical fact the grammar owns (§2.8), stderr a
+  courtesy to whoever is watching. Suppressing the block because a human had
+  already been told would make the canonical text depend on who was looking
+  at it, and would undo what SWG-4A-05 spent twenty mutations establishing.
+  The composition returns both surfaces together or neither, which is why "no
+  partial document" is structural here rather than a rule someone has to
+  remember.
+
+- 2026-08-21 — In the context of closing SWG-4A-10, facing an independent
+  review that found the entry above overclaiming its own surface, we decided
+  to correct the wording and against inventing the behaviour that would have
+  made it true, to achieve a documented contract the code actually keeps.
+  "One line per warning on stderr" is not something 4A-10 can promise:
+  `ImportWarning::Other(String)` is unrestricted and may contain an embedded
+  LF — SWG-4A-05 pinned exactly that case in the exact text, where the
+  grammar escapes it. The terminal rendering has no such grammar, and 4A-10
+  introduces no escaping or sanitization policy of its own. The invariant is
+  one rendered entry per `LossReport` element, preserving vector order.
+  Production behavior is unchanged; so is the test suite, because freezing a
+  stderr line policy the contract never asked for is the defect, not the fix.

@@ -30,6 +30,12 @@ thiserror     = { workspace = true }
 # Used only by the S0 characterization suite to synthesise `.mid` fixtures
 # directly, independent of griff's own export path.
 midly = { workspace = true }
+# Same reasoning one format over: the SWG-4A-10 suite writes its Guitar Pro
+# fixture with the parser crate's own serializer, so the bytes under test come
+# from an encoder independent of griff's importer. Already in the tree via
+# `griff-core`'s default `gp` feature — this adds no third-party code, only
+# test-time access to it.
+guitarpro = { version = "0.4", default-features = false }
 
 [lints]
 workspace = true
