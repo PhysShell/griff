@@ -122,6 +122,42 @@ fn dependency_tree(package: &str) -> String {
 
 // ── B. the document is not part of the public surface ───────────────────────
 
+/// Whether the code of a `syntax` module re-exports the level-2 **AST**.
+///
+/// The property is "the transient AST is not re-exported", not "the token
+/// `v2` never appears". SWG-4A-06 adds level-2 parsing and formatting, and a
+/// `pub use parser::v2::…` or `pub use format::v2::…` is precisely the wiring
+/// that task exists to add — it exposes no part of the document. A check that
+/// banned the version number outright would fail on legitimate work while its
+/// message went on claiming the document had escaped, which is worse than not
+/// checking: a red test that lies costs more than a missing one.
+fn re_exports_the_level_two_ast(syntax_code: &str) -> bool {
+    syntax_code.contains("pub use ast::v2")
+}
+
+#[test]
+fn the_re_export_check_reads_the_boundary_and_not_the_version_number() {
+    // Both halves, because narrowing a check is only safe if it still fires
+    // on the thing it was narrowed away from.
+    assert!(
+        re_exports_the_level_two_ast("pub use ast::v2::ExactScoreDocument;"),
+        "re-exporting the document itself is a breach and must be seen"
+    );
+    assert!(
+        re_exports_the_level_two_ast("pub use ast::v2 as level_two;"),
+        "so is re-exporting the module under any name"
+    );
+    assert!(
+        !re_exports_the_level_two_ast("pub use parser::v2::parse_exact;"),
+        "a level-2 parser is not the AST, and 4A-06 must not be blocked by \
+         this test"
+    );
+    assert!(
+        !re_exports_the_level_two_ast("pub use format::v2::format_exact;"),
+        "nor a level-2 formatter"
+    );
+}
+
 #[test]
 fn the_exact_document_is_not_re_exported() {
     let syntax = code_of(&read("swang/src/syntax.rs"));
@@ -131,12 +167,14 @@ fn the_exact_document_is_not_re_exported() {
          moved, the check below stopped meaning anything"
     );
     assert!(
-        !mentions(&syntax, "v2"),
-        "`syntax` re-exports level 1 only; the exact document stays crate-private"
+        !re_exports_the_level_two_ast(&syntax),
+        "`syntax` re-exports level 1's AST only; the exact document and its \
+         module stay crate-private"
     );
     assert!(
         !mentions(&syntax, "ExactScoreDocument"),
-        "and it is not named on the public surface by any other route"
+        "and it is not named on the public surface by any other route — a \
+         rename in the re-export path does not get around this"
     );
 
     let lib = code_of(&read("swang/src/lib.rs"));
