@@ -4,3 +4,13 @@
 //! than editing it.
 
 pub(crate) mod v1;
+pub(crate) mod v2;
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_assert_message
+)]
+mod v2_tests;

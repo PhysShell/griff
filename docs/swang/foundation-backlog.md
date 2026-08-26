@@ -113,7 +113,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-4A-01 | Normative exact-score-text grammar *(done)* | docs | INF-02 |
 | SWG-CORE-01 | Fixed-width migration for the three `usize` fields *(done)* | code | 4A-01 |
 | SWG-CORE-02 | Decide whether the canonical newtypes seal their fields | docs | 4A-01 |
-| SWG-4A-02 | `ExactScoreDocument` as a transient syntax form | code | 4A-01 |
+| SWG-4A-02 | `ExactScoreDocument` as a transient syntax form *(done)* | code | 4A-01 |
 | SWG-4A-03 | Writer: transport and master timeline | code | 4A-01 |
 | SWG-4A-04 | Writer: tracks, voices, groups, atoms | code | 4A-03 |
 | SWG-4A-05 | Writer: techniques, positions, evidence, losses *(done)* | code | 4A-04, CORE-01 |
@@ -486,7 +486,7 @@ wrong more expensively.
 Acceptance: a decision, written down, either sealing the fields behind
 constructors or stating why they stay open and what compensates.
 
-### SWG-4A-02 — `ExactScoreDocument` as a transient syntax form
+### SWG-4A-02 — `ExactScoreDocument` as a transient syntax form *(done)*
 
 **Kind:** code. **Depends on:** 4A-01
 
@@ -494,20 +494,55 @@ constructors or stating why they stay open and what compensates.
 text -> ExactScoreDocument -> checked ScoreBuilder -> canonical Score
 ```
 
-`ExactScoreDocument` is a syntax representation with a short life. It holds
-author order only until canonical formatting, is never consumed by a
-generator, never becomes a persistent domain model, and is never imported
-into `griff-core`. This is S16 required control #3 — no permanent score
-hierarchy beside canonical `Score` — enforced by construction rather than by
-good intentions.
+`ExactScoreDocument` is a syntax representation with a short life. It is
+never consumed by a generator, never becomes a persistent domain model, and
+is never imported into `griff-core`. This is S16 required control #3 — no
+permanent score hierarchy beside canonical `Score` — enforced by
+construction rather than by good intentions.
+
+One phrase in the original entry said the document "holds author order only
+until canonical formatting". As built it holds less than that, deliberately:
+§6.2 assigns the order *between* slots to the formatter, so nothing records
+that a `track` was written above a `master_bar`. What is kept is the order
+*within* each repeated slot, which is semantic, plus the marks a note listed
+— see the decision log. Recording the rest would have made this a concrete
+syntax tree preserving information the spec calls meaningless.
 
 Acceptance:
 
-- `griff-core` does not depend on `griff-swang` (assert in the dependency
-  test, not by reading `Cargo.toml` by eye);
-- after lowering, the evaluator sees only `Score`;
-- no generation entry point accepts an `ExactScoreDocument`;
-- the document has no serialization format of its own beyond Swang source.
+- `griff-core` does not depend on `griff-swang`, asked of `cargo tree`
+  rather than of `Cargo.toml`, because a manifest grep cannot see a
+  dependency arriving through a feature, a rename, or a longer path;
+- no generation entry point accepts an `ExactScoreDocument`; the module is
+  `pub(crate)` inside a `mod ast` that is private to `syntax`, so nothing
+  outside the AST can name the type at all — importing it into the
+  evaluator is `E0603`, not a lint;
+- the document has no serialization format of its own beyond Swang source,
+  and no `Hash`, no `From`, and no lowering method;
+- the whole grammar tree is representable, including everything §3 calls
+  inhabited, and including the states 4A-07 and 4A-09 will refuse — `ppqn 0`,
+  `pitch 200`, `meter 0/3`, `ticks 100..10`. Holding them is not a claim
+  they will be accepted; it is the claim that a struct definition did not
+  quietly appoint itself the validator and leave those refusals
+  unattributable;
+- sixteen mutations, none survived.
+
+One acceptance bullet, "after lowering, the evaluator sees only `Score`",
+cannot be discharged here and is deliberately **not** claimed: lowering does
+not exist yet. It splits in two:
+
+```text
+4A-02  structural half, proven now
+       ExactScoreDocument cannot escape the syntax module at all
+4A-09  dynamic half, still open
+       lowering returns a canonical Score and downstream receives only Score
+```
+
+Proving the second half with code that does not exist is how a backlog
+starts believing its own plans. The open half is carried as an acceptance
+bullet of SWG-4A-09, not as a remark here: moving an obligation out of a
+task that is closing, without moving the point at which someone must
+discharge it, only makes it easier to lose.
 
 ### SWG-4A-03 — Writer: transport and master timeline
 
@@ -682,6 +717,19 @@ syntactically valid text
 ```
 
 There is no third outcome, and no partially valid `Score` is ever returned.
+
+- **Inherited from SWG-4A-02.** Lowering consumes an `ExactScoreDocument`
+  and returns a canonical `Score`; no evaluator, generator, or other
+  downstream semantic consumer accepts or observes an `ExactScoreDocument`.
+
+  4A-02 built the syntax form and proved the half of this that could be
+  proved without lowering: the type cannot escape the syntax module, because
+  `mod ast` is private to `syntax` and naming it from outside is `E0603`.
+  The other half is dynamic and could not be tested against code that did
+  not exist. It lands here because this is the task that writes that code,
+  and it is written as an acceptance bullet rather than as a note in a
+  closed task's prose, because a criterion nobody has to satisfy is not a
+  criterion.
 
 ### SWG-4A-10 — `griff swang dump` *(done)*
 
@@ -1256,8 +1304,9 @@ INF-01 status sync                    (done)
                 │   surface over it, not another slice of it
                 │
                 └─→ 4A-02 → INF-04 → INF-06 → 4A-06 parser skeleton
-                      ↑
-                      next
+                      (done)   ↑
+                               next — INF-04 can now design SourceMap,
+                               AstId and FieldRef against a real v2 shape
   -> 4A-02..4A-09 writer / parser / builder
   -> 4A-10..4A-14 dump / verify / laws / fuzz
   -> 4B corpus acceptance
