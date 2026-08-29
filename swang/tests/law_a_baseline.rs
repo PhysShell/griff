@@ -45,9 +45,9 @@ use std::fmt::{Arguments, Write as _};
 
 use griff_pattern::{DensityBps, Traversal};
 use griff_swang::syntax::{
-    format, parse, Diagnostic, Export, ExportFormat, Fractalize, Generate, Ident, KernelLiteral,
-    Level, Linearize, MapRhythm, PatternDef, Program, Prune, StrategyName, StrategyPolicy,
-    StringLiteral, Unit,
+    format, header_level, parse, Diagnostic, Export, ExportFormat, Fractalize, Generate, Ident,
+    KernelLiteral, Level, Linearize, MapRhythm, PatternDef, Program, Prune, StrategyName,
+    StrategyPolicy, StringLiteral, Unit,
 };
 use griff_swang::TailPolicy;
 
@@ -697,6 +697,33 @@ const LEVEL_ONE_CODES: &[&str] = &[
     "SWG0001", "SWG0002", "SWG0003", "SWG0101", "SWG0102", "SWG0103", "SWG0301", "SWG0303",
     "SWG0307", "SWG0308", "SWG0401", "SWG0402", "SWG0403", "SWG0404",
 ];
+
+#[test]
+fn every_corpus_source_is_inside_law_a_s_domain() {
+    // §5.5 states Law A over "every source whose first line is a valid
+    // `swang 1` header — whether its body is valid or not". The valid header
+    // is the premise, not part of what varies: only the body may be invalid.
+    //
+    // A source the frozen pre-parser refuses is therefore not a Law A case,
+    // and recording one here does active harm. `swang 2` is the proof. Its
+    // refusal today is `SWG0001`, and SWG-4A-06 exists precisely to make
+    // `swang 2` supported — after which it must pass header dispatch and be
+    // refused as a level-2 `pattern` root instead. A baseline built to
+    // protect 4A-06 would then declare 4A-06's whole purpose a regression.
+    //
+    // So the domain is a witness, not a convention. A malformed header, a
+    // BOM, and a newer level are characterized by the header suite that owns
+    // the frozen pre-parser; they have no business in this artifact.
+    for entry in &corpus() {
+        assert_eq!(
+            header_level(&entry.source),
+            Ok(1),
+            "{} is not a Law A source: §5.5's domain is sources whose first \
+             line is a valid `swang 1` header",
+            entry.name
+        );
+    }
+}
 
 #[test]
 fn the_recorded_baseline_is_what_this_build_still_produces() {
