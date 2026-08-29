@@ -2555,6 +2555,11 @@ Architectural decisions go to [`adr/`](adr/) instead.
   says plainly that they are reservations and not evidence of a
   stack-overflow hazard, because a limit presented as a defence against a
   danger that does not exist is how a number stops being questioned.
+  *(Corrected on review: the reason a later bound is forbidden is §5.11's own
+  admission rule, which is stricter than the freeze boundary — not that the
+  level is frozen by then. §5.3 keeps level 2 provisional until Phase 4A is
+  accepted, so a bound added after the first accepted program would still
+  predate the freeze. The deadline stands; the causality was wrong.)*
 
 - 2026-08-29 — In the context of the budget having no level-2 parser to
   guard, facing the paradox that INF-06 must precede level 2's first
@@ -2582,3 +2587,42 @@ Architectural decisions go to [`adr/`](adr/) instead.
   number so a shrinking corpus fails rather than quietly testing less. The
   failure was the recurring one: a check too narrow for the data it runs
   over, counting codes where the regressions live at sites.
+
+- 2026-08-29 — In the context of SWG-INF-06's review, facing a Law A
+  baseline that recorded three sources the frozen pre-parser refuses, we
+  decided that **Law A's domain is itself a witness**, and against keeping
+  header refusals in the artifact, to achieve a baseline that 4A-06 can
+  actually satisfy, accepting that the pre-parser's three codes are then
+  covered only by their own characterization tests. §5.5 scopes Law A to
+  sources whose first line is a valid `swang 1` header — the header is the
+  premise, and only the body varies. One of the three was worse than merely
+  out of scope: `swang 2` is recorded as `SWG0001`, and SWG-4A-06 exists to
+  make `swang 2` supported, so a baseline built to protect that task would
+  have failed on the task's own correct behaviour and looked like a safety
+  net working. Every corpus source must now satisfy
+  `header_level(source) == Ok(1)`, because a domain that lives in a comment
+  is a domain that drifts.
+
+- 2026-08-29 — In the context of the level-1 boundary guard, facing an
+  exemption that looked harmless, we decided to **scan `syntax.rs` and
+  permit only its bare `mod limits;` line**, and against exempting the file
+  that declares the module, to achieve a guard that still holds when 4A-06
+  arrives, accepting a slightly fussier stripper. `syntax.rs` is the crate's
+  public re-export point and the obvious home for level dispatch, so it is
+  simultaneously the file that must name the module and the file where a
+  budget consulted before the level 1/2 branch would silently become a
+  level-1 bound. Exempting it made the single most dangerous location the
+  one nobody watched. Level-2-specific modules join the exempt list one at a
+  time as 4A-06 creates them; shared dispatch never joins it.
+
+- 2026-08-29 — In the context of a budget with no caller yet, facing
+  `pub(crate)` limit fields and a `Clone` counter, we decided to **seal the
+  mechanism before the first caller exists**, to achieve a type shape that
+  enforces what the documentation already promised, accepting that tests
+  need a `#[cfg(test)]` constructor to reach scaled bounds. Public fields
+  would have let a future call site write `Level2Budget::new(
+  Level2ResourceLimits { tokens: u64::MAX, .. })` and satisfy every word of
+  §5.11 while meaning none of it; a `Clone` on a running counter lets the
+  same budget be spent twice, which is precisely what the type's own doc
+  comment said must not happen. The cheapest moment to close both doors is
+  while closing them breaks nothing.

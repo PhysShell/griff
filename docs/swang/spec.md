@@ -844,12 +844,16 @@ approach 256 diagnostics. Both are declared anyway, and both are
 reservations: they are not evidence that today's grammar has a
 recursive-stack hazard or a diagnostic flood.
 
-They are declared now because §5.11 leaves no later opportunity. A bound not
-declared before level 2's first accepted program can never be added, since
-adding it afterwards would narrow an acceptance set that is by then frozen.
-Declaring them costs nothing today; omitting them spends the option
-permanently. A future recovery implementation may stop well short of 256 —
-it simply may not exceed it.
+They are declared now because this section leaves no later opportunity. The
+deadline above — before level 2's first accepted program — is an **admission
+rule stricter than the freeze boundary**, not a consequence of it. By §5.3
+level 2 remains provisional until Phase 4A is accepted, so a bound
+introduced after the first accepted program would still predate the freeze;
+§5.11 forbids it regardless, because by then programs are being written
+against the level and a new bound would start rejecting them. Declaring the
+bounds costs nothing today; omitting them spends the option permanently. A
+future recovery implementation may stop well short of 256 — it simply may
+not exceed it.
 
 #### The breach diagnostic
 

@@ -388,7 +388,22 @@ Acceptance:
   unchanged** — recovery adds diagnostics, it never renames the first one;
 - accept/reject verdicts are unchanged for every existing fixture;
 - adversarial input does not go quadratic (assert a bounded step count, not
-  a wall-clock time).
+  a wall-clock time);
+- **inherited from SWG-INF-06** — recovery is the first thing that can
+  approach the declared diagnostic bound, so it consults
+  `Level2Budget::admit_diagnostic` before appending. This task's own cap
+  (32 above) may be stricter than §5.11's 256; it may never exceed it, and
+  the terminal `SWG0509` counts toward whichever cap applies;
+- **inherited from SWG-INF-06** — this entry's "the first diagnostic of
+  every existing single-error golden is unchanged" bullet is **not**
+  sufficient once Law A is stated. §5.10 freezes level 1's diagnostic
+  *order*, and the Law A baseline records the whole sequence, not its first
+  element; a level-1 parse that begins returning three diagnostics where it
+  returned one has changed a frozen level's released output even though the
+  first one is untouched. INF-05 must therefore say plainly whether recovery
+  is level-2-only, or how a multi-diagnostic level-1 parse stays inside
+  §5.10 — and reconcile the acceptance bullet above with the seven-observable
+  contract before writing code against it.
 
 ### SWG-INF-06 — Parser resource gate and Law A baseline *(done)*
 
@@ -417,8 +432,12 @@ level-1 modules, the other walks every shipped `.rs` under `swang/src`.
 Counting semantics are in spec §5.11 and are part of the declaration. Depth
 and diagnostics are **forward reservations**: the exact-score grammar has no
 recursive production and today's parser returns one diagnostic, so neither
-can currently be approached. They are declared anyway because a bound not
-declared before level 2's first accepted program can never be added.
+can currently be approached. They are declared anyway because §5.11's
+deadline — before level 2's first accepted program — is an admission rule
+**stricter than the freeze boundary**, not a consequence of it: by §5.3
+level 2 stays provisional until Phase 4A is accepted, so a later bound would
+still predate the freeze, and §5.11 forbids it regardless because programs
+are by then already written against the level.
 
 Level 2 is unreachable on this build, so the budget has **no live caller**.
 Wiring a gate into a parser that does not exist would be the fake half of the
@@ -448,14 +467,25 @@ serde, and not the formatter's output, because canonical bytes and the AST
 have to be two witnesses rather than one wearing two hats. Every struct is
 destructured with no `..` and every enum matched with no wildcard.
 
-Extent, stated rather than implied: 50 cases reaching 38 distinct
+**The domain is a witness.** §5.5 scopes Law A to sources whose first line is
+already a valid `swang 1` header; only the body varies. The corpus first
+included three sources the pre-parser refuses outright — `swang 2`, a
+malformed header, and a BOM — and the first of those was actively harmful:
+its recorded refusal is `SWG0001`, and 4A-06 exists to make `swang 2`
+supported, so the artifact built to protect 4A-06 would have declared
+4A-06's whole purpose a regression. Every corpus source now has to satisfy
+`header_level(source) == Ok(1)`, so the mistake cannot recur. The
+pre-parser's own `SWG0001`–`SWG0003` are unreachable inside the domain and
+keep their characterization tests beside the frozen pre-parser.
+
+Extent, stated rather than implied: 47 cases reaching 35 distinct
 `(code, message)` refusals, both verdicts, every level-1 enum variant, both
-states of every optional, and all fourteen level-1 codes. The checked-in
-`swang_parse` seed is included as an input subset. Coverage by *code* proved
-weaker than coverage by *production site* — `SWG0403` is raised from four
-places — and a falsification probe survived until the corpus grew to reach
-them; `the_corpus_pins_the_extent_of_its_own_sample` now records the number
-so the sample cannot shrink quietly.
+states of every optional, and all eleven codes reachable inside the domain.
+The checked-in `swang_parse` seed is included as an input subset. Coverage
+by *code* proved weaker than coverage by *production site* — `SWG0403` is
+raised from four places — and a falsification probe survived until the
+corpus grew to reach them; `the_corpus_pins_the_extent_of_its_own_sample`
+now records the number so the sample cannot shrink quietly.
 
 **Fuzz oracles.** `swang_parse` asserted `starts_with("SWG")`, which accepted
 `SWG`, `SWGxyz`, and `SWG12345` as registry codes; it now asserts the one
@@ -471,11 +501,24 @@ exact writer lane is complete, and checked lowering from text to a valid
 business becoming another formatter-validation layer, so that clause is
 recorded as already owned rather than implemented here.
 
-Falsification: 10 probes, 0 survivors — an off-by-one at each of the four
+**The mechanism is sealed.** `Level2ResourceLimits` has private fields and
+`declared()` as its only production constructor, so no future caller can
+satisfy the contract with bounds of its own choosing, and `Level2Budget` is
+neither `Copy` nor `Clone`, so a running counter cannot be duplicated and
+spent twice. The level-1 guard scans `syntax.rs` too, permitting only the
+bare `mod limits;` line: that file is the crate's re-export point and
+4A-06's natural home for shared dispatch, and a budget consulted before the
+level branch is a level-1 bound whatever file it lives in.
+
+Falsification: 15 probes, 0 survivors — an off-by-one at each of the four
 caps, a token counted despite being refused, a no-op depth counter, a
 diagnostic cap returning one item too many, two malformed registry codes, a
-reworded frozen message, and a formatter spacing change. One probe is
-recorded as SURVIVED before the corpus grew and CAUGHT after.
+reworded frozen message, a formatter spacing change, an axis reporting
+another axis's word, a depth breach pointing somewhere fixed, a diagnostic
+breach understating what it needed, a production back door to arbitrary
+limits, and a budget mention in `syntax.rs`. Six of them are recorded as
+SURVIVED before a review commit and CAUGHT after, rather than as though the
+first suite had caught them.
 
 ---
 
