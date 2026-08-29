@@ -2478,7 +2478,7 @@ Architectural decisions go to [`adr/`](adr/) instead.
   the type from outside is `E0603`. Accepting that the bullet stays open in
   the backlog until 4A-09 closes it.
 
-- 2026-08-26 — In the context of SWG-INF-04, facing the question of what an
+- 2026-08-29 — In the context of SWG-INF-04, facing the question of what an
   `AstId` promises, we decided that it is a **parse-local structural
   handle** and against any persistence guarantee, to achieve a source map
   useful to diagnostics and editors today without pre-deciding a question
@@ -2494,7 +2494,7 @@ Architectural decisions go to [`adr/`](adr/) instead.
   would make 4C's real problem look solved by a side table that never
   addressed it.
 
-- 2026-08-26 — In the context of SWG-INF-04's design, facing three pieces of
+- 2026-08-29 — In the context of SWG-INF-04's design, facing three pieces of
   prior art, we decided to adopt two and refuse one, to achieve a source map
   that is boring in the ways that matter. From `rustc`: byte-offset
   locations, with line and column resolved only at render time, so nothing

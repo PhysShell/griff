@@ -346,7 +346,11 @@ Acceptance:
   diagnostic locations §3.5 released. The map now knows `bars`,
   `candidates` and `strategy`; that is editor capability, not permission to
   move a diagnostic somebody's tooling already parses;
-- eight mutations of the implementation, none survived.
+- eleven mutations, none survived. Three of them were run first against
+  the suite as it stood at closure and survived it — a node span stretched
+  back to byte 0, and two swapped arms of the evaluator's flaw-to-location
+  match — which is how the two review witnesses earned their place rather
+  than merely occupying it.
 
 `ProgramSpans` and `parse_with_spans` are removed rather than wrapped: a
 compatibility shim would have kept the four-field model alive indefinitely,
