@@ -59,6 +59,7 @@ mod format;
 mod header;
 mod lexer;
 mod parser;
+mod source_map;
 mod span;
 mod token;
 
@@ -69,7 +70,8 @@ pub use ast::v1::{
 pub use diagnostic::Diagnostic;
 pub use format::v1::format;
 pub use header::{header_level, LANGUAGE_LEVEL};
-pub use parser::v1::{parse, parse_with_spans, ProgramSpans};
+pub use parser::v1::{parse, parse_with_source_map};
+pub use source_map::{AstId, FieldKind, FieldRef, Parsed, SourceMap};
 pub use span::Span;
 #[cfg(test)]
 #[allow(

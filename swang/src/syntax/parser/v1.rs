@@ -9,33 +9,19 @@ use crate::syntax::ast::v1::{
 use crate::syntax::diagnostic::Diagnostic;
 use crate::syntax::header::{header_level, HEADER_WINDOW};
 use crate::syntax::lexer::lex;
+use crate::syntax::source_map::{AstId, FieldKind, Parsed, SourceMap};
 use crate::syntax::span::{span_of, Span};
 use crate::syntax::token::{Token, TokenKind};
 use crate::TailPolicy;
 
-/// Source locations of the program words an expansion frontend renders
-/// diagnostics at (spec §3.5's CLI contract, §1.5's layers).
+/// [`parse`], additionally returning the [`SourceMap`] side table.
 ///
-/// This is a side table, not part of the AST: [`Program`] equality and the
-/// `parse(format(ast)) == ast` law stay span-free. String-literal spans
-/// include their quotes; value spans cover the value token alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProgramSpans {
-    /// The quoted `ascii` kernel literal.
-    pub kernel: Span,
-    /// The `unit` value (`1/16`).
-    pub unit: Span,
-    /// The `tail` value (`reject` / `rest_pad`).
-    pub tail: Span,
-    /// The quoted `source` literal.
-    pub source: Span,
-}
-
-/// [`parse`], additionally returning the [`ProgramSpans`] side table.
+/// One parser: [`parse`] is this function with the map dropped, so the two
+/// cannot drift in what they accept or how they refuse.
 ///
 /// # Errors
-/// Exactly [`parse`]'s errors — the two functions are one parser.
-pub fn parse_with_spans(source: &str) -> Result<(Program, ProgramSpans), Vec<Diagnostic>> {
+/// Exactly [`parse`]'s errors.
+pub fn parse_with_source_map(source: &str) -> Result<Parsed<Program>, Vec<Diagnostic>> {
     // `header_level` already enforced 1..=LANGUAGE_LEVEL; the map_err is
     // defense in depth, not a reachable path.
     let level = Level::new(header_level(source).map_err(|d| vec![d])?).map_err(|e| {
@@ -56,9 +42,46 @@ pub fn parse_with_spans(source: &str) -> Result<(Program, ProgramSpans), Vec<Dia
         tokens,
         pos: 0,
         eof: span_of(source.len(), source.len()),
+        map: SourceMap::default(),
     };
-    let (pattern, spans) = parser.parse_pattern().map_err(|d| vec![d])?;
-    Ok((Program { level, pattern }, spans))
+    let pattern = parser.parse_pattern().map_err(|d| vec![d])?;
+    let mut map = parser.map;
+
+    // The header's level digits: everything after `swang ` up to the line
+    // break, trimmed. The header pre-parser has already proved the shape.
+    map.insert_field(AstId::Program(0), FieldKind::Level, level_span(source));
+    // The program is its header through the pattern block's `}` — the
+    // pattern node span already ends there.
+    let program_end = map
+        .node_span(AstId::Pattern(0))
+        .map_or(source.len(), |s| s.end as usize);
+    map.insert_node(AstId::Program(0), span_of(0, program_end));
+
+    Ok(Parsed {
+        value: Program { level, pattern },
+        source_map: map,
+    })
+}
+
+/// The header's level digits, located within the first line.
+///
+/// §1.1 froze the header as `swang <level>` plus one line break, and
+/// [`header_level`] has already accepted it by the time this runs, so the
+/// digits are the trailing run of the first line.
+fn level_span(source: &str) -> Span {
+    let first_line_end = source
+        .as_bytes()
+        .iter()
+        .take(HEADER_WINDOW)
+        .position(|&b| b == b'\n')
+        .unwrap_or(source.len());
+    let line = source.get(..first_line_end).unwrap_or("");
+    let end = line.trim_end().len();
+    let start = line
+        .get(..end)
+        .and_then(|head| head.rfind(|c: char| !c.is_ascii_digit()))
+        .map_or(0, |at| at.saturating_add(1));
+    span_of(start, end)
 }
 
 /// Parses a Swang script into its [`Program`].
@@ -76,7 +99,7 @@ pub fn parse_with_spans(source: &str) -> Result<(Program, ProgramSpans), Vec<Dia
 /// closed word set, `SWG0403` missing required word, `SWG0404` repeated
 /// word).
 pub fn parse(source: &str) -> Result<Program, Vec<Diagnostic>> {
-    parse_with_spans(source).map(|(program, _)| program)
+    parse_with_source_map(source).map(|parsed| parsed.value)
 }
 
 // ── parsing ──────────────────────────────────────────────────────────────
@@ -101,6 +124,7 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     eof: Span,
+    map: SourceMap,
 }
 
 impl Parser {
@@ -151,8 +175,8 @@ impl Parser {
     }
 
     /// `pattern <name> { ascii "…" entries* }` and nothing after it.
-    fn parse_pattern(&mut self) -> Result<(PatternDef, ProgramSpans), Diagnostic> {
-        self.expect_word("pattern")?;
+    fn parse_pattern(&mut self) -> Result<PatternDef, Diagnostic> {
+        let keyword = self.expect_word("pattern")?;
         let name = self.expect_kind(TokenKind::Word, "a pattern name")?;
         self.expect_kind(TokenKind::OpenBrace, "`{`")?;
 
@@ -174,36 +198,38 @@ impl Parser {
         else {
             return Err(self.unexpected_end());
         };
-        let fractalize = parse_fractalize(fractalize_entry)?;
-        let linearize = parse_linearize(linearize_entry)?;
-        let (map_rhythm, unit_span, tail_span) = parse_map_rhythm(map_rhythm_entry)?;
-        let (generate, source_span) = parse_generate(generate_entry)?;
-        let export = parse_export(export_entry)?;
+        let fractalize = parse_fractalize(fractalize_entry, &mut self.map)?;
+        let linearize = parse_linearize(linearize_entry, &mut self.map)?;
+        let map_rhythm = parse_map_rhythm(map_rhythm_entry, &mut self.map)?;
+        let generate = parse_generate(generate_entry, &mut self.map)?;
+        let export = parse_export(export_entry, &mut self.map)?;
 
-        let name = Ident::new(&name.text).map_err(|e| Diagnostic {
+        let name_ident = Ident::new(&name.text).map_err(|e| Diagnostic {
             // The lexer reads exactly the identifier charset; defensive.
             code: "SWG0401",
             span: name.span,
             message: e.to_string(),
         })?;
 
-        Ok((
-            PatternDef {
-                name,
-                kernel: ascii,
-                fractalize,
-                linearize,
-                map_rhythm,
-                generate,
-                export,
-            },
-            ProgramSpans {
-                kernel: kernel_span,
-                unit: unit_span,
-                tail: tail_span,
-                source: source_span,
-            },
-        ))
+        // The block runs from its `pattern` keyword to its closing brace.
+        self.map.insert_node(
+            AstId::Pattern(0),
+            span_of(keyword.span.start as usize, close.span.end as usize),
+        );
+        self.map
+            .insert_field(AstId::Pattern(0), FieldKind::Name, name.span);
+        self.map
+            .insert_field(AstId::Pattern(0), FieldKind::Kernel, kernel_span);
+
+        Ok(PatternDef {
+            name: name_ident,
+            kernel: ascii,
+            fractalize,
+            linearize,
+            map_rhythm,
+            generate,
+            export,
+        })
     }
 
     /// `ascii "<literal>"` — the block's first element.
@@ -360,6 +386,15 @@ fn scan_pairs(
     Ok(pairs)
 }
 
+/// A pipeline step's own span: its name word through its last argument.
+fn entry_span(entry: &PipelineEntry) -> Span {
+    let end = entry
+        .args
+        .last()
+        .map_or(entry.name_span.end, |token| token.span.end);
+    span_of(entry.name_span.start as usize, end as usize)
+}
+
 /// A required word that never arrived: `SWG0403` at the construct's name.
 fn missing_word(construct: &str, word: &str, at: Span) -> Diagnostic {
     Diagnostic {
@@ -369,7 +404,7 @@ fn missing_word(construct: &str, word: &str, at: Span) -> Diagnostic {
     }
 }
 
-fn parse_fractalize(entry: &PipelineEntry) -> Result<Fractalize, Diagnostic> {
+fn parse_fractalize(entry: &PipelineEntry, map: &mut SourceMap) -> Result<Fractalize, Diagnostic> {
     let pairs = scan_pairs(
         &entry.args,
         &["depth", "max_cells", "density", "seed"],
@@ -379,12 +414,25 @@ fn parse_fractalize(entry: &PipelineEntry) -> Result<Fractalize, Diagnostic> {
     let mut max_cells = None;
     let mut density = None;
     let mut seed = None;
+    let mut located: Vec<(FieldKind, Span)> = Vec::new();
     for (word, value) in &pairs {
         match word.text.as_str() {
-            "depth" => depth = Some(int_value::<u8>(value, "depth")?),
-            "max_cells" => max_cells = Some(int_value::<u64>(value, "max_cells")?),
-            "density" => density = Some((word.span, density_value(value)?)),
-            _ => seed = Some((word.span, int_value::<u64>(value, "seed")?)),
+            "depth" => {
+                depth = Some(int_value::<u8>(value, "depth")?);
+                located.push((FieldKind::Depth, value.span));
+            }
+            "max_cells" => {
+                max_cells = Some(int_value::<u64>(value, "max_cells")?);
+                located.push((FieldKind::MaxCells, value.span));
+            }
+            "density" => {
+                density = Some((word.span, density_value(value)?));
+                located.push((FieldKind::Density, value.span));
+            }
+            _ => {
+                seed = Some((word.span, int_value::<u64>(value, "seed")?));
+                located.push((FieldKind::Seed, value.span));
+            }
         }
     }
     let depth = depth.ok_or_else(|| missing_word("fractalize", "depth", entry.name_span))?;
@@ -412,6 +460,10 @@ fn parse_fractalize(entry: &PipelineEntry) -> Result<Fractalize, Diagnostic> {
         }
         (None, None) => None,
     };
+    map.insert_node(AstId::Fractalize(0), entry_span(entry));
+    for (field, span) in located {
+        map.insert_field(AstId::Fractalize(0), field, span);
+    }
     Ok(Fractalize {
         depth,
         max_cells,
@@ -419,19 +471,22 @@ fn parse_fractalize(entry: &PipelineEntry) -> Result<Fractalize, Diagnostic> {
     })
 }
 
-fn parse_linearize(entry: &PipelineEntry) -> Result<Linearize, Diagnostic> {
+fn parse_linearize(entry: &PipelineEntry, map: &mut SourceMap) -> Result<Linearize, Diagnostic> {
     match entry.args.as_slice() {
         [] => Err(missing_word("linearize", "traversal", entry.name_span)),
-        [token] => Ok(Linearize {
-            traversal: closed_set(
+        [token] => {
+            let traversal = closed_set(
                 token,
                 &[
                     ("row_major", Traversal::RowMajor),
                     ("snake", Traversal::Snake),
                 ],
                 "traversal",
-            )?,
-        }),
+            )?;
+            map.insert_node(AstId::Linearize(0), entry_span(entry));
+            map.insert_field(AstId::Linearize(0), FieldKind::Traversal, token.span);
+            Ok(Linearize { traversal })
+        }
         [_, extra, ..] => Err(Diagnostic {
             code: "SWG0401",
             span: extra.span,
@@ -440,7 +495,7 @@ fn parse_linearize(entry: &PipelineEntry) -> Result<Linearize, Diagnostic> {
     }
 }
 
-fn parse_map_rhythm(entry: &PipelineEntry) -> Result<(MapRhythm, Span, Span), Diagnostic> {
+fn parse_map_rhythm(entry: &PipelineEntry, map: &mut SourceMap) -> Result<MapRhythm, Diagnostic> {
     let pairs = scan_pairs(&entry.args, &["unit", "tail"], "map_rhythm")?;
     let mut unit = None;
     let mut tail = None;
@@ -465,10 +520,13 @@ fn parse_map_rhythm(entry: &PipelineEntry) -> Result<(MapRhythm, Span, Span), Di
         unit.ok_or_else(|| missing_word("map_rhythm", "unit", entry.name_span))?;
     let (tail, tail_span) =
         tail.ok_or_else(|| missing_word("map_rhythm", "tail", entry.name_span))?;
-    Ok((MapRhythm { unit, tail }, unit_span, tail_span))
+    map.insert_node(AstId::MapRhythm(0), entry_span(entry));
+    map.insert_field(AstId::MapRhythm(0), FieldKind::Unit, unit_span);
+    map.insert_field(AstId::MapRhythm(0), FieldKind::Tail, tail_span);
+    Ok(MapRhythm { unit, tail })
 }
 
-fn parse_generate(entry: &PipelineEntry) -> Result<(Generate, Span), Diagnostic> {
+fn parse_generate(entry: &PipelineEntry, map: &mut SourceMap) -> Result<Generate, Diagnostic> {
     let block = match entry.args.as_slice() {
         [open, inner @ .., close]
             if open.kind == TokenKind::OpenBrace && close.kind == TokenKind::CloseBrace =>
@@ -494,43 +552,68 @@ fn parse_generate(entry: &PipelineEntry) -> Result<(Generate, Span), Diagnostic>
     let mut candidates = None;
     let mut strategy = None;
     let mut corpus = None;
+    let mut located: Vec<(FieldKind, Span)> = Vec::new();
     for (word, value) in &pairs {
         match word.text.as_str() {
-            "source" => source = Some((string_value(value, "source")?, value.span)),
-            "bars" => bars = Some(int_value::<u64>(value, "bars")?),
-            "seed" => seed = Some(int_value::<u64>(value, "seed")?),
-            "candidates" => candidates = Some(int_value::<u64>(value, "candidates")?),
-            "strategy" => strategy = Some(strategy_value(value)?),
-            _ => corpus = Some(string_value(value, "corpus")?),
+            "source" => {
+                source = Some((string_value(value, "source")?, value.span));
+                located.push((FieldKind::Source, value.span));
+            }
+            "bars" => {
+                bars = Some(int_value::<u64>(value, "bars")?);
+                located.push((FieldKind::Bars, value.span));
+            }
+            "seed" => {
+                seed = Some(int_value::<u64>(value, "seed")?);
+                located.push((FieldKind::Seed, value.span));
+            }
+            "candidates" => {
+                candidates = Some(int_value::<u64>(value, "candidates")?);
+                located.push((FieldKind::Candidates, value.span));
+            }
+            "strategy" => {
+                strategy = Some(strategy_value(value)?);
+                located.push((FieldKind::Strategy, value.span));
+            }
+            _ => {
+                corpus = Some(string_value(value, "corpus")?);
+                located.push((FieldKind::Corpus, value.span));
+            }
         }
     }
-    let (source, source_span) =
-        source.ok_or_else(|| missing_word("generate", "source", entry.name_span))?;
-    Ok((
-        Generate {
-            source,
-            bars: bars.ok_or_else(|| missing_word("generate", "bars", entry.name_span))?,
-            seed: seed.ok_or_else(|| missing_word("generate", "seed", entry.name_span))?,
-            candidates: candidates
-                .ok_or_else(|| missing_word("generate", "candidates", entry.name_span))?,
-            strategy: strategy
-                .ok_or_else(|| missing_word("generate", "strategy", entry.name_span))?,
-            corpus,
-        },
-        source_span,
-    ))
+    let (source, _) = source.ok_or_else(|| missing_word("generate", "source", entry.name_span))?;
+    let generate = Generate {
+        source,
+        bars: bars.ok_or_else(|| missing_word("generate", "bars", entry.name_span))?,
+        seed: seed.ok_or_else(|| missing_word("generate", "seed", entry.name_span))?,
+        candidates: candidates
+            .ok_or_else(|| missing_word("generate", "candidates", entry.name_span))?,
+        strategy: strategy.ok_or_else(|| missing_word("generate", "strategy", entry.name_span))?,
+        corpus,
+    };
+    map.insert_node(AstId::Generate(0), entry_span(entry));
+    for (field, span) in located {
+        map.insert_field(AstId::Generate(0), field, span);
+    }
+    Ok(generate)
 }
 
-fn parse_export(entry: &PipelineEntry) -> Result<Export, Diagnostic> {
+fn parse_export(entry: &PipelineEntry, map: &mut SourceMap) -> Result<Export, Diagnostic> {
     match entry.args.as_slice() {
-        [format_token, path] => Ok(Export {
-            format: closed_set(
-                format_token,
-                &[("midi", ExportFormat::Midi)],
-                "export format",
-            )?,
-            path: string_value(path, "export path")?,
-        }),
+        [format_token, path] => {
+            let export = Export {
+                format: closed_set(
+                    format_token,
+                    &[("midi", ExportFormat::Midi)],
+                    "export format",
+                )?,
+                path: string_value(path, "export path")?,
+            };
+            map.insert_node(AstId::Export(0), entry_span(entry));
+            map.insert_field(AstId::Export(0), FieldKind::Format, format_token.span);
+            map.insert_field(AstId::Export(0), FieldKind::Path, path.span);
+            Ok(export)
+        }
         _ => Err(Diagnostic {
             code: "SWG0401",
             span: entry.name_span,

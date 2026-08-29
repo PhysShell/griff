@@ -3,9 +3,10 @@
 use griff_pattern::{DensityBps, Traversal};
 
 use super::{
-    format, header_level, parse, parse_with_spans, AstError, Diagnostic, Export, ExportFormat,
-    Fractalize, Generate, Ident, KernelLiteral, Level, Linearize, MapRhythm, PatternDef, Program,
-    Prune, StrategyName, StrategyPolicy, StringLiteral, Unit, LANGUAGE_LEVEL,
+    format, header_level, parse, parse_with_source_map, AstError, AstId, Diagnostic, Export,
+    ExportFormat, FieldKind, FieldRef, Fractalize, Generate, Ident, KernelLiteral, Level,
+    Linearize, MapRhythm, PatternDef, Program, Prune, StrategyName, StrategyPolicy, StringLiteral,
+    Unit, LANGUAGE_LEVEL,
 };
 use crate::TailPolicy;
 
@@ -445,29 +446,52 @@ fn a_leading_zero_is_swg0401_everywhere_not_only_in_the_header() {
     .expect("a zero density prunes everything but spells canonically");
 }
 
-// ── the span side table (the expand frontend's locations) ──────────────
+// ── the source-location side table (the expand frontend's locations) ────
 
 #[test]
 fn the_span_table_slices_the_source_to_the_owning_words() {
-    let (program, spans) = parse_with_spans(REFERENCE).expect("the reference parses");
-    assert_eq!(program, reference_ast(), "one parser, two entry points");
+    // Characterization, carried across SWG-INF-04's migration from
+    // `ProgramSpans` to `SourceMap` unchanged: these are the four locations
+    // §3.5 released, and the wider map does not move them.
+    let parsed = parse_with_source_map(REFERENCE).expect("the reference parses");
+    assert_eq!(
+        parsed.value,
+        reference_ast(),
+        "one parser, two entry points"
+    );
 
     let slice = |span: super::Span| &REFERENCE[span.start as usize..span.end as usize];
-    assert_eq!(slice(spans.kernel), "\"X.X/XX./.XX\"", "quotes included");
-    assert_eq!(slice(spans.unit), "1/16", "the value token alone");
-    assert_eq!(slice(spans.tail), "rest_pad");
+    let at = |node: AstId, field: FieldKind| {
+        slice(
+            parsed
+                .source_map
+                .field_span(FieldRef::new(node, field))
+                .expect("a released location"),
+        )
+    };
     assert_eq!(
-        slice(spans.source),
+        at(AstId::Pattern(0), FieldKind::Kernel),
+        "\"X.X/XX./.XX\"",
+        "quotes included"
+    );
+    assert_eq!(
+        at(AstId::MapRhythm(0), FieldKind::Unit),
+        "1/16",
+        "the value token alone"
+    );
+    assert_eq!(at(AstId::MapRhythm(0), FieldKind::Tail), "rest_pad");
+    assert_eq!(
+        at(AstId::Generate(0), FieldKind::Source),
         "\"corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5\""
     );
 }
 
 #[test]
-fn parse_and_parse_with_spans_are_one_parser() {
+fn parse_and_parse_with_source_map_are_one_parser() {
     // Same acceptance and same diagnostics on the same flawed source.
     let flawed = program_with("|> fractalize depth 1 max_cells 4096 density 9500bps");
     assert_eq!(
-        parse_with_spans(&flawed).expect_err("seedless density")[0].code,
+        parse_with_source_map(&flawed).expect_err("seedless density")[0].code,
         first_error(&flawed).code
     );
 }

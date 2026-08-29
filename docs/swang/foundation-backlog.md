@@ -107,7 +107,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-INF-01 | Sync the S16 status block with reality *(done)* | docs | — |
 | SWG-INF-02 | Language level 2 admission contract *(done)* | docs | INF-03 |
 | SWG-INF-03 | Split `syntax.rs` without behaviour change *(done)* | code | INF-01 |
-| SWG-INF-04 | Replace `ProgramSpans` with a `SourceMap` | code | INF-03 |
+| SWG-INF-04 | Replace `ProgramSpans` with a `SourceMap` *(done)* | code | INF-03 |
 | SWG-INF-05 | Deterministic multi-error recovery | code | INF-04 |
 | SWG-INF-06 | Parser resource gate and differential harness | code | INF-02, INF-03 |
 | SWG-4A-01 | Normative exact-score-text grammar *(done)* | docs | INF-02 |
@@ -288,40 +288,78 @@ than a description of something already coded: no `v2` module, no
 `Level2Root`, no `GrammarVersion`, no dispatch stub, no `Parsed<T>`, no
 `SourceMap`, no recovery, no limits, no public token API.
 
-### SWG-INF-04 — Replace `ProgramSpans` with a `SourceMap`
+### SWG-INF-04 — Replace `ProgramSpans` with a `SourceMap` *(done)*
 
 **Kind:** code. **Depends on:** INF-03
 
 Four spans cannot locate a diagnostic in an exact score text, cannot anchor
-a patch selector, and cannot drive an editor action. Shape:
+a patch selector, and cannot drive an editor action. As built:
 
 ```text
 struct SourceMap {
-    nodes:  BTreeMap<AstId, Span>,
-    fields: BTreeMap<FieldRef, Span>,
+    nodes:  BTreeMap<AstId, Span>,     // private
+    fields: BTreeMap<FieldRef, Span>,  // private
 }
 
-enum AstId    { Program(u32), Pattern(u32), PipelineStep(u32), Generate(u32) }
-enum FieldRef { Node(AstId), Named { node: AstId, field: FieldKind } }
+enum AstId    { Program(u32), Pattern(u32), Fractalize(u32), Linearize(u32),
+                MapRhythm(u32), Generate(u32), Export(u32) }
+struct FieldRef { node: AstId, field: FieldKind }
 ```
 
-Requirements:
+Two departures from this entry's original sketch, both deliberate. `AstId`
+gets one variant per construct rather than a shared `PipelineStep`, so a
+field's owner is named rather than inferred from an ordinal. And `FieldRef`
+has no `Node` variant: `SourceMap::node_span` already owns that relation,
+and two ways to ask one question is one too many. Both enums are
+`#[non_exhaustive]` so level 2 appends variants without breaking a match.
+
+`FieldKind` is not unique on its own — `Seed` names both the pruning and the
+generation seed, and the owning `AstId` tells them apart. A variant per
+(construct, word) pair would grow quadratically and say nothing the pair
+does not already say.
+
+Requirements, all met:
 
 - spans stay out of AST equality — `parse(format(ast)) == ast` still holds;
-- the formatter can consume an AST with no source map at all;
+- the formatter consumes an AST with no source map at all, proved by
+  building a `Program` in Rust with no source text anywhere and reparsing
+  its output;
 - the parser returns `Parsed<T> { value, source_map }`;
-- a diagnostic points at the value the user must change, not at the
-  statement containing it;
-- every semantically significant level-1 field has a span;
+- a diagnostic points at the value, not the statement containing it;
+- every semantically significant level-1 field has a span — seven nodes and
+  eighteen fields in the §3.1 reference, fifteen when pruning and `corpus`
+  are absent;
 - every span lies on a UTF-8 boundary inside the source.
 
 Acceptance:
 
-- the four existing span tests pass through the new model;
-- a witness test enumerates every level-1 AST field and asserts a span for
-  each — adding a field without a span fails to compile or fails the test;
-- reordering words in the source moves the owning span with the value;
-- the spec §3.5 formatter laws are unchanged.
+- the existing span tests pass through the new model. There were **two**,
+  not the four this entry claimed, and they are carried across as
+  characterization rather than rewritten;
+- a witness enumerates every level-1 AST field by exhaustive destructuring
+  with no `..`, so a new AST field without a location classification stops
+  the suite compiling;
+- reordering words moves the owning span with the value while the node and
+  field key sets stay identical — the useful stability guarantee, stated in
+  the decision log;
+- the spec §3.5 formatter laws are unchanged, and so are the four
+  diagnostic locations §3.5 released. The map now knows `bars`,
+  `candidates` and `strategy`; that is editor capability, not permission to
+  move a diagnostic somebody's tooling already parses;
+- eleven mutations, none survived. Three of them were run first against
+  the suite as it stood at closure and survived it — a node span stretched
+  back to byte 0, and two swapped arms of the evaluator's flaw-to-location
+  match — which is how the two review witnesses earned their place rather
+  than merely occupying it.
+
+`ProgramSpans` and `parse_with_spans` are removed rather than wrapped: a
+compatibility shim would have kept the four-field model alive indefinitely,
+which is the thing this task exists to end.
+
+What this task did **not** do, and must not be read as having done: no
+level-2 parsing, no level/root dispatch, no multi-error recovery, no
+resource limits, no token API, no persistent identity. `LANGUAGE_LEVEL`
+stays 1 and a `swang 2` source still takes the unsupported-level path.
 
 ### SWG-INF-05 — Deterministic multi-error recovery
 
@@ -1304,9 +1342,10 @@ INF-01 status sync                    (done)
                 │   surface over it, not another slice of it
                 │
                 └─→ 4A-02 → INF-04 → INF-06 → 4A-06 parser skeleton
-                      (done)   ↑
-                               next — INF-04 can now design SourceMap,
-                               AstId and FieldRef against a real v2 shape
+                      (done)   (done)   ↑
+                                        next — level 2's input bounds must
+                                        be declared before its first
+                                        accepted program (§5.11)
   -> 4A-02..4A-09 writer / parser / builder
   -> 4A-10..4A-14 dump / verify / laws / fuzz
   -> 4B corpus acceptance
