@@ -28,11 +28,13 @@
     clippy::string_slice
 )]
 
+use griff_pattern::{DensityBps, Traversal};
 use griff_swang::syntax::{
-    format, parse, parse_with_source_map, AstId, Export, FieldKind, FieldRef, Fractalize, Generate,
-    Ident, KernelLiteral, Level, Linearize, MapRhythm, PatternDef, Program, Prune, Span,
-    StrategyName, StrategyPolicy, StringLiteral, Unit,
+    format, parse, parse_with_source_map, AstId, Export, ExportFormat, FieldKind, FieldRef,
+    Fractalize, Generate, Ident, KernelLiteral, Level, Linearize, MapRhythm, Parsed, PatternDef,
+    Program, Prune, Span, StrategyName, StrategyPolicy, StringLiteral, Unit,
 };
+use griff_swang::TailPolicy;
 
 /// The spec §3.1 reference program — every optional word present, so the
 /// census sees the widest level-1 shape there is.
@@ -120,6 +122,10 @@ fn classify(program: &Program) -> (Vec<FieldRef>, Vec<AstId>) {
     nodes.push(AstId::Fractalize(0));
     fields.push(FieldRef::new(AstId::Fractalize(0), FieldKind::Depth));
     fields.push(FieldRef::new(AstId::Fractalize(0), FieldKind::MaxCells));
+    // `clippy::unneeded_field_pattern` would have this be `Prune { .. }`.
+    // That is precisely what must not happen: naming every field is how a
+    // new one becomes a compile error here instead of silently unlocatable.
+    #[allow(clippy::unneeded_field_pattern)]
     if let Some(Prune {
         density: _,
         seed: _,
@@ -348,7 +354,7 @@ pattern p {
     let pb = parse_with_source_map(b).expect("b parses");
     assert_eq!(pa.value, pb.value, "legal reordering is the same program");
 
-    let keys = |p: &griff_swang::syntax::Parsed<Program>| {
+    let keys = |p: &Parsed<Program>| {
         (
             p.source_map.nodes().map(|(id, _)| id).collect::<Vec<_>>(),
             p.source_map.fields().map(|(r, _)| r).collect::<Vec<_>>(),
@@ -491,16 +497,16 @@ fn an_ast_built_in_memory_still_formats_and_reparses() {
                 depth: 1,
                 max_cells: 4096,
                 prune: Some(Prune {
-                    density: griff_pattern::DensityBps::new(9500).expect("in scale"),
+                    density: DensityBps::new(9500).expect("in scale"),
                     seed: 4,
                 }),
             },
             linearize: Linearize {
-                traversal: griff_pattern::Traversal::Snake,
+                traversal: Traversal::Snake,
             },
             map_rhythm: MapRhythm {
                 unit: Unit::new(1, 16).expect("a note value"),
-                tail: griff_swang::TailPolicy::RestPad,
+                tail: TailPolicy::RestPad,
             },
             generate: Generate {
                 source: StringLiteral::new("seed.gp5").expect("a path"),
@@ -511,7 +517,7 @@ fn an_ast_built_in_memory_still_formats_and_reparses() {
                 corpus: None,
             },
             export: Export {
-                format: griff_swang::syntax::ExportFormat::Midi,
+                format: ExportFormat::Midi,
                 path: StringLiteral::new("out.mid").expect("a path"),
             },
         },

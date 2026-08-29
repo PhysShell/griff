@@ -28,17 +28,17 @@ use crate::pattern_compile::{
     compile_pattern_flaws, PatternFlaw, PatternPlan, RhythmPatternArgs, TailChoice, TraversalChoice,
 };
 use crate::syntax::{
-    self, Diagnostic, ExportFormat, PatternDef, Program, ProgramSpans, Span, StrategyName,
-    StrategyPolicy,
+    self, AstId, Diagnostic, ExportFormat, FieldKind, FieldRef, PatternDef, Program, SourceMap,
+    Span, StrategyName, StrategyPolicy,
 };
 
-/// A statically-checked program: the parsed AST plus the source spans a
+/// A statically-checked program: the parsed AST plus the source locations a
 /// frontend renders diagnostics at. Text in, structure out — nothing
 /// resolved, nothing run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledProgram {
     program: Program,
-    spans: ProgramSpans,
+    source_map: SourceMap,
 }
 
 impl CompiledProgram {
@@ -48,10 +48,15 @@ impl CompiledProgram {
         &self.program
     }
 
-    /// The source-span table.
+    /// The source-location side table (SWG-INF-04).
+    ///
+    /// The whole map, not a four-word projection of it: a frontend that
+    /// wants to underline `bars` no longer needs a new parser field to do
+    /// it. What this does **not** license is moving a diagnostic §3.5
+    /// already released — see [`flaw_to_diagnostic`].
     #[must_use]
-    pub const fn spans(&self) -> &ProgramSpans {
-        &self.spans
+    pub const fn source_map(&self) -> &SourceMap {
+        &self.source_map
     }
 
     /// The seed-score path the program declares (`generate { source … }`).
@@ -170,8 +175,11 @@ impl EvaluationResult {
 /// # Errors
 /// The parser's span diagnostics (`SWG0001`–`SWG0404`), never empty on `Err`.
 pub fn compile_program(source: &str) -> Result<CompiledProgram, Vec<Diagnostic>> {
-    let (program, spans) = syntax::parse_with_spans(source)?;
-    Ok(CompiledProgram { program, spans })
+    let parsed = syntax::parse_with_source_map(source)?;
+    Ok(CompiledProgram {
+        program: parsed.value,
+        source_map: parsed.source_map,
+    })
 }
 
 /// Runs a compiled program's pattern pipeline up to `map_rhythm`.
@@ -190,7 +198,7 @@ pub fn expand_program(
     let args = rhythm_args(pattern);
     let bars = clamp_bars(pattern.generate.bars);
     compile_pattern_flaws(&args, source_score, bars)
-        .map_err(|flaw| vec![flaw_to_diagnostic(flaw, &compiled.spans)])
+        .map_err(|flaw| vec![flaw_to_diagnostic(flaw, &compiled.source_map)])
 }
 
 /// Runs a compiled program end to end against resolved inputs.
@@ -238,7 +246,11 @@ pub fn evaluate_program(
     .map_err(|e| {
         vec![EvalDiagnostic {
             code: "SWG0310",
-            location: DiagLocation::Span(compiled.spans.source),
+            location: DiagLocation::Span(released(
+                &compiled.source_map,
+                AstId::Generate(0),
+                FieldKind::Source,
+            )),
             message: format!("the source score cannot seed generation: {e:?}"),
         }]
     })?;
@@ -328,30 +340,50 @@ const fn strategy_kind(name: StrategyName) -> GenerationStrategy {
     }
 }
 
+/// One of the four locations §3.5 released, resolved from the map.
+///
+/// The map is total over a well-formed program — the source-map contract
+/// suite proves all eighteen level-1 fields are present — so the fallback
+/// is unreachable. It exists rather than a panic because a location bug
+/// should degrade to a worse message, not to a crash in a frontend.
+fn released(map: &SourceMap, node: AstId, field: FieldKind) -> Span {
+    map.field_span(FieldRef::new(node, field))
+        .or_else(|| map.node_span(AstId::Program(0)))
+        .unwrap_or(Span { start: 0, end: 0 })
+}
+
 /// Maps a pattern-compilation flaw to a layered [`EvalDiagnostic`] (spec
 /// §1.5): structural breaches keep their `NodePath`, score-borne facts sit at
 /// the `source` word, time-domain flaws at the value that must change.
-fn flaw_to_diagnostic(flaw: PatternFlaw, spans: &ProgramSpans) -> EvalDiagnostic {
+///
+/// SWG-INF-04 widened what the parser can locate; it deliberately did not
+/// widen what this function points at. Each arm resolves exactly the word
+/// §3.5 already names, and the richer map is editor capability rather than
+/// permission to move a released diagnostic.
+fn flaw_to_diagnostic(flaw: PatternFlaw, map: &SourceMap) -> EvalDiagnostic {
     let at = |span: Span, code: &'static str, message: String| EvalDiagnostic {
         code,
         location: DiagLocation::Span(span),
         message,
     };
+    let kernel = released(map, AstId::Pattern(0), FieldKind::Kernel);
+    let unit = released(map, AstId::MapRhythm(0), FieldKind::Unit);
+    let source = released(map, AstId::Generate(0), FieldKind::Source);
     match flaw {
-        PatternFlaw::Kernel(d) | PatternFlaw::Density(d) => at(spans.kernel, d.code, d.message),
-        PatternFlaw::Unit(d) => at(spans.unit, d.code, d.message),
-        PatternFlaw::Score(d) => at(spans.source, d.code, d.message),
+        PatternFlaw::Kernel(d) | PatternFlaw::Density(d) => at(kernel, d.code, d.message),
+        PatternFlaw::Unit(d) => at(unit, d.code, d.message),
+        PatternFlaw::Score(d) => at(source, d.code, d.message),
         PatternFlaw::Budget(e) => budget_diagnostic(&e),
-        PatternFlaw::Lower(e) => lower_diagnostic(&e, spans),
+        PatternFlaw::Lower(e) => lower_diagnostic(&e, map),
         PatternFlaw::SilentExpansion => at(
-            spans.kernel,
+            kernel,
             "SWG0306",
             "the expansion produced no onsets — nothing to generate (change the kernel, \
              depth, density, or rhythm seed)"
                 .to_owned(),
         ),
         PatternFlaw::SilentWindow { used } => at(
-            spans.kernel,
+            kernel,
             "SWG0306",
             format!(
                 "the first {used} template(s) the bars window rotates over are all silent — \
@@ -392,11 +424,13 @@ fn budget_diagnostic(e: &griff_pattern::PatternError) -> EvalDiagnostic {
 }
 
 /// A time-domain lowering flaw at the value that must change.
-fn lower_diagnostic(e: &crate::LowerError, spans: &ProgramSpans) -> EvalDiagnostic {
+fn lower_diagnostic(e: &crate::LowerError, map: &SourceMap) -> EvalDiagnostic {
+    let unit_span = released(map, AstId::MapRhythm(0), FieldKind::Unit);
+    let tail_span = released(map, AstId::MapRhythm(0), FieldKind::Tail);
     match e {
         crate::LowerError::UnitDoesNotDivideBar { bar_duration, unit } => EvalDiagnostic {
             code: "SWG0301",
-            location: DiagLocation::Span(spans.unit),
+            location: DiagLocation::Span(unit_span),
             message: format!(
                 "unit {} does not divide the {}-tick bar exactly",
                 unit.0, bar_duration.0
@@ -404,7 +438,7 @@ fn lower_diagnostic(e: &crate::LowerError, spans: &ProgramSpans) -> EvalDiagnost
         },
         crate::LowerError::ZeroUnit => EvalDiagnostic {
             code: "SWG0301",
-            location: DiagLocation::Span(spans.unit),
+            location: DiagLocation::Span(unit_span),
             message: "the rhythm unit is zero ticks".to_owned(),
         },
         crate::LowerError::IncompleteFinalBar {
@@ -412,7 +446,7 @@ fn lower_diagnostic(e: &crate::LowerError, spans: &ProgramSpans) -> EvalDiagnost
             slots_per_bar,
         } => EvalDiagnostic {
             code: "SWG0302",
-            location: DiagLocation::Span(spans.tail),
+            location: DiagLocation::Span(tail_span),
             message: format!(
                 "the final bar holds {have_slots} of {slots_per_bar} slots; a rest_pad tail \
                  pads it with timed rests"
