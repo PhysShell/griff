@@ -683,7 +683,9 @@ mod level_two_budget {
     #[test]
     fn a_source_of_exactly_the_limit_is_admitted() {
         let budget = Level2Budget::new(small());
-        assert!(budget.admit_source("12345678", AT).is_ok());
+        budget
+            .admit_source("12345678", AT)
+            .expect("eight bytes is exactly the limit");
     }
 
     #[test]
@@ -702,7 +704,9 @@ mod level_two_budget {
             source_bytes: 5,
             ..small()
         });
-        assert!(budget.admit_source("ééé", AT).is_err());
+        budget
+            .admit_source("ééé", AT)
+            .expect_err("six bytes exceeds a limit of five");
     }
 
     #[test]
@@ -711,9 +715,13 @@ mod level_two_budget {
         // number is wired to it rather than merely declared beside it.
         let budget = Level2Budget::new(Level2ResourceLimits::declared());
         let at_limit = "a".repeat(usize::try_from(MAX_SOURCE_BYTES).expect("16 MiB fits usize"));
-        assert!(budget.admit_source(&at_limit, AT).is_ok());
+        budget
+            .admit_source(&at_limit, AT)
+            .expect("exactly the declared limit");
         let over = format!("{at_limit}a");
-        assert!(budget.admit_source(&over, AT).is_err());
+        budget
+            .admit_source(&over, AT)
+            .expect_err("one byte over the declared limit");
     }
 
     #[test]
@@ -735,8 +743,8 @@ mod level_two_budget {
         for _ in 0..3 {
             budget.admit_token(AT).expect("within the token budget");
         }
-        assert!(budget.admit_token(AT).is_err());
-        assert!(budget.admit_token(AT).is_err());
+        budget.admit_token(AT).expect_err("the fourth token");
+        budget.admit_token(AT).expect_err("the fifth token");
         assert_eq!(budget.tokens(), 3, "a refusal stores nothing");
     }
 

@@ -58,6 +58,7 @@ mod diagnostic;
 mod format;
 mod header;
 mod lexer;
+mod limits;
 mod parser;
 mod source_map;
 mod span;
