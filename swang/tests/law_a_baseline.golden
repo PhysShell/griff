@@ -1,6 +1,6 @@
 schema 1
 producer c44313c0cd82f3f2a8720437824d8cf5058b4e15
-cases 50
+cases 47
 
 case fuzz_seed_reference
 source 444 "swang 1\n\npattern dgd_fractal {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096 density 9500bps seed 4\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy repeat_variation\n        corpus \"corpus\"\n    }\n    |> export midi \"dgd_fractal_dense.mid\"\n}\n"
@@ -220,24 +220,6 @@ ast generate.corpus absent
 ast export.format midi
 ast export.path 7 "out.mid"
 canonical 316 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy shuffle_motifs\n    }\n    |> export midi \"out.mid\"\n}\n"
-end
-
-case header_level_newer_than_build
-source 306 "swang 2\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
-verdict rejected
-diagnostic 0 SWG0001 6 7 58 "language level 2 is newer than this build supports (1..=1)"
-end
-
-case header_malformed_missing_space
-source 305 "swang1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
-verdict rejected
-diagnostic 0 SWG0002 0 64 65 "missing or malformed header line; a script begins `swang <level>`"
-end
-
-case header_byte_order_mark
-source 309 "﻿swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
-verdict rejected
-diagnostic 0 SWG0003 0 3 63 "byte-order mark before the header; Swang is UTF-8 without a BOM"
 end
 
 case kernel_whitespace

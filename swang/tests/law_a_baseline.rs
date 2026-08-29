@@ -397,24 +397,6 @@ fn accepted_corpus() -> Vec<Case> {
     ]
 }
 
-/// The header pre-parser's three refusals (spec §1.1, frozen).
-fn rejected_header_corpus() -> Vec<Case> {
-    vec![
-        Case {
-            name: "header_level_newer_than_build",
-            source: Script::base().render().replace("swang 1", "swang 2"),
-        },
-        Case {
-            name: "header_malformed_missing_space",
-            source: Script::base().render().replace("swang 1", "swang1"),
-        },
-        Case {
-            name: "header_byte_order_mark",
-            source: format!("\u{feff}{}", Script::base().render()),
-        },
-    ]
-}
-
 /// The kernel literal's own registry laws, in the transport's order.
 fn rejected_kernel_corpus() -> Vec<Case> {
     let base = Script::base();
@@ -629,7 +611,6 @@ fn rejected_scalar_corpus() -> Vec<Case> {
 /// The whole corpus, in the order the baseline records it.
 fn corpus() -> Vec<Case> {
     let mut all = accepted_corpus();
-    all.extend(rejected_header_corpus());
     all.extend(rejected_kernel_corpus());
     all.extend(rejected_word_corpus());
     all.extend(rejected_lexical_corpus());
@@ -690,12 +671,19 @@ fn observed(program: &Program) -> String {
 
 // ── the tests ────────────────────────────────────────────────────────────
 
-/// Every diagnostic code language level 1 can emit. Spec §5.10 freezes
-/// these; a level-2 build must still produce exactly them for a `swang 1`
-/// source, which is why the corpus has to reach all of them.
+/// Every diagnostic code reachable **inside Law A's domain** — that is, from
+/// a source whose first line is already a valid `swang 1` header.
+///
+/// The header pre-parser's own three codes are deliberately absent.
+/// `SWG0001`, `SWG0002`, and `SWG0003` are raised *instead of* admitting a
+/// level-1 source, so no source that reaches them is a Law A case, and a
+/// build supporting `1..=N` is under no obligation to keep raising them —
+/// `SWG0001` for `swang 2` is precisely what SWG-4A-06 must stop doing. They
+/// keep their own characterization tests beside the frozen pre-parser, where
+/// the contract that governs them lives.
 const LEVEL_ONE_CODES: &[&str] = &[
-    "SWG0001", "SWG0002", "SWG0003", "SWG0101", "SWG0102", "SWG0103", "SWG0301", "SWG0303",
-    "SWG0307", "SWG0308", "SWG0401", "SWG0402", "SWG0403", "SWG0404",
+    "SWG0101", "SWG0102", "SWG0103", "SWG0301", "SWG0303", "SWG0307", "SWG0308", "SWG0401",
+    "SWG0402", "SWG0403", "SWG0404",
 ];
 
 #[test]
@@ -745,7 +733,7 @@ fn the_baseline_names_the_build_that_produced_it() {
 
 /// Distinct `(code, message)` refusals the corpus reaches. Pinned so the
 /// sample cannot silently shrink.
-const DISTINCT_REFUSALS: usize = 38;
+const DISTINCT_REFUSALS: usize = 35;
 
 #[test]
 fn the_corpus_pins_the_extent_of_its_own_sample() {

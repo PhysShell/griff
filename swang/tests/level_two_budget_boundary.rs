@@ -28,6 +28,12 @@ use std::path::{Path, PathBuf};
 /// The level-1 parse path, end to end: the frozen header pre-parser, the
 /// lexer it hands off to, the one parser module, and the formatter.
 const LEVEL_ONE_PATH: &[(&str, &str)] = &[
+    // `syntax.rs` is the crate's public re-export point and the natural home
+    // for shared dispatch, which makes it the one file most worth scanning —
+    // a budget consulted there, *before* the level 1/2 branch, would be
+    // consulted on every level-1 parse while both of this suite's other
+    // witnesses stayed silent.
+    ("syntax.rs", include_str!("../src/syntax.rs")),
     ("header.rs", include_str!("../src/syntax/header.rs")),
     ("lexer.rs", include_str!("../src/syntax/lexer.rs")),
     ("parser/v1.rs", include_str!("../src/syntax/parser/v1.rs")),
@@ -54,17 +60,37 @@ const BUDGET_NAMES: &[&str] = &[
     "SWG0509",
 ];
 
+/// The one line `syntax.rs` may contain: the module declaration itself.
+const DECLARATION: &str = "mod limits;";
+
 /// Strips comment-only lines, so prose about a name is not read as a use of
-/// it.
+/// it, and — in `syntax.rs` alone — the bare module declaration.
+///
+/// Exempting `syntax.rs` wholesale was the earlier form, and it was wrong in
+/// a way that only shows up next task: the file that declares the module is
+/// also the file where level dispatch will live, so a blanket exemption
+/// makes the shared dispatch point the one place a budget could be consulted
+/// unwatched. The declaration is permitted by exact line; every other line
+/// is scanned like any other module's.
 fn code_of(source: &str) -> String {
+    strip(source, false)
+}
+
+/// `code_of`, optionally also dropping the module declaration.
+fn strip(source: &str, is_root: bool) -> String {
     source
         .lines()
         .filter(|line| {
             let trimmed = line.trim_start();
-            !trimmed.starts_with("//")
+            !(trimmed.starts_with("//") || is_root && trimmed.trim_end() == DECLARATION)
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Whether this path is the crate's `syntax.rs` root module.
+fn is_root(shown: &str) -> bool {
+    shown.trim_start_matches('/') == "syntax.rs"
 }
 
 /// Whether `haystack` mentions `needle` as a whole token, so a longer
@@ -82,7 +108,7 @@ fn mentions(haystack: &str, needle: &str) -> bool {
 #[test]
 fn no_level_one_module_consults_the_level_two_budget() {
     for (name, source) in LEVEL_ONE_PATH {
-        let code = code_of(source);
+        let code = strip(source, is_root(name));
         for budget_name in BUDGET_NAMES {
             assert!(
                 !mentions(&code, budget_name),
@@ -104,6 +130,14 @@ fn the_witness_can_fail() {
     assert!(mentions(&code_of(planted), "limits"));
     let prose = "//! The Level2Budget is discussed here but never called.";
     assert!(!mentions(&code_of(prose), "Level2Budget"));
+    // The declaration is permitted in the root module and nowhere else, and
+    // permitting it must not swallow a use on the same subject.
+    assert!(!mentions(&strip("mod limits;", true), "limits"));
+    assert!(mentions(&strip("mod limits;", false), "limits"));
+    assert!(mentions(
+        &strip("mod limits;\nlet b = Level2Budget::declared();", true),
+        "Level2Budget"
+    ));
 }
 
 #[test]
@@ -123,7 +157,10 @@ fn every_shipped_module_but_the_budget_itself_is_scanned() {
         if EXEMPT.iter().any(|e| shown.trim_start_matches('/') == *e) {
             continue;
         }
-        let code = code_of(&read_to_string(&path).expect("a shipped source"));
+        let code = strip(
+            &read_to_string(&path).expect("a shipped source"),
+            is_root(&shown),
+        );
         scanned = scanned.saturating_add(1);
         for budget_name in BUDGET_NAMES {
             assert!(
@@ -136,9 +173,15 @@ fn every_shipped_module_but_the_budget_itself_is_scanned() {
     assert!(scanned > 10, "only {scanned} modules were walked");
 }
 
-/// The three modules that may name the budget: the one that declares the
-/// module, the budget itself, and its tests.
-const EXEMPT: &[&str] = &["syntax.rs", "syntax/limits.rs", "syntax/tests.rs"];
+/// The two modules that may name the budget freely: the budget itself and
+/// its tests. `syntax.rs` is deliberately absent — it is scanned, with only
+/// its `mod limits;` declaration permitted.
+///
+/// When SWG-4A-06 adds level-2-specific modules (`parser/v2.rs` and the
+/// like), those go on this list explicitly, one at a time. Shared dispatch
+/// never joins it: a budget consulted before the level branch is a level-1
+/// bound, whatever file it lives in.
+const EXEMPT: &[&str] = &["syntax/limits.rs", "syntax/tests.rs"];
 
 /// Every `.rs` file under `dir`, recursively, in a deterministic order.
 fn rust_sources(dir: &Path) -> Vec<PathBuf> {

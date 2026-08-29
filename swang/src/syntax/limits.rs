@@ -47,9 +47,12 @@
 //! bottoms out — so it cannot approach depth 64, and today's parser maps
 //! each error into a one-element vector, so it cannot approach 256
 //! diagnostics. Both limits are declared anyway, because §5.11 requires
-//! declaration *before* level 2's first accepted program: a bound not
-//! declared now can never be added, since adding it later would narrow a
-//! frozen acceptance set. They are reservations, not evidence of a
+//! declaration *before* level 2's first accepted program. That deadline is
+//! §5.11's own admission rule, and it is **stricter than the freeze**: by
+//! §5.3 level 2 stays provisional until Phase 4A is accepted, so a bound
+//! added after the first accepted program would still predate the freeze —
+//! §5.11 forbids it anyway, because programs written against a provisional
+//! level are already running. They are reservations, not evidence of a
 //! stack-overflow hazard in today's grammar.
 //!
 //! # No caller yet, on purpose
@@ -78,28 +81,53 @@ pub(crate) const MAX_NESTING_DEPTH: u32 = 64;
 /// diagnostic included.
 pub(crate) const MAX_DIAGNOSTICS: u32 = 256;
 
-/// The four declared level-2 bounds. Constructible with other values so a
-/// test can prove a boundary without allocating the declared cap.
+/// The four declared level-2 bounds.
+///
+/// The fields are private and there is no production constructor but
+/// [`Level2ResourceLimits::declared`]. A declared bound that a caller may
+/// replace is not a declared bound: `Level2Budget::new(Level2ResourceLimits
+/// { tokens: u64::MAX, .. })` would satisfy every word of the contract while
+/// meaning none of it. Tests reach the scaled constructor below, which is
+/// `#[cfg(test)]` and therefore cannot appear in a shipped call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Level2ResourceLimits {
     /// UTF-8 bytes of the complete source, header included.
-    pub(crate) source_bytes: u64,
+    source_bytes: u64,
     /// Tokens after the frozen header pre-parser; end of input is not one.
-    pub(crate) tokens: u64,
+    tokens: u64,
     /// Simultaneously open structural `{ ... }` constructs.
-    pub(crate) nesting_depth: u32,
+    nesting_depth: u32,
     /// Diagnostics one parse attempt may return.
-    pub(crate) diagnostics: u32,
+    diagnostics: u32,
 }
 
 impl Level2ResourceLimits {
-    /// The bounds spec §5.11 declares.
+    /// The bounds spec §5.11 declares. The only way to build these outside
+    /// a test.
     pub(crate) const fn declared() -> Self {
         Self {
             source_bytes: MAX_SOURCE_BYTES,
             tokens: MAX_TOKENS,
             nesting_depth: MAX_NESTING_DEPTH,
             diagnostics: MAX_DIAGNOSTICS,
+        }
+    }
+
+    /// Scaled-down bounds, so a test can prove an exact off-by-one without
+    /// allocating the declared caps. Test-only on purpose: see the type's
+    /// documentation.
+    #[cfg(test)]
+    pub(crate) const fn scaled(
+        source_bytes: u64,
+        tokens: u64,
+        nesting_depth: u32,
+        diagnostics: u32,
+    ) -> Self {
+        Self {
+            source_bytes,
+            tokens,
+            nesting_depth,
+            diagnostics,
         }
     }
 }
@@ -140,13 +168,15 @@ fn breach(axis: Axis, limit: u64, needed: u64, at: Span) -> Diagnostic {
 
 /// A level-2 parse's running resource state.
 ///
-/// Deliberately not `Copy`: it is a counter, and a silently copied counter
-/// would let a caller admit past its own cap by advancing a duplicate.
+/// Deliberately neither `Copy` nor `Clone`: it is a counter, and a
+/// duplicated counter lets a caller spend the same budget twice by
+/// advancing the copy. The documentation already promised that; the derives
+/// used to contradict it.
 #[allow(
     missing_copy_implementations,
     reason = "a running counter must not be silently duplicated"
 )]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Level2Budget {
     limits: Level2ResourceLimits,
     tokens: u64,
@@ -155,14 +185,29 @@ pub(crate) struct Level2Budget {
 }
 
 impl Level2Budget {
-    /// A fresh budget over the given bounds, with every counter at zero.
-    pub(crate) const fn new(limits: Level2ResourceLimits) -> Self {
+    /// The budget every level-2 parse runs under: the bounds §5.11 declares,
+    /// with every counter at zero. This is the only constructor a shipped
+    /// call site can reach.
+    pub(crate) const fn declared() -> Self {
+        Self::over(Level2ResourceLimits::declared())
+    }
+
+    /// A fresh budget over the given bounds. Private, so the declared bounds
+    /// cannot be swapped out at a call site; `declared()` is the production
+    /// door and `#[cfg(test)]` code reaches this through [`Self::scaled`].
+    const fn over(limits: Level2ResourceLimits) -> Self {
         Self {
             limits,
             tokens: 0,
             depth: 0,
             diagnostics: 0,
         }
+    }
+
+    /// A budget over scaled-down bounds, for boundary tests.
+    #[cfg(test)]
+    pub(crate) const fn scaled(limits: Level2ResourceLimits) -> Self {
+        Self::over(limits)
     }
 
     /// Tokens admitted so far.
