@@ -2477,3 +2477,33 @@ Architectural decisions go to [`adr/`](adr/) instead.
   reach the evaluator at all: `mod ast` is private to `syntax`, so naming
   the type from outside is `E0603`. Accepting that the bullet stays open in
   the backlog until 4A-09 closes it.
+
+- 2026-08-26 — In the context of SWG-INF-04, facing the question of what an
+  `AstId` promises, we decided that it is a **parse-local structural
+  handle** and against any persistence guarantee, to achieve a source map
+  useful to diagnostics and editors today without pre-deciding a question
+  Phase 4C owns, accepting that an edit which inserts, deletes or reorders
+  repeated nodes may renumber every id after it. What is guaranteed: for two
+  sources that parse to equal ASTs, the maps have the same node-key set and
+  the same field-key set, though the spans differ. That is deterministic
+  under whitespace and under §3.2's legal word reordering, which is the
+  stability an editor actually needs to re-anchor after a reformat. What is
+  not guaranteed, stated so nobody has to guess: identity across
+  AST-changing edits, patch identity, a serialized form, a semantic-hash
+  input, or anything about Phase 4C selector identity. Pretending otherwise
+  would make 4C's real problem look solved by a side table that never
+  addressed it.
+
+- 2026-08-26 — In the context of SWG-INF-04's design, facing three pieces of
+  prior art, we decided to adopt two and refuse one, to achieve a source map
+  that is boring in the ways that matter. From `rustc`: byte-offset
+  locations, with line and column resolved only at render time, so nothing
+  stores a line number as semantic state. From `rust-analyzer`'s `AstIdMap`:
+  the separation between structural identity and position-dependent
+  location — the side-table architecture itself. From `rowan`'s
+  `SyntaxNodePtr`: the idea is sound prior art for transient source
+  pointers, but a lossless CST is **not** adopted, because SWG-UI-07 owns
+  that admission gate and it requires three demonstrated needs that have not
+  been demonstrated. The borrowed architecture stops short of
+  `rust-analyzer`'s incremental-IDE identity guarantees, which is the
+  distinction the entry above exists to make explicit.
