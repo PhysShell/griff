@@ -632,3 +632,193 @@ fn parse_format_roundtrips_any_constructible_program() {
     let roundtripped = parse(&format(&program)).expect("formatted text parses");
     assert_eq!(roundtripped, program);
 }
+
+/// SWG-INF-06: the level-2 resource budget's contract, stated before it
+/// exists.
+///
+/// Spec §5.11 puts every declared input bound at **level 2 only**: level 1's
+/// acceptance set is frozen, so a parser-wide bound that rejected a source
+/// level 1 accepts would be an observable change to a frozen level. Nothing
+/// here may ever be consulted on a level-1 path, and the type is named for
+/// that.
+///
+/// The budget is a live counter, not a post-hoc audit. Checking
+/// `tokens.len()` after lexing four million tokens is not a resource gate;
+/// it is an obituary written after the allocation. So every axis is admitted
+/// *before* the thing it counts is built.
+mod level_two_budget {
+    use crate::syntax::limits::{
+        Level2Budget, Level2ResourceLimits, MAX_DIAGNOSTICS, MAX_NESTING_DEPTH, MAX_SOURCE_BYTES,
+        MAX_TOKENS,
+    };
+    use crate::syntax::Span;
+
+    /// Any location; these tests are about counting, not about pointing.
+    const AT: Span = Span { start: 0, end: 1 };
+
+    /// A scaled-down budget, so every boundary is testable at its exact
+    /// off-by-one without allocating the declared caps.
+    const fn small() -> Level2ResourceLimits {
+        Level2ResourceLimits {
+            source_bytes: 8,
+            tokens: 3,
+            nesting_depth: 2,
+            diagnostics: 2,
+        }
+    }
+
+    #[test]
+    fn the_declared_limits_are_the_four_numbers_the_spec_names() {
+        assert_eq!(MAX_SOURCE_BYTES, 16_777_216, "exactly 16 MiB");
+        assert_eq!(MAX_TOKENS, 4_000_000);
+        assert_eq!(MAX_NESTING_DEPTH, 64);
+        assert_eq!(MAX_DIAGNOSTICS, 256);
+        let declared = Level2ResourceLimits::declared();
+        assert_eq!(declared.source_bytes, MAX_SOURCE_BYTES);
+        assert_eq!(declared.tokens, MAX_TOKENS);
+        assert_eq!(declared.nesting_depth, MAX_NESTING_DEPTH);
+        assert_eq!(declared.diagnostics, MAX_DIAGNOSTICS);
+    }
+
+    #[test]
+    fn a_source_of_exactly_the_limit_is_admitted() {
+        let budget = Level2Budget::new(small());
+        assert!(budget.admit_source("12345678", AT).is_ok());
+    }
+
+    #[test]
+    fn one_byte_over_the_source_limit_is_refused() {
+        let budget = Level2Budget::new(small());
+        let refusal = budget
+            .admit_source("123456789", AT)
+            .expect_err("nine bytes exceeds a limit of eight");
+        assert_eq!(refusal.code, "SWG0509");
+    }
+
+    #[test]
+    fn the_source_limit_counts_utf8_bytes_not_characters() {
+        // Three two-byte characters are six bytes, not three.
+        let budget = Level2Budget::new(Level2ResourceLimits {
+            source_bytes: 5,
+            ..small()
+        });
+        assert!(budget.admit_source("ééé", AT).is_err());
+    }
+
+    #[test]
+    fn the_declared_source_limit_is_the_one_actually_consulted() {
+        // The scaled budget proves the arithmetic; this proves the real
+        // number is wired to it rather than merely declared beside it.
+        let budget = Level2Budget::new(Level2ResourceLimits::declared());
+        let at_limit = "a".repeat(usize::try_from(MAX_SOURCE_BYTES).expect("16 MiB fits usize"));
+        assert!(budget.admit_source(&at_limit, AT).is_ok());
+        let over = format!("{at_limit}a");
+        assert!(budget.admit_source(&over, AT).is_err());
+    }
+
+    #[test]
+    fn the_token_budget_admits_exactly_its_limit_then_refuses() {
+        let mut budget = Level2Budget::new(small());
+        for _ in 0..3 {
+            budget.admit_token(AT).expect("within the token budget");
+        }
+        assert_eq!(budget.tokens(), 3);
+        let refusal = budget.admit_token(AT).expect_err("the fourth token");
+        assert_eq!(refusal.code, "SWG0509");
+    }
+
+    #[test]
+    fn a_refused_token_is_not_counted() {
+        // The lexer asks before it stores. A budget that recorded the token
+        // it just refused would drift past its own cap.
+        let mut budget = Level2Budget::new(small());
+        for _ in 0..3 {
+            budget.admit_token(AT).expect("within the token budget");
+        }
+        assert!(budget.admit_token(AT).is_err());
+        assert!(budget.admit_token(AT).is_err());
+        assert_eq!(budget.tokens(), 3, "a refusal stores nothing");
+    }
+
+    #[test]
+    fn the_root_block_is_depth_one() {
+        let mut budget = Level2Budget::new(small());
+        budget.enter_block(AT).expect("the score root");
+        assert_eq!(budget.depth(), 1);
+    }
+
+    #[test]
+    fn nesting_counts_simultaneously_open_blocks_not_total_blocks() {
+        // Two sibling blocks are depth 1 twice, never depth 2. A counter
+        // that never decremented would refuse a perfectly flat document.
+        let mut budget = Level2Budget::new(small());
+        for _ in 0..10 {
+            budget.enter_block(AT).expect("a sibling block");
+            budget.leave_block();
+        }
+        assert_eq!(budget.depth(), 0);
+    }
+
+    #[test]
+    fn the_block_that_would_exceed_the_depth_is_the_one_refused() {
+        let mut budget = Level2Budget::new(small());
+        budget.enter_block(AT).expect("depth 1");
+        budget.enter_block(AT).expect("depth 2");
+        let refusal = budget.enter_block(AT).expect_err("depth 3 exceeds two");
+        assert_eq!(refusal.code, "SWG0509");
+        assert_eq!(budget.depth(), 2, "a refused block was never entered");
+    }
+
+    #[test]
+    fn the_diagnostic_budget_reserves_its_last_slot_for_the_breach() {
+        // §5.11's diagnostic cap is on what one parse attempt *returns*, and
+        // the terminal resource diagnostic counts toward it. So a cap of two
+        // buys one ordinary diagnostic and the SWG0509 that ends the run —
+        // never two ordinary ones and a third that quietly exceeds the cap.
+        let mut budget = Level2Budget::new(small());
+        budget.admit_diagnostic(AT).expect("the first diagnostic");
+        let terminal = budget
+            .admit_diagnostic(AT)
+            .expect_err("the second would leave no room for the breach");
+        assert_eq!(terminal.code, "SWG0509");
+        assert_eq!(budget.diagnostics(), 2, "the terminal one is counted");
+    }
+
+    #[test]
+    fn every_breach_names_its_axis_the_declared_limit_and_what_was_seen() {
+        let budget = Level2Budget::new(small());
+        let refusal = budget.admit_source("123456789", AT).expect_err("over");
+        assert!(refusal.message.contains("source bytes"), "{refusal:?}");
+        assert!(refusal.message.contains('8'), "the declared limit");
+        assert!(refusal.message.contains('9'), "what was observed");
+    }
+
+    #[test]
+    fn a_breach_points_where_the_caller_said() {
+        let mut budget = Level2Budget::new(small());
+        let at = Span { start: 40, end: 44 };
+        for _ in 0..3 {
+            budget.admit_token(AT).expect("within the budget");
+        }
+        let refusal = budget.admit_token(at).expect_err("the fourth token");
+        assert_eq!(refusal.span, at, "the crossing token, not the whole file");
+    }
+
+    #[test]
+    fn all_four_axes_share_one_code_because_they_share_one_meaning() {
+        let mut budget = Level2Budget::new(Level2ResourceLimits {
+            source_bytes: 1,
+            tokens: 0,
+            nesting_depth: 0,
+            diagnostics: 1,
+        });
+        let codes = [
+            budget.admit_token(AT).expect_err("tokens").code,
+            budget.enter_block(AT).expect_err("depth").code,
+            budget.admit_diagnostic(AT).expect_err("diagnostics").code,
+        ];
+        for code in codes {
+            assert_eq!(code, "SWG0509");
+        }
+    }
+}
