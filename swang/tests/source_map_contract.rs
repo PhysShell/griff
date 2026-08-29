@@ -294,6 +294,80 @@ fn a_node_span_contains_every_field_span_it_owns() {
     }
 }
 
+#[test]
+fn every_node_span_covers_exactly_its_construct() {
+    // Containment alone is far too weak: a node span of `0..source.len()`
+    // contains every field it owns and is wrong about all of them. The
+    // documented rule is the *smallest* contiguous range covering the
+    // construct's syntax, so the only honest witness is the slice itself.
+    let parsed = parse_with_source_map(REFERENCE).expect("the reference parses");
+    let at = |id: AstId| {
+        slice(
+            REFERENCE,
+            parsed
+                .source_map
+                .node_span(id)
+                .unwrap_or_else(|| panic!("no node span for {id:?}")),
+        )
+    };
+
+    assert_eq!(
+        at(AstId::Fractalize(0)),
+        "fractalize depth 1 max_cells 4096 density 9500bps seed 4",
+        "a pipeline step runs from its name word to its last argument"
+    );
+    assert_eq!(at(AstId::Linearize(0)), "linearize snake");
+    assert_eq!(
+        at(AstId::MapRhythm(0)),
+        "map_rhythm unit 1/16 tail rest_pad"
+    );
+    assert_eq!(
+        at(AstId::Export(0)),
+        "export midi \"dgd_fractal_dense.mid\"",
+        "the path literal is the last argument, quotes included"
+    );
+
+    let generate = at(AstId::Generate(0));
+    assert!(
+        generate.starts_with("generate {"),
+        "the generate step opens at its own word: {generate:?}"
+    );
+    assert!(
+        generate.ends_with('}'),
+        "and closes at its block's brace, not at the last word inside it: {generate:?}"
+    );
+    assert!(
+        generate.contains("corpus \"corpus\""),
+        "with the whole block between: {generate:?}"
+    );
+
+    let pattern = at(AstId::Pattern(0));
+    assert!(
+        pattern.starts_with("pattern dgd_fractal {"),
+        "the block opens at its keyword: {pattern:?}"
+    );
+    assert!(pattern.ends_with('}'), "and closes at its own brace");
+    assert!(
+        !pattern.starts_with("swang"),
+        "the header is the program's, not the pattern's"
+    );
+
+    let program = at(AstId::Program(0));
+    assert!(
+        program.starts_with("swang 1"),
+        "the program opens at its header: {program:?}"
+    );
+    assert!(
+        program.ends_with('}'),
+        "and ends at the pattern's closing brace, not at the trailing newline"
+    );
+    assert_eq!(
+        program.len(),
+        REFERENCE.trim_end().len(),
+        "the program covers the source but for the trailing newline"
+    );
+}
+
 // ── B. optionality ──────────────────────────────────────────────────────────
 
 #[test]
