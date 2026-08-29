@@ -1019,7 +1019,8 @@ same thing:
 | `SWG0403` | required word missing from a construct |
 | `SWG0404` | word repeated within a construct |
 
-Four codes are new, because these failures do not exist at level 1:
+Four codes are new to the grammar, because these failures do not exist at
+level 1:
 
 | Code | Meaning |
 | --- | --- |
@@ -1028,7 +1029,14 @@ Four codes are new, because these failures do not exist at level 1:
 | `SWG0507` | the tempo is a reduced fraction the canonical model cannot construct (H1's third branch) |
 | `SWG0508` | any string-literal escape fault — malformed (`\q`, an unterminated `\u{`) **and** valid-but-non-canonical (`\u{0a}` where `\n` is canonical, uppercase hex, leading zeros). Escapes are `SWG0508`'s alone; `SWG0505` never claims one |
 
-No block is reserved beyond these four. Errors that do not exist yet get
+One further code is level 2's, earned outside this document by the parser
+resource gate rather than by the grammar:
+
+| Code | Meaning |
+| --- | --- |
+| `SWG0509` | a declared level-2 input budget was exceeded — source bytes, tokens, nesting depth, or diagnostics. One code for four axes, because they carry one meaning; the message names the axis, the declared limit, and what the parse would have needed. Declared by SWG-INF-06, defined in spec §5.11 |
+
+No block is reserved beyond these five. Errors that do not exist yet get
 numbers when they do.
 
 ## 7. Fixture matrix

@@ -2507,3 +2507,78 @@ Architectural decisions go to [`adr/`](adr/) instead.
   been demonstrated. The borrowed architecture stops short of
   `rust-analyzer`'s incremental-IDE identity guarantees, which is the
   distinction the entry above exists to make explicit.
+
+- 2026-08-29 — In the context of SWG-INF-06, facing an entry that asked for
+  the pre-refactor parser to be diffed against the refactored one, we
+  decided to **retire that comparison as already discharged and record a
+  frozen Law A baseline in its place**, to achieve a differential with a
+  living right-hand side, accepting that no finite corpus is Law A's whole
+  domain. INF-03 deleted the parser the entry wanted to diff against and its
+  own acceptance already made that comparison — byte-identical reference,
+  identical test counts, no edited expected value, its own mutation round —
+  so there is nothing left in the tree to compare and resurrecting dead code
+  to diff it would be theatre. Spec §5.5 states the differential that will
+  have a second side: a build supporting `1..=N` treats every `swang 1`
+  source, invalid ones included, exactly as a level-1-only build did, on all
+  seven observables. Today N is 1, so the left-hand side is recorded now,
+  while a level-1-only build is what the tree holds — by the time 4A-06
+  supplies the right-hand side, that build will be gone exactly as the
+  pre-refactor parser is gone now.
+
+- 2026-08-29 — In the context of the Law A baseline's shape, facing the
+  question of what makes an AST observation *independent* evidence, we
+  decided on a **test-owned exhaustive projection**, and against `Debug`,
+  against serde, and against recording `format(ast)`, to achieve two
+  witnesses rather than one wearing two hats, accepting that the projection
+  must be extended by hand whenever the AST grows. `Debug` output is a
+  representation detail no contract pins; `Program` is deliberately not
+  serialized, so adding serde would mean inventing a contract in order to
+  test it; and recording the formatter's output as the AST observation would
+  leave canonical bytes and the AST as the same measurement, so a
+  coordinated parser-and-formatter regression could preserve the bytes while
+  changing what the tree means. Every struct is destructured with no `..`
+  and every enum matched with no wildcard, so growth is a compile error
+  rather than a silent blind spot. The artifact is compare-only: no
+  snapshot-update path exists, because a baseline that regenerates itself
+  records whatever the code now does and calls it history.
+
+- 2026-08-29 — In the context of SWG-INF-06's four bounds, facing two axes
+  that today's grammar cannot approach, we decided to **declare all four and
+  label depth and diagnostics as forward reservations**, to achieve the one
+  thing §5.11 leaves no second chance at, accepting that two declared
+  numbers guard nothing yet. The exact-score grammar has no recursive
+  production and the parser returns one diagnostic, so 64 and 256 are
+  currently unreachable; but a bound not declared before level 2's first
+  accepted program can never be added, because adding it afterwards would
+  narrow an acceptance set that is by then frozen. Declaring them costs
+  nothing today and omitting them spends the option permanently. The spec
+  says plainly that they are reservations and not evidence of a
+  stack-overflow hazard, because a limit presented as a defence against a
+  danger that does not exist is how a number stops being questioned.
+
+- 2026-08-29 — In the context of the budget having no level-2 parser to
+  guard, facing the paradox that INF-06 must precede level 2's first
+  accepted program while 4A-06 owns the parser, we decided that **INF-06
+  ships the mechanism and 4A-06 ships the first live wiring**, recorded as
+  an inherited bullet in 4A-06's acceptance, to achieve an explicit temporal
+  boundary instead of a fake gate, accepting that the budget has no caller
+  until then. Wiring a gate into a parser that does not exist would be the
+  fake half of the work, and a fuzz oracle asserting a limit breach would
+  cover an execution path the binary cannot enter. The same reasoning splits
+  the fuzz work: the registry-shape oracle tightens here, because it is
+  level-agnostic and was genuinely weak — `starts_with("SWG")` accepted
+  `SWG`, `SWGxyz`, and `SWG12345` — while the end-to-end breach oracle waits
+  for a parser a fuzzed input can reach.
+
+- 2026-08-29 — In the context of the Law A corpus, facing a falsification
+  probe that survived, we decided to **grow the corpus until it reaches the
+  production sites rather than merely the codes**, and to pin its extent, to
+  achieve a sample whose claim matches its evidence, accepting that the
+  sample is still a sample. Corrupting `SWG0403` at one of its four
+  production sites survived a corpus that reached every level-1 diagnostic
+  code, because reaching a code says nothing about the other places that
+  raise it — `SWG0401` is raised from twenty-two. The corpus grew from 23
+  cases and 14 distinct refusals to 50 and 38, and a test now records that
+  number so a shrinking corpus fails rather than quietly testing less. The
+  failure was the recurring one: a check too narrow for the data it runs
+  over, counting codes where the regressions live at sites.

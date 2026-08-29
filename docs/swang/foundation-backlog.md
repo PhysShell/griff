@@ -109,7 +109,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-INF-03 | Split `syntax.rs` without behaviour change *(done)* | code | INF-01 |
 | SWG-INF-04 | Replace `ProgramSpans` with a `SourceMap` *(done)* | code | INF-03 |
 | SWG-INF-05 | Deterministic multi-error recovery | code | INF-04 |
-| SWG-INF-06 | Parser resource gate and differential harness | code | INF-02, INF-03 |
+| SWG-INF-06 | Parser resource gate and Law A baseline *(done)* | code | INF-02, INF-03 |
 | SWG-4A-01 | Normative exact-score-text grammar *(done)* | docs | INF-02 |
 | SWG-CORE-01 | Fixed-width migration for the three `usize` fields *(done)* | code | 4A-01 |
 | SWG-CORE-02 | Decide whether the canonical newtypes seal their fields | docs | 4A-01 |
@@ -390,37 +390,92 @@ Acceptance:
 - adversarial input does not go quadratic (assert a bounded step count, not
   a wall-clock time).
 
-### SWG-INF-06 — Parser resource gate and differential harness
+### SWG-INF-06 — Parser resource gate and Law A baseline *(done)*
 
 **Kind:** code. **Depends on:** INF-02, INF-03
 
-Add bounded-input laws: maximum source bytes, maximum token count, maximum
-nesting depth, maximum diagnostics, no recursion overflow, and a canonical
-formatter that only ever writes from a checked AST.
+Landed as `swang/src/syntax/limits.rs` (the budget), `law_a_baseline.rs`
+plus its frozen `.golden` (the differential), `level_two_budget_boundary.rs`
+(the level-1 guard), spec §5.11's four declared bounds, and `SWG0509`.
 
-**Constraint from the freeze, settled by INF-02:** rejecting an input that
-level 1 previously accepted is an observable semantic change to a frozen
-level, so spec §5.11 puts every declared bound at **level 2 only**, to be
-declared before level 2's first accepted program. Level 1 keeps its
-acceptance set exactly; a level-1 run may still die of exhaustion, but that
-is a runtime outcome and never becomes a typed refusal. This task therefore
-adds no level-1 limit at all — the earlier "or prove the bound exceeds every
-representable level-1 program" branch is closed.
+**The bounds are level 2's alone, and they are declared, not enforced here.**
+Spec §5.11 puts every declared bound at level 2 only: rejecting an input that
+level 1 previously accepted is an observable change to a frozen level. A
+level-1 run may still die of exhaustion, but that is a runtime outcome and
+never becomes a typed refusal. This task therefore adds no level-1 limit at
+all — the earlier "or prove the bound exceeds every representable level-1
+program" branch is closed, and two witnesses hold the line: one reads the six
+level-1 modules, the other walks every shipped `.rs` under `swang/src`.
 
-Differential harness: the pre-refactor parser output is compared with the
-refactored parser over the fixture set and the fuzz corpus on AST, canonical
-text, diagnostic code, and owning span.
+| Axis | Limit |
+| --- | --- |
+| source bytes | `16_777_216` (16 MiB) |
+| tokens | `4_000_000` |
+| nesting depth | `64` |
+| diagnostics | `256` |
 
-Fuzz oracles (extending `swang_parse`):
+Counting semantics are in spec §5.11 and are part of the declaration. Depth
+and diagnostics are **forward reservations**: the exact-score grammar has no
+recursive production and today's parser returns one diagnostic, so neither
+can currently be approached. They are declared anyway because a bound not
+declared before level 2's first accepted program can never be added.
 
-```text
-parse never panics
-Err carries at least one diagnostic
-every code matches SWG\d{4}
-every span lies within the source
-format(parse(format(ast))) is a fixed point
-a limit breach is a typed error, not an allocation death
-```
+Level 2 is unreachable on this build, so the budget has **no live caller**.
+Wiring a gate into a parser that does not exist would be the fake half of the
+work: the mechanism ships here, the wiring is SWG-4A-06's, and that
+obligation is written into its acceptance rather than left to memory.
+
+**The differential harness, corrected.** This entry used to ask for the
+pre-refactor parser to be diffed against the refactored one. INF-03 landed
+and deleted that parser, and its own acceptance already discharged the
+comparison — byte-identical §3.1 reference, identical test counts, no edited
+expected value, and its own 168-mutation round. There is no historical
+implementation left in the tree to compare against, and resurrecting one
+purely to diff it would be theatre.
+
+The live differential is Law A (spec §5.5): a build supporting `1..=N` must
+treat every `swang 1` source, **invalid ones included**, exactly as a
+level-1-only build did, on verdict, AST, canonical bytes, diagnostic code,
+message, span, and order. Today `N` is 1, so that comparison has nothing on
+its right-hand side; when 4A-06 supplies one, the level-1-only build will be
+gone exactly as the pre-refactor parser is gone now. So the left-hand side is
+recorded now, as a frozen artifact naming the commit that produced it
+(`c44313c`, generated in a detached worktree at that commit), and it is
+**compare-only** — there is deliberately no snapshot-update path.
+
+The AST observation is a test-owned exhaustive projection: not `Debug`, not
+serde, and not the formatter's output, because canonical bytes and the AST
+have to be two witnesses rather than one wearing two hats. Every struct is
+destructured with no `..` and every enum matched with no wildcard.
+
+Extent, stated rather than implied: 50 cases reaching 38 distinct
+`(code, message)` refusals, both verdicts, every level-1 enum variant, both
+states of every optional, and all fourteen level-1 codes. The checked-in
+`swang_parse` seed is included as an input subset. Coverage by *code* proved
+weaker than coverage by *production site* — `SWG0403` is raised from four
+places — and a falsification probe survived until the corpus grew to reach
+them; `the_corpus_pins_the_extent_of_its_own_sample` now records the number
+so the sample cannot shrink quietly.
+
+**Fuzz oracles.** `swang_parse` asserted `starts_with("SWG")`, which accepted
+`SWG`, `SWGxyz`, and `SWG12345` as registry codes; it now asserts the one
+shape the registry has, with no regex dependency. The other listed oracles
+were already present. The limit-breach oracle is **not** claimed here: public
+parsing cannot reach level 2 on this build, so an end-to-end breach oracle
+would cover an execution path the binary cannot enter. It belongs to 4A-06.
+
+**The formatter clause is not this task's.** The original entry also asked
+for "a canonical formatter that only ever writes from a checked AST". The
+exact writer lane is complete, and checked lowering from text to a valid
+`Score` is SWG-4A-09's stated contract. A resource-gate change has no
+business becoming another formatter-validation layer, so that clause is
+recorded as already owned rather than implemented here.
+
+Falsification: 10 probes, 0 survivors — an off-by-one at each of the four
+caps, a token counted despite being refused, a no-op depth counter, a
+diagnostic cap returning one item too many, two malformed registry codes, a
+reworded frozen message, and a formatter spacing change. One probe is
+recorded as SURVIVED before the corpus grew and CAUGHT after.
 
 ---
 
@@ -679,7 +734,16 @@ Acceptance:
 - a level-2 `score` reaches the exact parser;
 - an unknown newer level is still refused by the frozen pre-parser;
 - dispatch routes to one level's entry point and never branches inside a
-  shared grammar (spec §5.4).
+  shared grammar (spec §5.4);
+- **inherited from SWG-INF-06** — before the first successful `swang 2`
+  result, level-2 dispatch constructs and consults the INF-06 budget:
+  source bytes checked pre-lex, token accounting during lexing, and
+  structural-depth accounting during parsing. No level-1 path imports or
+  consults that budget, and `level_two_budget_boundary.rs` still passes;
+- **inherited from SWG-INF-06** — `swang_parse` gains the end-to-end oracle
+  INF-06 could not honestly claim: a limit breach is a typed `SWG0509`, not
+  an allocation death. It lands here because this is the task that first
+  lets a fuzzed input reach a level-2 parser at all.
 
 ### SWG-4A-07 — Parser: exact scalar types
 
@@ -1342,10 +1406,13 @@ INF-01 status sync                    (done)
                 │   surface over it, not another slice of it
                 │
                 └─→ 4A-02 → INF-04 → INF-06 → 4A-06 parser skeleton
-                      (done)   (done)   ↑
-                                        next — level 2's input bounds must
-                                        be declared before its first
-                                        accepted program (§5.11)
+                      (done)   (done)   (done)     ↑
+                                                   next — it inherits
+                                                   INF-06's live wiring and
+                                                   the end-to-end breach
+                                                   oracle, and Law A's
+                                                   frozen baseline is what
+                                                   its dispatch must keep
   -> 4A-02..4A-09 writer / parser / builder
   -> 4A-10..4A-14 dump / verify / laws / fuzz
   -> 4B corpus acceptance

@@ -812,3 +812,71 @@ Level 2 may declare bounds — source bytes, token count, nesting depth,
 diagnostic count — as part of its own contract, and must declare them
 **before its first accepted program**, not after the first crash. That is
 the space the parser resource gate works in.
+
+#### The four declared level-2 bounds
+
+SWG-INF-06 declares them, ahead of level 2's first accepted program:
+
+| Axis | Limit | What is counted |
+| --- | --- | --- |
+| source bytes | `16_777_216` (16 MiB) | UTF-8 bytes of the complete source, header included |
+| tokens | `4_000_000` | tokens the level-2 lexer emits after the frozen header pre-parser; end of input is not a token |
+| nesting depth | `64` | simultaneously open structural `{ … }` constructs; the `score` root is depth 1, and a `[ … ]` scalar list adds no structural depth |
+| diagnostics | `256` | the most one level-2 parse attempt may return, the terminal budget diagnostic included |
+
+The counting semantics are part of the declaration. Without them `64` and
+`4_000_000` are decorative numerology: a token budget that counts differently
+is a different budget.
+
+Each bound is checked **before** the thing it counts exists — the source
+before lexing, each token before it is stored, each block on entry, each
+diagnostic before it is appended. Checking `tokens.len()` after lexing four
+million tokens is not a resource gate; it is an obituary written after the
+allocation.
+
+#### Two of the four are forward reservations
+
+The exact-score grammar §5.7 allocates to level 2 has no recursive
+production — `score`, `track`, `voice`, `group`, `note`, `position`,
+`evidence` bottoms out — so **it cannot currently approach depth 64**, and
+today's parser maps each error into a one-element vector, so it cannot
+approach 256 diagnostics. Both are declared anyway, and both are
+reservations: they are not evidence that today's grammar has a
+recursive-stack hazard or a diagnostic flood.
+
+They are declared now because §5.11 leaves no later opportunity. A bound not
+declared before level 2's first accepted program can never be added, since
+adding it afterwards would narrow an acceptance set that is by then frozen.
+Declaring them costs nothing today; omitting them spends the option
+permanently. A future recovery implementation may stop well short of 256 —
+it simply may not exceed it.
+
+#### The breach diagnostic
+
+A crossed budget is a **typed refusal**, never an allocation death. It is
+`SWG0509` — one code for all four axes, because they carry one meaning, and
+§5.10 forbids one number meaning two things. The message names the axis, the
+declared limit, and what the parse would have needed.
+
+Precedence, so a breach cannot be mistaken for a grammar error:
+
+```text
+malformed or unsupported header   -> SWG000x, before any budget is consulted
+supported `swang 2`, source too long -> SWG0509, before lexing
+token budget crossed              -> SWG0509, before structural parsing
+depth budget crossed on entering a legal construct -> SWG0509
+diagnostic budget exhausted       -> terminal SWG0509, within the 256 total
+```
+
+Where a breach points:
+
+| Breach | Location |
+| --- | --- |
+| source bytes | the level/header span — no body token has been admitted |
+| tokens | the token that crosses the budget |
+| nesting depth | the opening token of the construct that would exceed it |
+| diagnostics | the diagnostic whose production exhausts the budget |
+
+A source containing nine hundred `{` characters does not have to become a
+depth-budget error if the grammar rejects it structurally first. The
+resource checker must not understand more grammar than the parser does.
