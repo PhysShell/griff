@@ -505,12 +505,137 @@ fn rejected_word_corpus() -> Vec<Case> {
     ]
 }
 
+/// One case built by editing the base script's rendered text.
+fn edited(name: &'static str, from: &str, to: &str) -> Case {
+    let source = Script::base().render();
+    assert!(
+        source.contains(from),
+        "{name}: `{from}` is not in the base script"
+    );
+    Case {
+        name,
+        source: source.replace(from, to),
+    }
+}
+
+/// The lexer's own three refusals, and the shapes that never reach a word.
+fn rejected_lexical_corpus() -> Vec<Case> {
+    vec![
+        edited("lex_bare_pipe", "|> linearize", "| linearize"),
+        edited("lex_unexpected_character", "bars 8", "bars @8"),
+        edited("lex_unterminated_string", "\"seed.gp5\"", "\"seed.gp5"),
+        Case {
+            name: "truncated_after_header",
+            source: "swang 1\n\npattern".to_owned(),
+        },
+        Case {
+            name: "nothing_after_header",
+            source: "swang 1\n".to_owned(),
+        },
+        Case {
+            name: "unclosed_pattern_block",
+            source: {
+                let full = Script::base().render();
+                full.trim_end().trim_end_matches('}').to_owned()
+            },
+        },
+    ]
+}
+
+/// The block's own structure: the keyword, the name, the braces, and the
+/// `ascii` literal that must come first.
+fn rejected_block_corpus() -> Vec<Case> {
+    vec![
+        edited("no_pattern_keyword", "pattern p {", "patern p {"),
+        edited("no_pattern_name", "pattern p {", "pattern {"),
+        edited("no_open_brace", "pattern p {", "pattern p"),
+        edited(
+            "first_element_not_ascii",
+            "ascii \"X.X/XX./.XX\"",
+            "kernel \"X.X/XX./.XX\"",
+        ),
+        edited(
+            "ascii_value_not_a_string",
+            "ascii \"X.X/XX./.XX\"",
+            "ascii 123",
+        ),
+        edited(
+            "trailing_content_after_block",
+            "|> generate {",
+            "|> generate",
+        ),
+    ]
+}
+
+/// The pipeline's shape: which steps, in which order, with which words.
+fn rejected_pipeline_corpus() -> Vec<Case> {
+    vec![
+        edited(
+            "unknown_pipeline_step",
+            "|> linearize snake",
+            "|> flatten snake",
+        ),
+        edited(
+            "steps_out_of_order",
+            "|> fractalize depth 1 max_cells 4096\n    |> linearize snake",
+            "|> linearize snake\n    |> fractalize depth 1 max_cells 4096",
+        ),
+        edited("missing_pipeline_step", "    |> linearize snake\n", ""),
+        edited(
+            "word_names_no_value",
+            "depth 1 max_cells 4096",
+            "depth 1 max_cells",
+        ),
+        edited(
+            "linearize_missing_its_word",
+            "|> linearize snake",
+            "|> linearize",
+        ),
+        edited(
+            "export_missing_its_path",
+            "export midi \"out.mid\"",
+            "export midi",
+        ),
+        edited("export_unknown_format", "export midi", "export wav"),
+    ]
+}
+
+/// The scalar spellings: integers, densities, units, and quoted strings.
+fn rejected_scalar_corpus() -> Vec<Case> {
+    vec![
+        edited("integer_not_decimal", "bars 8", "bars eight"),
+        edited("integer_leading_zero", "bars 8", "bars 08"),
+        edited(
+            "integer_out_of_range",
+            "bars 8",
+            "bars 99999999999999999999999999",
+        ),
+        edited("integer_too_wide_for_its_field", "depth 1", "depth 300"),
+        edited(
+            "density_without_the_bps_suffix",
+            "depth 1 max_cells 4096",
+            "depth 1 max_cells 4096 density 9500 seed 4",
+        ),
+        edited("unit_not_a_rational", "unit 1/16", "unit 16"),
+        edited("unit_with_three_parts", "unit 1/16", "unit 1/16/4"),
+        edited(
+            "string_word_takes_no_bare_word",
+            "source \"seed.gp5\"",
+            "source seed",
+        ),
+    ]
+}
+
 /// The whole corpus, in the order the baseline records it.
 fn corpus() -> Vec<Case> {
     let mut all = accepted_corpus();
     all.extend(rejected_header_corpus());
     all.extend(rejected_kernel_corpus());
     all.extend(rejected_word_corpus());
+    all.extend(rejected_lexical_corpus());
+    all.extend(rejected_block_corpus());
+    all.extend(rejected_pipeline_corpus());
+    all.extend(rejected_scalar_corpus());
     all
 }
 
@@ -589,6 +714,39 @@ fn the_baseline_names_the_build_that_produced_it() {
     let mut lines = BASELINE.lines();
     assert_eq!(lines.next(), Some(format!("schema {SCHEMA}").as_str()));
     assert_eq!(lines.next(), Some(format!("producer {PRODUCER}").as_str()));
+}
+
+/// Distinct `(code, message)` refusals the corpus reaches. Pinned so the
+/// sample cannot silently shrink.
+const DISTINCT_REFUSALS: usize = 38;
+
+#[test]
+fn the_corpus_pins_the_extent_of_its_own_sample() {
+    // Coverage by code is weaker than coverage by production site, and the
+    // difference is not academic: `SWG0403` is raised from four different
+    // places, and a corpus reaching one of them proves nothing about the
+    // other three. A falsification probe that corrupted an unreached site
+    // survived this suite until the corpus grew to reach it.
+    //
+    // No finite corpus can be Law A's whole domain. What it can do is state
+    // its own extent, so a shrinking sample is a failure rather than a
+    // quieter test run.
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    for entry in &corpus() {
+        if let Err(diagnostics) = parse(&entry.source) {
+            for diagnostic in &diagnostics {
+                let pair = (diagnostic.code, diagnostic.message.clone());
+                if !pairs.contains(&pair) {
+                    pairs.push(pair);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        pairs.len(),
+        DISTINCT_REFUSALS,
+        "the corpus reaches a different set of refusals than it records"
+    );
 }
 
 #[test]
