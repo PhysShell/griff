@@ -45,7 +45,12 @@ const LEVEL_ONE_PATH: &[(&str, &str)] = &[
 /// Every name the budget exports. A level-1 module naming any of them is
 /// consulting a level-2 bound.
 const BUDGET_NAMES: &[&str] = &[
-    "limits",
+    // Qualified, because bare `limits` is an ordinary English word and an
+    // ordinary Rust identifier. Every real route to the module — `use
+    // crate::syntax::limits::…`, `super::limits::…`, an inline
+    // `limits::MAX_TOKENS` — carries the `::`; prose and unrelated locals do
+    // not.
+    "limits::",
     "Level2Budget",
     "Level2ResourceLimits",
     "MAX_SOURCE_BYTES",
@@ -95,13 +100,21 @@ fn is_root(shown: &str) -> bool {
 
 /// Whether `haystack` mentions `needle` as a whole token, so a longer
 /// identifier containing it does not count as a mention.
+///
+/// A boundary is required only on the sides where the needle's own edge is a
+/// word character. `limits::` ends in punctuation and is followed by the
+/// name it qualifies, so demanding a non-word character after it would match
+/// nothing at all.
 fn mentions(haystack: &str, needle: &str) -> bool {
     let bytes = haystack.as_bytes();
     let is_word = |b: Option<&u8>| b.is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_');
+    let edge_is_word = |b: Option<&u8>| b.is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_');
+    let needs_before = edge_is_word(needle.as_bytes().first());
+    let needs_after = edge_is_word(needle.as_bytes().last());
     haystack.match_indices(needle).any(|(at, _)| {
         let before = at.checked_sub(1).and_then(|i| bytes.get(i));
         let after = bytes.get(at.saturating_add(needle.len()));
-        !is_word(before) && !is_word(after)
+        !(needs_before && is_word(before) || needs_after && is_word(after))
     })
 }
 
@@ -173,9 +186,10 @@ fn the_witness_can_fail() {
     // A boundary test that cannot fail proves nothing about the boundary. If
     // `mentions` or `code_of` ever stopped seeing real code, the witness
     // above would pass for the wrong reason and no one would learn of it.
-    let planted = "fn lex() { let budget = Level2Budget::new(limits); }";
+    let planted = "fn lex() { let b = Level2Budget::new(limits::declared()); }";
+    assert!(names_the_budget(planted));
     assert!(mentions(&code_of(planted), "Level2Budget"));
-    assert!(mentions(&code_of(planted), "limits"));
+    assert!(mentions(&code_of(planted), "limits::"));
     let prose = "//! The Level2Budget is discussed here but never called.";
     assert!(!mentions(&code_of(prose), "Level2Budget"));
     // The declaration is permitted in the root module and nowhere else, and
