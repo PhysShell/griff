@@ -2674,3 +2674,62 @@ Architectural decisions go to [`adr/`](adr/) instead.
   rule is saturation rather than no-effect. Deferring it would have added one
   more item to 4A-06's growing pile of inherited archaeology for no reason
   other than that nobody could hit it yet.
+
+- 2026-08-30 — In the context of SWG-INF-06's **prior-art survey**, which
+  AGENTS.md requires before anything non-trivial and requires recorded here,
+  facing two independent designs carried by one task, we decided to adopt one
+  idea from each lineage and to refuse the central convenience of the first,
+  to achieve a baseline and a budget that borrow proven shapes instead of
+  invented ones, accepting that neither lineage settles the numbers this task
+  had to choose. The survey was owed and was missing; a task about evidence
+  should not be the one that skips its own admission gate.
+
+  **The frozen baseline — `insta` and `expect-test`.** Both are the Rust
+  reference-test prior art, and both share the shape adopted here: an
+  expected artifact checked into the tree, recompared on every run, with a
+  diff as the failure. What is deliberately *not* adopted is the feature each
+  is built around. `insta` ships an accept/review workflow — `cargo insta
+  review`, `cargo insta accept`, `INSTA_UPDATE` — and `expect-test` exists so
+  that setting `UPDATE_EXPECT` rewrites the expectation in place. That is
+  correct for a snapshot of *current* behaviour, where re-recording is the
+  normal workflow and the artifact is a convenience. The Law A baseline is a
+  different object: the historical left-hand side of a comparison whose
+  right-hand side does not exist yet, stamped with the commit that produced
+  it. An updater would let the side under test rewrite the side it is tested
+  against, so this artifact is compare-only and regeneration is a deliberate
+  reviewed act in a detached worktree at the producer commit. The idea is
+  borrowed; the ergonomics are refused, and refused for a stated reason.
+
+  **The resource bounds — `serde_json` and `rustc`.** The adopted idea is
+  admission *during* the descent rather than recovery after it: `serde_json`
+  carries a recursion limit checked as it parses, and its escape hatch is
+  documented with the warning that a caller who disables it must protect
+  against stack overflow by other means. That is precisely the claim §5.11
+  makes — a crossed budget is a typed refusal, never an allocation death —
+  and it is why every axis here is admitted before the thing it counts
+  exists. `rustc`'s `recursion_limit` supplies the other half: a compiler may
+  *declare* a bound as part of its contract instead of discovering it at
+  runtime, which is what §5.11's before-the-first-accepted-program deadline
+  formalises. Neither supplies four axes or their values. `serde_json` bounds
+  one axis, `rustc` another; the byte, token, depth and diagnostic set, their
+  counting semantics, and the `wasm32` storage contract are this task's own,
+  derived in the entries above. Recording a survey is not a licence to claim
+  more inheritance than there is: nothing in `insta` taught this task to
+  count tokens.
+
+- 2026-08-30 — In the context of the level-1 boundary guard, facing a Codex
+  finding that the bare token `limits` fails the build on ordinary English,
+  we decided to **match qualified paths rather than a generic word**, to
+  achieve a guard specific enough to survive contact with future code,
+  accepting that the witness stays lexical and can still be fooled by
+  `limits::` inside a string. Reproduced before changing anything: a string
+  literal reading "no limits apply here" and a trailing `// … limits`
+  comment each failed CI, while a comment-only line was correctly ignored.
+  `limits` is an ordinary word and an ordinary identifier, and a guard that
+  blocks a build over prose is a guard the next person weakens — at which
+  point the frozen level loses its protection for a reason unrelated to the
+  frozen level. Every real route to the module carries `::`, so `limits::`
+  keeps the teeth: the original planted probe in `syntax.rs` is still caught.
+  Guarding against `limits::` in a string would need a Rust parser, which
+  costs more than this boundary is worth; the trade is stated in the test
+  rather than left for someone to discover.

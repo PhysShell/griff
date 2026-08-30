@@ -531,6 +531,17 @@ absent; a type that calls itself a running resource state has to report one.
 The last slot is now consumed once and later admissions are refused
 identically, giving the diagnostic axis the law `admit_token` already had.
 
+**Two findings from the final external round.** Codex observed that the task
+had no recorded prior-art survey, which AGENTS.md requires for anything
+non-trivial — a real gap, and one this PR would otherwise have carried while
+marking INF-06 done. The survey is now in the decision log: `insta` and
+`expect-test` for the checked-in reference artifact (shape adopted, updater
+deliberately refused), `serde_json` and `rustc` for admission during the
+descent and for declaring a bound as contract. Codex also found the level-1
+guard failing on the ordinary word `limits` in a string or a trailing
+comment; it now matches `limits::`, with witnesses for five benign forms and
+six real ones.
+
 Falsification: 16 probes, 0 survivors — an off-by-one at each of the four
 caps, a token counted despite being refused, a no-op depth counter, a
 diagnostic cap returning one item too many, two malformed registry codes, a
