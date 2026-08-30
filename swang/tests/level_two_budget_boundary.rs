@@ -22,8 +22,9 @@
     clippy::missing_assert_message
 )]
 
+use std::ffi::OsStr;
 use std::fs::{read_dir, read_to_string};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// The level-1 parse path, end to end: the frozen header pre-parser, the
 /// lexer it hands off to, the one parser module, and the formatter.
@@ -57,11 +58,12 @@ const BUDGET_NAMES: &[&str] = &[
     "MAX_TOKENS",
     "MAX_NESTING_DEPTH",
     "MAX_DIAGNOSTICS",
-    "admit_source",
-    "admit_token",
-    "enter_block",
-    "leave_block",
-    "admit_diagnostic",
+    // Method names are deliberately absent. They are ordinary identifiers,
+    // and a caller cannot reach one without first obtaining a
+    // `Level2Budget` — which in practice names the type or the path above.
+    // A helper returning the budget plus type inference could in principle
+    // slip through; that route is left undefended on purpose rather than
+    // paid for with false positives on every `enter_block` in the tree.
     "SWG0509",
 ];
 
@@ -242,17 +244,15 @@ fn every_shipped_module_but_the_budget_itself_is_scanned() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
     let mut scanned = 0_u32;
     for path in rust_sources(Path::new(root)) {
-        let shown = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
-        if EXEMPT.iter().any(|e| shown.trim_start_matches('/') == *e) {
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        if is_exempt(relative) {
             continue;
         }
+        // Only ever for the failure message — never for the decision.
+        let shown = relative.display().to_string();
         let code = strip(
             &read_to_string(&path).expect("a shipped source"),
-            is_root(&shown),
+            relative == Path::new("syntax.rs"),
         );
         scanned = scanned.saturating_add(1);
         for budget_name in BUDGET_NAMES {
@@ -274,7 +274,21 @@ fn every_shipped_module_but_the_budget_itself_is_scanned() {
 /// like), those go on this list explicitly, one at a time. Shared dispatch
 /// never joins it: a budget consulted before the level branch is a level-1
 /// bound, whatever file it lives in.
-const EXEMPT: &[&str] = &["syntax/limits.rs", "syntax/tests.rs"];
+const EXEMPT: &[&[&str]] = &[&["syntax", "limits.rs"], &["syntax", "tests.rs"]];
+
+/// Whether a path relative to `swang/src` is one of the exempt modules.
+///
+/// Compared component by component. A separator is not the same character
+/// on every platform this crate builds for, so the exemption must never be
+/// decided by a string that contains one.
+fn is_exempt(relative: &Path) -> bool {
+    EXEMPT.iter().any(|parts| {
+        relative
+            .components()
+            .map(Component::as_os_str)
+            .eq(parts.iter().copied().map(OsStr::new))
+    })
+}
 
 /// Every `.rs` file under `dir`, recursively, in a deterministic order.
 fn rust_sources(dir: &Path) -> Vec<PathBuf> {
