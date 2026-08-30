@@ -2587,6 +2587,10 @@ Architectural decisions go to [`adr/`](adr/) instead.
   number so a shrinking corpus fails rather than quietly testing less. The
   failure was the recurring one: a check too narrow for the data it runs
   over, counting codes where the regressions live at sites.
+  *(Corrected on later review: 50 cases / 38 refusals was the pre-domain-fix
+  extent. Removing the three out-of-domain header cases left the accepted
+  Law A corpus at 47 cases / 35 distinct refusals, which is what the test
+  now pins.)*
 
 - 2026-08-29 — In the context of SWG-INF-06's review, facing a Law A
   baseline that recorded three sources the frozen pre-parser refuses, we
