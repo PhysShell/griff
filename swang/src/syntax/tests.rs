@@ -779,6 +779,41 @@ mod level_two_budget {
         assert_eq!(budget.depth(), 2, "a refused block was never entered");
     }
 
+    #[test]
+    fn diagnostic_exhaustion_is_terminal_and_stops_accounting() {
+        // `admit_token` already pins that a refused thing does not advance
+        // admitted state. The diagnostic axis needs the same law, adjusted
+        // for the one difference: its terminal refusal *does* consume the
+        // final slot, once.
+        //
+        // Without that, `diagnostics()` becomes false state the moment the
+        // budget goes terminal — it keeps climbing past its own cap on every
+        // later call, and the message invents an ever-larger hypothetical
+        // parse for a parse that has already been terminated. A caller
+        // obeying `Err` never sees it, which makes the bug latent, not
+        // correct: a type that calls itself a running resource state has to
+        // report one.
+        let cap = 2;
+        let mut budget = budget(small());
+        budget.admit_diagnostic(AT).expect("the first diagnostic");
+        for attempt in 0..6 {
+            let refusal = budget
+                .admit_diagnostic(AT)
+                .expect_err("the budget is terminal from the second on");
+            assert_eq!(refusal.code, "SWG0509", "attempt {attempt}");
+            assert_eq!(
+                budget.diagnostics(),
+                cap,
+                "attempt {attempt}: admitted state must saturate at the cap"
+            );
+            assert!(
+                refusal.message.contains("needed 3"),
+                "attempt {attempt}: `needed` must stay at cap + 1, not grow: {}",
+                refusal.message
+            );
+        }
+    }
+
     /// One breach per axis: the axis phrase, the declared limit, the count
     /// the parse would have needed, and the refusal itself.
     type Breach = (&'static str, u64, u64, Diagnostic);
