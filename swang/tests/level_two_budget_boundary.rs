@@ -126,6 +126,31 @@ fn names_the_budget(source: &str) -> bool {
 }
 
 #[test]
+fn the_exemption_is_decided_by_path_components_not_by_a_slashed_string() {
+    // `to_string_lossy` performs no separator normalisation, so a path built
+    // on Windows stringifies as `syntax\limits.rs` and never equals the
+    // literal `"syntax/limits.rs"`. The exempt budget module then stops
+    // being exempt and the guard fails on the one file it must ignore —
+    // which reads like a boundary breach and is not one.
+    //
+    // CI is `ubuntu-latest` on every job, so this is latent rather than
+    // live. It is still wrong on a platform this crate builds for, and the
+    // cure is to compare paths as paths rather than to translate separators
+    // by hand.
+    let native = Path::new("syntax").join("limits.rs");
+    assert!(
+        is_exempt(&native),
+        "the budget module is exempt on any platform"
+    );
+    let also = Path::new("syntax").join("tests.rs");
+    assert!(is_exempt(&also), "so are its tests");
+    assert!(
+        !is_exempt(Path::new("syntax").join("parser").join("v1.rs").as_path()),
+        "nothing else is"
+    );
+}
+
+#[test]
 fn a_generic_word_in_prose_or_a_string_is_not_a_budget_reference() {
     // This witness reads source text, not a parsed tree, so its precision is
     // lexical and heuristic — never syntactic. That is an accepted trade:
@@ -143,6 +168,13 @@ fn a_generic_word_in_prose_or_a_string_is_not_a_budget_reference() {
         "let limits = compute_ui_limits();",
         "//! This module documents the limits elsewhere.",
         "struct Delimiters;",
+        // Method names are ordinary identifiers too, and they are not the
+        // signal: a module cannot call one without first obtaining a
+        // `Level2Budget`, which means naming the type or the path in the
+        // same file. Keeping them buys false positives.
+        "fn enter_block(&mut self) -> bool { true }",
+        "self.leave_block();",
+        "let admit_source = compute();",
     ] {
         assert!(
             !names_the_budget(benign),
@@ -157,7 +189,6 @@ fn a_generic_word_in_prose_or_a_string_is_not_a_budget_reference() {
         "use super::limits::Level2ResourceLimits;",
         "let b = Level2Budget::declared();",
         "if bytes > MAX_SOURCE_BYTES { refuse() }",
-        "budget.admit_token(at)?;",
     ] {
         assert!(
             names_the_budget(real),
