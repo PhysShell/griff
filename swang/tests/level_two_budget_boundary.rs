@@ -58,13 +58,25 @@ const BUDGET_NAMES: &[&str] = &[
     "MAX_TOKENS",
     "MAX_NESTING_DEPTH",
     "MAX_DIAGNOSTICS",
-    // Method names are deliberately absent. They are ordinary identifiers,
-    // and a caller cannot reach one without first obtaining a
-    // `Level2Budget` — which in practice names the type or the path above.
-    // A helper returning the budget plus type inference could in principle
-    // slip through; that route is left undefended on purpose rather than
-    // paid for with false positives on every `enter_block` in the tree.
     "SWG0509",
+    // Bare method names are still absent — they are ordinary identifiers,
+    // and banning them failed CI on an unrelated `fn enter_block(...)`.
+    // What is banned is the *call*, which is punctuated: a definition, a
+    // binding, or a sentence never contains `.name(`.
+    //
+    // This closes the route the earlier form left open — a helper hands
+    // back a `Level2Budget`, type inference supplies the type, and the call
+    // site spells no name at all. Matching the call needs neither the type
+    // nor a Rust parser.
+    //
+    // rustfmt breaks a long chain before the dot, so `.name(` stays
+    // contiguous even across lines; the repository's own formatting is what
+    // makes a plain substring enough.
+    ".admit_source(",
+    ".admit_token(",
+    ".enter_block(",
+    ".leave_block(",
+    ".admit_diagnostic(",
 ];
 
 /// The one line `syntax.rs` may contain: the module declaration itself.
@@ -170,10 +182,11 @@ fn a_generic_word_in_prose_or_a_string_is_not_a_budget_reference() {
         "let limits = compute_ui_limits();",
         "//! This module documents the limits elsewhere.",
         "struct Delimiters;",
-        // Method names are ordinary identifiers too, and they are not the
-        // signal: a module cannot call one without first obtaining a
-        // `Level2Budget`, which means naming the type or the path in the
-        // same file. Keeping them buys false positives.
+        // A bare method name is an ordinary identifier and is not the
+        // signal — banning one failed CI on an unrelated definition. The
+        // call form is watched instead, which is why a definition and a
+        // binding still read as benign here while `b.enter_block(at)` does
+        // not.
         "fn enter_block(&mut self) -> bool { true }",
         "let admit_source = compute();",
     ] {
