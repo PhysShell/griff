@@ -175,7 +175,6 @@ fn a_generic_word_in_prose_or_a_string_is_not_a_budget_reference() {
         // `Level2Budget`, which means naming the type or the path in the
         // same file. Keeping them buys false positives.
         "fn enter_block(&mut self) -> bool { true }",
-        "self.leave_block();",
         "let admit_source = compute();",
     ] {
         assert!(
@@ -195,6 +194,60 @@ fn a_generic_word_in_prose_or_a_string_is_not_a_budget_reference() {
         assert!(
             names_the_budget(real),
             "a real budget reference must count: {real}"
+        );
+    }
+}
+
+#[test]
+fn a_budget_call_through_an_inferred_receiver_is_a_budget_reference() {
+    // Matching names alone leaves one route open, and review named it
+    // exactly: a helper hands back a `Level2Budget`, type inference supplies
+    // the type, and the call site never spells the module, the type, or a
+    // constant.
+    //
+    //     let mut b = budget_from_context();
+    //     b.admit_token(at)?;
+    //
+    // No budget name appears, so the guard stayed silent while a level-1
+    // module spent a level-2 bound. That is the failure this file exists to
+    // refuse, reached by the one path it did not watch.
+    //
+    // The cure is not a parser. A *call* carries punctuation — `.name(` —
+    // and a definition, a binding, or a sentence does not. That is why the
+    // bare identifiers were removed and these are safe to add: the marker
+    // that matched `fn enter_block(...)` is not the marker that matches
+    // `b.enter_block(at)`.
+    for call in [
+        "let mut b = budget_from_context();\n    b.admit_source(src, at)?;",
+        "let mut b = budget_from_context();\n    b.admit_token(at)?;",
+        "b.enter_block(at)?;",
+        "b.leave_block();",
+        "self.budget.admit_diagnostic(at)?;",
+        // rustfmt breaks a long chain before the dot, which keeps `.name(`
+        // contiguous on the continuation line. The repository's own
+        // formatting is therefore what makes a plain substring sufficient,
+        // and no tolerance for optional whitespace is needed.
+        "some_budget\n    .admit_token(at)\n    .map_err(one)?;",
+    ] {
+        assert!(
+            names_the_budget(call),
+            "a budget call through an inferred receiver must count: {call}"
+        );
+    }
+
+    // And the bare identifiers must stay unmatched, because being noisy is
+    // why they were dropped. A call marker that also fired on these would
+    // have re-imported the false positives it was meant to shed.
+    for benign in [
+        "fn admit_token(&mut self, at: Span) -> bool { true }",
+        "fn enter_block(&mut self) -> bool { true }",
+        "let enter_block = compute();",
+        "let admit_source = compute();",
+        r#"const _NOTE: &str = "admit_token is explained below";"#,
+    ] {
+        assert!(
+            !names_the_budget(benign),
+            "a bare method identifier must not count: {benign}"
         );
     }
 }
