@@ -294,16 +294,28 @@ impl Level2Budget {
     /// refusal instead of being spent on an ordinary diagnostic and then
     /// exceeded.
     ///
+    /// Exhaustion is **terminal and idempotent**: the last slot is consumed
+    /// once, and every later admission is refused identically without
+    /// advancing admitted state. `admit_token` states the same law — a
+    /// refused thing does not move the counter — and the only difference
+    /// here is that the terminal refusal itself genuinely occupies a slot.
+    /// A budget that kept counting after termination would report a parse
+    /// that never happened.
+    ///
     /// # Errors
     /// `SWG0509` — itself the last diagnostic the attempt may return.
     pub(crate) fn admit_diagnostic(&mut self, at: Span) -> Result<(), Diagnostic> {
         let needed = self.diagnostics.saturating_add(1);
         if needed >= self.limits.diagnostics {
-            self.diagnostics = needed;
+            // Saturate rather than increment: `needed` is what a parse would
+            // have required to keep this diagnostic *and* still carry the
+            // terminal refusal, which is one past the cap however many times
+            // an ignored `Err` is retried.
+            self.diagnostics = self.limits.diagnostics;
             return Err(breach(
                 Axis::Diagnostics,
                 u64::from(self.limits.diagnostics),
-                u64::from(needed.saturating_add(1)),
+                u64::from(self.limits.diagnostics.saturating_add(1)),
                 at,
             ));
         }
