@@ -834,6 +834,52 @@ diagnostic before it is appended. Checking `tokens.len()` after lexing four
 million tokens is not a resource gate; it is an obituary written after the
 allocation.
 
+#### The token bound's derivation, and the level-2 token-storage contract
+
+`MAX_TOKENS` is derived against the **level-2 token-storage contract below**,
+not against level 1's lexer representation. The two must not be confused: a
+token budget is a memory bound only in combination with a statement of what a
+retained token costs.
+
+A retained level-2 token carries only its classification and its source
+location, or uses a representation with an equal-or-smaller retained
+footprint. Lexeme text is recovered from the immutable source through its
+`Span` — it is never copied into the token.
+
+```text
+on wasm32:
+  Span                        =  8 bytes
+  compact kind + Span token  <= 12 bytes
+  4,000,000 retained tokens  <= 48,000,000 bytes  ~ 45.8 MiB nominal
+
+  16 MiB source + full token spine  ~ 61.8 MiB
+  before parser and allocator overhead
+```
+
+The normative requirement is a **budget, not a struct layout**:
+
+> No per-token owned lexeme storage. A retained level-2 token occupies at
+> most 12 bytes on `wasm32`, or the lexer uses a strictly stronger
+> representation — streaming, for instance — that retains less.
+
+Stated that way, a level-2 lexer is free to do better than a
+`{ kind, span }` pair, and is forbidden only from doing worse.
+
+This matters because `griff-swang` is a direct dependency of the Cockpit,
+which is built and exercised for `wasm32-unknown-unknown`. Level 1's `Token`
+owns a `String` per token — the lexer allocates one even for a single `{` —
+which at 40 bytes of spine per token on a 64-bit host would put four million
+tokens past 150 MiB of vector alone, before millions of individual string
+allocations. On a memory-constrained browser tab a budget of that shape
+would be reached by exhaustion rather than by refusal, which is precisely
+what §5.11 exists to prevent. The bound is therefore paired with a storage
+contract rather than lowered to accommodate a representation level 2 does
+not have to inherit.
+
+If a level-2 lexer's measured `wasm32` behaviour ever disproves this
+derivation, the time to lower the bound is then — still before level 2's
+first accepted program, and still inside this section's deadline.
+
 #### Two of the four are forward reservations
 
 The exact-score grammar §5.7 allocates to level 2 has no recursive

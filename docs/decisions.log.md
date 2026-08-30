@@ -2626,3 +2626,47 @@ Architectural decisions go to [`adr/`](adr/) instead.
   same budget be spent twice, which is precisely what the type's own doc
   comment said must not happen. The cheapest moment to close both doors is
   while closing them breaks nothing.
+
+- 2026-08-30 — In the context of SWG-INF-06's external review, facing a Codex
+  finding that `MAX_TOKENS = 4_000_000` had an unstated representation
+  assumption, we decided to **keep the number and bind it to a level-2
+  token-storage contract**, and against lowering it, to achieve a bound whose
+  memory derivation is written down, accepting that 4A-06 now owes a proof
+  its lexer would otherwise have been free to skip. The finding was correct
+  on every premise: `griff-swang` is a direct dependency of the Cockpit,
+  which CI builds for `wasm32-unknown-unknown`; level 1's `Token` owns a
+  `String` each — the lexer allocates one even for a single `{` — and
+  measures 40 bytes on a 64-bit host, so four million would exceed 150 MiB of
+  vector spine before millions of individual string allocations. §5.11
+  promises a typed refusal rather than an allocation death, and on a browser
+  tab that promise would have failed. The recorded derivation was
+  "≈ 4 bytes per token at the byte cap", which ties `MAX_TOKENS` to
+  `MAX_SOURCE_BYTES` consistently but never asks what a retained token costs;
+  AGENTS.md requires the derivation be recorded, and a heap derivation was
+  not. Lowering the bound would have spent permanent acceptance-set budget to
+  accommodate a representation level 2 has not been written to inherit —
+  backwards, when the level-2 lexer does not exist and 4A-06 already owes the
+  first live wiring. So §5.11 states the contract as a budget rather than a
+  struct layout — no per-token owned lexeme storage, at most 12 bytes
+  retained per token on `wasm32`, text recovered from the span, or a strictly
+  stronger representation such as streaming — leaving a lexer free to do
+  better and forbidden only from doing worse. If 4A-06's measured `wasm32`
+  behaviour disproves the derivation, that is the moment to lower the bound,
+  still inside §5.11's deadline.
+
+- 2026-08-30 — In the context of the same review, facing a CodeRabbit
+  merge-risk note, we decided that **diagnostic exhaustion is terminal and
+  idempotent**, and against deferring the fix to 4A-06, to achieve a running
+  resource state that still describes reality after it is spent, accepting a
+  small behavioural change to a mechanism with no caller. Against a cap of
+  two, `diagnostics()` climbed to 7 across repeated admissions and the
+  reported `needed` count grew with it, describing an ever-larger
+  hypothetical parse for a parse already terminated. Every call returned
+  `Err`, so no caller obeying the contract could exceed the declared maximum
+  — which made the defect latent rather than absent, and latent is not the
+  same as correct. `admit_token` already pinned the matching law, that a
+  refused thing does not advance admitted state; the diagnostic axis differs
+  only in that its terminal refusal genuinely occupies the final slot, so the
+  rule is saturation rather than no-effect. Deferring it would have added one
+  more item to 4A-06's growing pile of inherited archaeology for no reason
+  other than that nobody could hit it yet.

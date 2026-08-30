@@ -510,15 +510,34 @@ bare `mod limits;` line: that file is the crate's re-export point and
 4A-06's natural home for shared dispatch, and a budget consulted before the
 level branch is a level-1 bound whatever file it lives in.
 
-Falsification: 15 probes, 0 survivors — an off-by-one at each of the four
+**The token bound is paired with a storage contract, not lowered.** Codex
+found that `MAX_TOKENS` had an unstated representation assumption: level 1's
+`Token` owns a `String` each, so four million of them would exceed 150 MiB
+of vector spine before millions of string allocations — and `griff-swang` is
+a direct dependency of the Cockpit, which is built for
+`wasm32-unknown-unknown`. Rather than shrink a permanent language bound to
+fit a representation level 2 need not inherit, spec §5.11 now carries the
+derivation and the normative storage contract: no per-token owned lexeme
+storage, at most 12 bytes retained per token on `wasm32`, text recovered
+from the span. 4A-06 inherits the obligation to prove it.
+
+**Diagnostic exhaustion is terminal.** CodeRabbit found that the budget kept
+counting after it was spent — `diagnostics()` reached 7 against a cap of 2.
+A caller obeying `Err` never exceeded the cap, so the defect was latent, not
+absent; a type that calls itself a running resource state has to report one.
+The last slot is now consumed once and later admissions are refused
+identically, giving the diagnostic axis the law `admit_token` already had.
+
+Falsification: 16 probes, 0 survivors — an off-by-one at each of the four
 caps, a token counted despite being refused, a no-op depth counter, a
 diagnostic cap returning one item too many, two malformed registry codes, a
 reworded frozen message, a formatter spacing change, an axis reporting
 another axis's word, a depth breach pointing somewhere fixed, a diagnostic
 breach understating what it needed, a production back door to arbitrary
-limits, and a budget mention in `syntax.rs`. Six of them are recorded as
-SURVIVED before a review commit and CAUGHT after, rather than as though the
-first suite had caught them.
+limits, a budget mention in `syntax.rs`, and accounting that runs on past a
+terminal diagnostic breach. Seven of them are recorded as SURVIVED before a
+review commit and CAUGHT after, rather than as though the first suite had
+caught them.
 
 ---
 
@@ -786,7 +805,19 @@ Acceptance:
 - **inherited from SWG-INF-06** — `swang_parse` gains the end-to-end oracle
   INF-06 could not honestly claim: a limit breach is a typed `SWG0509`, not
   an allocation death. It lands here because this is the task that first
-  lets a fuzzed input reach a level-2 parser at all.
+  lets a fuzzed input reach a level-2 parser at all;
+- **inherited from SWG-INF-06** — before the first successful `swang 2`, the
+  level-2 lexer proves the `MAX_TOKENS` heap derivation on the `wasm32`
+  frontend: retained tokens own no lexeme `String` or other per-token heap
+  allocation; a materialized token is at most 12 bytes on `wasm32`, or the
+  lexer proves a strictly smaller or streaming retained representation.
+  Token text is recovered from the source span. **Level 1's `String`-owning
+  `Token` is not the level-2 storage representation.** A witness is
+  required, not prose: for a materialized representation a compile-time size
+  assertion plus tests showing text is source-sliced suffices — there is no
+  need to allocate four million tokens to admire the fan spinning.
+  Preregistered falsification probe: *adding owned lexeme text to the
+  level-2 token* **must be CAUGHT**.
 
 ### SWG-4A-07 — Parser: exact scalar types
 
