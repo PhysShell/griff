@@ -105,6 +105,54 @@ fn mentions(haystack: &str, needle: &str) -> bool {
     })
 }
 
+/// Whether a source names any budget identifier, after stripping the lines a
+/// scan must not read.
+fn names_the_budget(source: &str) -> bool {
+    let code = code_of(source);
+    BUDGET_NAMES.iter().any(|name| mentions(&code, name))
+}
+
+#[test]
+fn a_generic_word_in_prose_or_a_string_is_not_a_budget_reference() {
+    // This witness reads source text, not a parsed tree, so its precision is
+    // lexical and heuristic — never syntactic. That is an accepted trade:
+    // pulling in a Rust parser to guard a boundary test would cost more than
+    // the boundary is worth.
+    //
+    // What the trade must not buy is a guard that trips on English. `limits`
+    // is an ordinary word and an ordinary identifier, and a check that fails
+    // CI because someone wrote "no limits apply" in a string is a check the
+    // next person weakens — at which point the frozen level loses its guard
+    // for a reason that had nothing to do with the frozen level.
+    for benign in [
+        r#"const _NOTE: &str = "no limits apply here";"#,
+        "const _N: u8 = 1; // nothing to do with limits",
+        "let limits = compute_ui_limits();",
+        "//! This module documents the limits elsewhere.",
+        "struct Delimiters;",
+    ] {
+        assert!(
+            !names_the_budget(benign),
+            "benign source must not count as a budget reference: {benign}"
+        );
+    }
+
+    // And what it must still buy is every real way to reach the module.
+    for real in [
+        "const _P: bool = limits::MAX_TOKENS > 0;",
+        "use crate::syntax::limits::Level2Budget;",
+        "use super::limits::Level2ResourceLimits;",
+        "let b = Level2Budget::declared();",
+        "if bytes > MAX_SOURCE_BYTES { refuse() }",
+        "budget.admit_token(at)?;",
+    ] {
+        assert!(
+            names_the_budget(real),
+            "a real budget reference must count: {real}"
+        );
+    }
+}
+
 #[test]
 fn no_level_one_module_consults_the_level_two_budget() {
     for (name, source) in LEVEL_ONE_PATH {
