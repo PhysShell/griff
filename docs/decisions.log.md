@@ -2518,9 +2518,9 @@ Architectural decisions go to [`adr/`](adr/) instead.
   identical test counts, no edited expected value, its own mutation round —
   so there is nothing left in the tree to compare and resurrecting dead code
   to diff it would be theatre. Spec §5.5 states the differential that will
-  have a second side: a build supporting `1..=N` treats every `swang 1`
-  source, invalid ones included, exactly as a level-1-only build did, on all
-  seven observables. Today N is 1, so the left-hand side is recorded now,
+  have a second side: a build supporting `1..=N` treats every source whose
+  first line is a valid `swang 1` header, invalid *bodies* included, exactly
+  as a level-1-only build did, on all seven observables. Today N is 1, so the left-hand side is recorded now,
   while a level-1-only build is what the tree holds — by the time 4A-06
   supplies the right-hand side, that build will be gone exactly as the
   pre-refactor parser is gone now.

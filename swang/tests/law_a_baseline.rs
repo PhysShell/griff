@@ -1,9 +1,11 @@
 //! SWG-INF-06: the frozen Law A baseline for language level 1.
 //!
-//! Spec §5.5 says a build supporting `1..=N` must treat every `swang 1`
-//! source — **including invalid ones** — exactly as a level-1-only build
-//! did, compared on verdict, AST, canonical bytes, diagnostic code, message,
-//! span, and order. Today `N == 1`, so that comparison has nothing on its
+//! Spec §5.5 says a build supporting `1..=N` must treat every source whose
+//! first line is a **valid `swang 1` header** — including those with
+//! **invalid bodies** — exactly as a level-1-only build did, compared on
+//! verdict, AST, canonical bytes, diagnostic code, message, span, and order.
+//! The valid header is the premise, not part of what varies; the witness
+//! below makes that domain executable rather than a claim in prose. Today `N == 1`, so that comparison has nothing on its
 //! right-hand side; the moment SWG-4A-06 adds level dispatch it has
 //! everything, and by then the level-1-only build is gone — exactly as the
 //! pre-refactor parser SWG-INF-06's original sketch wanted to diff against

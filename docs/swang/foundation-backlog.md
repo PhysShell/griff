@@ -207,9 +207,11 @@ the spec. `spec.md` §1 and §3 are byte-unchanged, verified by digest.
 What §5 settles, for downstream tasks that need the answer:
 
 - **Law A adopted, strengthened.** A build supporting `1..=N` treats every
-  `swang 1` source — *including invalid ones* — exactly as a level-1-only
-  build did, compared on all seven observables: verdict, AST, canonical
-  bytes, diagnostic code, message, span, and order. A level-2 keyword in a
+  source whose first line is a **valid `swang 1` header** — *including those
+  with invalid bodies* — exactly as a level-1-only build did, compared on all
+  seven observables: verdict, AST, canonical bytes, diagnostic code, message,
+  span, and order. The valid header is the premise, not part of what varies:
+  §5.5 does not reach a source the frozen pre-parser refuses outright. A level-2 keyword in a
   `swang 1` script raises the `SWG0401` level 1 already raised, never a
   friendlier "requires language level 2".
 - **Law B rejected.** A `swang 2` header over a level-1 body is not valid by
@@ -453,7 +455,8 @@ implementation left in the tree to compare against, and resurrecting one
 purely to diff it would be theatre.
 
 The live differential is Law A (spec §5.5): a build supporting `1..=N` must
-treat every `swang 1` source, **invalid ones included**, exactly as a
+treat every source whose first line is a valid `swang 1` header, **invalid
+bodies included**, exactly as a
 level-1-only build did, on verdict, AST, canonical bytes, diagnostic code,
 message, span, and order. Today `N` is 1, so that comparison has nothing on
 its right-hand side; when 4A-06 supplies one, the level-1-only build will be
