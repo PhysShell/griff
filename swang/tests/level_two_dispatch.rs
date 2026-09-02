@@ -33,8 +33,8 @@
 )]
 
 use griff_swang::syntax::{
-    format, format_document, header_level, parse, parse_document, Diagnostic, Document,
-    LANGUAGE_LEVEL,
+    format, format_document, header_level, parse, parse_document, parse_document_with_source_map,
+    AstId, Diagnostic, Document, FieldKind, FieldRef, Level, Span, LANGUAGE_LEVEL,
 };
 
 /// The one level-1 program every dispatch test measures level 1 against:
@@ -366,6 +366,81 @@ fn canonical_level_two_text_is_the_one_spelling() {
     assert_eq!(format_document(&document), MINIMAL_SCORE);
 }
 
+// -- the level a constructed AST may carry ----------------------------------
+
+#[test]
+fn a_level_one_ast_cannot_carry_level_two() {
+    // The parser guard closed the *parse* path; this closes the
+    // *construction* path, which `Program`'s public fields leave open.
+    // `ast::v1::Level` validated against `LANGUAGE_LEVEL`, so raising the
+    // constant silently made `Level::new(2)` succeed — and a caller could
+    // then build a `Program` the formatter renders as `swang 2` above a
+    // `pattern` root. Both entry points refuse that text, so
+    // `parse(format(ast)) == ast` would fail for an AST anyone can build.
+    Level::new(1).expect("level 1 is the level this AST spells");
+    for other in [0, 2, 3, LANGUAGE_LEVEL, u32::MAX] {
+        assert!(
+            other == 1 || Level::new(other).is_err(),
+            "the level-1 AST spells no level but 1; `Level::new({other})` must \
+             not succeed merely because the build understands that level"
+        );
+    }
+}
+
+// -- the source map the skeleton ships with ---------------------------------
+
+#[test]
+fn a_level_two_parse_carries_a_source_map() {
+    // The SWG-4A-06 contract: "the skeleton ships complete: a typed root
+    // enum, the source map, deterministic diagnostics, resource budgets, and
+    // formatter dispatch." Without it a caller cannot locate a successfully
+    // parsed level-2 construct, and 4A-09's builder diagnostics would have
+    // to reparse to point anywhere.
+    let parsed = parse_document_with_source_map(MINIMAL_SCORE).expect("accepted");
+    let Document::Score(_) = parsed.value else {
+        panic!("it is a score");
+    };
+    let map = &parsed.source_map;
+    let root = map
+        .node_span(AstId::Score(0))
+        .expect("the score block has a location");
+    assert_eq!(
+        MINIMAL_SCORE.get(root.start as usize..root.end as usize),
+        Some("score {\n    ppqn 960\n}"),
+        "the node span is the construct, from its keyword to its brace"
+    );
+    let ppqn = map
+        .field_span(FieldRef::new(AstId::Score(0), FieldKind::Ppqn))
+        .expect("`ppqn` has a location");
+    assert_eq!(
+        MINIMAL_SCORE.get(ppqn.start as usize..ppqn.end as usize),
+        Some("960"),
+        "the field span is the value, not the word that introduces it"
+    );
+}
+
+#[test]
+fn the_dispatched_map_and_the_dispatched_parse_agree() {
+    // One parser, two entry points: the mapped one is the plain one with the
+    // map dropped, so the two cannot drift in what they accept.
+    for source in [MINIMAL_SCORE, LEVEL_ONE] {
+        let mapped = parse_document_with_source_map(source).expect("accepted");
+        let plain = parse_document(source).expect("accepted");
+        assert_eq!(mapped.value, plain);
+    }
+    for source in [
+        "swang 2\n\nscore {\n}\n",
+        "swang 3\n",
+        "swang 2\n\npattern x {\n}\n",
+    ] {
+        assert_eq!(
+            parse_document_with_source_map(source).err(),
+            parse_document(source).err(),
+            "and they refuse identically: {source:?}"
+        );
+    }
+}
+
 // ── the inherited INF-06 obligations ────────────────────────────────────────
 
 #[test]
@@ -385,6 +460,14 @@ fn the_source_byte_budget_breaches_end_to_end_before_any_success() {
         first.message.contains("source bytes") && first.message.contains("16777216"),
         "the breach names its axis and the declared limit: {}",
         first.message
+    );
+    // Spec §5.11's breach-location table: "source bytes -> the level/header
+    // span — no body token has been admitted". Pointing at `0..len` would
+    // highlight sixteen megabytes and call it a location.
+    assert_eq!(
+        first.span,
+        Span { start: 6, end: 7 },
+        "the breach points at the level digits, not at the whole document"
     );
 }
 
