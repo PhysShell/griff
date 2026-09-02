@@ -4,3 +4,4 @@
 //! than editing it.
 
 pub(crate) mod v1;
+pub(crate) mod v2;

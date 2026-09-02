@@ -22,9 +22,30 @@ use crate::TailPolicy;
 /// # Errors
 /// Exactly [`parse`]'s errors.
 pub fn parse_with_source_map(source: &str) -> Result<Parsed<Program>, Vec<Diagnostic>> {
+    let pinned = header_level(source).map_err(|d| vec![d])?;
+    // §5.4: each released level owns its own entry point, and a build "routes
+    // to one of them and never mixes them". This is level 1's, so a source
+    // pinning any other level is refused here rather than half-read — which
+    // also keeps a level-2 header out of a level-1 `Program`, where the
+    // formatter would emit `swang 2` above a `pattern` block.
+    //
+    // `SWG0401` because that is what it is: a structural violation of the
+    // level-1 document contract, the same class as any other. It is not
+    // `SWG0001` — this build does support level 2, and §5.10 forbids one
+    // number carrying a second meaning. This arm cannot fire for a `swang 1`
+    // source, so Law A (§5.5) is untouched by its existence.
+    if pinned != 1 {
+        return Err(vec![Diagnostic {
+            code: "SWG0401",
+            span: level_span(source),
+            message: format!(
+                "the level-1 parser reads `swang 1`; this source pins `swang {pinned}`"
+            ),
+        }]);
+    }
     // `header_level` already enforced 1..=LANGUAGE_LEVEL; the map_err is
     // defense in depth, not a reachable path.
-    let level = Level::new(header_level(source).map_err(|d| vec![d])?).map_err(|e| {
+    let level = Level::new(pinned).map_err(|e| {
         vec![Diagnostic {
             code: "SWG0002",
             span: span_of(0, 0),

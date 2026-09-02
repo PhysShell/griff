@@ -914,6 +914,7 @@ mod level_two_budget {
 mod level_two_token_storage {
     use std::mem::size_of;
 
+    use crate::syntax::limits::Level2Budget;
     use crate::syntax::parser::v2::lexer::{lex_level_two, Level2Token, Level2TokenKind};
     use crate::syntax::span::span_of;
 
@@ -999,8 +1000,8 @@ mod level_two_token_storage {
         );
     }
 
-    fn budget_for(source: &str) -> crate::syntax::limits::Level2Budget {
-        let budget = crate::syntax::limits::Level2Budget::declared();
+    fn budget_for(source: &str) -> Level2Budget {
+        let budget = Level2Budget::declared();
         budget
             .admit_source(source, span_of(0, source.len()))
             .expect("this fixture is far under the source cap");
