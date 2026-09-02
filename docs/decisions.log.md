@@ -2787,3 +2787,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   without spending the same budget, and `Level2ResourceLimits` still has
   private fields and `declared()` as its only production constructor.
 
+
+- 2026-09-02 — In the context of `ast::v1::Level::new` being pinned to level
+  1 while `LANGUAGE_LEVEL` rose to 2, we decided to **stop the level-1 AST's
+  refusal from quoting the build's supported range**, to achieve a public
+  error that describes the constraint the code actually enforces, accepting
+  that two neighbouring types now word "unsupported level" differently on
+  purpose. The message interpolated `LANGUAGE_LEVEL`, so refusing level 2
+  read `language level 2 is not supported (1..=2)` — a sentence that lists
+  the level it is refusing, and sends the reader hunting for a bug anywhere
+  but where it is. The two doc comments carried the same stale claim. This
+  is the same error the constructor bug was, one layer out: the level-1 tree
+  asking the *build* what it may spell. It may spell level 1 (§5.4), and the
+  header's own `SWG0001` remains the place where the build-wide range is
+  named, because there the range is the subject.
