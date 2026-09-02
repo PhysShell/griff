@@ -77,13 +77,28 @@ impl ExactScore {
 /// a non-canonical spelling, `SWG0506` for a canonical-model invariant, and
 /// `SWG0401` for everything structural.
 pub(crate) fn parse_exact(source: &str) -> Result<ExactScore, Vec<Diagnostic>> {
-    parse_score(source).map(ExactScore).map_err(|d| vec![d])
+    let mut budget = Level2Budget::declared();
+    parse_score(source, &mut budget)
+        .map(ExactScore)
+        .map_err(|d| vec![d])
 }
 
-fn parse_score(source: &str) -> Result<ExactScoreDocument, Diagnostic> {
-    let mut budget = Level2Budget::declared();
+/// The parse itself, spending a budget the caller owns.
+///
+/// The caller owning it is what makes the accounting observable: the
+/// counters can be read after the parse — including after a refusal, where
+/// a depth still held is proof the block was entered. The budget is not an
+/// argument a caller may weaken, because `Level2ResourceLimits` has private
+/// fields and `declared()` as its only production constructor.
+///
+/// # Errors
+/// Exactly [`parse_exact`]'s, unwrapped from the vector.
+pub(crate) fn parse_score(
+    source: &str,
+    budget: &mut Level2Budget,
+) -> Result<ExactScoreDocument, Diagnostic> {
     budget.admit_source(source, span_of(0, source.len()))?;
-    let tokens = lex_level_two(source, body_offset(source), &mut budget)?;
+    let tokens = lex_level_two(source, body_offset(source), budget)?;
     let mut parser = Parser {
         source,
         tokens,
@@ -116,7 +131,7 @@ struct Parser<'a> {
     tokens: Vec<Level2Token>,
     pos: usize,
     eof: Span,
-    budget: Level2Budget,
+    budget: &'a mut Level2Budget,
 }
 
 impl Parser<'_> {
