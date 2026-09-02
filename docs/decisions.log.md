@@ -2733,3 +2733,57 @@ Architectural decisions go to [`adr/`](adr/) instead.
   Guarding against `limits::` in a string would need a Rust parser, which
   costs more than this boundary is worth; the trade is stated in the test
   rather than left for someone to discover.
+
+- 2026-09-02 — In the context of SWG-4A-06's level-2 lexer, facing spec
+  §5.11's contract that a retained token costs at most twelve bytes on
+  `wasm32`, we decided to **retain a kind and a span and slice the lexeme
+  from the source on demand**, to achieve a token that cannot silently grow
+  a heap allocation per lexeme, accepting that every consumer of a token's
+  text must carry the source alongside it. Prior art, since the technique is
+  not this task's invention: `rustc_lexer` emits tokens carrying a kind and
+  a length and leaves the text in the source buffer; `rust-analyzer`'s
+  `rowan` keeps green-tree tokens interned rather than owned per
+  occurrence; `logos` generates lexers whose token payload is a `Span` the
+  caller slices. What none of them supplies is the *bound* — twelve bytes is
+  §5.11's own derivation from `MAX_TOKENS` and the cockpit's `wasm32` heap,
+  and the compile-time assertion that enforces it is this task's. Level 1's
+  `String`-owning `Token` is untouched: it is frozen, it is not the level-2
+  representation, and the two now differ on purpose.
+
+- 2026-09-02 — In the context of the level-1 parser meeting a `swang 2`
+  header once the build supports level 2, we decided to **refuse it in the
+  level-1 entry point with `SWG0401`**, to achieve §5.4's "routes to one of
+  them and never mixes them", accepting that a caller who reaches for the
+  frozen entry point with level-2 text gets a structural refusal rather than
+  a routing hint. Without the guard, `Level::new(2)` succeeded and a level-1
+  `Program` carried level 2, so the formatter emitted `swang 2` above a
+  `pattern` block — a document neither level would read back. `SWG0001` was
+  rejected for it: this build *does* support level 2, and §5.10 forbids one
+  number carrying a second meaning. The arm cannot fire for a `swang 1`
+  source, so Law A is untouched by its existence, and the frozen baseline
+  proves it rather than the claim resting on inspection.
+
+- 2026-09-02 — In the context of SWG-4A-06 reading exactly one scalar, we
+  decided to **implement `SWG0505` and `SWG0506` for `ppqn` alone**, to
+  achieve a level-2 acceptance set that contains no text §6.6 declares
+  invalid, accepting that two codes belonging to 4A-07's scalar layer appear
+  one task early. The alternative was `parse("swang 2\n\nscore { ppqn 0 }")`
+  returning `Ok` — a permissive fallback in the accepted set of a level that
+  has not frozen, which 4A-07 would then have to *narrow*. Refusing early is
+  the cheaper mistake to correct: widening an unfrozen level is routine,
+  and the two checks are four lines scoped to the one word this slice reads.
+
+- 2026-09-02 — In the context of SWG-4A-06's depth accounting, facing a
+  falsification probe that **survived**, we decided to **have the parse
+  spend a budget its caller owns**, to achieve a wiring that can be
+  falsified today rather than when 4A-08 makes nesting reachable, accepting
+  a crate-internal signature that hands the budget in. Deleting
+  `enter_block` from the level-2 parser was caught by nothing at all: the
+  minimal score has one block, so no end-to-end breach can witness the
+  counter. The witness now reads it after a refusal *inside* the block,
+  where a depth still held is proof of entry — a balanced parse returns to
+  zero whether the block was entered or not, and would have passed either
+  way. This is not a side channel: there is no second entry that can succeed
+  without spending the same budget, and `Level2ResourceLimits` still has
+  private fields and `declared()` as its only production constructor.
+
