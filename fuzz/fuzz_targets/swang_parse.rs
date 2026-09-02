@@ -11,8 +11,8 @@
 //!   * `header_level`: `Ok(level)` in `1..=LANGUAGE_LEVEL` xor a typed
 //!     diagnostic.
 //!   * `parse`: `Ok(Program)` xor a non-empty `Vec<Diagnostic>`.
-//!   * Every diagnostic carries an `SWG`-prefixed registry code and a span
-//!     inside the source (`start <= end <= len`).
+//!   * Every diagnostic carries a registry code of exactly the shape
+//!     `SWG\d{4}` and a span inside the source (`start <= end <= len`).
 //!   * On `Ok`: `format` emits canonical text that reparses to the same AST
 //!     (law 3) and is its own fixed point (law 2).
 
@@ -20,11 +20,18 @@ use griff_swang::syntax::{format, header_level, parse, Diagnostic, LANGUAGE_LEVE
 use libfuzzer_sys::fuzz_target;
 
 /// The one diagnostic contract, applied to the header pre-parser and the
-/// parser alike: a stable `SWG` registry code and a span inside the source.
+/// parser alike: a registry code of exactly the shape `SWG\d{4}` and a span
+/// inside the source.
+///
+/// `starts_with("SWG")` was the weaker form this oracle shipped with, and it
+/// accepted `SWG`, `SWGxyz`, and `SWG12345` as registry codes. The registry
+/// has one shape (spec §1.5); the oracle now asserts that shape rather than
+/// its first three bytes. No regex dependency is needed to say so.
 fn assert_diagnostic(d: &Diagnostic, len: u32) {
+    let digits = d.code.strip_prefix("SWG");
     assert!(
-        d.code.starts_with("SWG"),
-        "stable registry code, never ad hoc: {}",
+        digits.is_some_and(|rest| rest.len() == 4 && rest.bytes().all(|b| b.is_ascii_digit())),
+        "a registry code is exactly `SWG` and four digits, never ad hoc: {}",
         d.code
     );
     assert!(

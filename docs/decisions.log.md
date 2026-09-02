@@ -2507,3 +2507,229 @@ Architectural decisions go to [`adr/`](adr/) instead.
   been demonstrated. The borrowed architecture stops short of
   `rust-analyzer`'s incremental-IDE identity guarantees, which is the
   distinction the entry above exists to make explicit.
+
+- 2026-08-29 — In the context of SWG-INF-06, facing an entry that asked for
+  the pre-refactor parser to be diffed against the refactored one, we
+  decided to **retire that comparison as already discharged and record a
+  frozen Law A baseline in its place**, to achieve a differential with a
+  living right-hand side, accepting that no finite corpus is Law A's whole
+  domain. INF-03 deleted the parser the entry wanted to diff against and its
+  own acceptance already made that comparison — byte-identical reference,
+  identical test counts, no edited expected value, its own mutation round —
+  so there is nothing left in the tree to compare and resurrecting dead code
+  to diff it would be theatre. Spec §5.5 states the differential that will
+  have a second side: a build supporting `1..=N` treats every source whose
+  first line is a valid `swang 1` header, invalid *bodies* included, exactly
+  as a level-1-only build did, on all seven observables. Today N is 1, so the left-hand side is recorded now,
+  while a level-1-only build is what the tree holds — by the time 4A-06
+  supplies the right-hand side, that build will be gone exactly as the
+  pre-refactor parser is gone now.
+
+- 2026-08-29 — In the context of the Law A baseline's shape, facing the
+  question of what makes an AST observation *independent* evidence, we
+  decided on a **test-owned exhaustive projection**, and against `Debug`,
+  against serde, and against recording `format(ast)`, to achieve two
+  witnesses rather than one wearing two hats, accepting that the projection
+  must be extended by hand whenever the AST grows. `Debug` output is a
+  representation detail no contract pins; `Program` is deliberately not
+  serialized, so adding serde would mean inventing a contract in order to
+  test it; and recording the formatter's output as the AST observation would
+  leave canonical bytes and the AST as the same measurement, so a
+  coordinated parser-and-formatter regression could preserve the bytes while
+  changing what the tree means. Every struct is destructured with no `..`
+  and every enum matched with no wildcard, so growth is a compile error
+  rather than a silent blind spot. The artifact is compare-only: no
+  snapshot-update path exists, because a baseline that regenerates itself
+  records whatever the code now does and calls it history.
+
+- 2026-08-29 — In the context of SWG-INF-06's four bounds, facing two axes
+  that today's grammar cannot approach, we decided to **declare all four and
+  label depth and diagnostics as forward reservations**, to achieve the one
+  thing §5.11 leaves no second chance at, accepting that two declared
+  numbers guard nothing yet. The exact-score grammar has no recursive
+  production and the parser returns one diagnostic, so 64 and 256 are
+  currently unreachable; but a bound not declared before level 2's first
+  accepted program can never be added, because adding it afterwards would
+  narrow an acceptance set that is by then frozen. Declaring them costs
+  nothing today and omitting them spends the option permanently. The spec
+  says plainly that they are reservations and not evidence of a
+  stack-overflow hazard, because a limit presented as a defence against a
+  danger that does not exist is how a number stops being questioned.
+  *(Corrected on review: the reason a later bound is forbidden is §5.11's own
+  admission rule, which is stricter than the freeze boundary — not that the
+  level is frozen by then. §5.3 keeps level 2 provisional until Phase 4A is
+  accepted, so a bound added after the first accepted program would still
+  predate the freeze. The deadline stands; the causality was wrong.)*
+
+- 2026-08-29 — In the context of the budget having no level-2 parser to
+  guard, facing the paradox that INF-06 must precede level 2's first
+  accepted program while 4A-06 owns the parser, we decided that **INF-06
+  ships the mechanism and 4A-06 ships the first live wiring**, recorded as
+  an inherited bullet in 4A-06's acceptance, to achieve an explicit temporal
+  boundary instead of a fake gate, accepting that the budget has no caller
+  until then. Wiring a gate into a parser that does not exist would be the
+  fake half of the work, and a fuzz oracle asserting a limit breach would
+  cover an execution path the binary cannot enter. The same reasoning splits
+  the fuzz work: the registry-shape oracle tightens here, because it is
+  level-agnostic and was genuinely weak — `starts_with("SWG")` accepted
+  `SWG`, `SWGxyz`, and `SWG12345` — while the end-to-end breach oracle waits
+  for a parser a fuzzed input can reach.
+
+- 2026-08-29 — In the context of the Law A corpus, facing a falsification
+  probe that survived, we decided to **grow the corpus until it reaches the
+  production sites rather than merely the codes**, and to pin its extent, to
+  achieve a sample whose claim matches its evidence, accepting that the
+  sample is still a sample. Corrupting `SWG0403` at one of its four
+  production sites survived a corpus that reached every level-1 diagnostic
+  code, because reaching a code says nothing about the other places that
+  raise it — `SWG0401` is raised from twenty-two. The corpus grew from 23
+  cases and 14 distinct refusals to 50 and 38, and a test now records that
+  number so a shrinking corpus fails rather than quietly testing less. The
+  failure was the recurring one: a check too narrow for the data it runs
+  over, counting codes where the regressions live at sites.
+  *(Corrected on later review: 50 cases / 38 refusals was the pre-domain-fix
+  extent. Removing the three out-of-domain header cases left the accepted
+  Law A corpus at 47 cases / 35 distinct refusals, which is what the test
+  now pins.)*
+
+- 2026-08-29 — In the context of SWG-INF-06's review, facing a Law A
+  baseline that recorded three sources the frozen pre-parser refuses, we
+  decided that **Law A's domain is itself a witness**, and against keeping
+  header refusals in the artifact, to achieve a baseline that 4A-06 can
+  actually satisfy, accepting that the pre-parser's three codes are then
+  covered only by their own characterization tests. §5.5 scopes Law A to
+  sources whose first line is a valid `swang 1` header — the header is the
+  premise, and only the body varies. One of the three was worse than merely
+  out of scope: `swang 2` is recorded as `SWG0001`, and SWG-4A-06 exists to
+  make `swang 2` supported, so a baseline built to protect that task would
+  have failed on the task's own correct behaviour and looked like a safety
+  net working. Every corpus source must now satisfy
+  `header_level(source) == Ok(1)`, because a domain that lives in a comment
+  is a domain that drifts.
+
+- 2026-08-29 — In the context of the level-1 boundary guard, facing an
+  exemption that looked harmless, we decided to **scan `syntax.rs` and
+  permit only its bare `mod limits;` line**, and against exempting the file
+  that declares the module, to achieve a guard that still holds when 4A-06
+  arrives, accepting a slightly fussier stripper. `syntax.rs` is the crate's
+  public re-export point and the obvious home for level dispatch, so it is
+  simultaneously the file that must name the module and the file where a
+  budget consulted before the level 1/2 branch would silently become a
+  level-1 bound. Exempting it made the single most dangerous location the
+  one nobody watched. Level-2-specific modules join the exempt list one at a
+  time as 4A-06 creates them; shared dispatch never joins it.
+
+- 2026-08-29 — In the context of a budget with no caller yet, facing
+  `pub(crate)` limit fields and a `Clone` counter, we decided to **seal the
+  mechanism before the first caller exists**, to achieve a type shape that
+  enforces what the documentation already promised, accepting that tests
+  need a `#[cfg(test)]` constructor to reach scaled bounds. Public fields
+  would have let a future call site write `Level2Budget::new(
+  Level2ResourceLimits { tokens: u64::MAX, .. })` and satisfy every word of
+  §5.11 while meaning none of it; a `Clone` on a running counter lets the
+  same budget be spent twice, which is precisely what the type's own doc
+  comment said must not happen. The cheapest moment to close both doors is
+  while closing them breaks nothing.
+
+- 2026-08-30 — In the context of SWG-INF-06's external review, facing a Codex
+  finding that `MAX_TOKENS = 4_000_000` had an unstated representation
+  assumption, we decided to **keep the number and bind it to a level-2
+  token-storage contract**, and against lowering it, to achieve a bound whose
+  memory derivation is written down, accepting that 4A-06 now owes a proof
+  its lexer would otherwise have been free to skip. The finding was correct
+  on every premise: `griff-swang` is a direct dependency of the Cockpit,
+  which CI builds for `wasm32-unknown-unknown`; level 1's `Token` owns a
+  `String` each — the lexer allocates one even for a single `{` — and
+  measures 40 bytes on a 64-bit host, so four million would exceed 150 MiB of
+  vector spine before millions of individual string allocations. §5.11
+  promises a typed refusal rather than an allocation death, and on a browser
+  tab that promise would have failed. The recorded derivation was
+  "≈ 4 bytes per token at the byte cap", which ties `MAX_TOKENS` to
+  `MAX_SOURCE_BYTES` consistently but never asks what a retained token costs;
+  AGENTS.md requires the derivation be recorded, and a heap derivation was
+  not. Lowering the bound would have spent permanent acceptance-set budget to
+  accommodate a representation level 2 has not been written to inherit —
+  backwards, when the level-2 lexer does not exist and 4A-06 already owes the
+  first live wiring. So §5.11 states the contract as a budget rather than a
+  struct layout — no per-token owned lexeme storage, at most 12 bytes
+  retained per token on `wasm32`, text recovered from the span, or a strictly
+  stronger representation such as streaming — leaving a lexer free to do
+  better and forbidden only from doing worse. If 4A-06's measured `wasm32`
+  behaviour disproves the derivation, that is the moment to lower the bound,
+  still inside §5.11's deadline.
+
+- 2026-08-30 — In the context of the same review, facing a CodeRabbit
+  merge-risk note, we decided that **diagnostic exhaustion is terminal and
+  idempotent**, and against deferring the fix to 4A-06, to achieve a running
+  resource state that still describes reality after it is spent, accepting a
+  small behavioural change to a mechanism with no caller. Against a cap of
+  two, `diagnostics()` climbed to 7 across repeated admissions and the
+  reported `needed` count grew with it, describing an ever-larger
+  hypothetical parse for a parse already terminated. Every call returned
+  `Err`, so no caller obeying the contract could exceed the declared maximum
+  — which made the defect latent rather than absent, and latent is not the
+  same as correct. `admit_token` already pinned the matching law, that a
+  refused thing does not advance admitted state; the diagnostic axis differs
+  only in that its terminal refusal genuinely occupies the final slot, so the
+  rule is saturation rather than no-effect. Deferring it would have added one
+  more item to 4A-06's growing pile of inherited archaeology for no reason
+  other than that nobody could hit it yet.
+
+- 2026-08-30 — In the context of SWG-INF-06's **prior-art survey**, which
+  AGENTS.md requires before anything non-trivial and requires recorded here,
+  facing two independent designs carried by one task, we decided to adopt one
+  idea from each lineage and to refuse the central convenience of the first,
+  to achieve a baseline and a budget that borrow proven shapes instead of
+  invented ones, accepting that neither lineage settles the numbers this task
+  had to choose. The survey was owed and was missing; a task about evidence
+  should not be the one that skips its own admission gate.
+
+  **The frozen baseline — `insta` and `expect-test`.** Both are the Rust
+  reference-test prior art, and both share the shape adopted here: an
+  expected artifact checked into the tree, recompared on every run, with a
+  diff as the failure. What is deliberately *not* adopted is the feature each
+  is built around. `insta` ships an accept/review workflow — `cargo insta
+  review`, `cargo insta accept`, `INSTA_UPDATE` — and `expect-test` exists so
+  that setting `UPDATE_EXPECT` rewrites the expectation in place. That is
+  correct for a snapshot of *current* behaviour, where re-recording is the
+  normal workflow and the artifact is a convenience. The Law A baseline is a
+  different object: the historical left-hand side of a comparison whose
+  right-hand side does not exist yet, stamped with the commit that produced
+  it. An updater would let the side under test rewrite the side it is tested
+  against, so this artifact is compare-only and regeneration is a deliberate
+  reviewed act in a detached worktree at the producer commit. The idea is
+  borrowed; the ergonomics are refused, and refused for a stated reason.
+
+  **The resource bounds — `serde_json` and `rustc`.** The adopted idea is
+  admission *during* the descent rather than recovery after it: `serde_json`
+  carries a recursion limit checked as it parses, and its escape hatch is
+  documented with the warning that a caller who disables it must protect
+  against stack overflow by other means. That is precisely the claim §5.11
+  makes — a crossed budget is a typed refusal, never an allocation death —
+  and it is why every axis here is admitted before the thing it counts
+  exists. `rustc`'s `recursion_limit` supplies the other half: a compiler may
+  *declare* a bound as part of its contract instead of discovering it at
+  runtime, which is what §5.11's before-the-first-accepted-program deadline
+  formalises. Neither supplies four axes or their values. `serde_json` bounds
+  one axis, `rustc` another; the byte, token, depth and diagnostic set, their
+  counting semantics, and the `wasm32` storage contract are this task's own,
+  derived in the entries above. Recording a survey is not a licence to claim
+  more inheritance than there is: nothing in `insta` taught this task to
+  count tokens.
+
+- 2026-08-30 — In the context of the level-1 boundary guard, facing a Codex
+  finding that the bare token `limits` fails the build on ordinary English,
+  we decided to **match qualified paths rather than a generic word**, to
+  achieve a guard specific enough to survive contact with future code,
+  accepting that the witness stays lexical and can still be fooled by
+  `limits::` inside a string. Reproduced before changing anything: a string
+  literal reading "no limits apply here" and a trailing `// … limits`
+  comment each failed CI, while a comment-only line was correctly ignored.
+  `limits` is an ordinary word and an ordinary identifier, and a guard that
+  blocks a build over prose is a guard the next person weakens — at which
+  point the frozen level loses its protection for a reason unrelated to the
+  frozen level. Every real route to the module carries `::`, so `limits::`
+  keeps the teeth: the original planted probe in `syntax.rs` is still caught.
+  Guarding against `limits::` in a string would need a Rust parser, which
+  costs more than this boundary is worth; the trade is stated in the test
+  rather than left for someone to discover.

@@ -1,0 +1,451 @@
+schema 1
+producer c44313c0cd82f3f2a8720437824d8cf5058b4e15
+cases 47
+
+case fuzz_seed_reference
+source 444 "swang 1\n\npattern dgd_fractal {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096 density 9500bps seed 4\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy repeat_variation\n        corpus \"corpus\"\n    }\n    |> export midi \"dgd_fractal_dense.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 11 "dgd_fractal"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune present
+ast fractalize.prune.density 9500
+ast fractalize.prune.seed 4
+ast linearize.traversal snake
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail rest_pad
+ast generate.source 63 "corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy named repeat_variation
+ast generate.corpus present 6 "corpus"
+ast export.format midi
+ast export.path 21 "dgd_fractal_dense.mid"
+canonical 444 "swang 1\n\npattern dgd_fractal {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096 density 9500bps seed 4\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"corpus/Dance Gavin Dance - The Robot With Human Hair Part 2.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy repeat_variation\n        corpus \"corpus\"\n    }\n    |> export midi \"dgd_fractal_dense.mid\"\n}\n"
+end
+
+case minimal_no_prune_no_corpus
+source 306 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 1 "p"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune absent
+ast linearize.traversal snake
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail rest_pad
+ast generate.source 8 "seed.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy auto
+ast generate.corpus absent
+ast export.format midi
+ast export.path 7 "out.mid"
+canonical 306 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+end
+
+case prune_present
+source 329 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096 density 9500bps seed 4\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 1 "p"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune present
+ast fractalize.prune.density 9500
+ast fractalize.prune.seed 4
+ast linearize.traversal snake
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail rest_pad
+ast generate.source 8 "seed.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy auto
+ast generate.corpus absent
+ast export.format midi
+ast export.path 7 "out.mid"
+canonical 329 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096 density 9500bps seed 4\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+end
+
+case row_major_and_reject_tail
+source 308 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize row_major\n    |> map_rhythm unit 1/16 tail reject\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 1 "p"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune absent
+ast linearize.traversal row_major
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail reject
+ast generate.source 8 "seed.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy auto
+ast generate.corpus absent
+ast export.format midi
+ast export.path 7 "out.mid"
+canonical 308 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize row_major\n    |> map_rhythm unit 1/16 tail reject\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+end
+
+case words_reordered_off_canonical
+source 306 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize max_cells 4096 depth 1\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 1 "p"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune absent
+ast linearize.traversal snake
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail rest_pad
+ast generate.source 8 "seed.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy auto
+ast generate.corpus absent
+ast export.format midi
+ast export.path 7 "out.mid"
+canonical 306 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+end
+
+case strategy_rhythm_copy
+source 313 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy rhythm_copy\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 1 "p"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune absent
+ast linearize.traversal snake
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail rest_pad
+ast generate.source 8 "seed.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy named rhythm_copy
+ast generate.corpus absent
+ast export.format midi
+ast export.path 7 "out.mid"
+canonical 313 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy rhythm_copy\n    }\n    |> export midi \"out.mid\"\n}\n"
+end
+
+case strategy_motif_transpose
+source 317 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy motif_transpose\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 1 "p"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune absent
+ast linearize.traversal snake
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail rest_pad
+ast generate.source 8 "seed.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy named motif_transpose
+ast generate.corpus absent
+ast export.format midi
+ast export.path 7 "out.mid"
+canonical 317 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy motif_transpose\n    }\n    |> export midi \"out.mid\"\n}\n"
+end
+
+case strategy_constrained_walk
+source 318 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy constrained_walk\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 1 "p"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune absent
+ast linearize.traversal snake
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail rest_pad
+ast generate.source 8 "seed.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy named constrained_walk
+ast generate.corpus absent
+ast export.format midi
+ast export.path 7 "out.mid"
+canonical 318 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy constrained_walk\n    }\n    |> export midi \"out.mid\"\n}\n"
+end
+
+case strategy_shuffle_motifs
+source 316 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy shuffle_motifs\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict accepted
+ast level 1
+ast pattern.name 1 "p"
+ast pattern.kernel 11 "X.X/XX./.XX"
+ast fractalize.depth 1
+ast fractalize.max_cells 4096
+ast fractalize.prune absent
+ast linearize.traversal snake
+ast map_rhythm.unit.numerator 1
+ast map_rhythm.unit.denominator 16
+ast map_rhythm.tail rest_pad
+ast generate.source 8 "seed.gp5"
+ast generate.bars 8
+ast generate.seed 42
+ast generate.candidates 2
+ast generate.strategy named shuffle_motifs
+ast generate.corpus absent
+ast export.format midi
+ast export.path 7 "out.mid"
+canonical 316 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy shuffle_motifs\n    }\n    |> export midi \"out.mid\"\n}\n"
+end
+
+case kernel_whitespace
+source 302 "swang 1\n\npattern p {\n    ascii \"X X/XX.\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0103 31 40 69 "whitespace inside the kernel literal; rows are separated by `/` alone"
+end
+
+case kernel_empty_row
+source 302 "swang 1\n\npattern p {\n    ascii \"X.X//XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0307 31 40 33 "empty kernel literal or empty row"
+end
+
+case kernel_ragged
+source 301 "swang 1\n\npattern p {\n    ascii \"X.X/XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0101 31 39 44 "ragged kernel: row 1 has 2 cells, expected 3"
+end
+
+case kernel_foreign_cell
+source 300 "swang 1\n\npattern p {\n    ascii \"XO/XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0102 31 38 57 "invalid kernel cell 'O' at row 0, col 1: only `X` and `.`"
+end
+
+case unit_zero_numerator
+source 306 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 0/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0301 132 136 25 "unit 0/16 has a zero part"
+end
+
+case density_without_seed
+source 322 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096 density 9500bps\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0303 86 93 80 "density decay was given without a rhythm seed; pruning must be explicitly seeded"
+end
+
+case density_out_of_range
+source 330 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096 density 10001bps seed 4\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0308 94 102 38 "density 10001 bps is outside 0..=10000"
+end
+
+case unknown_traversal
+source 307 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize spiral\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0402 103 109 56 "unknown traversal `spiral`; the set is row_major | snake"
+end
+
+case missing_max_cells
+source 291 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0403 52 62 53 "`fractalize` is missing its required word `max_cells`"
+end
+
+case repeated_word
+source 314 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 depth 2 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0404 71 76 44 "the word `depth` repeats within `fractalize`"
+end
+
+case second_pattern_block
+source 320 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\npattern q {\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 306 313 53 "a program is one pattern block; nothing may follow it"
+end
+
+case lex_bare_pipe
+source 305 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    | linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 90 91 13 "expected `|>`"
+end
+
+case lex_unexpected_character
+source 307 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars @8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 208 209 24 "unexpected character '@'"
+end
+
+case lex_unterminated_string
+source 305 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 184 305 27 "unterminated string literal"
+end
+
+case truncated_after_header
+source 16 "swang 1\n\npattern"
+verdict rejected
+diagnostic 0 SWG0401 16 16 23 "unexpected end of input"
+end
+
+case nothing_after_header
+source 8 "swang 1\n"
+verdict rejected
+diagnostic 0 SWG0401 8 8 23 "unexpected end of input"
+end
+
+case unclosed_pattern_block
+source 304 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n"
+verdict rejected
+diagnostic 0 SWG0401 304 304 23 "unexpected end of input"
+end
+
+case no_pattern_keyword
+source 305 "swang 1\n\npatern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 9 15 34 "expected `pattern`, found `patern`"
+end
+
+case no_pattern_name
+source 304 "swang 1\n\npattern {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 17 18 34 "expected a pattern name, found `{`"
+end
+
+case no_open_brace
+source 304 "swang 1\n\npattern p\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 23 28 27 "expected `{`, found `ascii`"
+end
+
+case first_element_not_ascii
+source 307 "swang 1\n\npattern p {\n    kernel \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0403 25 31 49 "the pattern block begins with its `ascii` literal"
+end
+
+case ascii_value_not_a_string
+source 296 "swang 1\n\npattern p {\n    ascii 123\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 31 34 38 "expected a kernel literal, found `123`"
+end
+
+case trailing_content_after_block
+source 304 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 277 279 53 "a program is one pattern block; nothing may follow it"
+end
+
+case unknown_pipeline_step
+source 304 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> flatten snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 93 100 31 "unknown pipeline step `flatten`"
+end
+
+case steps_out_of_order
+source 306 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> linearize snake\n    |> fractalize depth 1 max_cells 4096\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 52 61 64 "`linearize` arrives out of pipeline order; expected `fractalize`"
+end
+
+case missing_pipeline_step
+source 283 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0403 281 282 44 "the pipeline is missing its `linearize` step"
+end
+
+case word_names_no_value
+source 301 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 71 80 35 "the word `max_cells` names no value"
+end
+
+case linearize_missing_its_word
+source 300 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0403 93 102 52 "`linearize` is missing its required word `traversal`"
+end
+
+case export_missing_its_path
+source 296 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 282 288 34 "`export` takes a format and a path"
+end
+
+case export_unknown_format
+source 305 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export wav \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0402 289 292 44 "unknown export format `wav`; the set is midi"
+end
+
+case integer_not_decimal
+source 310 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars eight\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 208 213 49 "bars takes a plain decimal integer, found `eight`"
+end
+
+case integer_leading_zero
+source 307 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 08\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 208 210 32 "bars does not take leading zeros"
+end
+
+case integer_out_of_range
+source 331 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 99999999999999999999999999\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 208 234 55 "bars value `99999999999999999999999999` is out of range"
+end
+
+case integer_too_wide_for_its_field
+source 308 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 300 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 69 72 33 "depth value `300` is out of range"
+end
+
+case density_without_the_bps_suffix
+source 326 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096 density 9500 seed 4\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 94 98 78 "density takes basis points with the `bps` suffix, like `9500bps`; found `9500`"
+end
+
+case unit_not_a_rational
+source 304 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 16 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0301 132 134 52 "malformed unit `16`: expected a note value like 1/16"
+end
+
+case unit_with_three_parts
+source 308 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16/4 tail rest_pad\n    |> generate {\n        source \"seed.gp5\"\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0301 132 138 56 "malformed unit `1/16/4`: expected a note value like 1/16"
+end
+
+case string_word_takes_no_bare_word
+source 300 "swang 1\n\npattern p {\n    ascii \"X.X/XX./.XX\"\n    |> fractalize depth 1 max_cells 4096\n    |> linearize snake\n    |> map_rhythm unit 1/16 tail rest_pad\n    |> generate {\n        source seed\n        bars 8\n        seed 42\n        candidates 2\n        strategy auto\n    }\n    |> export midi \"out.mid\"\n}\n"
+verdict rejected
+diagnostic 0 SWG0401 184 188 28 "source takes a quoted string"
+end

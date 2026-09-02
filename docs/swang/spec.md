@@ -812,3 +812,121 @@ Level 2 may declare bounds — source bytes, token count, nesting depth,
 diagnostic count — as part of its own contract, and must declare them
 **before its first accepted program**, not after the first crash. That is
 the space the parser resource gate works in.
+
+#### The four declared level-2 bounds
+
+SWG-INF-06 declares them, ahead of level 2's first accepted program:
+
+| Axis | Limit | What is counted |
+| --- | --- | --- |
+| source bytes | `16_777_216` (16 MiB) | UTF-8 bytes of the complete source, header included |
+| tokens | `4_000_000` | tokens the level-2 lexer emits after the frozen header pre-parser; end of input is not a token |
+| nesting depth | `64` | simultaneously open structural `{ … }` constructs; the `score` root is depth 1, and a `[ … ]` scalar list adds no structural depth |
+| diagnostics | `256` | the most one level-2 parse attempt may return, the terminal budget diagnostic included |
+
+The counting semantics are part of the declaration. Without them `64` and
+`4_000_000` are decorative numerology: a token budget that counts differently
+is a different budget.
+
+Each bound is checked **before** the thing it counts exists — the source
+before lexing, each token before it is stored, each block on entry, each
+diagnostic before it is appended. Checking `tokens.len()` after lexing four
+million tokens is not a resource gate; it is an obituary written after the
+allocation.
+
+#### The token bound's derivation, and the level-2 token-storage contract
+
+`MAX_TOKENS` is derived against the **level-2 token-storage contract below**,
+not against level 1's lexer representation. The two must not be confused: a
+token budget is a memory bound only in combination with a statement of what a
+retained token costs.
+
+A retained level-2 token carries only its classification and its source
+location, or uses a representation with an equal-or-smaller retained
+footprint. Lexeme text is recovered from the immutable source through its
+`Span` — it is never copied into the token.
+
+```text
+on wasm32:
+  Span                        =  8 bytes
+  compact kind + Span token  <= 12 bytes
+  4,000,000 retained tokens  <= 48,000,000 bytes  ~ 45.8 MiB nominal
+
+  16 MiB source + full token spine  ~ 61.8 MiB
+  before parser and allocator overhead
+```
+
+The normative requirement is a **budget, not a struct layout**:
+
+> No per-token owned lexeme storage. A retained level-2 token occupies at
+> most 12 bytes on `wasm32`, or the lexer uses a strictly stronger
+> representation — streaming, for instance — that retains less.
+
+Stated that way, a level-2 lexer is free to do better than a
+`{ kind, span }` pair, and is forbidden only from doing worse.
+
+This matters because `griff-swang` is a direct dependency of the Cockpit,
+which is built and exercised for `wasm32-unknown-unknown`. Level 1's `Token`
+owns a `String` per token — the lexer allocates one even for a single `{` —
+which at 40 bytes of spine per token on a 64-bit host would put four million
+tokens past 150 MiB of vector alone, before millions of individual string
+allocations. On a memory-constrained browser tab a budget of that shape
+would be reached by exhaustion rather than by refusal, which is precisely
+what §5.11 exists to prevent. The bound is therefore paired with a storage
+contract rather than lowered to accommodate a representation level 2 does
+not have to inherit.
+
+If a level-2 lexer's measured `wasm32` behaviour ever disproves this
+derivation, the time to lower the bound is then — still before level 2's
+first accepted program, and still inside this section's deadline.
+
+#### Two of the four are forward reservations
+
+The exact-score grammar §5.7 allocates to level 2 has no recursive
+production — `score`, `track`, `voice`, `group`, `note`, `position`,
+`evidence` bottoms out — so **it cannot currently approach depth 64**, and
+today's parser maps each error into a one-element vector, so it cannot
+approach 256 diagnostics. Both are declared anyway, and both are
+reservations: they are not evidence that today's grammar has a
+recursive-stack hazard or a diagnostic flood.
+
+They are declared now because this section leaves no later opportunity. The
+deadline above — before level 2's first accepted program — is an **admission
+rule stricter than the freeze boundary**, not a consequence of it. By §5.3
+level 2 remains provisional until Phase 4A is accepted, so a bound
+introduced after the first accepted program would still predate the freeze;
+§5.11 forbids it regardless, because by then programs are being written
+against the level and a new bound would start rejecting them. Declaring the
+bounds costs nothing today; omitting them spends the option permanently. A
+future recovery implementation may stop well short of 256 — it simply may
+not exceed it.
+
+#### The breach diagnostic
+
+A crossed budget is a **typed refusal**, never an allocation death. It is
+`SWG0509` — one code for all four axes, because they carry one meaning, and
+§5.10 forbids one number meaning two things. The message names the axis, the
+declared limit, and what the parse would have needed.
+
+Precedence, so a breach cannot be mistaken for a grammar error:
+
+```text
+malformed or unsupported header   -> SWG000x, before any budget is consulted
+supported `swang 2`, source too long -> SWG0509, before lexing
+token budget crossed              -> SWG0509, before structural parsing
+depth budget crossed on entering a legal construct -> SWG0509
+diagnostic budget exhausted       -> terminal SWG0509, within the 256 total
+```
+
+Where a breach points:
+
+| Breach | Location |
+| --- | --- |
+| source bytes | the level/header span — no body token has been admitted |
+| tokens | the token that crosses the budget |
+| nesting depth | the opening token of the construct that would exceed it |
+| diagnostics | the diagnostic whose production exhausts the budget |
+
+A source containing nine hundred `{` characters does not have to become a
+depth-budget error if the grammar rejects it structurally first. The
+resource checker must not understand more grammar than the parser does.
