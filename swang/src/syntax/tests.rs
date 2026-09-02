@@ -909,6 +909,58 @@ mod level_two_budget {
     }
 }
 
+/// SWG-4A-06: the depth axis is wired, and the wiring is falsifiable.
+///
+/// The minimal score has exactly one block, so nesting can never approach
+/// `MAX_NESTING_DEPTH` and no end-to-end breach can witness the accounting.
+/// A falsification probe found that out the honest way: deleting
+/// `enter_block` from the parser was caught by nothing at all. So the
+/// witness observes the counter directly, on the real parse function with
+/// the real budget — not on a reconstruction of it.
+mod level_two_depth_accounting {
+    use crate::syntax::limits::Level2Budget;
+    use crate::syntax::parser::v2::parse_score;
+    use crate::syntax::span::span_of;
+
+    fn budget_for(source: &str) -> Level2Budget {
+        let budget = Level2Budget::declared();
+        budget
+            .admit_source(source, span_of(0, source.len()))
+            .expect("far under the source cap");
+        budget
+    }
+
+    #[test]
+    fn the_root_block_is_entered_on_the_caller_s_budget() {
+        // A refusal *inside* the block is what makes this observable: the
+        // parse returns before `leave_block`, so a depth of one is proof the
+        // block was entered, where a balanced parse would have returned the
+        // counter to zero either way.
+        let source = "swang 2
+
+score {
+    nope 1
+}
+";
+        let mut budget = budget_for(source);
+        let refusal = parse_score(source, &mut budget).expect_err("`nope` is not a `score` word");
+        assert_eq!(refusal.code, "SWG0401");
+        assert_eq!(
+            budget.depth(),
+            1,
+            "the root block was entered on the budget the caller owns"
+        );
+    }
+
+    #[test]
+    fn a_balanced_parse_returns_the_depth_it_borrowed() {
+        let source = "swang 2\n\nscore {\n    ppqn 960\n}\n".replace("\\n", "\n");
+        let mut budget = budget_for(&source);
+        parse_score(&source, &mut budget).expect("the minimal score");
+        assert_eq!(budget.depth(), 0, "what was entered was left");
+    }
+}
+
 /// SWG-4A-06's inherited SWG-INF-06 obligation: the level-2 token proves the
 /// `MAX_TOKENS` heap derivation instead of asserting it in prose.
 mod level_two_token_storage {
