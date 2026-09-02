@@ -5,7 +5,6 @@ use std::fmt;
 
 use griff_pattern::{DensityBps, Traversal};
 
-use crate::syntax::header::LANGUAGE_LEVEL;
 use crate::TailPolicy;
 
 /// Why an AST value refused to exist.
@@ -36,7 +35,10 @@ pub enum AstError {
     },
     /// A unit part is zero — no note value has a zero side.
     ZeroUnitPart,
-    /// Level zero, or newer than [`LANGUAGE_LEVEL`].
+    /// Any level but 1 — this is the level-1 AST, and it spells one level
+    /// (spec §5.4). Deliberately not the build-wide range that
+    /// [`LANGUAGE_LEVEL`](crate::syntax::LANGUAGE_LEVEL) reports: a build
+    /// understanding a level says nothing about which tree carries it.
     UnsupportedLevel {
         /// The rejected level.
         level: u32,
@@ -60,7 +62,7 @@ impl fmt::Display for AstError {
             Self::ZeroUnitPart => write!(f, "a unit part is zero"),
             Self::UnsupportedLevel { level } => write!(
                 f,
-                "language level {level} is not supported (1..={LANGUAGE_LEVEL})"
+                "the level-1 AST spells level 1; it cannot carry level {level}"
             ),
         }
     }
@@ -68,8 +70,10 @@ impl fmt::Display for AstError {
 
 impl Error for AstError {}
 
-/// A pinned language level, valid by construction: nonzero and at most
-/// [`LANGUAGE_LEVEL`].
+/// A pinned language level, valid by construction: level 1, the one this
+/// AST spells — not every level
+/// [`LANGUAGE_LEVEL`](crate::syntax::LANGUAGE_LEVEL) admits, for the reason
+/// [`Level::new`] gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Level(u32);
 
