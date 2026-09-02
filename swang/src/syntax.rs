@@ -70,7 +70,7 @@ pub use ast::v1::{
     MapRhythm, PatternDef, Program, Prune, StrategyName, StrategyPolicy, StringLiteral, Unit,
 };
 pub use diagnostic::Diagnostic;
-pub use document::{format_document, parse_document, Document};
+pub use document::{format_document, parse_document, parse_document_with_source_map, Document};
 pub use format::v1::format;
 pub use header::{header_level, LANGUAGE_LEVEL};
 pub use parser::v1::{parse, parse_with_source_map};

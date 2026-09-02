@@ -920,6 +920,7 @@ mod level_two_budget {
 mod level_two_depth_accounting {
     use crate::syntax::limits::Level2Budget;
     use crate::syntax::parser::v2::parse_score;
+    use crate::syntax::source_map::SourceMap;
     use crate::syntax::span::span_of;
 
     fn budget_for(source: &str) -> Level2Budget {
@@ -943,7 +944,9 @@ score {
 }
 ";
         let mut budget = budget_for(source);
-        let refusal = parse_score(source, &mut budget).expect_err("`nope` is not a `score` word");
+        let mut map = SourceMap::default();
+        let refusal =
+            parse_score(source, &mut budget, &mut map).expect_err("`nope` is not a `score` word");
         assert_eq!(refusal.code, "SWG0401");
         assert_eq!(
             budget.depth(),
@@ -956,7 +959,8 @@ score {
     fn a_balanced_parse_returns_the_depth_it_borrowed() {
         let source = "swang 2\n\nscore {\n    ppqn 960\n}\n".replace("\\n", "\n");
         let mut budget = budget_for(&source);
-        parse_score(&source, &mut budget).expect("the minimal score");
+        let mut map = SourceMap::default();
+        parse_score(&source, &mut budget, &mut map).expect("the minimal score");
         assert_eq!(budget.depth(), 0, "what was entered was left");
     }
 }

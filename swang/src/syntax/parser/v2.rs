@@ -47,6 +47,7 @@ use crate::syntax::ast::v2::ExactScoreDocument;
 use crate::syntax::diagnostic::Diagnostic;
 use crate::syntax::header::HEADER_WINDOW;
 use crate::syntax::limits::Level2Budget;
+use crate::syntax::source_map::{AstId, FieldKind, Parsed, SourceMap};
 use crate::syntax::span::{span_of, Span};
 
 /// A parsed level-2 exact score.
@@ -77,9 +78,27 @@ impl ExactScore {
 /// a non-canonical spelling, `SWG0506` for a canonical-model invariant, and
 /// `SWG0401` for everything structural.
 pub(crate) fn parse_exact(source: &str) -> Result<ExactScore, Vec<Diagnostic>> {
+    parse_exact_with_source_map(source).map(|parsed| parsed.value)
+}
+
+/// [`parse_exact`], additionally returning the [`SourceMap`] side table.
+///
+/// One parser: [`parse_exact`] is this function with the map dropped, so the
+/// two cannot drift in what they accept or how they refuse — the same shape
+/// level 1 uses for the same reason.
+///
+/// # Errors
+/// Exactly [`parse_exact`]'s.
+pub(crate) fn parse_exact_with_source_map(
+    source: &str,
+) -> Result<Parsed<ExactScore>, Vec<Diagnostic>> {
     let mut budget = Level2Budget::declared();
-    parse_score(source, &mut budget)
-        .map(ExactScore)
+    let mut map = SourceMap::default();
+    parse_score(source, &mut budget, &mut map)
+        .map(|document| Parsed {
+            value: ExactScore(document),
+            source_map: map,
+        })
         .map_err(|d| vec![d])
 }
 
@@ -104,8 +123,9 @@ pub(crate) fn parse_exact(source: &str) -> Result<ExactScore, Vec<Diagnostic>> {
 pub(crate) fn parse_score(
     source: &str,
     budget: &mut Level2Budget,
+    map: &mut SourceMap,
 ) -> Result<ExactScoreDocument, Diagnostic> {
-    budget.admit_source(source, span_of(0, source.len()))?;
+    budget.admit_source(source, level_span(source))?;
     let tokens = lex_level_two(source, body_offset(source), budget)?;
     let mut parser = Parser {
         source,
@@ -113,11 +133,36 @@ pub(crate) fn parse_score(
         pos: 0,
         eof: span_of(source.len(), source.len()),
         budget,
+        map,
     };
     let document = parser.score()?;
     parser.expect_end()?;
     Ok(document)
 }
+
+/// The header's level digits: everything after `swang ` up to the line
+/// break, trimmed.
+///
+/// Spec §5.11's breach-location table sends a source-byte breach here —
+/// "the level/header span — no body token has been admitted" — because at
+/// that point nothing else has a location. `0..source.len()` would
+/// highlight the whole oversized document and call that a location.
+fn level_span(source: &str) -> Span {
+    let line_end = source
+        .as_bytes()
+        .iter()
+        .take(HEADER_WINDOW)
+        .position(|&b| b == b'\n')
+        .unwrap_or(source.len());
+    let line = source.get(..line_end).unwrap_or_default();
+    let end = line.trim_end().len();
+    let start = HEADER.len().min(end);
+    span_of(start, end)
+}
+
+/// The frozen §1.1 header prefix, whose length is where the level digits
+/// begin.
+const HEADER: &str = "swang ";
 
 /// The first byte after the header line, matching level 1's own arithmetic.
 fn body_offset(source: &str) -> usize {
@@ -134,12 +179,17 @@ fn body_offset(source: &str) -> usize {
 /// owns them instead of claiming they are not words at all.
 const DEFERRED_SCORE_WORDS: &[&str] = &["master_bar", "track", "source", "loss"];
 
+/// The one `score` root a level-2 document holds (§5.7). Numbered like level
+/// 1's ids so the map has one shape across levels.
+const SCORE: AstId = AstId::Score(0);
+
 struct Parser<'a> {
     source: &'a str,
     tokens: Vec<Level2Token>,
     pos: usize,
     eof: Span,
     budget: &'a mut Level2Budget,
+    map: &'a mut SourceMap,
 }
 
 impl Parser<'_> {
@@ -206,8 +256,13 @@ impl Parser<'_> {
         }
         let open = self.expect_kind(Level2TokenKind::OpenBrace, "`{`")?;
         self.budget.enter_block(open.span)?;
-        let ppqn = self.score_body(root.span)?;
+        let (ppqn, close) = self.score_body(root.span)?;
         self.budget.leave_block();
+        // The construct is its keyword through its closing brace, and the
+        // field is the value rather than the word that introduces it — the
+        // convention level 1's map already follows.
+        self.map
+            .insert_node(SCORE, span_of(root.span.start as usize, close.end as usize));
         Ok(ExactScoreDocument {
             ppqn,
             master_bars: Vec::new(),
@@ -219,12 +274,12 @@ impl Parser<'_> {
 
     /// The `score` body up to its closing brace, returning the one value
     /// this slice reads.
-    fn score_body(&mut self, root: Span) -> Result<u16, Diagnostic> {
+    fn score_body(&mut self, root: Span) -> Result<(u16, Span), Diagnostic> {
         let mut ppqn: Option<u16> = None;
-        loop {
+        let close = loop {
             let token = self.next().ok_or_else(|| self.unexpected_end())?;
             match token.kind {
-                Level2TokenKind::CloseBrace => break,
+                Level2TokenKind::CloseBrace => break token.span,
                 Level2TokenKind::Word => {
                     let word = self.text(token).to_owned();
                     if word != "ppqn" {
@@ -237,7 +292,9 @@ impl Parser<'_> {
                             message: "`score` takes one `ppqn` word".to_owned(),
                         });
                     }
-                    ppqn = Some(self.ppqn_value()?);
+                    let (value, at) = self.ppqn_value()?;
+                    self.map.insert_field(SCORE, FieldKind::Ppqn, at);
+                    ppqn = Some(value);
                 }
                 Level2TokenKind::Number | Level2TokenKind::OpenBrace => {
                     let found = self.text(token).to_owned();
@@ -247,12 +304,13 @@ impl Parser<'_> {
                     ));
                 }
             }
-        }
-        ppqn.ok_or_else(|| Diagnostic {
+        };
+        let value = ppqn.ok_or_else(|| Diagnostic {
             code: "SWG0403",
             span: root,
             message: "`score` requires a `ppqn` word".to_owned(),
-        })
+        })?;
+        Ok((value, close))
     }
 
     /// A word `score` does not take here, said honestly: a word the grammar
@@ -281,7 +339,7 @@ impl Parser<'_> {
     /// implemented rather than deferred because the alternative is to accept
     /// `ppqn 0960` and `ppqn 0` — text §6.6 declares invalid — into the
     /// accepted set of a level that has not frozen.
-    fn ppqn_value(&mut self) -> Result<u16, Diagnostic> {
+    fn ppqn_value(&mut self) -> Result<(u16, Span), Diagnostic> {
         let token = self.expect_kind(Level2TokenKind::Number, "a `ppqn` value")?;
         let text = self.text(token);
         if text.len() > 1 && text.starts_with('0') {
@@ -303,7 +361,7 @@ impl Parser<'_> {
                 message: "`ppqn` is the tick resolution and cannot be zero".to_owned(),
             });
         }
-        Ok(value)
+        Ok((value, token.span))
     }
 
     /// One document holds one root: anything after the root's closing brace

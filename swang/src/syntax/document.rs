@@ -24,6 +24,7 @@ use super::format::v2::format_exact;
 use super::header::{header_level, LANGUAGE_LEVEL};
 use super::parser;
 use super::parser::v2::ExactScore;
+use super::source_map::Parsed;
 use super::span::span_of;
 
 /// A parsed Swang document, tagged by the root its level admits.
@@ -49,17 +50,49 @@ pub fn parse_document(source: &str) -> Result<Document, Vec<Diagnostic>> {
     match level {
         1 => parser::v1::parse(source).map(Document::Pattern),
         2 => parser::v2::parse_exact(source).map(Document::Score),
-        // Unreachable: the pre-parser already refused anything outside
-        // `1..=LANGUAGE_LEVEL`. Defense in depth, so that raising the
-        // constant without adding an arm is a refusal rather than a panic
-        // or, worse, a silent fall-through to the wrong grammar.
-        other => Err(vec![Diagnostic {
-            code: "SWG0001",
-            span: span_of(6, 6),
-            message: format!(
-                "language level {other} has no parser in this build (1..={LANGUAGE_LEVEL})"
-            ),
-        }]),
+        other => Err(vec![unsupported_level(other)]),
+    }
+}
+
+/// Unreachable: the pre-parser already refused anything outside
+/// `1..=LANGUAGE_LEVEL`. Defense in depth, so that raising the constant
+/// without adding an arm is a refusal rather than a panic or, worse, a
+/// silent fall-through to the wrong grammar.
+fn unsupported_level(level: u32) -> Diagnostic {
+    Diagnostic {
+        code: "SWG0001",
+        span: span_of(6, 6),
+        message: format!(
+            "language level {level} has no parser in this build (1..={LANGUAGE_LEVEL})"
+        ),
+    }
+}
+
+/// [`parse_document`], additionally returning the [`SourceMap`] side table.
+///
+/// One router: [`parse_document`] is this function with the map dropped, so
+/// the two cannot drift in what they accept or how they refuse. Each level
+/// contributes its own level's map — level 1 the `Program`/`Pattern` ids it
+/// already recorded, level 2 the `Score` root and its `Ppqn` field — because
+/// a map is a location table, and a location belongs to the grammar that
+/// read it.
+///
+/// # Errors
+/// Exactly [`parse_document`]'s.
+///
+/// [`SourceMap`]: super::SourceMap
+pub fn parse_document_with_source_map(source: &str) -> Result<Parsed<Document>, Vec<Diagnostic>> {
+    let level = header_level(source).map_err(|d| vec![d])?;
+    match level {
+        1 => parser::v1::parse_with_source_map(source).map(|parsed| Parsed {
+            value: Document::Pattern(parsed.value),
+            source_map: parsed.source_map,
+        }),
+        2 => parser::v2::parse_exact_with_source_map(source).map(|parsed| Parsed {
+            value: Document::Score(parsed.value),
+            source_map: parsed.source_map,
+        }),
+        other => Err(vec![unsupported_level(other)]),
     }
 }
 

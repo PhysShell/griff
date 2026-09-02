@@ -73,13 +73,25 @@ impl Error for AstError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Level(u32);
 
+/// The one language level this AST spells (spec §5.4: each released level
+/// owns its own parser, formatter and tree).
+const LEVEL_ONE: u32 = 1;
+
 impl Level {
-    /// Validates the level against this build's supported range.
+    /// Validates the level against the one level this AST spells.
+    ///
+    /// Level 1's AST carries level 1 and nothing else. Validating against
+    /// `LANGUAGE_LEVEL` instead would mean that raising the constant — which
+    /// SWG-4A-06 did — silently admits a `Program` whose header says
+    /// `swang 2` above a `pattern` root: text the formatter emits happily
+    /// and both entry points refuse, so `parse(format(ast)) == ast` fails
+    /// for an AST a caller can build from public fields. The mixed value is
+    /// unconstructible instead of merely unreachable.
     ///
     /// # Errors
-    /// [`AstError::UnsupportedLevel`] for zero or a newer level.
+    /// [`AstError::UnsupportedLevel`] for any level but 1.
     pub const fn new(level: u32) -> Result<Self, AstError> {
-        if level == 0 || level > LANGUAGE_LEVEL {
+        if level != LEVEL_ONE {
             return Err(AstError::UnsupportedLevel { level });
         }
         Ok(Self(level))
