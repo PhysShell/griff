@@ -387,6 +387,35 @@ fn a_level_one_ast_cannot_carry_level_two() {
     }
 }
 
+#[test]
+fn the_level_one_ast_refusal_names_the_level_it_spells() {
+    // Codex, on 6d1775d: pinning the constructor to level 1 left its refusal
+    // still printing the *build's* range. With `LANGUAGE_LEVEL` at 2 that
+    // renders "language level 2 is not supported (1..=2)" — a message that
+    // refuses a level while listing it among the supported ones. A public
+    // error contradicting itself is a defect on its own: it tells the caller
+    // the call it just lost should have succeeded, and sends them looking for
+    // the bug anywhere but where it is.
+    for level in [0_u32, 2, 3, LANGUAGE_LEVEL, u32::MAX] {
+        if level == 1 {
+            continue;
+        }
+        let refusal = Level::new(level)
+            .expect_err("the level-1 AST spells no level but 1")
+            .to_string();
+        assert!(
+            refusal.contains(&level.to_string()),
+            "the refusal must name the level it rejected; got {refusal:?}"
+        );
+        assert!(
+            !refusal.contains(&format!("1..={LANGUAGE_LEVEL}")),
+            "the level-1 AST's refusal must describe the level *it* spells, \
+             not the build's supported range — a range that now contains the \
+             level just refused; got {refusal:?}"
+        );
+    }
+}
+
 // -- the source map the skeleton ships with ---------------------------------
 
 #[test]
