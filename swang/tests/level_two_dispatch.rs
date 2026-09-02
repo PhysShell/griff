@@ -332,9 +332,32 @@ fn the_level_two_formatter_preserves_the_level_and_is_its_own_fixed_point() {
     );
     let reparsed = parse_document(&canonical).expect("canonical text reparses");
     assert_eq!(format_document(&reparsed), canonical, "law 2: fixed point");
+    assert_eq!(reparsed, document, "law 3: and it is the same document");
     let Document::Score(_) = reparsed else {
         panic!("canonical level-2 text is still a score");
     };
+}
+
+#[test]
+fn a_level_two_round_trip_preserves_the_value_it_parsed() {
+    // Law 3, `parse(format(ast)) == ast`, which the fixed-point law does not
+    // imply: a formatter emitting a *constant* `ppqn` is its own fixed point
+    // and reparses to something that is not what it was given. A probe found
+    // that hole the honest way — replacing the interpolated `ppqn` with the
+    // literal 960 was caught by nothing, because every fixture used 960.
+    //
+    // So the values here are deliberately not the one the other fixtures use.
+    for ppqn in ["1", "480", "65535"] {
+        let source = format!("swang 2\n\nscore {{\n    ppqn {ppqn}\n}}\n");
+        let document = parse_document(&source).expect("a valid minimal score");
+        let canonical = format_document(&document);
+        assert_eq!(canonical, source, "this fixture is already canonical");
+        let reparsed = parse_document(&canonical).expect("canonical text reparses");
+        assert_eq!(
+            reparsed, document,
+            "parse(format(ast)) == ast: the value survives the round trip"
+        );
+    }
 }
 
 #[test]

@@ -91,6 +91,14 @@ pub(crate) fn parse_exact(source: &str) -> Result<ExactScore, Vec<Diagnostic>> {
 /// argument a caller may weaken, because `Level2ResourceLimits` has private
 /// fields and `declared()` as its only production constructor.
 ///
+/// **One budget, one parse.** A refusal returns with whatever the parse had
+/// spent, depth included — deliberately, since that is the evidence the
+/// block was entered — so a budget carried into a second parse would start
+/// it part-spent. [`parse_exact`] constructs a fresh one every time, which
+/// is why no production path can reuse one; a future caller that wants to
+/// bound a *sequence* of parses is declaring a different bound than §5.11's
+/// per-source one and should say so explicitly rather than by accident.
+///
 /// # Errors
 /// Exactly [`parse_exact`]'s, unwrapped from the vector.
 pub(crate) fn parse_score(

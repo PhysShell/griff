@@ -103,7 +103,9 @@ fuzz_target!(|source: &str| {
                 (Document::Pattern(a), Document::Pattern(b)) => {
                     assert_eq!(a, b, "parse(format(ast)) == ast (law 3)");
                 }
-                (Document::Score(_), Document::Score(_)) => {}
+                (Document::Score(a), Document::Score(b)) => {
+                    assert_eq!(a, b, "parse(format(ast)) == ast (law 3)");
+                }
                 _ => panic!("the canonical text of a document keeps its root"),
             }
         }
