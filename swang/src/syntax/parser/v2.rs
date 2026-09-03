@@ -69,26 +69,20 @@ impl ExactScore {
     }
 }
 
-/// Parses a level-2 source. The caller has already proved the header says
-/// `swang 2`; this function owns everything after it.
+/// Parses a level-2 source, returning the [`SourceMap`] side table with it.
+/// The caller has already proved the header says `swang 2`; this function
+/// owns everything after it.
+///
+/// The level-2 entry point, singular. Level 1 additionally offers `v1::parse`
+/// as its map-dropping wrapper because callers of the frozen level want one;
+/// level 2's only caller is the router, which takes the map, so a wrapper
+/// here would be a second entry with no one behind it.
 ///
 /// # Errors
 /// One diagnostic. `SWG0509` for a declared budget breach, `SWG0403` for a
 /// missing required word, `SWG0404` for a repeated singleton, `SWG0505` for
 /// a non-canonical spelling, `SWG0506` for a canonical-model invariant, and
 /// `SWG0401` for everything structural.
-pub(crate) fn parse_exact(source: &str) -> Result<ExactScore, Vec<Diagnostic>> {
-    parse_exact_with_source_map(source).map(|parsed| parsed.value)
-}
-
-/// [`parse_exact`], additionally returning the [`SourceMap`] side table.
-///
-/// One parser: [`parse_exact`] is this function with the map dropped, so the
-/// two cannot drift in what they accept or how they refuse — the same shape
-/// level 1 uses for the same reason.
-///
-/// # Errors
-/// Exactly [`parse_exact`]'s.
 pub(crate) fn parse_exact_with_source_map(
     source: &str,
 ) -> Result<Parsed<ExactScore>, Vec<Diagnostic>> {
@@ -113,13 +107,14 @@ pub(crate) fn parse_exact_with_source_map(
 /// **One budget, one parse.** A refusal returns with whatever the parse had
 /// spent, depth included — deliberately, since that is the evidence the
 /// block was entered — so a budget carried into a second parse would start
-/// it part-spent. [`parse_exact`] constructs a fresh one every time, which
+/// it part-spent. [`parse_exact_with_source_map`] constructs a fresh one
+/// every time, which
 /// is why no production path can reuse one; a future caller that wants to
 /// bound a *sequence* of parses is declaring a different bound than §5.11's
 /// per-source one and should say so explicitly rather than by accident.
 ///
 /// # Errors
-/// Exactly [`parse_exact`]'s, unwrapped from the vector.
+/// Exactly [`parse_exact_with_source_map`]'s, unwrapped from the vector.
 pub(crate) fn parse_score(
     source: &str,
     budget: &mut Level2Budget,

@@ -456,9 +456,9 @@ fn the_router_decides_the_level_once() {
     // for a while it described one that did not exist: the module held two
     // independent dispatches, each reading the level for itself, and the
     // property was maintained by hand rather than established by
-    // construction — while one layer down, `v1::parse` and `v2::parse_exact`
-    // really are their map-bearing twin with the map dropped, which is
-    // presumably where the sentence came from.
+    // construction — while one layer down, `v1::parse` really is its
+    // map-bearing twin with the map dropped, which is presumably where the
+    // sentence came from.
     //
     // This is lexical because the claim is structural. The test below can
     // only sample inputs, and two routers agreeing on every input a suite
@@ -476,8 +476,10 @@ fn the_router_decides_the_level_once() {
 
 #[test]
 fn the_dispatched_map_and_the_dispatched_parse_agree() {
-    // One parser, two entry points: the mapped one is the plain one with the
-    // map dropped, so the two cannot drift in what they accept.
+    // One parser, two entry points: the plain one is the mapped one with the
+    // map dropped, so the two cannot drift in what they accept. This samples
+    // that agreement; `the_router_decides_the_level_once` is what makes it
+    // structural rather than a coincidence this corpus happens to confirm.
     for source in [MINIMAL_SCORE, LEVEL_ONE] {
         let mapped = parse_document_with_source_map(source).expect("accepted");
         let plain = parse_document(source).expect("accepted");

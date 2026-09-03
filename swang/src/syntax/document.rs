@@ -40,16 +40,34 @@ pub enum Document {
     Score(ExactScore),
 }
 
-/// Parses a source at whichever level its header pins.
+/// Parses a source at whichever level its header pins, returning the
+/// [`SourceMap`] side table alongside it.
+///
+/// **The one router.** Every level decision in this build is this call:
+/// [`parse_document`] is this function with the map dropped, so the two
+/// cannot drift in what they accept or how they refuse — not by discipline,
+/// but because there is only one of them to keep in step. Each level then
+/// contributes its own level's map — level 1 the `Program`/`Pattern` ids it
+/// already recorded, level 2 the `Score` root and its `Ppqn` field — because
+/// a map is a location table, and a location belongs to the grammar that
+/// read it.
 ///
 /// # Errors
 /// The frozen §1.1 pre-parser's diagnostics for a header this build cannot
 /// read, and otherwise exactly the chosen level's own.
-pub fn parse_document(source: &str) -> Result<Document, Vec<Diagnostic>> {
+///
+/// [`SourceMap`]: super::SourceMap
+pub fn parse_document_with_source_map(source: &str) -> Result<Parsed<Document>, Vec<Diagnostic>> {
     let level = header_level(source).map_err(|d| vec![d])?;
     match level {
-        1 => parser::v1::parse(source).map(Document::Pattern),
-        2 => parser::v2::parse_exact(source).map(Document::Score),
+        1 => parser::v1::parse_with_source_map(source).map(|parsed| Parsed {
+            value: Document::Pattern(parsed.value),
+            source_map: parsed.source_map,
+        }),
+        2 => parser::v2::parse_exact_with_source_map(source).map(|parsed| Parsed {
+            value: Document::Score(parsed.value),
+            source_map: parsed.source_map,
+        }),
         other => Err(vec![unsupported_level(other)]),
     }
 }
@@ -68,32 +86,17 @@ fn unsupported_level(level: u32) -> Diagnostic {
     }
 }
 
-/// [`parse_document`], additionally returning the [`SourceMap`] side table.
+/// [`parse_document_with_source_map`] with the map dropped.
 ///
-/// One router: [`parse_document`] is this function with the map dropped, so
-/// the two cannot drift in what they accept or how they refuse. Each level
-/// contributes its own level's map — level 1 the `Program`/`Pattern` ids it
-/// already recorded, level 2 the `Score` root and its `Ppqn` field — because
-/// a map is a location table, and a location belongs to the grammar that
-/// read it.
+/// The shape level 1's own pair already has — `v1::parse` is written this
+/// way too — so the map costs a caller who does not want it exactly what it
+/// costs them one layer down, and dispatch cannot be changed for one entry
+/// point without being changed for the other.
 ///
 /// # Errors
-/// Exactly [`parse_document`]'s.
-///
-/// [`SourceMap`]: super::SourceMap
-pub fn parse_document_with_source_map(source: &str) -> Result<Parsed<Document>, Vec<Diagnostic>> {
-    let level = header_level(source).map_err(|d| vec![d])?;
-    match level {
-        1 => parser::v1::parse_with_source_map(source).map(|parsed| Parsed {
-            value: Document::Pattern(parsed.value),
-            source_map: parsed.source_map,
-        }),
-        2 => parser::v2::parse_exact_with_source_map(source).map(|parsed| Parsed {
-            value: Document::Score(parsed.value),
-            source_map: parsed.source_map,
-        }),
-        other => Err(vec![unsupported_level(other)]),
-    }
+/// Exactly [`parse_document_with_source_map`]'s.
+pub fn parse_document(source: &str) -> Result<Document, Vec<Diagnostic>> {
+    parse_document_with_source_map(source).map(|parsed| parsed.value)
 }
 
 /// Emits the canonical text of a document, at its own level.

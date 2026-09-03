@@ -14,8 +14,8 @@ use crate::syntax::parser::v2::ExactScore;
 
 /// Emits the one canonical text for `score`.
 ///
-/// `format_exact(parse_exact(t))` is idempotent and
-/// `parse_exact(format_exact(s))` recovers the same score.
+/// `format_exact(parse(t))` is idempotent and `parse(format_exact(s))`
+/// recovers the same score, for the level-2 parse.
 pub(crate) fn format_exact(score: &ExactScore) -> String {
     // Destructured with no `..` on purpose: when SWG-4A-08 starts filling
     // the structural slots, this function stops compiling until it learns to
