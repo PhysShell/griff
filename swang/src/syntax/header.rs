@@ -8,9 +8,13 @@ use std::str::from_utf8;
 use super::diagnostic::Diagnostic;
 use super::span::span_of;
 
-/// The language level this build parses (spec §1.1). Levels are additive-only
-/// and never enter any content hash.
-pub const LANGUAGE_LEVEL: u32 = 1;
+/// The newest language level this build parses (spec §1.1). Levels are
+/// additive-only and never enter any content hash.
+///
+/// SWG-4A-06 raised this to 2. The pre-parser below is unchanged — that is
+/// what "frozen" means — and what moved is the range it reports, which has
+/// to be the range the build actually has or `SWG0001` would name a lie.
+pub const LANGUAGE_LEVEL: u32 = 2;
 
 /// The frozen §1.1 pre-parser: reads at most 64 bytes of the first line and
 /// returns the pinned language level.

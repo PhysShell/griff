@@ -340,7 +340,18 @@ fn every_shipped_module_but_the_budget_itself_is_scanned() {
 /// like), those go on this list explicitly, one at a time. Shared dispatch
 /// never joins it: a budget consulted before the level branch is a level-1
 /// bound, whatever file it lives in.
-const EXEMPT: &[&[&str]] = &[&["syntax", "limits.rs"], &["syntax", "tests.rs"]];
+const EXEMPT: &[&[&str]] = &[
+    &["syntax", "limits.rs"],
+    &["syntax", "tests.rs"],
+    // SWG-4A-06's level-2 modules, added one at a time as the comment above
+    // requires. Both are level-2-only: the entry point that constructs the
+    // budget, and the lexer that spends its token allowance. Neither is on
+    // any level-1 path, and `syntax.rs` and the dispatcher stay off this
+    // list, because a budget consulted before the level branch is a level-1
+    // bound whatever file it lives in.
+    &["syntax", "parser", "v2.rs"],
+    &["syntax", "parser", "v2", "lexer.rs"],
+];
 
 /// Whether a path relative to `swang/src` is one of the exempt modules.
 ///

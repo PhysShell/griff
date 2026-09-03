@@ -109,7 +109,10 @@ fn first_error(source: &str) -> Diagnostic {
 #[test]
 fn the_frozen_header_form_pins_the_level() {
     assert_eq!(header_level("swang 1\nrest").expect("frozen form"), 1);
-    assert_eq!(LANGUAGE_LEVEL, 1, "this build parses level 1");
+    // The frozen form is frozen; the range this build supports is not, and
+    // SWG-4A-06 moved it. Level 1 still reads exactly as it did — that is
+    // the line above, and Law A's baseline is the fuller proof.
+    assert_eq!(LANGUAGE_LEVEL, 2, "SWG-4A-06 admits level 2");
 }
 
 #[test]
@@ -157,12 +160,20 @@ fn the_pre_parser_reads_at_most_64_bytes() {
 
 #[test]
 fn a_newer_level_is_swg0001_naming_the_supported_range() {
-    let d = header_level("swang 2\n").expect_err("newer than this build");
+    // `swang 2` was this case's fixture until SWG-4A-06 made it supported.
+    // The refusal is not what changed — the range is — so the case moves up
+    // to the next unsupported level and now pins the range exactly, rather
+    // than pinning that the message contains the digit one.
+    let d = header_level("swang 3\n").expect_err("newer than this build");
     assert_eq!(d.code, "SWG0001");
     assert!(
-        d.message.contains('1'),
+        d.message.contains("1..=2"),
         "the message names the supported range: {}",
         d.message
+    );
+    assert_eq!(
+        header_level("swang 2\n").expect("level 2 is this build's"),
+        2
     );
 }
 
@@ -895,5 +906,161 @@ mod level_two_budget {
             .expect_err("the second would leave no room for the breach");
         assert_eq!(terminal.code, "SWG0509");
         assert_eq!(budget.diagnostics(), 2, "the terminal one is counted");
+    }
+}
+
+/// SWG-4A-06: the depth axis is wired, and the wiring is falsifiable.
+///
+/// The minimal score has exactly one block, so nesting can never approach
+/// `MAX_NESTING_DEPTH` and no end-to-end breach can witness the accounting.
+/// A falsification probe found that out the honest way: deleting
+/// `enter_block` from the parser was caught by nothing at all. So the
+/// witness observes the counter directly, on the real parse function with
+/// the real budget — not on a reconstruction of it.
+mod level_two_depth_accounting {
+    use crate::syntax::limits::Level2Budget;
+    use crate::syntax::parser::v2::parse_score;
+    use crate::syntax::source_map::SourceMap;
+    use crate::syntax::span::span_of;
+
+    fn budget_for(source: &str) -> Level2Budget {
+        let budget = Level2Budget::declared();
+        budget
+            .admit_source(source, span_of(0, source.len()))
+            .expect("far under the source cap");
+        budget
+    }
+
+    #[test]
+    fn the_root_block_is_entered_on_the_caller_s_budget() {
+        // A refusal *inside* the block is what makes this observable: the
+        // parse returns before `leave_block`, so a depth of one is proof the
+        // block was entered, where a balanced parse would have returned the
+        // counter to zero either way.
+        let source = "swang 2
+
+score {
+    nope 1
+}
+";
+        let mut budget = budget_for(source);
+        let mut map = SourceMap::default();
+        let refusal =
+            parse_score(source, &mut budget, &mut map).expect_err("`nope` is not a `score` word");
+        assert_eq!(refusal.code, "SWG0401");
+        assert_eq!(
+            budget.depth(),
+            1,
+            "the root block was entered on the budget the caller owns"
+        );
+    }
+
+    #[test]
+    fn a_balanced_parse_returns_the_depth_it_borrowed() {
+        let source = "swang 2\n\nscore {\n    ppqn 960\n}\n".replace("\\n", "\n");
+        let mut budget = budget_for(&source);
+        let mut map = SourceMap::default();
+        parse_score(&source, &mut budget, &mut map).expect("the minimal score");
+        assert_eq!(budget.depth(), 0, "what was entered was left");
+    }
+}
+
+/// SWG-4A-06's inherited SWG-INF-06 obligation: the level-2 token proves the
+/// `MAX_TOKENS` heap derivation instead of asserting it in prose.
+mod level_two_token_storage {
+    use std::mem::size_of;
+
+    use crate::syntax::limits::Level2Budget;
+    use crate::syntax::parser::v2::lexer::{lex_level_two, Level2Token, Level2TokenKind};
+    use crate::syntax::span::span_of;
+
+    /// The budget derivation in spec §5.11 is `<= 12` bytes per retained
+    /// token on `wasm32`. `Span` is two `u32` by the determinism law, so the
+    /// only way to exceed it is to start owning something.
+    const MAX_RETAINED_TOKEN_BYTES: usize = 12;
+
+    #[test]
+    fn a_retained_level_two_token_fits_the_declared_budget() {
+        assert!(
+            size_of::<Level2Token>() <= MAX_RETAINED_TOKEN_BYTES,
+            "a retained token is at most {MAX_RETAINED_TOKEN_BYTES} bytes; \
+             this one is {}",
+            size_of::<Level2Token>()
+        );
+    }
+
+    #[test]
+    fn the_size_bound_is_asserted_at_compile_time_so_it_travels_to_wasm32() {
+        // This test runs on the host only. The binding obligation is the
+        // `const` assertion in the lexer itself, which every target this
+        // crate builds for must satisfy — including the `wasm32` frontend
+        // CI builds. A host-only runtime check would prove the host and
+        // call it a platform proof.
+        let shipped = include_str!("parser/v2/lexer.rs");
+        assert!(
+            shipped.contains("const _RETAINED_TOKEN_FITS_THE_BUDGET"),
+            "the compile-time assertion is what reaches wasm32; a runtime \
+             test on x86_64 does not"
+        );
+    }
+
+    #[test]
+    fn level_two_token_text_is_recovered_from_the_source_span() {
+        // "Token text is recovered from the source span." Level 1's
+        // `String`-owning `Token` is not the level-2 storage representation,
+        // so the lexeme has to be sliced back out on demand.
+        let source = "swang 2\n\nscore {\n    ppqn 960\n}\n";
+        let tokens = lex_level_two(source, 9, &mut budget_for(source)).expect("lexes");
+        let words: Vec<&str> = tokens
+            .iter()
+            .filter(|t| t.kind == Level2TokenKind::Word)
+            .map(|t| t.text_in(source))
+            .collect();
+        assert_eq!(words, ["score", "ppqn"]);
+        let numbers: Vec<&str> = tokens
+            .iter()
+            .filter(|t| t.kind == Level2TokenKind::Number)
+            .map(|t| t.text_in(source))
+            .collect();
+        assert_eq!(numbers, ["960"]);
+    }
+
+    #[test]
+    fn every_level_two_token_carries_a_span_that_slices_its_own_lexeme() {
+        let source = "swang 2\n\nscore {\n    ppqn 960\n}\n";
+        let tokens = lex_level_two(source, 9, &mut budget_for(source)).expect("lexes");
+        assert!(!tokens.is_empty());
+        for token in &tokens {
+            let text = token.text_in(source);
+            assert!(!text.is_empty(), "a token spans at least one byte");
+            let start = token.span.start as usize;
+            assert_eq!(
+                source.get(start..token.span.end as usize),
+                Some(text),
+                "the span is the lexeme, not an approximation of it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lexer_spends_the_token_budget_it_is_given() {
+        // Accounting attached to the real transition it constrains: one
+        // admitted token per token retained, on the budget the caller owns.
+        let source = "swang 2\n\nscore {\n    ppqn 960\n}\n";
+        let mut budget = budget_for(source);
+        let tokens = lex_level_two(source, 9, &mut budget).expect("lexes");
+        assert_eq!(
+            budget.tokens(),
+            tokens.len() as u64,
+            "no token is retained without being admitted first"
+        );
+    }
+
+    fn budget_for(source: &str) -> Level2Budget {
+        let budget = Level2Budget::declared();
+        budget
+            .admit_source(source, span_of(0, source.len()))
+            .expect("this fixture is far under the source cap");
+        budget
     }
 }

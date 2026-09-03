@@ -5,7 +5,6 @@ use std::fmt;
 
 use griff_pattern::{DensityBps, Traversal};
 
-use crate::syntax::header::LANGUAGE_LEVEL;
 use crate::TailPolicy;
 
 /// Why an AST value refused to exist.
@@ -36,7 +35,10 @@ pub enum AstError {
     },
     /// A unit part is zero — no note value has a zero side.
     ZeroUnitPart,
-    /// Level zero, or newer than [`LANGUAGE_LEVEL`].
+    /// Any level but 1 — this is the level-1 AST, and it spells one level
+    /// (spec §5.4). Deliberately not the build-wide range that
+    /// [`LANGUAGE_LEVEL`](crate::syntax::LANGUAGE_LEVEL) reports: a build
+    /// understanding a level says nothing about which tree carries it.
     UnsupportedLevel {
         /// The rejected level.
         level: u32,
@@ -60,7 +62,7 @@ impl fmt::Display for AstError {
             Self::ZeroUnitPart => write!(f, "a unit part is zero"),
             Self::UnsupportedLevel { level } => write!(
                 f,
-                "language level {level} is not supported (1..={LANGUAGE_LEVEL})"
+                "the level-1 AST spells level 1; it cannot carry level {level}"
             ),
         }
     }
@@ -68,18 +70,32 @@ impl fmt::Display for AstError {
 
 impl Error for AstError {}
 
-/// A pinned language level, valid by construction: nonzero and at most
-/// [`LANGUAGE_LEVEL`].
+/// A pinned language level, valid by construction: level 1, the one this
+/// AST spells — not every level
+/// [`LANGUAGE_LEVEL`](crate::syntax::LANGUAGE_LEVEL) admits, for the reason
+/// [`Level::new`] gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Level(u32);
 
+/// The one language level this AST spells (spec §5.4: each released level
+/// owns its own parser, formatter and tree).
+const LEVEL_ONE: u32 = 1;
+
 impl Level {
-    /// Validates the level against this build's supported range.
+    /// Validates the level against the one level this AST spells.
+    ///
+    /// Level 1's AST carries level 1 and nothing else. Validating against
+    /// `LANGUAGE_LEVEL` instead would mean that raising the constant — which
+    /// SWG-4A-06 did — silently admits a `Program` whose header says
+    /// `swang 2` above a `pattern` root: text the formatter emits happily
+    /// and both entry points refuse, so `parse(format(ast)) == ast` fails
+    /// for an AST a caller can build from public fields. The mixed value is
+    /// unconstructible instead of merely unreachable.
     ///
     /// # Errors
-    /// [`AstError::UnsupportedLevel`] for zero or a newer level.
+    /// [`AstError::UnsupportedLevel`] for any level but 1.
     pub const fn new(level: u32) -> Result<Self, AstError> {
-        if level == 0 || level > LANGUAGE_LEVEL {
+        if level != LEVEL_ONE {
             return Err(AstError::UnsupportedLevel { level });
         }
         Ok(Self(level))

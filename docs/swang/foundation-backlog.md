@@ -117,7 +117,7 @@ recorded in `decisions.log.md` if reversed.
 | SWG-4A-03 | Writer: transport and master timeline | code | 4A-01 |
 | SWG-4A-04 | Writer: tracks, voices, groups, atoms | code | 4A-03 |
 | SWG-4A-05 | Writer: techniques, positions, evidence, losses *(done)* | code | 4A-04, CORE-01 |
-| SWG-4A-06 | Parser skeleton and level/root dispatch | code | 4A-01, INF-04, INF-06 |
+| SWG-4A-06 | Parser skeleton and level/root dispatch *(done)* | code | 4A-01, INF-04, INF-06 |
 | SWG-4A-07 | Parser: exact scalar types | code | 4A-06 |
 | SWG-4A-08 | Parser: structural tree | code | 4A-07, 4A-02 |
 | SWG-4A-09 | Checked `ScoreBuilder` | code | 4A-08 |
@@ -832,6 +832,52 @@ Acceptance:
   need to allocate four million tokens to admire the fan spinning.
   Preregistered falsification probe: *adding owned lexeme text to the
   level-2 token* **must be CAUGHT**.
+
+**Delivered.** `LANGUAGE_LEVEL` is 2. `syntax/document.rs` routes on the
+level and holds no grammar of its own; `parser/v2.rs` owns the level-2
+entry, `format/v2.rs` the level-2 canonical text. Level 1's entry point
+gained a guard that fires only for a level it does not own, because without
+it a `swang 2` header flowed into a level-1 `Program` and the formatter
+emitted `swang 2` above a `pattern` block.
+
+**What this slice accepts, exactly:** `score { ppqn <n> }`. `ppqn` is
+`score`'s only `1` word and the structural blocks are `*`/`?`, so the
+minimal empty score is a complete level-2 program rather than a stub.
+
+**What it refuses, and who owns the refusal.** `master_bar`, `track`,
+`source` and `loss` are real `score` words (§6.4b) owned by SWG-4A-08; they
+are refused here with a message that says so, never skipped, because a
+parser that ignores a word it does not implement is how exact text stops
+being exact. Two registry codes are implemented, `SWG0505` and `SWG0506`,
+and only for `ppqn` — the scalar layer proper stays 4A-07's. The alternative
+was to accept `ppqn 0960` and `ppqn 0`, text §6.6 declares invalid, into the
+accepted set of a level that has not frozen.
+
+**The three inherited SWG-INF-06 obligations, discharged:**
+
+- the budget is constructed in the level-2 entry and nowhere else, and
+  consulted before the work it bounds — source bytes pre-lex, tokens as each
+  is retained, depth as the block is entered. `level_two_budget_boundary.rs`
+  still passes, with `parser/v2.rs` and `parser/v2/lexer.rs` added to its
+  exempt list one at a time and the dispatcher deliberately left off it;
+- `swang_parse` gains the dispatched arm, so a budget breach reaching a
+  fuzzed input is a typed `SWG0509`. Two deterministic breaches drive the
+  declared limits through the public path with no scaling: 16 MiB of
+  whitespace padding a *grammatically valid* score (so it would be accepted
+  if the byte check were not consulted first), and four million tokens plus
+  one spelled under the byte cap;
+- the retained level-2 token is a kind and a `Span` — twelve bytes, no
+  `String`, text sliced from the source. The bound is a `const` assertion in
+  the lexer, so it travels to every target the crate builds for; the
+  preregistered probe (owned lexeme text) is **CAUGHT-BY-COMPILE** on
+  `wasm32-unknown-unknown`.
+
+**Inherited by SWG-4A-08**, found by falsification rather than assumed: the
+depth axis is wired but cannot breach end-to-end in a grammar with one
+block. Deleting `enter_block` was caught by nothing until a witness read the
+counter directly on the real parse. When the structural tree lands, the
+depth cap becomes reachable from text and deserves an end-to-end breach of
+its own.
 
 ### SWG-4A-07 — Parser: exact scalar types
 

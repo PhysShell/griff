@@ -69,6 +69,8 @@ pub enum AstId {
     Generate(u32),
     /// An `export …` pipeline step.
     Export(u32),
+    /// A level-2 `score { … }` root (SWG-4A-06).
+    Score(u32),
 }
 
 /// Which value of a construct a location belongs to.
@@ -117,6 +119,8 @@ pub enum FieldKind {
     Format,
     /// The quoted `export` path literal.
     Path,
+    /// A level-2 `score { ppqn … }` tick resolution (SWG-4A-06).
+    Ppqn,
 }
 
 /// One value's address: which construct, and which of its words.

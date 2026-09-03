@@ -55,6 +55,7 @@
 
 mod ast;
 mod diagnostic;
+mod document;
 mod format;
 mod header;
 mod lexer;
@@ -69,9 +70,11 @@ pub use ast::v1::{
     MapRhythm, PatternDef, Program, Prune, StrategyName, StrategyPolicy, StringLiteral, Unit,
 };
 pub use diagnostic::Diagnostic;
+pub use document::{format_document, parse_document, parse_document_with_source_map, Document};
 pub use format::v1::format;
 pub use header::{header_level, LANGUAGE_LEVEL};
 pub use parser::v1::{parse, parse_with_source_map};
+pub use parser::v2::ExactScore;
 pub use source_map::{AstId, FieldKind, FieldRef, Parsed, SourceMap};
 pub use span::Span;
 #[cfg(test)]
