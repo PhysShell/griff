@@ -449,6 +449,32 @@ fn a_level_two_parse_carries_a_source_map() {
 }
 
 #[test]
+fn the_router_decides_the_level_once() {
+    // `parse_document_with_source_map`'s doc says `parse_document` "is this
+    // function with the map dropped, so the two cannot drift in what they
+    // accept or how they refuse". That sentence describes a delegation, and
+    // for a while it described one that did not exist: the module held two
+    // independent dispatches, each reading the level for itself, and the
+    // property was maintained by hand rather than established by
+    // construction — while one layer down, `v1::parse` and `v2::parse_exact`
+    // really are their map-bearing twin with the map dropped, which is
+    // presumably where the sentence came from.
+    //
+    // This is lexical because the claim is structural. The test below can
+    // only sample inputs, and two routers agreeing on every input a suite
+    // happens to try is exactly what a second router looks like right up
+    // until it doesn't. One read of the level means one function owns the
+    // decision, and any other entry point has to go through it.
+    let shipped = include_str!("../src/syntax/document.rs");
+    assert_eq!(
+        shipped.matches("header_level(").count(),
+        1,
+        "the level is read once, by the one router; a second reader is a \
+         second dispatch, free to drift from the first"
+    );
+}
+
+#[test]
 fn the_dispatched_map_and_the_dispatched_parse_agree() {
     // One parser, two entry points: the mapped one is the plain one with the
     // map dropped, so the two cannot drift in what they accept.
