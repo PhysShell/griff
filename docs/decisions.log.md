@@ -2801,3 +2801,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   asking the *build* what it may spell. It may spell level 1 (§5.4), and the
   header's own `SWG0001` remains the place where the build-wide range is
   named, because there the range is the subject.
+
+- 2026-09-03 — In the context of `syntax/document.rs` documenting a
+  delegation it did not implement, we decided to **make `parse_document`
+  literally `parse_document_with_source_map` with the map dropped**, to
+  achieve one level decision per build rather than two kept in step by hand,
+  accepting that a caller wanting no map still pays for one — the price
+  `v1::parse` already pays a layer down. The module held two `match level`
+  blocks while its doc said the two "cannot drift"; the property was real
+  but maintained by discipline. Reintroducing the duplicate is invisible to
+  behaviour — 287 tests agreed with it — because a fresh copy of a router
+  does agree, and agrees right up until someone edits one copy. So the
+  witness is lexical: the level is read once in that file. `v2::parse_exact`
+  lost its only caller and is deleted rather than kept for symmetry, since a
+  `pub(crate)` wrapper with nobody behind it is not an API.
