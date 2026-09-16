@@ -835,8 +835,30 @@ pub fn holdout_bucket(key: &str, buckets: u64) -> u64 {
 /// `window == 0`.
 #[must_use]
 pub fn repeat_pairs(pitches: &[Pitch], window: usize) -> Vec<(usize, usize)> {
-    let _ = (pitches, window);
-    todo!("repeat pairs — green step")
+    let n = pitches.len();
+    let mut pairs = Vec::new();
+    if window == 0 {
+        return pairs;
+    }
+    let mut i = 0;
+    while i + 2 * window <= n {
+        let Some(figure) = pitches.get(i..i + window) else {
+            break;
+        };
+        if figure.windows(2).all(|w| matches!(w, [a, b] if a == b)) {
+            i += 1;
+            continue;
+        }
+        let next = (i + window..=n - window).find(|&j| pitches.get(j..j + window) == Some(figure));
+        match next {
+            Some(j) => {
+                pairs.push((i, j));
+                i += window;
+            }
+            None => i += 1,
+        }
+    }
+    pairs
 }
 
 /// Adds the **repeat-consistency** global constraint to a fingering problem
@@ -855,8 +877,34 @@ pub fn with_repeat_consistency(
     pairs: &[(usize, usize)],
     window: usize,
 ) -> Result<OptProblem, OptIrError> {
-    let _ = (problem, vars_per_note, pairs, window);
-    todo!("repeat consistency — green step")
+    let vars = problem.vars();
+    let mut hard = problem.hard().to_vec();
+    for &(i, j) in pairs {
+        for k in 0..window {
+            let (a, b) = ((i + k) * vars_per_note, (j + k) * vars_per_note);
+            let tuples = match (vars.get(a), vars.get(b)) {
+                (Some(x), Some(y)) => x
+                    .domain
+                    .iter()
+                    .filter(|v| y.domain.binary_search(v).is_ok())
+                    .map(|&v| (v, v))
+                    .collect(),
+                // Let validation name the dangling id.
+                _ => vec![(0, 0)],
+            };
+            hard.push(Hard::Allowed {
+                a: VarId(a),
+                b: VarId(b),
+                tuples,
+            });
+        }
+    }
+    OptProblem::try_new(
+        problem.name(),
+        vars.to_vec(),
+        hard,
+        problem.objective().to_vec(),
+    )
 }
 
 /// A deterministic tie-break for comparing solver witnesses: every objective
@@ -872,8 +920,63 @@ pub fn with_string_tiebreak(
     problem: &OptProblem,
     vars_per_note: usize,
 ) -> Result<(OptProblem, i64), OptIrError> {
-    let _ = (problem, vars_per_note);
-    todo!("string tie-break — green step")
+    let vars = problem.vars();
+    let step = vars_per_note.max(1);
+    let strings: Vec<VarId> = (0..vars.len()).step_by(step).map(VarId).collect();
+    let max_string = strings
+        .iter()
+        .filter_map(|id| vars.get(id.0))
+        .filter_map(|v| v.domain.last().copied())
+        .max()
+        .unwrap_or(0);
+    let notes = i64::try_from(strings.len()).unwrap_or(i64::MAX);
+    let scale = notes.saturating_mul(max_string).saturating_add(1);
+    let mut objective: Vec<Term> = problem
+        .objective()
+        .iter()
+        .map(|term| match term {
+            Term::Unary { var, costs } => Term::Unary {
+                var: *var,
+                costs: costs
+                    .iter()
+                    .map(|&(v, c)| (v, c.saturating_mul(scale)))
+                    .collect(),
+            },
+            Term::Pair { a, b, costs } => Term::Pair {
+                a: *a,
+                b: *b,
+                costs: costs
+                    .iter()
+                    .map(|&(x, y, c)| (x, y, c.saturating_mul(scale)))
+                    .collect(),
+            },
+            Term::AbsDiff { a, b, weight } => Term::AbsDiff {
+                a: *a,
+                b: *b,
+                weight: weight.saturating_mul(scale),
+            },
+            Term::NotEqual { a, b, weight } => Term::NotEqual {
+                a: *a,
+                b: *b,
+                weight: weight.saturating_mul(scale),
+            },
+        })
+        .collect();
+    for id in strings {
+        if let Some(var) = vars.get(id.0) {
+            objective.push(Term::Unary {
+                var: id,
+                costs: var.domain.iter().map(|&v| (v, v)).collect(),
+            });
+        }
+    }
+    let rebuilt = OptProblem::try_new(
+        problem.name(),
+        vars.to_vec(),
+        problem.hard().to_vec(),
+        objective,
+    )?;
+    Ok((rebuilt, scale))
 }
 
 // ── private helpers ───────────────────────────────────────────────────────────
