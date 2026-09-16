@@ -2815,3 +2815,23 @@ Architectural decisions go to [`adr/`](adr/) instead.
   witness is lexical: the level is read once in that file. `v2::parse_exact`
   lost its only caller and is deleted rather than kept for symmetry, since a
   `pub(crate)` wrapper with nobody behind it is not an API.
+
+- 2026-09-16 — In the context of the Constraint Lab's optimization phase
+  (SLOTHY-style "how far from the best admissible realization is Griff?"),
+  facing a production fingering DP that is exact for its own objective, we
+  decided to **measure the optimality gap against two references — a
+  CP-SAT optimum verified in-repo and the tab authors of a Guitar Pro
+  corpus — and to keep the external solver offline**, to achieve evidence
+  about which component limits fingering quality, accepting hours of solver
+  time for what the DP answers in milliseconds. Result
+  (`docs/audit/2026-09-fingering-optimality-gap.md`): the solver gap is zero
+  on all 9,150 lines for both v1 weight sets; the model gap is large (34.0%
+  per-note agreement on holdout songs, 31.8% for a lowest-fret heuristic,
+  37.2% ceiling over all v1-optimal fingerings); fitted weights and a
+  hand-position model reach ~40%; and a repeat-consistency global
+  constraint that tab authors satisfy in 98% of repeats does not raise
+  agreement. The objective, not the search and not the constraint
+  vocabulary, is what to improve next. Solver: OR-Tools CP-SAT via a local
+  venv adapter (`lab/cpsat/`), never a dependency; idea-level prior art
+  only (TablaZinc is MPL-2.0, `guitar-tab-generator` GPL-3.0 — no code
+  copied).
