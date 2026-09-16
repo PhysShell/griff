@@ -19,11 +19,12 @@ use std::ops::RangeInclusive;
 
 use griff_core::event::{FretboardPosition, Pitch, Tuning};
 use griff_core::fretboard::{FingeringWeights, STANDARD_MAX_FRET};
-use griff_core::score::Score;
+use griff_core::score::{AtomEvent, AtomNote, Score};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::optir::OptProblem;
+use crate::ir::{fnv1a64, IntVar, VarId};
+use crate::optir::{Hard, OptProblem, Term};
 use crate::problems::LabError;
 
 /// Variables per note in a [`v1_problem`]: `s{i}` (string), `f{i}` (fret).
@@ -85,8 +86,28 @@ pub struct CutStats {
 impl CutStats {
     /// Adds another track's counts into this one.
     pub fn absorb(&mut self, other: &Self) {
-        let _ = other;
-        todo!("cut stats — green step")
+        let Self {
+            notes_seen,
+            chord_onsets,
+            unpositioned,
+            beyond_max_fret,
+            pitch_mismatch,
+            rest_cuts,
+            short_lines,
+            short_line_notes,
+            kept_lines,
+            kept_notes,
+        } = *other;
+        self.notes_seen = self.notes_seen.saturating_add(notes_seen);
+        self.chord_onsets = self.chord_onsets.saturating_add(chord_onsets);
+        self.unpositioned = self.unpositioned.saturating_add(unpositioned);
+        self.beyond_max_fret = self.beyond_max_fret.saturating_add(beyond_max_fret);
+        self.pitch_mismatch = self.pitch_mismatch.saturating_add(pitch_mismatch);
+        self.rest_cuts = self.rest_cuts.saturating_add(rest_cuts);
+        self.short_lines = self.short_lines.saturating_add(short_lines);
+        self.short_line_notes = self.short_line_notes.saturating_add(short_line_notes);
+        self.kept_lines = self.kept_lines.saturating_add(kept_lines);
+        self.kept_notes = self.kept_notes.saturating_add(kept_notes);
     }
 }
 
@@ -122,8 +143,78 @@ pub fn tab_lines(
     track_index: usize,
     cut: &LineCut,
 ) -> Result<(Vec<TabLine>, CutStats), LabError> {
-    let _ = (score, track_index, cut);
-    todo!("tablature line extraction — green step")
+    let track = score
+        .tracks
+        .get(track_index)
+        .ok_or(LabError::NoSuchTrack { index: track_index })?;
+    let rest_ticks = u64::from(cut.max_rest_quarters) * u64::from(score.ticks_per_quarter);
+    let mut lines = Vec::new();
+    let mut stats = CutStats::default();
+
+    for voice in &track.voices {
+        let mut notes: Vec<&AtomNote> = voice
+            .event_groups
+            .iter()
+            .flat_map(|g| &g.atoms)
+            .filter_map(|a| match a {
+                AtomEvent::Note(n) => Some(n),
+                AtomEvent::Rest(_) => None,
+            })
+            .collect();
+        notes.sort_by_key(|n| n.absolute_start.0);
+
+        let mut line = LineBuilder::new(track_index, voice.id, &track.tuning);
+        let mut sounding_until: Option<u64> = None;
+        let mut rest = notes.as_slice();
+        while let Some(first) = rest.first() {
+            let onset = first.absolute_start.0;
+            let width = rest
+                .iter()
+                .position(|n| n.absolute_start.0 != onset)
+                .unwrap_or(rest.len());
+            let (group, tail) = rest.split_at(width);
+            rest = tail;
+            stats.notes_seen = stats.notes_seen.saturating_add(count(group.len()));
+
+            let onset_ticks = u64::from(onset);
+            let rest_cut = cut.max_rest_quarters > 0
+                && sounding_until.is_some_and(|end| onset_ticks >= end.saturating_add(rest_ticks));
+            let group_end = group
+                .iter()
+                .map(|n| onset_ticks.saturating_add(u64::from(n.duration.0)))
+                .max()
+                .unwrap_or(onset_ticks);
+            sounding_until = Some(sounding_until.map_or(group_end, |end| end.max(group_end)));
+            if rest_cut && !line.is_empty() {
+                stats.rest_cuts = stats.rest_cuts.saturating_add(1);
+                line.flush(cut, &mut lines, &mut stats);
+            }
+
+            let [note] = group else {
+                stats.chord_onsets = stats.chord_onsets.saturating_add(1);
+                line.flush(cut, &mut lines, &mut stats);
+                continue;
+            };
+            let Some(position) = note.position.map(|p| p.position) else {
+                stats.unpositioned = stats.unpositioned.saturating_add(1);
+                line.flush(cut, &mut lines, &mut stats);
+                continue;
+            };
+            if position.fret > cut.max_fret {
+                stats.beyond_max_fret = stats.beyond_max_fret.saturating_add(1);
+                line.flush(cut, &mut lines, &mut stats);
+                continue;
+            }
+            if track.tuning.pitch_at(position) != Some(note.pitch) {
+                stats.pitch_mismatch = stats.pitch_mismatch.saturating_add(1);
+                line.flush(cut, &mut lines, &mut stats);
+                continue;
+            }
+            line.push(onset, note.pitch, position);
+        }
+        line.flush(cut, &mut lines, &mut stats);
+    }
+    Ok((lines, stats))
 }
 
 /// The production fingering objective (ADR-0019 `v1`), re-implemented
@@ -131,8 +222,25 @@ pub fn tab_lines(
 /// per step `|Δfret|·w.position_shift + [string changed]·w.string_change`.
 #[must_use]
 pub fn v1_cost(line: &[FretboardPosition], weights: &FingeringWeights) -> i64 {
-    let _ = (line, weights);
-    todo!("v1 objective mirror — green step")
+    let unary = line
+        .iter()
+        .map(|&p| v1_unary(p.fret, weights))
+        .fold(0_i64, i64::saturating_add);
+    let steps = line
+        .windows(2)
+        .map(|pair| match pair {
+            [a, b] => weights
+                .position_shift
+                .saturating_mul(i64::from(a.fret.abs_diff(b.fret)))
+                .saturating_add(if a.string == b.string {
+                    0
+                } else {
+                    weights.string_change
+                }),
+            _ => 0,
+        })
+        .fold(0_i64, i64::saturating_add);
+    unary.saturating_add(steps)
 }
 
 /// The production objective as an [`OptProblem`]: per note `s{i}` and
@@ -150,23 +258,65 @@ pub fn v1_problem(
     weights: &FingeringWeights,
     max_fret: u8,
 ) -> Result<OptProblem, LabError> {
-    let _ = (pitches, tuning, weights, max_fret);
-    todo!("v1 problem builder — green step")
+    if pitches.is_empty() {
+        return Err(LabError::EmptyLine);
+    }
+    let mut vars = Vec::with_capacity(pitches.len().saturating_mul(V1_VARS_PER_NOTE));
+    let mut hard = Vec::with_capacity(pitches.len());
+    let mut objective = Vec::new();
+    for (index, &pitch) in pitches.iter().enumerate() {
+        let candidates = candidates_or_refuse(index, pitch, tuning, max_fret)?;
+        let (s, f) = push_position_vars(&mut vars, &mut hard, index, &candidates);
+        let costs: Vec<(i64, i64)> = distinct_frets(&candidates)
+            .into_iter()
+            .map(|fret| (i64::from(fret), v1_unary(fret, weights)))
+            .filter(|&(_, cost)| cost != 0)
+            .collect();
+        if !costs.is_empty() {
+            objective.push(Term::Unary { var: f, costs });
+        }
+        if index > 0 {
+            let (prev_s, prev_f) = (VarId(s.0 - V1_VARS_PER_NOTE), VarId(f.0 - V1_VARS_PER_NOTE));
+            if weights.position_shift != 0 {
+                objective.push(Term::AbsDiff {
+                    a: prev_f,
+                    b: f,
+                    weight: weights.position_shift,
+                });
+            }
+            if weights.string_change != 0 {
+                objective.push(Term::NotEqual {
+                    a: prev_s,
+                    b: s,
+                    weight: weights.string_change,
+                });
+            }
+        }
+    }
+    Ok(build("fingering-v1", vars, hard, objective))
 }
 
 /// Encodes positions as a [`v1_problem`] witness (`s0, f0, s1, f1, …`).
 #[must_use]
 pub fn encode_v1_witness(line: &[FretboardPosition]) -> Vec<i64> {
-    let _ = line;
-    todo!("v1 witness encoding — green step")
+    line.iter()
+        .flat_map(|p| [i64::from(p.string), i64::from(p.fret)])
+        .collect()
 }
 
 /// Encodes positions and hands as a [`hand_problem`] witness
 /// (`s0, f0, h0, s1, …`); `None` when the lengths differ.
 #[must_use]
 pub fn encode_hand_witness(line: &[FretboardPosition], hands: &[u8]) -> Option<Vec<i64>> {
-    let _ = (line, hands);
-    todo!("hand witness encoding — green step")
+    if line.len() != hands.len() {
+        return None;
+    }
+    Some(
+        line.iter()
+            .zip(hands)
+            .flat_map(|(p, &h)| [i64::from(p.string), i64::from(p.fret), i64::from(h)])
+            .collect(),
+    )
 }
 
 /// Decodes the per-note positions of a witness laid out with
@@ -174,8 +324,19 @@ pub fn encode_hand_witness(line: &[FretboardPosition], hands: &[u8]) -> Option<V
 /// ragged length or out-of-range values.
 #[must_use]
 pub fn decode_positions(witness: &[i64], vars_per_note: usize) -> Option<Vec<FretboardPosition>> {
-    let _ = (witness, vars_per_note);
-    todo!("witness decoding — green step")
+    if vars_per_note < 2 || !witness.len().is_multiple_of(vars_per_note) {
+        return None;
+    }
+    witness
+        .chunks(vars_per_note)
+        .map(|chunk| match chunk {
+            [string, fret, ..] => Some(FretboardPosition {
+                string: u8::try_from(*string).ok()?,
+                fret: u8::try_from(*fret).ok()?,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Weights of the hand-position model. Transition weights and `stretch` are
@@ -247,8 +408,20 @@ impl HandModel {
     /// `shift_distance`, or `string_distance`; [`HandModelError::NoRoom`]
     /// when `max_fret < 4`.
     pub fn new(weights: HandWeights, max_fret: u8) -> Result<Self, HandModelError> {
-        let _ = (weights, max_fret);
-        todo!("hand model validation — green step")
+        for (name, value) in [
+            ("stretch", weights.stretch),
+            ("shift", weights.shift),
+            ("shift_distance", weights.shift_distance),
+            ("string_distance", weights.string_distance),
+        ] {
+            if value < 0 {
+                return Err(HandModelError::NegativeWeight { name, value });
+            }
+        }
+        if max_fret < Self::BOX_FRETS {
+            return Err(HandModelError::NoRoom { max_fret });
+        }
+        Ok(Self { weights, max_fret })
     }
 
     /// The weights.
@@ -266,15 +439,27 @@ impl HandModel {
     /// Admissible hand positions, ascending.
     #[must_use]
     pub fn hands(&self) -> RangeInclusive<u8> {
-        todo!("hand range — green step")
+        1..=self.max_fret.saturating_sub(Self::BOX_FRETS - 1)
     }
 
     /// How `fret` is reached from `hand`; `None` when it is not reachable
     /// (or `hand` is not an admissible position).
     #[must_use]
     pub fn reach(&self, fret: u8, hand: u8) -> Option<Reach> {
-        let _ = (fret, hand);
-        todo!("reach — green step")
+        if !self.hands().contains(&hand) || fret > self.max_fret {
+            return None;
+        }
+        if fret == 0 {
+            return Some(Reach::Open);
+        }
+        let top = hand.saturating_add(Self::BOX_FRETS - 1);
+        if (hand..=top).contains(&fret) {
+            Some(Reach::InBox)
+        } else if fret == top.saturating_add(1) || fret.saturating_add(1) == hand {
+            Some(Reach::Stretch)
+        } else {
+            None
+        }
     }
 }
 
@@ -309,8 +494,23 @@ pub fn hand_cost(
     hands: &[u8],
     model: &HandModel,
 ) -> Result<i64, HandError> {
-    let _ = (line, hands, model);
-    todo!("hand cost — green step")
+    if line.len() != hands.len() {
+        return Err(HandError::Length {
+            positions: line.len(),
+            hands: hands.len(),
+        });
+    }
+    let mut total = 0_i64;
+    for (index, (p, &hand)) in line.iter().zip(hands).enumerate() {
+        let unary = hand_unary(model, p.fret, hand).ok_or(HandError::Unreachable { index })?;
+        total = total.saturating_add(unary);
+    }
+    for (pair, hand_pair) in line.windows(2).zip(hands.windows(2)) {
+        if let ([a, b], [ha, hb]) = (pair, hand_pair) {
+            total = total.saturating_add(hand_transition(&model.weights, *a, *ha, *b, *hb));
+        }
+    }
+    Ok(total)
 }
 
 /// The cheapest hand sequence for **fixed** positions (e.g. a human tab):
@@ -318,8 +518,56 @@ pub fn hand_cost(
 /// unreachable from every hand position.
 #[must_use]
 pub fn best_hands(line: &[FretboardPosition], model: &HandModel) -> Option<(i64, Vec<u8>)> {
-    let _ = (line, model);
-    todo!("best hands — green step")
+    let hands: Vec<u8> = model.hands().collect();
+    let mut layers: Vec<Vec<Scored<usize>>> = Vec::with_capacity(line.len());
+    for (index, p) in line.iter().enumerate() {
+        let layer: Vec<Scored<usize>> = hands
+            .iter()
+            .map(|&h| {
+                let unary = hand_unary(model, p.fret, h)?;
+                let Some(prev_layer) = index.checked_sub(1).and_then(|i| layers.get(i)) else {
+                    return Some((unary, usize::MAX));
+                };
+                let prev = line.get(index - 1).copied()?;
+                let mut best: Scored<usize> = None;
+                for (j, cell) in prev_layer.iter().enumerate() {
+                    let (Some((cost, _)), Some(&ph)) = (cell, hands.get(j)) else {
+                        continue;
+                    };
+                    let total = cost
+                        .saturating_add(hand_transition(&model.weights, prev, ph, *p, h))
+                        .saturating_add(unary);
+                    if best.is_none_or(|(b, _)| total < b) {
+                        best = Some((total, j));
+                    }
+                }
+                best
+            })
+            .collect();
+        if layer.iter().all(Option::is_none) {
+            return None;
+        }
+        layers.push(layer);
+    }
+    let Some(last) = layers.last() else {
+        return Some((0, Vec::new()));
+    };
+    let mut best: Scored<usize> = None;
+    for (j, cell) in last.iter().enumerate() {
+        if let Some((cost, _)) = cell {
+            if best.is_none_or(|(b, _)| *cost < b) {
+                best = Some((*cost, j));
+            }
+        }
+    }
+    let (cost, mut j) = best?;
+    let mut out = vec![0_u8; line.len()];
+    for (layer, slot) in layers.iter().zip(out.iter_mut()).rev() {
+        let (_, parent) = (*layer.get(j)?)?;
+        *slot = *hands.get(j)?;
+        j = parent;
+    }
+    Some((cost, out))
 }
 
 /// An optimal realization under a [`HandModel`].
@@ -338,8 +586,73 @@ pub struct HandSolution {
 /// candidate at or below the model's `max_fret`; an empty line costs `0`.
 #[must_use]
 pub fn solve_hand(pitches: &[Pitch], tuning: &Tuning, model: &HandModel) -> Option<HandSolution> {
-    let _ = (pitches, tuning, model);
-    todo!("hand DP — green step")
+    let hands: Vec<u8> = model.hands().collect();
+    let weights = model.weights;
+    let mut layers: Vec<HandLayer> = Vec::with_capacity(pitches.len());
+    for &pitch in pitches {
+        let candidates = tuning.candidates(pitch, model.max_fret);
+        if candidates.is_empty() {
+            return None;
+        }
+        let unary: Vec<Vec<Option<i64>>> = candidates
+            .iter()
+            .map(|c| {
+                hands
+                    .iter()
+                    .map(|&h| hand_unary(model, c.fret, h))
+                    .collect()
+            })
+            .collect();
+        let cells = match layers.last() {
+            None => unary
+                .iter()
+                .map(|row| row.iter().map(|u| u.map(|u| (u, (0, 0)))).collect())
+                .collect(),
+            Some(prev) => hand_step(prev, &candidates, &unary, &hands, &weights),
+        };
+        let layer = HandLayer { candidates, cells };
+        if layer.cells.iter().flatten().all(Option::is_none) {
+            return None;
+        }
+        layers.push(layer);
+    }
+
+    let Some(last) = layers.last() else {
+        return Some(HandSolution {
+            cost: 0,
+            positions: Vec::new(),
+            hands: Vec::new(),
+        });
+    };
+    let mut best: Scored<(usize, usize)> = None;
+    for (ci, row) in last.cells.iter().enumerate() {
+        for (hi, cell) in row.iter().enumerate() {
+            if let Some((cost, _)) = cell {
+                if best.is_none_or(|(b, _)| *cost < b) {
+                    best = Some((*cost, (ci, hi)));
+                }
+            }
+        }
+    }
+    let (cost, (mut ci, mut hi)) = best?;
+    let mut positions = vec![FretboardPosition { string: 0, fret: 0 }; layers.len()];
+    let mut chosen = vec![0_u8; layers.len()];
+    for ((layer, position), hand) in layers
+        .iter()
+        .zip(positions.iter_mut())
+        .zip(chosen.iter_mut())
+        .rev()
+    {
+        let (_, parent) = (*layer.cells.get(ci)?.get(hi)?)?;
+        *position = *layer.candidates.get(ci)?;
+        *hand = *hands.get(hi)?;
+        (ci, hi) = parent;
+    }
+    Some(HandSolution {
+        cost,
+        positions,
+        hands: chosen,
+    })
 }
 
 /// The hand model as an [`OptProblem`]: per note `s{i}`, `f{i}`, `h{i}`;
@@ -357,8 +670,100 @@ pub fn hand_problem(
     tuning: &Tuning,
     model: &HandModel,
 ) -> Result<OptProblem, LabError> {
-    let _ = (pitches, tuning, model);
-    todo!("hand problem builder — green step")
+    if pitches.is_empty() {
+        return Err(LabError::EmptyLine);
+    }
+    let hands: Vec<u8> = model.hands().collect();
+    let weights = model.weights;
+    let mut vars = Vec::with_capacity(pitches.len().saturating_mul(HAND_VARS_PER_NOTE));
+    let mut hard = Vec::with_capacity(pitches.len().saturating_mul(2));
+    let mut objective = Vec::new();
+    for (index, &pitch) in pitches.iter().enumerate() {
+        let candidates = candidates_or_refuse(index, pitch, tuning, model.max_fret)?;
+        let (s, f) = push_position_vars(&mut vars, &mut hard, index, &candidates);
+        let h = VarId(vars.len());
+        vars.push(IntVar::new(
+            format!("h{index}"),
+            hands.iter().map(|&x| i64::from(x)).collect(),
+        ));
+        let frets = distinct_frets(&candidates);
+        let mut reach_tuples = Vec::new();
+        let mut stretch_costs = Vec::new();
+        for &fret in &frets {
+            for &hand in &hands {
+                match model.reach(fret, hand) {
+                    None => {}
+                    Some(reach) => {
+                        reach_tuples.push((i64::from(fret), i64::from(hand)));
+                        if reach == Reach::Stretch && weights.stretch != 0 {
+                            stretch_costs.push((i64::from(fret), i64::from(hand), weights.stretch));
+                        }
+                    }
+                }
+            }
+        }
+        hard.push(Hard::Allowed {
+            a: f,
+            b: h,
+            tuples: reach_tuples,
+        });
+        if weights.height != 0 {
+            objective.push(Term::Unary {
+                var: h,
+                costs: hands
+                    .iter()
+                    .map(|&x| {
+                        (
+                            i64::from(x),
+                            weights.height.saturating_mul(i64::from(x) - 1),
+                        )
+                    })
+                    .filter(|&(_, cost)| cost != 0)
+                    .collect(),
+            });
+        }
+        if weights.open_string != 0 && frets.contains(&0) {
+            objective.push(Term::Unary {
+                var: f,
+                costs: vec![(0, weights.open_string)],
+            });
+        }
+        if !stretch_costs.is_empty() {
+            objective.push(Term::Pair {
+                a: f,
+                b: h,
+                costs: stretch_costs,
+            });
+        }
+        if index > 0 {
+            let (prev_s, prev_h) = (
+                VarId(s.0 - HAND_VARS_PER_NOTE),
+                VarId(h.0 - HAND_VARS_PER_NOTE),
+            );
+            if weights.shift != 0 {
+                objective.push(Term::NotEqual {
+                    a: prev_h,
+                    b: h,
+                    weight: weights.shift,
+                });
+            }
+            if weights.shift_distance != 0 {
+                objective.push(Term::AbsDiff {
+                    a: prev_h,
+                    b: h,
+                    weight: weights.shift_distance,
+                });
+            }
+            if weights.string_distance != 0 {
+                objective.push(Term::AbsDiff {
+                    a: prev_s,
+                    b: s,
+                    weight: weights.string_distance,
+                });
+            }
+        }
+    }
+    Ok(build("fingering-hand", vars, hard, objective))
 }
 
 /// A song identity for holdout splits: the file stem, lowercased, with
@@ -366,14 +771,279 @@ pub fn hand_problem(
 /// removed, so arrangements of one song share a key.
 #[must_use]
 pub fn song_key(file_name: &str) -> String {
-    let _ = file_name;
-    todo!("song key — green step")
+    let name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = match name.rfind('.') {
+        Some(dot) if dot > 0 && !name[dot..].contains(' ') => &name[..dot],
+        _ => name,
+    };
+    let mut key = stem.trim();
+    while key.ends_with(')') {
+        match key.rfind('(') {
+            Some(open) => key = key[..open].trim_end(),
+            None => break,
+        }
+    }
+    key.to_lowercase()
 }
 
 /// A deterministic holdout bucket in `0..buckets` for a [`song_key`]
 /// (FNV-1a 64 modulo `buckets`); `0` when `buckets` is `0`.
 #[must_use]
 pub fn holdout_bucket(key: &str, buckets: u64) -> u64 {
-    let _ = (key, buckets);
-    todo!("holdout bucket — green step")
+    if buckets == 0 {
+        return 0;
+    }
+    fnv1a64(key.as_bytes()) % buckets
+}
+
+// ── private helpers ───────────────────────────────────────────────────────────
+
+/// Accumulates one tablature line while a voice is scanned.
+struct LineBuilder<'a> {
+    track: usize,
+    voice: u8,
+    tuning: &'a Tuning,
+    start_tick: u32,
+    pitches: Vec<Pitch>,
+    human: Vec<FretboardPosition>,
+}
+
+impl<'a> LineBuilder<'a> {
+    const fn new(track: usize, voice: u8, tuning: &'a Tuning) -> Self {
+        Self {
+            track,
+            voice,
+            tuning,
+            start_tick: 0,
+            pitches: Vec::new(),
+            human: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pitches.is_empty()
+    }
+
+    fn push(&mut self, onset: u32, pitch: Pitch, position: FretboardPosition) {
+        if self.pitches.is_empty() {
+            self.start_tick = onset;
+        }
+        self.pitches.push(pitch);
+        self.human.push(position);
+    }
+
+    /// Ends the current line: kept when long enough, otherwise counted as
+    /// dropped. An empty line is a no-op.
+    fn flush(&mut self, cut: &LineCut, lines: &mut Vec<TabLine>, stats: &mut CutStats) {
+        let len = self.pitches.len();
+        if len == 0 {
+            return;
+        }
+        let pitches = std::mem::take(&mut self.pitches);
+        let human = std::mem::take(&mut self.human);
+        if len < cut.min_notes {
+            stats.short_lines = stats.short_lines.saturating_add(1);
+            stats.short_line_notes = stats.short_line_notes.saturating_add(count(len));
+            return;
+        }
+        stats.kept_lines = stats.kept_lines.saturating_add(1);
+        stats.kept_notes = stats.kept_notes.saturating_add(count(len));
+        lines.push(TabLine {
+            track: self.track,
+            voice: self.voice,
+            start_tick: self.start_tick,
+            tuning: self.tuning.clone(),
+            pitches,
+            human,
+        });
+    }
+}
+
+fn count(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+/// The `v1` per-note cost (mirrors production `candidate_cost`).
+fn v1_unary(fret: u8, weights: &FingeringWeights) -> i64 {
+    let base = weights.fret.saturating_mul(i64::from(fret));
+    if fret == 0 {
+        base.saturating_sub(weights.open_string)
+    } else {
+        base
+    }
+}
+
+fn candidates_or_refuse(
+    index: usize,
+    pitch: Pitch,
+    tuning: &Tuning,
+    max_fret: u8,
+) -> Result<Vec<FretboardPosition>, LabError> {
+    let candidates = tuning.candidates(pitch, max_fret);
+    if candidates.is_empty() {
+        return Err(LabError::UnpositionablePitch {
+            index,
+            pitch: pitch.0,
+        });
+    }
+    Ok(candidates)
+}
+
+/// Declares `s{index}` and `f{index}` and the candidate table tying them.
+fn push_position_vars(
+    vars: &mut Vec<IntVar>,
+    hard: &mut Vec<Hard>,
+    index: usize,
+    candidates: &[FretboardPosition],
+) -> (VarId, VarId) {
+    let s = VarId(vars.len());
+    vars.push(IntVar::new(
+        format!("s{index}"),
+        candidates.iter().map(|c| i64::from(c.string)).collect(),
+    ));
+    let f = VarId(vars.len());
+    vars.push(IntVar::new(
+        format!("f{index}"),
+        candidates.iter().map(|c| i64::from(c.fret)).collect(),
+    ));
+    hard.push(Hard::Allowed {
+        a: s,
+        b: f,
+        tuples: candidates
+            .iter()
+            .map(|c| (i64::from(c.string), i64::from(c.fret)))
+            .collect(),
+    });
+    (s, f)
+}
+
+fn distinct_frets(candidates: &[FretboardPosition]) -> Vec<u8> {
+    let mut frets: Vec<u8> = candidates.iter().map(|c| c.fret).collect();
+    frets.sort_unstable();
+    frets.dedup();
+    frets
+}
+
+/// Builds an IR problem the builders above make valid by construction:
+/// unique safe names, validated ids, non-empty domains and tables, and
+/// duplicate-free cost tables.
+#[allow(clippy::panic)] // documented invariant, exercised by the contract suite
+fn build(name: &str, vars: Vec<IntVar>, hard: Vec<Hard>, objective: Vec<Term>) -> OptProblem {
+    match OptProblem::try_new(name, vars, hard, objective) {
+        Ok(problem) => problem,
+        Err(e) => panic!("fingering problem builder produced invalid IR: {e}"),
+    }
+}
+
+/// Per-note hand-model cost, or `None` when unreachable.
+fn hand_unary(model: &HandModel, fret: u8, hand: u8) -> Option<i64> {
+    let reach = model.reach(fret, hand)?;
+    let w = model.weights;
+    let mut cost = w.height.saturating_mul(i64::from(hand) - 1);
+    match reach {
+        Reach::Open => cost = cost.saturating_add(w.open_string),
+        Reach::Stretch => cost = cost.saturating_add(w.stretch),
+        Reach::InBox => {}
+    }
+    Some(cost)
+}
+
+fn hand_shift(w: &HandWeights, from: u8, to: u8) -> i64 {
+    if from == to {
+        0
+    } else {
+        w.shift.saturating_add(
+            w.shift_distance
+                .saturating_mul(i64::from(from.abs_diff(to))),
+        )
+    }
+}
+
+fn hand_transition(
+    w: &HandWeights,
+    a: FretboardPosition,
+    ha: u8,
+    b: FretboardPosition,
+    hb: u8,
+) -> i64 {
+    hand_shift(w, ha, hb).saturating_add(
+        w.string_distance
+            .saturating_mul(i64::from(a.string.abs_diff(b.string))),
+    )
+}
+
+/// A DP cell: the best cost reaching a state and its parent, or `None` when
+/// the state is unreachable.
+type Scored<P> = Option<(i64, P)>;
+
+/// Per candidate, per hand: a [`solve_hand`] layer's cells.
+type HandCells = Vec<Vec<Scored<(usize, usize)>>>;
+
+/// One [`solve_hand`] layer transition, factored: the string term depends
+/// only on the candidates and the hand term only on the hands, so
+/// `min over (c, h) of D[c][h] + σ|s_c − s_c'| + τ(h, h')` equals
+/// `min over h of (min over c of D[c][h] + σ|s_c − s_c'|) + τ(h, h')` —
+/// `O(K²·H + K·H²)` instead of `O(K²·H²)` per step. Ties keep the lowest
+/// candidate, then the lowest hand.
+fn hand_step(
+    prev: &HandLayer,
+    candidates: &[FretboardPosition],
+    unary: &[Vec<Option<i64>>],
+    hands: &[u8],
+    weights: &HandWeights,
+) -> HandCells {
+    candidates
+        .iter()
+        .zip(unary)
+        .map(|(next, row)| {
+            let via_string: Vec<Scored<usize>> = (0..hands.len())
+                .map(|hi| {
+                    let mut best: Scored<usize> = None;
+                    for (ci, (cand, prev_row)) in
+                        prev.candidates.iter().zip(&prev.cells).enumerate()
+                    {
+                        let Some(Some((cost, _))) = prev_row.get(hi) else {
+                            continue;
+                        };
+                        let total = cost.saturating_add(
+                            weights
+                                .string_distance
+                                .saturating_mul(i64::from(cand.string.abs_diff(next.string))),
+                        );
+                        if best.is_none_or(|(b, _)| total < b) {
+                            best = Some((total, ci));
+                        }
+                    }
+                    best
+                })
+                .collect();
+            row.iter()
+                .enumerate()
+                .map(|(hj, u)| {
+                    let u = (*u)?;
+                    let to = *hands.get(hj)?;
+                    let mut best: Scored<(usize, usize)> = None;
+                    for (hi, cell) in via_string.iter().enumerate() {
+                        let (Some((cost, ci)), Some(&from)) = (cell, hands.get(hi)) else {
+                            continue;
+                        };
+                        let total = cost
+                            .saturating_add(hand_shift(weights, from, to))
+                            .saturating_add(u);
+                        if best.is_none_or(|(b, _)| total < b) {
+                            best = Some((total, (*ci, hi)));
+                        }
+                    }
+                    best
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// One DP layer of [`solve_hand`]: per candidate, per hand, the best cost and
+/// its parent `(candidate, hand)` in the previous layer.
+struct HandLayer {
+    candidates: Vec<FretboardPosition>,
+    cells: HandCells,
 }

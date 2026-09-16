@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ir::{IntVar, IrError, VarId};
+use crate::ir::{fnv1a64, minizinc_safe, IntVar, IrError, VarId};
 use crate::manifest::SolverIdentity;
 
 /// Wire schema identity of an exported optimization problem.
@@ -155,8 +155,92 @@ impl OptProblem {
         hard: Vec<Hard>,
         objective: Vec<Term>,
     ) -> Result<Self, OptIrError> {
-        let _ = (name.into(), vars, hard, objective);
-        todo!("optimization IR construction — green step")
+        let mut vars = vars;
+        for var in &mut vars {
+            // IntVar fields are public: re-canonicalize so evaluation can
+            // binary-search every domain.
+            var.domain.sort_unstable();
+            var.domain.dedup();
+            if var.domain.is_empty() {
+                return Err(IrError::EmptyDomain {
+                    name: var.name.clone(),
+                }
+                .into());
+            }
+            if !minizinc_safe(&var.name) {
+                return Err(IrError::UnsafeName {
+                    name: var.name.clone(),
+                }
+                .into());
+            }
+        }
+        for (i, var) in vars.iter().enumerate() {
+            if vars.iter().skip(i + 1).any(|other| other.name == var.name) {
+                return Err(IrError::DuplicateName {
+                    name: var.name.clone(),
+                }
+                .into());
+            }
+        }
+        let count = vars.len();
+        let check = |id: VarId| -> Result<(), IrError> {
+            if id.0 >= count {
+                return Err(IrError::DanglingVarId {
+                    id: id.0,
+                    vars: count,
+                });
+            }
+            Ok(())
+        };
+
+        let mut hard = hard;
+        for (index, constraint) in hard.iter_mut().enumerate() {
+            match constraint {
+                Hard::Allowed { a, b, tuples } => {
+                    check(*a)?;
+                    check(*b)?;
+                    tuples.sort_unstable();
+                    tuples.dedup();
+                    if tuples.is_empty() {
+                        return Err(OptIrError::EmptyAllowedTable { index });
+                    }
+                }
+            }
+        }
+
+        let mut objective = objective;
+        for (index, term) in objective.iter_mut().enumerate() {
+            let duplicate = match term {
+                Term::Unary { var, costs } => {
+                    check(*var)?;
+                    costs.sort_unstable();
+                    costs.windows(2).any(|w| matches!(w, [x, y] if x.0 == y.0))
+                }
+                Term::Pair { a, b, costs } => {
+                    check(*a)?;
+                    check(*b)?;
+                    costs.sort_unstable();
+                    costs
+                        .windows(2)
+                        .any(|w| matches!(w, [x, y] if (x.0, x.1) == (y.0, y.1)))
+                }
+                Term::AbsDiff { a, b, .. } | Term::NotEqual { a, b, .. } => {
+                    check(*a)?;
+                    check(*b)?;
+                    false
+                }
+            };
+            if duplicate {
+                return Err(OptIrError::DuplicateCostKey { term: index });
+            }
+        }
+
+        Ok(Self {
+            name: name.into(),
+            vars,
+            hard,
+            objective,
+        })
     }
 
     /// Problem name.
@@ -187,7 +271,9 @@ impl OptProblem {
     /// identity discipline as [`crate::ir::OracleProblem::fingerprint`].
     #[must_use]
     pub fn fingerprint(&self) -> u64 {
-        todo!("optimization IR fingerprint — green step")
+        let canonical =
+            serde_json::to_string(self).unwrap_or_else(|_| format!("unserializable:{}", self.name));
+        fnv1a64(canonical.as_bytes())
     }
 
     /// Re-scores a complete assignment: full length, every value inside its
@@ -197,8 +283,67 @@ impl OptProblem {
     ///
     /// See [`WitnessError`].
     pub fn evaluate(&self, witness: &[i64]) -> Result<i64, WitnessError> {
-        let _ = witness;
-        todo!("optimization IR evaluation — green step")
+        if witness.len() != self.vars.len() {
+            return Err(WitnessError::Length {
+                expected: self.vars.len(),
+                got: witness.len(),
+            });
+        }
+        for (var, &value) in self.vars.iter().zip(witness) {
+            if var.domain.binary_search(&value).is_err() {
+                return Err(WitnessError::OutOfDomain {
+                    name: var.name.clone(),
+                    value,
+                });
+            }
+        }
+        // Ids are validated at construction, so every lookup below succeeds.
+        let value = |id: &VarId| witness.get(id.0).copied().unwrap_or_default();
+        for (index, constraint) in self.hard.iter().enumerate() {
+            match constraint {
+                Hard::Allowed { a, b, tuples } => {
+                    if tuples.binary_search(&(value(a), value(b))).is_err() {
+                        return Err(WitnessError::HardViolated { index });
+                    }
+                }
+            }
+        }
+        let mut total: i128 = 0;
+        for term in &self.objective {
+            let cost: i128 = match term {
+                Term::Unary { var, costs } => {
+                    let x = value(var);
+                    costs
+                        .binary_search_by_key(&x, |&(v, _)| v)
+                        .ok()
+                        .and_then(|i| costs.get(i))
+                        .map_or(0, |&(_, c)| i128::from(c))
+                }
+                Term::Pair { a, b, costs } => {
+                    let key = (value(a), value(b));
+                    costs
+                        .binary_search_by_key(&key, |&(u, v, _)| (u, v))
+                        .ok()
+                        .and_then(|i| costs.get(i))
+                        .map_or(0, |&(_, _, c)| i128::from(c))
+                }
+                Term::AbsDiff { a, b, weight } => {
+                    let diff = (i128::from(value(a)) - i128::from(value(b))).abs();
+                    i128::from(*weight)
+                        .checked_mul(diff)
+                        .ok_or(WitnessError::Overflow)?
+                }
+                Term::NotEqual { a, b, weight } => {
+                    if value(a) == value(b) {
+                        0
+                    } else {
+                        i128::from(*weight)
+                    }
+                }
+            };
+            total = total.checked_add(cost).ok_or(WitnessError::Overflow)?;
+        }
+        i64::try_from(total).map_err(|_| WitnessError::Overflow)
     }
 }
 
@@ -226,8 +371,14 @@ impl ProblemRecord {
     /// Wraps a problem with its identity and fingerprint.
     #[must_use]
     pub fn new(id: impl Into<String>, problem: OptProblem, reference: Vec<(VarId, i64)>) -> Self {
-        let _ = (id.into(), problem, reference);
-        todo!("problem record — green step")
+        Self {
+            schema: OPT_SCHEMA,
+            version: OPT_SCHEMA_VERSION,
+            id: id.into(),
+            fingerprint_hex: format!("{:016x}", problem.fingerprint()),
+            problem,
+            reference,
+        }
     }
 }
 
@@ -317,8 +468,29 @@ pub enum Verdict {
 /// Judges a solver record against the problem it claims to answer.
 #[must_use]
 pub fn verify_record(problem: &OptProblem, record: &SolveRecord) -> Verdict {
-    let _ = (problem, record);
-    todo!("record verification — green step")
+    if record.fingerprint_hex != format!("{:016x}", problem.fingerprint()) {
+        return Verdict::FingerprintMismatch;
+    }
+    if record.status != SolveStatus::Optimal {
+        return Verdict::NotProven {
+            status: record.status,
+        };
+    }
+    let (Some(witness), Some(claimed)) = (&record.witness, record.objective) else {
+        return Verdict::MissingWitness;
+    };
+    let rescored = match problem.evaluate(witness) {
+        Ok(cost) => cost,
+        Err(e) => return Verdict::WitnessInvalid(e),
+    };
+    if rescored != claimed || record.bound.is_some_and(|bound| bound != claimed) {
+        return Verdict::ObjectiveMismatch {
+            claimed,
+            rescored,
+            bound: record.bound,
+        };
+    }
+    Verdict::Proven { optimum: rescored }
 }
 
 /// Why an agreement-pass claim is refused.
@@ -366,6 +538,27 @@ pub fn verify_agreement(
     optimum: i64,
     record: &AgreementRecord,
 ) -> Result<u64, AgreementError> {
-    let _ = (problem, reference, optimum, record);
-    todo!("agreement verification — green step")
+    if record.status != SolveStatus::Optimal {
+        return Err(AgreementError::NotProven {
+            status: record.status,
+        });
+    }
+    let (Some(witness), Some(claimed)) = (&record.witness, record.matched) else {
+        return Err(AgreementError::MissingWitness);
+    };
+    let rescored = problem
+        .evaluate(witness)
+        .map_err(AgreementError::WitnessInvalid)?;
+    if rescored != optimum {
+        return Err(AgreementError::OffOptimum { optimum, rescored });
+    }
+    let recounted = reference
+        .iter()
+        .filter(|(var, value)| witness.get(var.0) == Some(value))
+        .count();
+    let recounted = u64::try_from(recounted).unwrap_or(u64::MAX);
+    if recounted != claimed {
+        return Err(AgreementError::CountMismatch { claimed, recounted });
+    }
+    Ok(recounted)
 }
