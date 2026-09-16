@@ -920,9 +920,16 @@ fn print_oracle(oracle: &BTreeMap<String, OracleEval>) {
     println!("\n| model | records | not run | proven | not proven | invalid | gap = 0 | gap > 0 | gap < 0 | max gap | DP agreement | ceiling at optimum | solver p50 / p99 / max ms | solver total s |");
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for (name, e) in oracle {
-        let rate = |x: u64| 100.0 * x as f64 / e.ceiling_notes.max(1) as f64;
+        // No agreement pass verified: say so rather than print 0%.
+        let rate = |x: u64| {
+            if e.ceiling_notes == 0 {
+                "—".to_string()
+            } else {
+                format!("{:.1}%", 100.0 * x as f64 / e.ceiling_notes as f64)
+            }
+        };
         println!(
-            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1}% | {:.1}% | {:.1} / {:.1} / {:.1} | {:.1} |",
+            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} / {:.1} / {:.1} | {:.1} |",
             e.records,
             e.missing,
             e.proven,

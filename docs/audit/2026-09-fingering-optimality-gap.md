@@ -78,7 +78,10 @@ scale instead of assuming it.
 |---|---|---|---|---|---|---|---|
 | v1 (production weights) | 9,150 | 9,150 | 9,150 | **9,150** | 0 | 0 | 519 |
 | v1-fit | 9,150 | 9,150 | 9,150 | **9,150** | 0 | 0 | 748 |
-| hand-fit (in-repo `solve_hand`) | 1,954 (holdout) | see Result 4 | | | | | |
+| hand-fit (in-repo `solve_hand`) | 1,954 (holdout) | 1,930 | 1,930 | **1,930** | 0 | 0 | 350 |
+
+For the hand model, 24 holdout lines (1.2%) stayed unproven after the
+16-worker, 60 s escalation; no claim is made for them.
 
 `gap < 0` would mean the IR encoding and the in-repo evaluator disagree; it
 is a defect detector and stayed empty. Every optimum above was re-scored in
@@ -190,7 +193,7 @@ first tier (Result 4).
   | v1-fit + tie-break (repeat lines) | 510 | 60 (12%) | | | | 400 s |
   | v1-fit + tie-break + repeat consistency | 510 | 33 (6.5%) | | | | 342 s |
   | hand-fit + tie-break (repeat lines) | 510 | **354 (69%)** | | | | stopped |
-  | hand-fit (holdout) | 1,954 | 350 (18%) | | | | ~15 s per escalated line |
+  | hand-fit (holdout, no agreement pass) | 1,954 | 350 (18%) | 61 ms | 60 s (limit) | 61 s | 3,676 s |
 
 - With one worker and a 120 s limit, ~2% of v1 lines (80–357 notes) stayed
   unproven; a 16-worker portfolio proved the same lines in 0.2–1.1 s, while
@@ -201,7 +204,9 @@ first tier (Result 4).
   tens of seconds per line; the in-repo DP is unaffected by either. The
   repeat constraint, by contrast, made proofs *easier* (it prunes).
 - The first full-corpus hand-model run with the agreement pass was stopped
-  after 1.5 h in its escalation tier.
+  after 1.5 h in its escalation tier; the holdout run without it took about
+  an hour of wall time for what `solve_hand` does over the whole corpus in
+  ~120 ms, and still left 24 lines unproven.
 
 The contract's standing decision holds with evidence: an external solver in
 the production path would cost four to five orders of magnitude of latency
