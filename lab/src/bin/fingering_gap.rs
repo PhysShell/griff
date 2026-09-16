@@ -917,16 +917,17 @@ fn print_oracle(oracle: &BTreeMap<String, OracleEval>) {
     if oracle.is_empty() {
         return;
     }
-    println!("\n| model | records | proven | not proven | invalid | gap = 0 | gap > 0 | gap < 0 | max gap | DP agreement | ceiling at optimum | solver p50 / p99 / max ms | solver total s |");
-    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    println!("\n| model | records | not run | proven | not proven | invalid | gap = 0 | gap > 0 | gap < 0 | max gap | DP agreement | ceiling at optimum | solver p50 / p99 / max ms | solver total s |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for (name, e) in oracle {
         let rate = |x: u64| 100.0 * x as f64 / e.ceiling_notes.max(1) as f64;
         println!(
-            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1}% | {:.1}% | {:.1} / {:.1} / {:.1} | {:.1} |",
+            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1}% | {:.1}% | {:.1} / {:.1} / {:.1} | {:.1} |",
             e.records,
+            e.missing,
             e.proven,
             e.not_proven,
-            e.witness_invalid + e.objective_mismatch + e.fingerprint_mismatch + e.missing,
+            e.witness_invalid + e.objective_mismatch + e.fingerprint_mismatch,
             e.gap_zero,
             e.gap_positive,
             e.gap_negative,
@@ -1086,15 +1087,10 @@ fn repeat_report(corpus: &Corpus, models: &[Model], out: &Path) -> std::io::Resu
                 vpn,
                 pairs,
             } = repeat_variants(model, &line.tab)?;
+            // Lines the solver was not run on (e.g. a holdout-only run) are
+            // outside the sample, not refusals.
             let (Some(a), Some(b)) = (tie.get(&line.id), repeat.get(&line.id)) else {
-                return Some(One {
-                    notes: line.tab.human.len() as u64,
-                    pairs: pairs.len() as u64,
-                    verified: None,
-                    raise: None,
-                    human_consistent: false,
-                    wall: (0, 0),
-                });
+                return None;
             };
             let human = &line.tab.human;
             let human_consistent = consistent(human, &pairs) == pairs.len() as u64;
