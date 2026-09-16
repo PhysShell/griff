@@ -11,9 +11,17 @@ optimum, maximize how many of the record's reference `(var, value)`
 pairs hold — the tie-insensitive ceiling of a model's agreement with a
 reference (e.g. the human tab).
 
+Escalation: every problem is first solved in a process pool with `--threads`
+workers and `--time-limit`; a record without a proven optimum (or, with
+`--agreement`, without a proven agreement pass) is re-solved sequentially with
+`--retry-threads` and `--retry-limit`, and its solver identity says so. On the
+first corpus run a single-worker search left ~2% of lines unproven after 120 s,
+while the multi-worker portfolio proved the same lines in about a second.
+
 Usage:
     python solve_opt.py IN.jsonl OUT.jsonl [--jobs N] [--threads T]
                         [--time-limit SECONDS] [--agreement]
+                        [--retry-threads T] [--retry-limit SECONDS]
 """
 
 import argparse
@@ -99,7 +107,7 @@ def solver_for(threads, time_limit):
 
 
 def solve_one(args):
-    line, threads, time_limit, agreement = args
+    line, threads, time_limit, agreement, tag = args
     rec = json.loads(line)
     if rec.get("schema") != SCHEMA or rec.get("version") != SCHEMA_VERSION:
         raise ValueError(f"unsupported record schema {rec.get('schema')}/{rec.get('version')}")
@@ -114,7 +122,7 @@ def solve_one(args):
         "fingerprint_hex": rec["fingerprint_hex"],
         "solver": {
             "name": "ortools/cp-sat",
-            "version": f"{ortools.__version__} (num_workers={threads}, time_limit={time_limit}s)",
+            "version": f"{ortools.__version__} (num_workers={threads}, time_limit={time_limit}s{tag})",
         },
         "status": STATUS.get(status, "unknown"),
         "objective": None,
@@ -162,17 +170,36 @@ def main():
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--time-limit", type=float, default=120.0)
     ap.add_argument("--agreement", action="store_true")
+    ap.add_argument("--retry-threads", type=int, default=mp.cpu_count())
+    ap.add_argument("--retry-limit", type=float, default=300.0)
     a = ap.parse_args()
 
     with open(a.input, encoding="utf-8") as f:
         lines = [l for l in f if l.strip()]
-    work = [(l, a.threads, a.time_limit, a.agreement) for l in lines]
+    work = [(l, a.threads, a.time_limit, a.agreement, "") for l in lines]
     started = time.perf_counter()
-    with open(a.output, "w", encoding="utf-8", newline="\n") as out, mp.Pool(a.jobs) as pool:
-        for i, result in enumerate(pool.imap(solve_one, work, chunksize=4), 1):
-            out.write(result + "\n")
+    results = []
+    with mp.Pool(a.jobs) as pool:
+        for i, result in enumerate(pool.imap(solve_one, work, chunksize=1), 1):
+            results.append(result)
             if i % 500 == 0 or i == len(work):
                 print(f"{i}/{len(work)} solved, {time.perf_counter() - started:.1f}s", file=sys.stderr)
+
+    def unproven(result):
+        r = json.loads(result)
+        if r["status"] != "optimal":
+            return True
+        return a.agreement and r["agreement"] is not None and r["agreement"]["status"] != "optimal"
+
+    retry = [i for i, r in enumerate(results) if unproven(r)]
+    print(f"escalating {len(retry)} unproven records", file=sys.stderr)
+    for n, i in enumerate(retry, 1):
+        results[i] = solve_one((lines[i], a.retry_threads, a.retry_limit, a.agreement, ", escalated"))
+        print(f"  escalated {n}/{len(retry)}, {time.perf_counter() - started:.1f}s", file=sys.stderr)
+
+    with open(a.output, "w", encoding="utf-8", newline="\n") as out:
+        for result in results:
+            out.write(result + "\n")
 
 
 if __name__ == "__main__":

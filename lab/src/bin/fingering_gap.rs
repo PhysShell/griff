@@ -17,6 +17,15 @@
 //! cargo run --release --bin fingering_gap -- report --tabs DIR --out DIR [MODELS]
 //! ```
 //!
+//! Repeat consistency (a global constraint no chain DP state holds):
+//!
+//! ```text
+//! cargo run --release --bin fingering_gap -- repeat-export --tabs DIR --out DIR [MODELS]
+//! python cpsat/solve_opt.py OUT/NAME.tie.problems.jsonl        OUT/NAME.tie.cpsat.jsonl
+//! python cpsat/solve_opt.py OUT/NAME.tie-repeat.problems.jsonl OUT/NAME.tie-repeat.cpsat.jsonl
+//! cargo run --release --bin fingering_gap -- repeat-report --tabs DIR --out DIR [MODELS]
+//! ```
+//!
 //! `MODELS`: `--v1 NAME=fret,open_string,position_shift,string_change` and
 //! `--hand NAME=height,open_string,stretch,shift,shift_distance,string_distance`,
 //! repeatable; default `--v1 v1=1,1,2,1` (the production weights).
@@ -33,8 +42,9 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use griff_constraint_lab::fingering::{
-    best_hands, hand_problem, holdout_bucket, solve_hand, song_key, tab_lines, v1_cost, v1_problem,
-    CutStats, HandModel, HandWeights, LineCut, TabLine, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
+    best_hands, decode_positions, hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key,
+    tab_lines, v1_cost, v1_problem, with_repeat_consistency, with_string_tiebreak, CutStats,
+    HandModel, HandWeights, LineCut, TabLine, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
 };
 use griff_constraint_lab::ir::VarId;
 use griff_constraint_lab::optir::{
@@ -933,6 +943,253 @@ fn print_oracle(oracle: &BTreeMap<String, OracleEval>) {
     }
 }
 
+// ── repeat consistency ────────────────────────────────────────────────────────
+
+/// Window of a repeated figure, in notes.
+const REPEAT_WINDOW: usize = 6;
+
+/// The two solver variants of a line with repeats: the model under a
+/// deterministic string tie-break (`tie`), and the same plus the
+/// repeat-consistency constraint (`tie-repeat`).
+fn repeat_variants(model: &Model, line: &TabLine) -> Option<RepeatVariants> {
+    let pairs = repeat_pairs(&line.pitches, REPEAT_WINDOW);
+    if pairs.is_empty() {
+        return None;
+    }
+    let (base, vpn) = model.problem(line)?;
+    let (tie, scale) = with_string_tiebreak(&base, vpn).ok()?;
+    let constrained = with_repeat_consistency(&tie, vpn, &pairs, REPEAT_WINDOW).ok()?;
+    Some(RepeatVariants {
+        tie,
+        constrained,
+        scale,
+        vpn,
+        pairs,
+    })
+}
+
+struct RepeatVariants {
+    tie: OptProblem,
+    constrained: OptProblem,
+    scale: i64,
+    vpn: usize,
+    pairs: Vec<(usize, usize)>,
+}
+
+fn repeat_export(corpus: &Corpus, models: &[Model], out: &Path) -> std::io::Result<()> {
+    for model in models {
+        let records = par_map(&corpus.lines, |line| {
+            repeat_variants(model, &line.tab).map(|v| {
+                let a = ProblemRecord::new(line.id.clone(), v.tie, Vec::new());
+                let b = ProblemRecord::new(line.id.clone(), v.constrained, Vec::new());
+                (
+                    serde_json::to_string(&a).expect("problem records serialize"),
+                    serde_json::to_string(&b).expect("problem records serialize"),
+                )
+            })
+        });
+        let tie_path = out.join(format!("{}.tie.problems.jsonl", model.name()));
+        let rep_path = out.join(format!("{}.tie-repeat.problems.jsonl", model.name()));
+        let mut tie_w = BufWriter::new(fs::File::create(&tie_path)?);
+        let mut rep_w = BufWriter::new(fs::File::create(&rep_path)?);
+        let mut written = 0;
+        for (a, b) in records.into_iter().flatten() {
+            tie_w.write_all(a.as_bytes())?;
+            tie_w.write_all(b"\n")?;
+            rep_w.write_all(b.as_bytes())?;
+            rep_w.write_all(b"\n")?;
+            written += 1;
+        }
+        eprintln!(
+            "{}: {written} lines with repeats → {}, {}",
+            model.name(),
+            tie_path.display(),
+            rep_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn read_records(path: &Path) -> std::io::Result<HashMap<String, SolveRecord>> {
+    let mut records = HashMap::new();
+    for line in BufReader::new(fs::File::open(path)?).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: SolveRecord = serde_json::from_str(&line).map_err(std::io::Error::other)?;
+        records.insert(record.id.clone(), record);
+    }
+    Ok(records)
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct RepeatEval {
+    lines: usize,
+    notes: u64,
+    pairs: u64,
+    /// Both variants proven and verified.
+    verified_lines: usize,
+    refused_lines: usize,
+    consistent_pairs_human: u64,
+    consistent_pairs_dp: u64,
+    consistent_pairs_tie: u64,
+    consistent_pairs_repeat: u64,
+    agree_dp: u64,
+    agree_tie: u64,
+    agree_repeat: u64,
+    agree_rate_dp: f64,
+    agree_rate_tie: f64,
+    agree_rate_repeat: f64,
+    /// Lines where the constraint raised the model cost, and by how much.
+    lines_cost_raised: usize,
+    cost_raise: Quantiles,
+    /// Lines where the human fingering satisfies the constraint.
+    human_consistent_lines: usize,
+    solver_total_s_tie: f64,
+    solver_total_s_repeat: f64,
+}
+
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+fn repeat_report(corpus: &Corpus, models: &[Model], out: &Path) -> std::io::Result<()> {
+    let consistent = |positions: &[FretboardPosition], pairs: &[(usize, usize)]| {
+        pairs
+            .iter()
+            .filter(|&&(i, j)| {
+                positions.get(i..i + REPEAT_WINDOW) == positions.get(j..j + REPEAT_WINDOW)
+            })
+            .count() as u64
+    };
+    let mut evals = BTreeMap::new();
+    for model in models {
+        let tie = read_records(&out.join(format!("{}.tie.cpsat.jsonl", model.name())))?;
+        let repeat = read_records(&out.join(format!("{}.tie-repeat.cpsat.jsonl", model.name())))?;
+        struct One {
+            notes: u64,
+            pairs: u64,
+            verified: Option<[u64; 7]>,
+            raise: Option<i64>,
+            human_consistent: bool,
+            wall: (u64, u64),
+        }
+        let ones = par_map(&corpus.lines, |line| {
+            let RepeatVariants {
+                tie: tie_p,
+                constrained: rep_p,
+                scale,
+                vpn,
+                pairs,
+            } = repeat_variants(model, &line.tab)?;
+            let (Some(a), Some(b)) = (tie.get(&line.id), repeat.get(&line.id)) else {
+                return Some(One {
+                    notes: line.tab.human.len() as u64,
+                    pairs: pairs.len() as u64,
+                    verified: None,
+                    raise: None,
+                    human_consistent: false,
+                    wall: (0, 0),
+                });
+            };
+            let human = &line.tab.human;
+            let human_consistent = consistent(human, &pairs) == pairs.len() as u64;
+            let wall = (a.wall_us, b.wall_us);
+            let (Verdict::Proven { optimum: oa }, Verdict::Proven { optimum: ob }) =
+                (verify_record(&tie_p, a), verify_record(&rep_p, b))
+            else {
+                return Some(One {
+                    notes: human.len() as u64,
+                    pairs: pairs.len() as u64,
+                    verified: None,
+                    raise: None,
+                    human_consistent,
+                    wall,
+                });
+            };
+            let pa = decode_positions(a.witness.as_deref()?, vpn)?;
+            let pb = decode_positions(b.witness.as_deref()?, vpn)?;
+            let dp = model.predict(&line.tab).positions;
+            let agree = |p: &[FretboardPosition]| Agreement::of(human, p).agree;
+            Some(One {
+                notes: human.len() as u64,
+                pairs: pairs.len() as u64,
+                verified: Some([
+                    consistent(human, &pairs),
+                    consistent(&dp, &pairs),
+                    consistent(&pa, &pairs),
+                    consistent(&pb, &pairs),
+                    agree(&dp),
+                    agree(&pa),
+                    agree(&pb),
+                ]),
+                raise: Some(ob.div_euclid(scale) - oa.div_euclid(scale)),
+                human_consistent,
+                wall,
+            })
+        });
+        let mut e = RepeatEval::default();
+        let mut raises = Vec::new();
+        let mut verified_notes = 0_u64;
+        for one in ones.into_iter().flatten() {
+            e.lines += 1;
+            e.notes += one.notes;
+            e.pairs += one.pairs;
+            e.human_consistent_lines += usize::from(one.human_consistent);
+            e.solver_total_s_tie += one.wall.0 as f64 / 1e6;
+            e.solver_total_s_repeat += one.wall.1 as f64 / 1e6;
+            let Some(v) = one.verified else {
+                e.refused_lines += 1;
+                continue;
+            };
+            e.verified_lines += 1;
+            verified_notes += one.notes;
+            e.consistent_pairs_human += v[0];
+            e.consistent_pairs_dp += v[1];
+            e.consistent_pairs_tie += v[2];
+            e.consistent_pairs_repeat += v[3];
+            e.agree_dp += v[4];
+            e.agree_tie += v[5];
+            e.agree_repeat += v[6];
+            if let Some(r) = one.raise {
+                e.lines_cost_raised += usize::from(r > 0);
+                raises.push(r);
+            }
+        }
+        let rate = |x: u64| x as f64 / verified_notes.max(1) as f64;
+        e.agree_rate_dp = rate(e.agree_dp);
+        e.agree_rate_tie = rate(e.agree_tie);
+        e.agree_rate_repeat = rate(e.agree_repeat);
+        e.cost_raise = quantiles(raises);
+        evals.insert(model.name().to_string(), e);
+    }
+
+    println!("\n| model | lines (verified / refused) | pairs | consistent pairs: human / DP / solver / solver+constraint | agreement: DP / solver / solver+constraint | cost raised (lines, p50 / p90 / max) | solver s (tie / +constraint) |");
+    println!("|---|---|---|---|---|---|---|");
+    for (name, e) in &evals {
+        let pct = |x: u64| 100.0 * x as f64 / e.pairs.max(1) as f64;
+        println!(
+            "| {name} | {} ({} / {}) | {} | {:.1}% / {:.1}% / {:.1}% / {:.1}% | {:.1}% / {:.1}% / {:.1}% | {} ({} / {} / {}) | {:.0} / {:.0} |",
+            e.lines,
+            e.verified_lines,
+            e.refused_lines,
+            e.pairs,
+            pct(e.consistent_pairs_human),
+            pct(e.consistent_pairs_dp),
+            pct(e.consistent_pairs_tie),
+            pct(e.consistent_pairs_repeat),
+            100.0 * e.agree_rate_dp,
+            100.0 * e.agree_rate_tie,
+            100.0 * e.agree_rate_repeat,
+            e.lines_cost_raised,
+            e.cost_raise.p50,
+            e.cost_raise.p90,
+            e.cost_raise.max,
+            e.solver_total_s_tie,
+            e.solver_total_s_repeat
+        );
+    }
+    write_json(&out.join("repeat-report.json"), &evals)
+}
+
 fn write_json(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
     let mut text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
     text.push('\n');
@@ -994,6 +1251,8 @@ fn run() -> Result<(), String> {
         "fit" => fit(corpus, &args.out),
         "export" => export(&corpus, &args.models, &args.out),
         "report" => report(corpus, &args.models, &args.out),
+        "repeat-export" => repeat_export(&corpus, &args.models, &args.out),
+        "repeat-report" => repeat_report(&corpus, &args.models, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
