@@ -81,6 +81,9 @@ pub struct CutStats {
     pub kept_lines: u64,
     /// Notes inside kept lines.
     pub kept_notes: u64,
+    /// Tracks whose tuning was strictly ascending (string 1 = lowest, the GP6
+    /// import orientation) and was mirrored to string 1 = highest.
+    pub mirrored_tracks: u64,
 }
 
 impl CutStats {
@@ -97,6 +100,7 @@ impl CutStats {
             short_line_notes,
             kept_lines,
             kept_notes,
+            mirrored_tracks: _,
         } = *other;
         self.notes_seen = self.notes_seen.saturating_add(notes_seen);
         self.chord_onsets = self.chord_onsets.saturating_add(chord_onsets);
@@ -134,6 +138,10 @@ pub struct TabLine {
 /// sound their pitch under the track tuning. A chord onset, an unpositioned
 /// note, a position above `cut.max_fret`, a pitch/position mismatch, or a
 /// long enough rest ends the current line; each cause is counted.
+///
+/// Lines always use griff's string orientation (string 1 = highest): a track
+/// whose tuning is strictly ascending is mirrored — tuning reversed and every
+/// position renumbered — and counted in [`CutStats::mirrored_tracks`].
 ///
 /// # Errors
 ///

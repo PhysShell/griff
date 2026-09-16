@@ -76,6 +76,10 @@ fn group(atoms: Vec<AtomEvent>) -> EventGroup {
 }
 
 fn score(voices: Vec<Vec<EventGroup>>) -> Score {
+    score_with_tuning(voices, Tuning::standard_e())
+}
+
+fn score_with_tuning(voices: Vec<Vec<EventGroup>>, tuning: Tuning) -> Score {
     Score {
         ticks_per_quarter: 480,
         master_bars: vec![MasterBar {
@@ -99,7 +103,7 @@ fn score(voices: Vec<Vec<EventGroup>>) -> Score {
                     event_groups,
                 })
                 .collect(),
-            tuning: Tuning::standard_e(),
+            tuning,
         }],
         source_meta: None,
         loss: LossReport::new(),
@@ -191,6 +195,7 @@ fn tab_lines_cut_at_every_cause_and_count_it() {
             short_line_notes: 2,
             kept_lines: 4,
             kept_notes: 16,
+            mirrored_tracks: 0,
         }
     );
 }
@@ -238,6 +243,51 @@ fn tab_lines_sort_onsets_within_a_voice() {
     );
 }
 
+/// GP6 imports number strings low-first (string 1 = lowest); lines come out
+/// in griff's orientation (string 1 = highest), pitches untouched.
+#[test]
+fn tab_lines_mirror_low_first_tunings() {
+    let low_first = Tuning::new(pitches_of(&[40, 45, 50, 55, 59, 64]));
+    let s = score_with_tuning(
+        vec![vec![
+            single(0, 40, Some((1, 0))),
+            single(Q, 45, Some((1, 5))),
+            single(2 * Q, 59, Some((5, 0))),
+            single(3 * Q, 64, Some((6, 0))),
+        ]],
+        low_first,
+    );
+    let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    assert_eq!(stats.mirrored_tracks, 1);
+    assert_eq!(lines[0].tuning, Tuning::standard_e());
+    assert_eq!(
+        lines[0].human,
+        vec![pos(6, 0), pos(6, 5), pos(2, 0), pos(1, 0)]
+    );
+    for (p, q) in lines[0].human.iter().zip(&lines[0].pitches) {
+        assert_eq!(lines[0].tuning.pitch_at(*p), Some(*q));
+    }
+}
+
+#[test]
+fn tab_lines_keep_non_monotonic_tunings_as_they_are() {
+    // Descending except one crossed pair: not a mirrored tuning, left alone.
+    let odd = Tuning::new(pitches_of(&[64, 59, 55, 57, 45, 40]));
+    let s = score_with_tuning(
+        vec![vec![
+            single(0, 40, Some((6, 0))),
+            single(Q, 57, Some((4, 0))),
+            single(2 * Q, 59, Some((2, 0))),
+            single(3 * Q, 64, Some((1, 0))),
+        ]],
+        odd.clone(),
+    );
+    let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    assert_eq!(stats.mirrored_tracks, 0);
+    assert_eq!(lines[0].tuning, odd);
+    assert_eq!(lines[0].human[1], pos(4, 0));
+}
+
 #[test]
 fn tab_lines_refuse_a_missing_track() {
     assert_eq!(
@@ -256,6 +306,15 @@ fn cut_stats_absorb_adds_fieldwise() {
     assert_eq!(total.kept_notes, 2 * a.kept_notes);
     assert_eq!(total.rest_cuts, 2 * a.rest_cuts);
     assert_eq!(total.short_line_notes, 2 * a.short_line_notes);
+    let (_, mirrored) = tab_lines(
+        &score_with_tuning(vec![vec![]], Tuning::new(pitches_of(&[40, 45, 50]))),
+        0,
+        &LineCut::v1(),
+    )
+    .unwrap();
+    total.absorb(&mirrored);
+    total.absorb(&mirrored);
+    assert_eq!(total.mirrored_tracks, 2);
 }
 
 // ── brute force helpers ───────────────────────────────────────────────────────
