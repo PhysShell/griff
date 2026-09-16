@@ -98,24 +98,44 @@ Per-note agreement with the tab author (string and fret), holdout songs:
 | lowest fret (baseline) | — | 31.8% | 35.5% | 20.7% | — | — |
 | v1 production | fret 1, open bonus 1, shift 2, string 1 | 34.0% | 36.7% | 18.9% | 19.0% | 45 / 489 |
 | v1-fit | fret 0, open +4 penalty, shift 1, string 0 | 40.1% | 42.4% | 11.5% | 22.1% | 10 / 76 |
-| hand-fit | height 0, open 0, stretch 0, shift 2, shift_distance 1, string_distance 3 | **40.6%** | 46.2% | 22.3% | **35.4%** | **6 / 69** |
+| hand-fit | height 0, open 0, stretch 0, shift 2, shift_distance 1, string_distance 3 | **40.6%** | 46.2% | 22.3% | 35.4% | 6 / 69 |
 
 (v1 fields: cost = `fret·w − [open]·open_string`; `open_string = −4` is a
 penalty of 4 per open string. v1-fit: exhaustive grid of 2,205 integer
 weight sets on train songs; hand-fit: coordinate descent from three starts,
 366 weight sets evaluated.)
 
+**Reading the last two columns across models.** Only the agreement columns
+compare models on a common scale.
+
+- *Human excess* is in each model's own cost units and is **not comparable
+  across rows**: v1 charges every note its fret number, so a tab author
+  playing at the 12th fret pays 12 per note before any movement, while the
+  fitted models have no per-note term at all. The drop from 45 to 6 mostly
+  reflects weight scale, not a better account of human choices.
+- *Human fingering optimal* is scale-free but inflated by flat objectives:
+  the more fingerings tie at the optimum, the easier it is for the human one
+  to be among them.
+- Neither is a training target: all-zero weights make every fingering
+  optimal (excess 0, 100% optimal). A scale-free diagnostic — the human
+  path's rank among candidates, or `(human − optimum) / (baseline −
+  optimum)` — is follow-up work; agreement on holdout songs remains the only
+  unbiased target used here.
+
 - The production weights barely beat "always the lowest fret" (34.0% vs
   31.8%) and make the human fingering optimal in only 19% of lines.
 - Fitted on train songs only, both families gain ~6 points on unseen songs.
   The fit is a local optimum over small integer grids, not a claim about the
   best achievable weights.
-- The hand model explains human choices markedly better than it predicts
-  them: the human fingering is optimal in 35% of test lines (v1: 19%) and
-  its median excess cost is 6 (v1: 45), while agreement moves only to 40.6%.
-- Tab authors avoid open strings (every fit turned the open-string bonus
-  into a penalty or zero) and pay more for crossing strings than for moving
-  along the neck — consistent with swancore's position playing.
+- The hand model makes the human fingering optimal in 35% of test lines
+  (v1: 19%, v1-fit: 22%) while agreement moves only to 40.6%. Part of that
+  rise is the flatness caveat above, so it is a hint that the hand terms
+  describe human choices better, not a measurement of how much better.
+- Tab authors avoid open strings: every fit turned the open-string bonus
+  into a penalty or zero. The hand model charges a crossed string three
+  times a fret of hand travel; the v1 family, which sees only whether the
+  string *changed*, set that weight to 0 — the distance, not the change,
+  carries the signal.
 
 **Tie-breaking is not the problem.** The agreement pass maximizes agreement
 over *all* cost-optimal fingerings, so it is the ceiling any tie-break could
