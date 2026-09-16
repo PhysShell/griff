@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ir::{fnv1a64, IntVar, VarId};
-use crate::optir::{Hard, OptProblem, Term};
+use crate::optir::{Hard, OptIrError, OptProblem, Term};
 use crate::problems::LabError;
 
 /// Variables per note in a [`v1_problem`]: `s{i}` (string), `f{i}` (fret).
@@ -825,6 +825,55 @@ pub fn holdout_bucket(key: &str, buckets: u64) -> u64 {
         return 0;
     }
     fnv1a64(key.as_bytes()) % buckets
+}
+
+/// Repeated figures inside one line: start indices `(i, j)` with
+/// `i + window <= j` of identical pitch windows, scanning left to right —
+/// for each start `i` the first later non-overlapping occurrence `j`, after
+/// which the scan resumes at `i + window`. Single-pitch windows (ostinato on
+/// one note) are skipped: they carry no fingering shape. Empty for
+/// `window == 0`.
+#[must_use]
+pub fn repeat_pairs(pitches: &[Pitch], window: usize) -> Vec<(usize, usize)> {
+    let _ = (pitches, window);
+    todo!("repeat pairs — green step")
+}
+
+/// Adds the **repeat-consistency** global constraint to a fingering problem
+/// laid out with `vars_per_note` variables per note (string first): for each
+/// pair from [`repeat_pairs`] and each offset `k < window`, notes `i + k` and
+/// `j + k` must use the same string. Not expressible in a chain DP's local
+/// state; expressed in the IR as equal-value hard tables.
+///
+/// # Errors
+///
+/// [`OptIrError`] when a pair indexes past the problem (dangling variable) or
+/// two aligned notes share no string.
+pub fn with_repeat_consistency(
+    problem: &OptProblem,
+    vars_per_note: usize,
+    pairs: &[(usize, usize)],
+    window: usize,
+) -> Result<OptProblem, OptIrError> {
+    let _ = (problem, vars_per_note, pairs, window);
+    todo!("repeat consistency — green step")
+}
+
+/// A deterministic tie-break for comparing solver witnesses: every objective
+/// weight is multiplied by `scale = notes · max_string + 1` and each note's
+/// string value is added, so `evaluate' = scale · evaluate + Σ string` — the
+/// cost-optimal set is unchanged and ties resolve toward lower string numbers.
+/// Returns the new problem and `scale`.
+///
+/// # Errors
+///
+/// [`OptIrError`] if the rebuilt problem is refused.
+pub fn with_string_tiebreak(
+    problem: &OptProblem,
+    vars_per_note: usize,
+) -> Result<(OptProblem, i64), OptIrError> {
+    let _ = (problem, vars_per_note);
+    todo!("string tie-break — green step")
 }
 
 // ── private helpers ───────────────────────────────────────────────────────────

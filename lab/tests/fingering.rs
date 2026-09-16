@@ -22,11 +22,11 @@
 use griff_constraint_lab::{
     fingering::{
         best_hands, decode_positions, encode_hand_witness, encode_v1_witness, hand_cost,
-        hand_problem, holdout_bucket, solve_hand, song_key, tab_lines, v1_cost, v1_problem,
-        CutStats, HandError, HandModel, HandModelError, HandWeights, LineCut, Reach,
-        HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
+        hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key, tab_lines, v1_cost,
+        v1_problem, with_repeat_consistency, with_string_tiebreak, CutStats, HandError, HandModel,
+        HandModelError, HandWeights, LineCut, Reach, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
     },
-    optir::{Term, WitnessError},
+    optir::{OptIrError, Term, WitnessError},
     problems::LabError,
 };
 use griff_core::{
@@ -845,4 +845,97 @@ fn holdout_bucket_is_stable_and_bounded() {
         .map(|i| holdout_bucket(&format!("band - song {i}"), 5))
         .collect();
     assert_eq!(spread.len(), 5);
+}
+
+// ── repeat consistency ────────────────────────────────────────────────────────
+
+#[test]
+fn repeat_pairs_find_non_overlapping_repeated_figures() {
+    let p = pitches_of;
+    assert_eq!(repeat_pairs(&p(&[40, 45, 47, 40, 45, 47]), 3), vec![(0, 3)]);
+    assert_eq!(
+        repeat_pairs(&p(&[50, 52, 55, 57, 50, 52, 55]), 3),
+        vec![(0, 4)]
+    );
+    assert_eq!(
+        repeat_pairs(&p(&[50, 52, 50, 52, 50, 52]), 2),
+        vec![(0, 2), (2, 4)]
+    );
+    assert_eq!(repeat_pairs(&p(&[40, 40, 40, 40, 40, 40]), 3), vec![]);
+    assert_eq!(repeat_pairs(&p(&[40, 45, 40, 45]), 0), vec![]);
+    assert_eq!(repeat_pairs(&p(&[40, 45, 40]), 2), vec![]);
+}
+
+#[test]
+fn repeat_consistency_admits_only_identically_fingered_repeats() {
+    let tuning = Tuning::standard_e();
+    let pitches = pitches_of(&[52, 55, 57, 52, 55, 57]);
+    let base = v1_problem(
+        &pitches,
+        &tuning,
+        &FingeringWeights::v1(),
+        STANDARD_MAX_FRET,
+    )
+    .unwrap();
+    let pairs = repeat_pairs(&pitches, 3);
+    let constrained = with_repeat_consistency(&base, V1_VARS_PER_NOTE, &pairs, 3).unwrap();
+    assert_eq!(constrained.hard().len(), base.hard().len() + 3);
+    let mut consistent = 0;
+    for line in candidate_lines(&pitches, &tuning, STANDARD_MAX_FRET) {
+        let witness = encode_v1_witness(&line);
+        let same = (0..3).all(|k| line[k] == line[3 + k]);
+        if same {
+            consistent += 1;
+            assert_eq!(constrained.evaluate(&witness), base.evaluate(&witness));
+        } else {
+            assert!(matches!(
+                constrained.evaluate(&witness),
+                Err(WitnessError::HardViolated { index }) if index >= base.hard().len()
+            ));
+        }
+    }
+    assert!(consistent > 1);
+    assert!(matches!(
+        with_repeat_consistency(&base, V1_VARS_PER_NOTE, &[(0, 5)], 3),
+        Err(OptIrError::Ir(_))
+    ));
+}
+
+#[test]
+fn string_tiebreak_scales_cost_and_prefers_lower_strings() {
+    let tuning = Tuning::standard_e();
+    for weights in v1_weight_sets() {
+        let pitches = pitches_of(&[52, 57, 64, 59]);
+        let base = v1_problem(&pitches, &tuning, &weights, STANDARD_MAX_FRET).unwrap();
+        let (tie, scale) = with_string_tiebreak(&base, V1_VARS_PER_NOTE).unwrap();
+        assert_eq!(scale, 4 * 6 + 1);
+        let lines = candidate_lines(&pitches, &tuning, STANDARD_MAX_FRET);
+        for line in &lines {
+            let w = encode_v1_witness(line);
+            let strings: i64 = line.iter().map(|p| i64::from(p.string)).sum();
+            assert_eq!(
+                tie.evaluate(&w).unwrap(),
+                scale * base.evaluate(&w).unwrap() + strings
+            );
+        }
+        let best_base = lines
+            .iter()
+            .map(|l| base.evaluate(&encode_v1_witness(l)).unwrap())
+            .min()
+            .unwrap();
+        let best_tie = lines
+            .iter()
+            .map(|l| tie.evaluate(&encode_v1_witness(l)).unwrap())
+            .min()
+            .unwrap();
+        assert_eq!(best_tie.div_euclid(scale), best_base);
+    }
+    let hand = hand_problem(
+        &pitches_of(&[52, 57]),
+        &tuning,
+        &model(hand_weight_sets()[0], STANDARD_MAX_FRET),
+    )
+    .unwrap();
+    let (_, scale) = with_string_tiebreak(&hand, HAND_VARS_PER_NOTE).unwrap();
+    assert_eq!(scale, 2 * 6 + 1);
 }
