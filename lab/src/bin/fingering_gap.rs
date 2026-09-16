@@ -686,6 +686,8 @@ fn export(corpus: &Corpus, models: &[Model], out: &Path) -> std::io::Result<()> 
 #[derive(Debug, Clone, Default, Serialize)]
 struct OracleEval {
     records: usize,
+    /// Records re-solved by the adapter's multi-worker escalation tier.
+    escalated: usize,
     missing: usize,
     proven: usize,
     not_proven: usize,
@@ -759,6 +761,10 @@ fn oracle_eval(
     });
     let mut e = OracleEval {
         records: records.len(),
+        escalated: records
+            .values()
+            .filter(|r| r.solver.version.contains("escalated"))
+            .count(),
         ..OracleEval::default()
     };
     let mut walls = Vec::new();
@@ -799,7 +805,7 @@ fn oracle_eval(
     }
     e.solver = records
         .values()
-        .next()
+        .find(|r| !r.solver.version.contains("escalated"))
         .map(|r| format!("{} {}", r.solver.name, r.solver.version));
     e.solver_total_s = walls.iter().sum::<i64>() as f64 / 1e6;
     e.solver_wall_us = quantiles(walls);
@@ -936,8 +942,8 @@ fn print_oracle(oracle: &BTreeMap<String, OracleEval>) {
     for (name, e) in oracle {
         if let Some(s) = &e.solver {
             println!(
-                "  {name}: {s}; agreement passes verified {} refused {}",
-                e.agreement_verified, e.agreement_refused
+                "  {name}: {s}; escalated {}; agreement passes verified {} refused {}",
+                e.escalated, e.agreement_verified, e.agreement_refused
             );
         }
     }
