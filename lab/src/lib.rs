@@ -8,12 +8,18 @@
 //! - **Problem B** — complement pair cleanliness (the existing
 //!   `PairValidation` rule set, pinned to production semantics).
 //!
+//! The optimization phase ([`optir`], [`fingering`]) adds an objective to
+//! the IR and measures the production fingering DP and a hand-position model
+//! against an external optimum and against human tablature.
+//!
 //! Shape: typed problem → solver-neutral IR → `MiniZinc` emission + an exact
 //! in-repo reference solver → archived manifests. Research tooling only:
 //! nothing here is a production dependency, and no production path calls it.
 
 pub mod emit;
+pub mod fingering;
 pub mod ir;
 pub mod manifest;
+pub mod optir;
 pub mod problems;
 pub mod solve;

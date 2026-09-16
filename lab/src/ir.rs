@@ -248,7 +248,7 @@ impl OracleProblem {
 }
 
 /// FNV-1a 64-bit.
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     bytes
@@ -257,7 +257,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 /// `[A-Za-z_][A-Za-z0-9_]*` — safe as a `MiniZinc` identifier.
-fn minizinc_safe(name: &str) -> bool {
+pub(crate) fn minizinc_safe(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;
