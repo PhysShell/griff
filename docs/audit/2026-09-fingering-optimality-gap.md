@@ -12,6 +12,49 @@ Guitar Pro corpus.
 Research tooling only. `lab/` stays outside the workspace; no production
 code, dependency, or `deny.toml` changed; OR-Tools lives in a local venv.
 
+## Correction (2026-09-17) — GP7 pitches were wrong in the data
+
+Chasing this audit's side finding exposed a larger import defect, fixed in
+PhysShell/griff#198: GP7 (`.gp`) tracks imported a fallback Standard E
+tuning while their notes stayed numbered from the low string, so **nearly
+every GP7 note in the corpus had the wrong pitch** (0.2% matched the GPIF
+`Midi` property). Positions stayed consistent with the wrong tuning, which is
+why no check in this audit caught it. Every number in Results 1–4 below was
+measured *before* that fix.
+
+Re-measured on the fixed importer (same corpus and protocol; 1,149 guitar
+tracks, 9,045 lines, 326,130 notes; 7,091 train / 1,954 holdout lines; weights
+refitted on train songs):
+
+| model | agreement, holdout (before → after) | human fingering optimal, holdout (after) |
+|---|---|---|
+| lowest fret | 31.8% → 33.5% | — |
+| v1 production | 34.0% → 35.8% | 19.2% |
+| v1-fit (after: fret 0, open +3 penalty, shift 1, string 0) | 40.1% → 44.1% | 30.9% |
+| hand-fit (after: height 0, open 1, stretch 2, shift 0, shift_distance 2, string_distance 2) | 40.6% → 44.3% | 37.7% |
+
+CP-SAT on the holdout lines, fixed importer (every record verified):
+
+| model | proven | DP gap = 0 | DP agreement | ceiling at the optimum |
+|---|---|---|---|---|
+| v1 | 1,954 / 1,954 | 1,954 | 35.8% | **36.2%** |
+| v1-fit | 1,954 / 1,954 | 1,954 | 44.1% | **55.5%** |
+
+What changes and what does not:
+
+- **Unchanged:** the solver gap is zero; the production weights barely beat
+  a lowest-fret heuristic; v1's optimal set caps agreement near its DP value
+  (36.2% vs 35.8%), so the objective is the limit.
+- **Stronger:** the flat-objective reading of v1-fit — its optimal set
+  contains 55.5% agreement against the DP's 44.1%, an 11.4-point tie-break
+  loss.
+- **Shifted:** fitted weights and absolute agreement (+2 to +4 points on
+  every model). The fitted hand model no longer beats fitted v1 on holdout
+  agreement (44.3% vs 44.1%); its advantage remains the human-optimal rate.
+- **Not re-run:** the repeat-consistency experiment (Result 3) and the
+  hand-model oracle (Results 1 and 4). Neither conclusion depends on pitch
+  correctness in an obvious way, but their numbers are pre-fix.
+
 ## What was built
 
 `lab/` (`griff-constraint-lab`), TDD red → green per commit:
@@ -234,7 +277,7 @@ for problems a DP solves exactly, and its cost is sensitive to modelling
 details a DP does not see. As an offline oracle over a sample it is cheap
 enough and it found what it was asked to find.
 
-## Side finding — GP6 imports mirror string numbering
+## Side finding — GPIF imports mirror string numbering (and GP7 pitches)
 
 156 guitar tracks — nearly all `.gpx` (GP6/GPIF) — import with a strictly
 ascending tuning: string 1 is the *lowest* string, against the glossary's
@@ -242,8 +285,12 @@ string 1 = highest. Pitches stay consistent (tuning and positions are
 mirrored together, which is why 9073de1's index fix did not surface it), but
 anything orientation-sensitive — the DP's "lowest string first" tie-break,
 tab rendering, `Tuning` equality — flips with the file format. The Lab
-normalizes lines (`CutStats::mirrored_tracks`); the importer fix is a
-separate `core` change.
+normalizes lines (`CutStats::mirrored_tracks`).
+
+Following it up against the GPIF `Midi` note property found the GP7 half:
+the `guitarpro` crate never reads a staff-level tuning, so GP7 tracks got a
+high-first Standard E and wrong pitches (see *Correction* above). Both are
+fixed at the import boundary in PhysShell/griff#198.
 
 ## Limitations (recorded, not hidden)
 

@@ -2831,7 +2831,11 @@ Architectural decisions go to [`adr/`](adr/) instead.
   hand-position model reach ~40%; and a repeat-consistency global
   constraint that tab authors satisfy in 98% of repeats does not raise
   agreement. The objective, not the search and not the constraint
-  vocabulary, is what to improve next. Solver: OR-Tools CP-SAT via a local
+  vocabulary, is what to improve next. (Numbers are pre-#198: GP7 pitches
+  were wrong in the corpus import; re-measured after the fix, holdout
+  agreement is v1 35.8%, lowest-fret 33.5%, v1 ceiling 36.2%, fitted models
+  ~44%, with every conclusion unchanged — see the audit's Correction.)
+  Solver: OR-Tools CP-SAT via a local
   venv adapter (`lab/cpsat/`), never a dependency; idea-level prior art
   only (TablaZinc is MPL-2.0, `guitar-tab-generator` GPL-3.0 — no code
   copied).
