@@ -100,7 +100,7 @@ impl CutStats {
             short_line_notes,
             kept_lines,
             kept_notes,
-            mirrored_tracks: _,
+            mirrored_tracks,
         } = *other;
         self.notes_seen = self.notes_seen.saturating_add(notes_seen);
         self.chord_onsets = self.chord_onsets.saturating_add(chord_onsets);
@@ -112,6 +112,7 @@ impl CutStats {
         self.short_line_notes = self.short_line_notes.saturating_add(short_line_notes);
         self.kept_lines = self.kept_lines.saturating_add(kept_lines);
         self.kept_notes = self.kept_notes.saturating_add(kept_notes);
+        self.mirrored_tracks = self.mirrored_tracks.saturating_add(mirrored_tracks);
     }
 }
 
@@ -159,6 +160,28 @@ pub fn tab_lines(
     let mut lines = Vec::new();
     let mut stats = CutStats::default();
 
+    // Positions are checked against the imported tuning as-is, then emitted
+    // in griff's orientation (string 1 = highest).
+    let open = track.tuning.open_strings();
+    let mirrored = open.len() >= 2 && open.windows(2).all(|w| matches!(w, [a, b] if a.0 < b.0));
+    let tuning = if mirrored {
+        stats.mirrored_tracks = 1;
+        Tuning::new(open.iter().rev().copied().collect())
+    } else {
+        track.tuning.clone()
+    };
+    let string_count = u8::try_from(open.len()).unwrap_or(u8::MAX);
+    let orient = |p: FretboardPosition| {
+        if mirrored {
+            FretboardPosition {
+                string: string_count.saturating_add(1).saturating_sub(p.string),
+                fret: p.fret,
+            }
+        } else {
+            p
+        }
+    };
+
     for voice in &track.voices {
         let mut notes: Vec<&AtomNote> = voice
             .event_groups
@@ -171,7 +194,7 @@ pub fn tab_lines(
             .collect();
         notes.sort_by_key(|n| n.absolute_start.0);
 
-        let mut line = LineBuilder::new(track_index, voice.id, &track.tuning);
+        let mut line = LineBuilder::new(track_index, voice.id, &tuning);
         let mut sounding_until: Option<u64> = None;
         let mut rest = notes.as_slice();
         while let Some(first) = rest.first() {
@@ -218,7 +241,7 @@ pub fn tab_lines(
                 line.flush(cut, &mut lines, &mut stats);
                 continue;
             }
-            line.push(onset, note.pitch, position);
+            line.push(onset, note.pitch, orient(position));
         }
         line.flush(cut, &mut lines, &mut stats);
     }
