@@ -320,3 +320,169 @@ stay on one string and descend.
   - Of those legato edges, 96.8% descend (tap, then pull-off) and 99.6% stay
     on the string.
   - 14.8% land on an open string.
+
+## Phase 2 — ablation (corrected import)
+
+`fingering_gap legato`. Primary weights `v1-fit`, whole corpus: 226 tapped
+lines, 25,571 notes, 5,260 of them tapped.
+
+**Controls:**
+
+- lines without legato edges: 0 of 12,814 (lines × weight sets) differ
+  between B and any legato stage;
+- untapped lines: 0 of 17,480 differ between A and B.
+
+### Results (`v1-fit`, whole corpus)
+
+The baseline is the untapped pool under **the same stage objective**,
+reweighted to the slice's line lengths; its value is in parentheses.
+
+| stage | human path in optimum set | exactness gap to baseline | excess per note | agreement | on tapped notes | ceiling | unique optimum |
+|---|---|---|---|---|---|---|---|
+| A tap-blind | 0.0% | 20.0 pt (20.0%) | 3.20 (1.16) | 38.5% (44.9%) | 29.0% | 44.1% | 14.2% |
+| B tap-aware | 0.9% | 19.1 pt (20.0%) | 1.63 (1.16) | 43.1% (44.9%) | 45.3% | 52.3% | 3.1% |
+| **C1 hard continuity** | **11.5%** | **9.3 pt** (20.8%) | 0.69\* (0.97) | 45.7% (44.9%) | 50.7% | 51.4% | 28.8% |
+| C2 soft, k = 1 | 3.1% | 17.2 pt (20.2%) | 1.46 (1.14) | 46.7% (44.9%) | 52.5% | 52.9% | 14.6% |
+| **C2 soft, k = 3** | **8.4%** | **12.0 pt** (20.4%) | 1.25 (1.10) | 47.6% (45.0%) | 51.9% | 53.3% | 28.8% |
+| C2 soft, k = 10 | 10.6% | 10.1 pt (20.7%) | 0.94 (1.04) | 46.5% (45.0%) | 50.5% | 52.0% | 37.6% |
+| **D1 = C1 + waiver** | **15.0%** | **6.0 pt** (21.0%) | 0.52\* (0.94) | 52.1% (46.1%) | 53.5% | 59.7% | 27.9% |
+| **D2 = C2(3) + waiver** | **8.8%** | **11.7 pt** (20.5%) | 1.08 (1.07) | 45.7% (45.0%) | 48.4% | 53.2% | 27.0% |
+
+\* Over 207 lines. The other 19 tapped lines have more cross-string legato
+edges in the tab than the hard optimum; they are not exact and have no
+defined excess.
+
+Where the optimum put a legato edge across strings (lines):
+
+| stage | lines |
+|---|---|
+| A | 209 of 226 |
+| B | 212 |
+| C2(3) | 163 |
+| C1 | 2 (edges the constraint cannot avoid) |
+
+**Per format family** (exactness, then the gap to the same-format baseline):
+
+| stage | GP3–5 (142 lines) | GP6/7 (84 lines) |
+|---|---|---|
+| B | 1.4%, gap 17.0 pt | 0.0%, gap 19.8 pt |
+| C1 | 12.0%, gap 7.0 pt | 10.7%, gap 10.1 pt |
+| C2(3) | 7.7%, gap 10.9 pt | 9.5%, gap 11.0 pt |
+| D1 | 15.5%, gap 3.7 pt | 14.3%, gap 6.7 pt |
+| D2 | 9.9%, gap 8.8 pt | 7.1%, gap 13.4 pt |
+
+### Leave one song out (`v1-fit`, whole corpus)
+
+- **Δ** is the change in the slice's exactness, in points.
+- **Min / max** give Δ recomputed with each song key's lines removed.
+- **Share** is the largest single song's share of the net line gain. It can
+  exceed 100% when other songs lose lines.
+- **Evidence** applies the registered rule: Δ > 0 on the full subset and
+  under every removal.
+
+All tapped lines (226 lines, 58 songs):
+
+| step | Δ | min / max | share | evidence |
+|---|---|---|---|---|
+| A → B | +0.9 | +0.0 / +1.1 | 100% | no |
+| **B → C1** | +10.6 | +7.3 / +13.3 | 33% | **yes** |
+| **B → C2(3)** | +7.5 | +5.6 / +9.4 | 35% | **yes** |
+| **C1 → D1** | +3.5 | +1.8 / +4.4 | 50% | **yes** |
+| C2(3) → D2 | +0.4 | −0.9 / +1.4 | 300% | no |
+
+GP3–5 (142 lines, 36 songs):
+
+| step | Δ | min / max | share | evidence |
+|---|---|---|---|---|
+| A → B | +1.4 | +0.0 / +1.8 | 100% | no |
+| **B → C1** | +10.6 | +5.2 / +12.6 | 53% | **yes** |
+| **B → C2(3)** | +6.3 | +2.6 / +7.6 | 67% | **yes** |
+| **C1 → D1** | +3.5 | +1.5 / +4.4 | 60% | **yes** |
+| C2(3) → D2 | +2.1 | +0.0 / +2.6 | 100% | no |
+
+GP6/7 (84 lines, 27 songs):
+
+| step | Δ | min / max | share | evidence |
+|---|---|---|---|---|
+| A → B | +0.0 | +0.0 / +0.0 | — | no |
+| **B → C1** | +10.7 | +7.7 / +14.8 | 33% | **yes** |
+| **B → C2(3)** | +9.5 | +6.4 / +13.1 | 38% | **yes** |
+| C1 → D1 | +3.6 | −1.3 / +5.1 | 133% | no: concentrated case evidence |
+| C2(3) → D2 | −2.4 | −3.3 / +0.0 | — | no |
+
+The B → C1 gain spreads over 8 songs; none loses a line, and the largest
+contributes 8 of the 24 lines. The C1 → D1 gain comes from 3 songs, all by
+one band; one other song loses a line. It passes the registered rule on the
+whole slice and in GP3–5 but rests on few songs.
+
+### Production `v1` (secondary)
+
+- **Hard continuity.** Exactness goes from B 0.9% to C1 **17.7%**, above its
+  baseline (14.7%, gap −3.0 pt). B → C1 is corpus evidence in all three
+  subsets (all +16.8 pt, leave-one-song-out +9.6 / +18.9).
+- **Soft continuity.** C2(3) reaches 2.2% (+1.3 pt, not corpus evidence).
+  The soft penalty `3 · position_shift` is small against `v1`'s other terms.
+- **Waiver.** D equals C line by line: the waiver lifts only penalties, and
+  `v1` has an open-string bonus.
+
+### Holdout songs
+
+30 tapped lines, reported, not interpreted. `v1-fit` exactness: B 6.7%,
+C1 16.7%, D1 26.7%, C2(3) 13.3%, D2 13.3%.
+
+## Reading
+
+1. **Observed legato continuity explains a large, robust part of the
+   exactness residual.** Hard same-string continuity across observed legato
+   edges halves the gap to comparable untapped lines (19.1 → 9.3 pt, `v1-fit`,
+   whole corpus). It is corpus evidence by the registered rule in both format
+   families and under both weight sets. Under B, the optimum put some legato
+   edge across strings in 212 of 226 tapped lines. H1 (tapping figures kept on
+   one string) was a real blind spot of the objective, not a hunch.
+2. **Hard fits better than soft at this law level (99.6%).** Soft continuity
+   approaches hard as `k` grows (3.1% → 8.4% → 10.6%, against 11.5%). The
+   registered `k = 3` closes 37% of the gap, and under production `v1` almost
+   nothing. The hard constraint's cost is 19 tapped lines (8.4%) that it can
+   never reach: their tabs cross strings on 61 legato edges, spread over 8
+   songs.
+3. **The pull-off → open-string interaction (derived direction) adds to hard
+   continuity, not to soft.**
+   - **On top of C1,** it closes another third of the remaining gap
+     (9.3 → 6.0 pt), raising agreement from 45.7% to 52.1% and the ceiling
+     from 51.4% to 59.7%. By the registered rule it is corpus evidence on the
+     whole slice and in GP3–5, but its gain comes from 3 songs of one band,
+     and in GP6/7 it is concentrated case evidence.
+   - **On top of soft continuity,** it adds nothing (+0.4 pt) and lowers
+     agreement (47.6% → 45.7%). A plausible reading, not tested here: under
+     soft continuity a waived open string can be reached by crossing strings,
+     which the hard constraint forbids.
+4. **What remains is closeness without exactness.** Under D1 the slice sits
+   6.0 pt below its baseline in exactness (15.0% against 21.0%). Its excess
+   per note is below the baseline's (0.52 against 0.94, over lines with a
+   defined excess), and its agreement is above (52.1% against 46.1%).
+5. **Tap attribution alone never moved exactness.** A → B changes 2 lines
+   from one song and is not corpus evidence, consistent with stage 1.
+
+## Limitations
+
+- **Oracle labels.** Tapping and legato labels come from the tab.
+  MIDI-sourced lines carry neither, so these gains assume the labels.
+- **Import limits.** Legato is imported as an origin only, and D's direction
+  is derived from pitch.
+- **Weights.** `v1-fit` was fitted on all lines and reused unchanged. `k` and
+  the waiver were fixed before the results.
+- **Hard constraint.** 19 tapped lines are unreachable under it.
+- **Concentration.** The C1 → D1 gain rests on 3 songs.
+- **Holdout.** The holdout slice (30 lines) is too small to interpret.
+
+## Follow-ups proposed (not done)
+
+1. **Hidden technique inference must predict legato edges, not only taps.**
+   Continuity carries half of the exactness effect, so a MIDI-side model
+   without legato labels would lose it.
+2. **Inspect the 19 hard-constraint violators** before choosing between hard
+   continuity with an exception budget and soft continuity with a large `k`.
+   Guitar Pro stores legato "to the next note on this string", which need not
+   be the next onset.
+3. **Hammer-on / pull-off direction.** D's derived direction argues for the
+   separate core decision on importing or deriving direction for all formats.
