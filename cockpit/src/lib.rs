@@ -39,7 +39,7 @@ use griff_core::score::Score;
 use griff_core::{midi::export_score, score::LossReport};
 use griff_swang::eval;
 use griff_ui_core::history::{
-    CandidateSource, ChainOutcomeRecord, ChainSupplier, CorpusContribution, GenerationRunId,
+    contribution_from_pass, CandidateSource, ChainOutcomeRecord, ChainSupplier, GenerationRunId,
     GeneratorProvenance, HistoryId, Provenance, SessionHistory, Verdict,
 };
 use griff_ui_core::playback::{Player, TempoMap};
@@ -1637,7 +1637,7 @@ impl CockpitApp {
                     seed: ask.seed,
                     bars: ask.bars,
                     variants_per_strategy: ask.variants_per_strategy,
-                    corpus: CorpusContribution::from_pass(
+                    corpus: contribution_from_pass(
                         self.material.as_ref().map_or(0, |m| m.rhythms.len()),
                         &set.summary,
                     ),
@@ -3674,6 +3674,7 @@ mod tests {
     use eframe::egui::epaint::ClippedShape;
     use eframe::egui::Shape;
     use griff_core::classify::BarClass;
+    use griff_ui_core::history::CorpusContribution;
     use griff_ui_core::playback::ticks_per_second;
     use griff_ui_core::scene::CellRole;
 
