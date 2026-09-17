@@ -53,10 +53,11 @@ pub enum RunFailure {
 }
 
 impl LoadedExperiment {
-    /// Arranges an already-verified `bundle`.
+    /// Verifies and arranges `bundle` through [`ExperimentView::from_bundle`];
+    /// a bundle edited after it was sealed is refused, not shown.
     ///
     /// # Errors
-    /// Whatever arranging the bundle refuses.
+    /// Whatever verifying or arranging the bundle refuses.
     pub fn from_bundle(bundle: ExperimentBundleV1, origin: Origin) -> Result<Self, BundleError> {
         let view = ExperimentView::from_bundle(&bundle)?;
         Ok(Self {

@@ -2,7 +2,7 @@
 //! experiment.
 //!
 //! **One display path.** An [`ExperimentView`] is built from an
-//! [`ExperimentBundleV1`] and from nothing else — not from a live
+//! [`ExperimentBundleV1`] that verifies, and from nothing else — not from a live
 //! `ExperimentRun`, a runner, a ranked set, or a corpus. A fresh run is written
 //! down as a bundle before it is shown, and a saved bundle is read back as the
 //! same bundle, so both reach the screen through this one projection and cannot
@@ -227,13 +227,18 @@ pub struct InteractionView {
 }
 
 impl ExperimentView {
-    /// Arranges `bundle` for display. Reads the bundle only.
+    /// Verifies `bundle`, then arranges it for display. Reads the bundle only.
+    ///
+    /// The bundle is verified here, whichever way it arrived: `from_json` and
+    /// `from_run` verify too, but an [`ExperimentBundleV1`] is a plain value
+    /// that can be edited after either, and this is the frontend boundary.
     ///
     /// # Errors
-    /// Whatever rebuilding the bundle's typed run refuses (a projection the
-    /// model cannot hold, a name outside the vocabulary), or a cell whose regime
-    /// or pass the bundle does not have.
+    /// [`BundleError::IdentityMismatch`] for data its recorded identities do
+    /// not describe; whatever rebuilding the typed run refuses (a projection
+    /// the model cannot hold, a name outside the vocabulary).
     pub fn from_bundle(bundle: &ExperimentBundleV1) -> Result<Self, BundleError> {
+        bundle.verify()?;
         let run = bundle.run()?;
         let regimes: Vec<RegimeView> = bundle
             .spec
