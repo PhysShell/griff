@@ -894,11 +894,15 @@ fn map_gp_note_marks(
 
 // ── duration helpers ──────────────────────────────────────────────────────────
 
-/// Computes the beat duration in GP ticks from the public `Duration` fields.
+/// Computes the beat duration in GP ticks from the public `Duration` fields:
+/// `base = PPQN * 4 / value`, plus half the base for a dot (three quarters for
+/// a double dot), then the tuplet ratio.
 ///
-/// Matches the internal `Duration::time()` logic in the `guitarpro` crate
-/// (which is `pub(crate)` and cannot be called externally):
-/// `base = PPQN * 4 / value`, with dotted and tuplet adjustments.
+/// A tuplet plays `tuplet_enters` notes in the time of `tuplet_times` — the GP
+/// readers store a triplet as 3 : 2 — so each note lasts `times / enters` of
+/// its written value. The crate's own `Duration::time()` (0.4.2) applies the
+/// inverse ratio and ignores double dots; following it overfilled every bar
+/// with a tuplet, starting its last beats after the next bar's first.
 fn gp_duration_ticks(dur: &GpDuration) -> u32 {
     if dur.value == 0 {
         return u32::from(GP_PPQN);
@@ -907,18 +911,19 @@ fn gp_duration_ticks(dur: &GpDuration) -> u32 {
         .saturating_mul(4)
         .checked_div(u32::from(dur.value))
         .unwrap_or_else(|| u32::from(GP_PPQN));
-    let dotted_extra = if dur.dotted {
+    let dots = if dur.double_dotted {
+        base.saturating_mul(3).checked_div(4).unwrap_or(0)
+    } else if dur.dotted {
         base.checked_div(2).unwrap_or(0)
     } else {
         0
     };
-    let time = base.saturating_add(dotted_extra);
-    // Apply tuplet factor (same convention as guitarpro's convert_time).
+    let time = base.saturating_add(dots);
     if dur.tuplet_enters == 0 || dur.tuplet_times == 0 || dur.tuplet_enters == dur.tuplet_times {
         return time;
     }
-    time.saturating_mul(u32::from(dur.tuplet_enters))
-        .checked_div(u32::from(dur.tuplet_times))
+    time.saturating_mul(u32::from(dur.tuplet_times))
+        .checked_div(u32::from(dur.tuplet_enters))
         .unwrap_or(time)
 }
 
