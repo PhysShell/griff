@@ -125,8 +125,13 @@ pub enum SourceBindingError {
 /// # Errors
 /// [`SourceBindingError::HashMismatch`] when the record pins another hash.
 pub fn bind_source(source: &SourceRef, found_sha256: &str) -> Result<(), SourceBindingError> {
-    let _ = (source, found_sha256);
-    Ok(())
+    match &source.sha256 {
+        Some(expected) if expected != found_sha256 => Err(SourceBindingError::HashMismatch {
+            expected: expected.clone(),
+            found: found_sha256.to_owned(),
+        }),
+        _ => Ok(()),
+    }
 }
 
 // ── source provenance ─────────────────────────────────────────────────────────

@@ -168,8 +168,10 @@ pub struct LoadedCorpus {
 /// aggregation) is core's.
 ///
 /// Records are visited in sorted order, so the rhythm-template palette is
-/// deterministic. A record whose source is missing, unreadable, unimportable, or
-/// silent is reported in `material.skipped`, never silently dropped.
+/// deterministic. A record whose source is missing, unreadable, holds other
+/// bytes than the record pins (`bind_source`, shared with the CLI loader),
+/// unimportable, or silent is reported in `material.skipped`, never silently
+/// dropped.
 ///
 /// # Errors
 /// A message when `dir` cannot be read.
@@ -177,6 +179,7 @@ pub struct LoadedCorpus {
 pub fn load_corpus_dir(dir: &Path) -> Result<LoadedCorpus, String> {
     use std::fs;
 
+    use griff_core::corpus::{bind_source, source_sha256};
     use griff_core::generation_input::{corpus_material, prepare_chunk};
     use griff_core::import::import_score_auto;
 
@@ -198,6 +201,12 @@ pub fn load_corpus_dir(dir: &Path) -> Result<LoadedCorpus, String> {
             skipped.push(name);
             continue;
         };
+        // The binding rule the CLI loader applies: a record pinning a hash takes
+        // its notes only from a file holding exactly those bytes.
+        if bind_source(&meta.source, &source_sha256(&bytes)).is_err() {
+            skipped.push(name);
+            continue;
+        }
         let Ok(source) = import_score_auto(&bytes) else {
             skipped.push(name);
             continue;
@@ -294,16 +303,18 @@ pub fn kept_provenance<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    use griff_core::score::Score;
 
     /// One 4/4 bar of four quarter notes opening on `first` — a valid tab
     /// whose bytes change with `first`.
     #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::expect_used)]
-    fn one_bar(first: u8) -> griff_core::score::Score {
+    fn one_bar(first: u8) -> Score {
         use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
         use griff_core::score::{
             AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-            Score, Track, Voice,
+            Track, Voice,
         };
         use griff_core::slice::TickRange;
 

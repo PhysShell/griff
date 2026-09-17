@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use griff_core::corpus::{source_sha256, ChunkMeta};
+use griff_core::corpus::{bind_source, source_sha256, ChunkMeta};
 use griff_core::generation_input::{corpus_material, prepare_chunk, LoadedChunk};
 use griff_core::import;
 use griff_core::score::Score;
@@ -56,7 +56,7 @@ fn load_corpus_material_with(
         .collect();
     record_names.sort_unstable();
 
-    let mut cache: HashMap<String, Score> = HashMap::new();
+    let mut cache: HashMap<String, Option<SourceFile>> = HashMap::new();
     let mut loaded = Vec::new();
     let mut skipped = Vec::new();
     for name in record_names {
@@ -68,41 +68,62 @@ fn load_corpus_material_with(
     Ok(corpus_material(loaded, skipped))
 }
 
-/// Reads one chunk record and prepares it through core, importing its source
-/// tab (or reusing an already-parsed one from `cache`). `None` when the record
-/// does not parse, the source is missing/unimportable/hash-mismatched, or the
-/// prepared slice carries no sounding track — the caller reports it as skipped.
+/// One source file, read once however many records name it: its content hash
+/// and its parse, which waits until a record binds to the file.
+struct SourceFile {
+    /// [`source_sha256`] of the file's bytes.
+    sha256: String,
+    /// The bytes before the first bound record, the parse after.
+    parse: SourceParse,
+}
+
+/// A source file's parse, taken lazily so a file no record binds is never
+/// imported.
+enum SourceParse {
+    /// Read and hashed; no record has bound to it yet.
+    Pending(Vec<u8>),
+    /// Imported — `None` when it does not import.
+    Done(Option<Score>),
+}
+
+/// Reads one chunk record and prepares it through core, reading and parsing its
+/// source tab once per file (reused from `cache` afterwards). `None` when the
+/// record does not parse, the file it names is missing, holds other bytes than
+/// the record pins, or does not import, or the prepared slice carries no
+/// sounding track — the caller reports it as skipped.
 fn load_chunk(
     dir: &Path,
     record_name: &str,
-    cache: &mut HashMap<String, Score>,
+    cache: &mut HashMap<String, Option<SourceFile>>,
     import: &mut impl FnMut(&[u8]) -> Option<Score>,
 ) -> Option<LoadedChunk> {
     let meta: ChunkMeta =
         serde_json::from_str(&fs::read_to_string(dir.join(record_name)).ok()?).ok()?;
-    // Key the parsed source by its content hash (v9) — falling back to the
-    // filename for pre-v9 records — so every chunk of one tab reuses a single
-    // parse. Determinism is unchanged: `prepare_chunk` slices an immutable
-    // `&Score`, so a shared parse yields exactly the per-chunk-parse result.
-    let key = meta
-        .source
-        .sha256
-        .clone()
-        .unwrap_or_else(|| meta.source.filename.clone());
-    if !cache.contains_key(&key) {
-        let bytes = fs::read(dir.join(&meta.source.filename)).ok()?;
-        // A filename is not an identity: when the record pins the source's hash
-        // (schema v9), a same-named but different file must not silently supply
-        // the notes. A mismatch is a load failure — and a cache miss, so the
-        // check runs for every distinct expected hash, never bypassed by reuse.
-        if let Some(expected) = &meta.source.sha256 {
-            if &source_sha256(&bytes) != expected {
-                return None;
-            }
-        }
-        cache.insert(key.clone(), import(&bytes)?);
+    // Keyed by the file the record names, not by the hash it pins: a cache keyed
+    // by hash let a record whose own file is missing, or holds other bytes,
+    // borrow a parse another file supplied. Every record binds its own file
+    // (`bind_source`, the rule the cockpit loader applies too); the read, the
+    // hash, and the parse still happen once per file. Determinism is unchanged:
+    // `prepare_chunk` slices an immutable `&Score`.
+    let file = cache
+        .entry(meta.source.filename.clone())
+        .or_insert_with(|| {
+            fs::read(dir.join(&meta.source.filename))
+                .ok()
+                .map(|bytes| SourceFile {
+                    sha256: source_sha256(&bytes),
+                    parse: SourceParse::Pending(bytes),
+                })
+        })
+        .as_mut()?;
+    bind_source(&meta.source, &file.sha256).ok()?;
+    if let SourceParse::Pending(bytes) = &file.parse {
+        file.parse = SourceParse::Done(import(bytes));
     }
-    prepare_chunk(meta, cache.get(&key)?)
+    let SourceParse::Done(Some(score)) = &file.parse else {
+        return None;
+    };
+    prepare_chunk(meta, score)
 }
 
 #[cfg(test)]
