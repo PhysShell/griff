@@ -107,6 +107,17 @@ with and without the line's hand anchor.
 
 Results: [`../docs/audit/2026-09-fingering-tie-break.md`](../docs/audit/2026-09-fingering-tie-break.md).
 
+## Technique-aware fingering (oracle stage)
+
+`src/technique.rs` attributes tapped notes (`TabLine::tapped`, from the tab)
+to the picking hand: the fretting hand's anchor carries across taps, and the
+picking hand pays its own travel. `tap_aware_chain` encodes it for the exact
+optimum-set DPs. `fingering_gap taps` compares tap-blind and tap-aware models
+under the same weights on lines with tapped notes, with an untapped baseline
+reweighted to the same line lengths.
+
+Results: [`../docs/audit/2026-09-fingering-tap-attribution.md`](../docs/audit/2026-09-fingering-tap-attribution.md).
+
 ## Known spike limits (deliberate)
 
 - The reference solver is leaf-checked backtracking with two sound band

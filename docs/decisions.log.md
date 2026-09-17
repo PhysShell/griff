@@ -2872,3 +2872,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   recovers 3.2 points (47.3%, 28% of the gap). The discriminating
   information is contextual, so the next Lab subject (chord voicing) is also
   what makes such anchors available for MIDI-sourced material.
+
+- 2026-09-17 — In the context of the fingering objective failing completely
+  on lines with tapped notes (no human path in the model's optimum set), we
+  decided to **test hand attribution as an oracle first — tap labels from
+  the tab, same weights, exact DPs — before any hidden technique
+  inference**, to achieve a clean attribution of that failure, accepting
+  that the result says nothing yet about MIDI-sourced material. Result
+  (`docs/audit/2026-09-fingering-tap-attribution.md`): attribution brings
+  the tapped slice to parity with length-matched untapped lines on excess
+  per note (2.94 → 1.27 vs 1.26), agreement (39.4% → 44.3% vs 44.9%) and
+  ceiling, but not on exactness (1.3% vs 21.0% of lines with the human path
+  in the optimum set); 75% of the residual is fretting-hand travel spent
+  keeping tapping figures on one string. Legato continuity comes before
+  technique inference.
