@@ -18,7 +18,8 @@
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::float_cmp
+    clippy::float_cmp,
+    clippy::cast_possible_wrap
 )]
 
 use griff_constraint_lab::{
@@ -263,12 +264,12 @@ fn path_counts_saturate_with_an_exact_logarithm() {
     // E3 has three candidates in Standard E; with zero weights every path ties.
     let tuning = Tuning::standard_e();
     let zero = weights(0, 0, 0, 0);
-    let exact = Chain::v1(&vec![pitch(52); 30], &tuning, &zero, STANDARD_MAX_FRET).unwrap();
+    let exact = Chain::v1(&[pitch(52); 30], &tuning, &zero, STANDARD_MAX_FRET).unwrap();
     let count = optimum_set(&exact, None).count;
     assert_eq!(count.exact, 3_u64.pow(30));
     assert!(!count.saturated);
 
-    let huge = Chain::v1(&vec![pitch(52); 60], &tuning, &zero, STANDARD_MAX_FRET).unwrap();
+    let huge = Chain::v1(&[pitch(52); 60], &tuning, &zero, STANDARD_MAX_FRET).unwrap();
     let count = optimum_set(&huge, None).count;
     assert!(count.saturated);
     assert_eq!(count.exact, u64::MAX);

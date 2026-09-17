@@ -1047,7 +1047,7 @@ fn count(n: usize) -> u64 {
 }
 
 /// The `v1` per-note cost (mirrors production `candidate_cost`).
-fn v1_unary(fret: u8, weights: &FingeringWeights) -> i64 {
+pub(crate) fn v1_unary(fret: u8, weights: &FingeringWeights) -> i64 {
     let base = weights.fret.saturating_mul(i64::from(fret));
     if fret == 0 {
         base.saturating_sub(weights.open_string)
