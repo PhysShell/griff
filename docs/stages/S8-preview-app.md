@@ -147,11 +147,23 @@ front-ends and audio build on them:
         `ranked_candidates_from_view`, pinned output-identical to main.
       - **Unchanged boundary.** Holdout and population selection stay with
         the Reachability Lab (ADR-0032).
+      - **Persistent bundle landed** (`ExperimentBundleV1`).
+        - **One projection.** The canonical semantic projection V1 is the
+          only wire form, and every fingerprint walks it; the pinned v1
+          goldens were reproduced unchanged.
+        - **Complete record.** The whole spec, the source, the population
+          identity, every pass, and both identities of every cell.
+        - **Loading.** Parses strictly, validates every projection
+          through the model's constructors, and recomputes every identity
+          with typed mismatches. It never generates.
+        - **Lossless.** `run()` rebuilds the in-memory run exactly.
+        - **Characterization, not a contract.** On one repository-corpus
+          source, 16 cells wrote a 7.9 MB pretty JSON bundle that loaded
+          and verified in about 11 ms in release.
       - **Next increments.**
-        1. The persistent experiment bundle: one canonical projection for
-           the bundle and fingerprints, and loading never generates.
-        2. The cockpit A/B projection over the Slice 2 transport.
-        3. Retiring the manual `s6_candidate_set` / `intact_top` identities
+        1. The cockpit A/B projection over the Slice 2 transport, built
+           from a bundle.
+        2. Retiring the manual `s6_candidate_set` / `intact_top` identities
            into core.
 - [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16 and merged
       as PR #126**: favorite/reject controls (mutually exclusive) and a
