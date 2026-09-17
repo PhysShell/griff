@@ -1,6 +1,6 @@
 [package]
-name         = "griff-ui-core"
-description  = "Renderer-agnostic UI core for griff previews: view-model, interaction core, scene, curation (ADR-0016)"
+name         = "griff-experiment"
+description  = "Generator Observatory contract for griff: algorithm variants x information regimes, identities, and metric comparability"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -11,9 +11,10 @@ keywords.workspace     = true
 categories.workspace   = true
 
 [dependencies]
-griff-core       = { path = "../core" }
-griff-experiment = { path = "../experiment" }
+griff-core = { path = "../core" }
+serde      = { workspace = true }
 serde_json = { workspace = true }
+sha2       = "0.10"
 
 [lints]
 workspace = true

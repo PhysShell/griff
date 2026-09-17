@@ -14,6 +14,11 @@ live contract.
 
 ## Index
 
+- [`generator-observatory.md`](generator-observatory.md) — algorithm variant ×
+  information regime as two experiment axes: a headless core runner, a
+  per-channel corpus fingerprint, an immutable experiment bundle, and a
+  cockpit A/B projection over the existing S8 transport. Status: historical
+  context; durable decisions accepted in ADR-0034.
 - [`generator-reachability-lab.md`](generator-reachability-lab.md) — offline
   coverage census and target-relative symbolic comparison for the
   deterministic generators. Status: for discussion.

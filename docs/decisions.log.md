@@ -2853,40 +2853,13 @@ Architectural decisions go to [`adr/`](adr/) instead.
   vocabulary, is what to improve next. (Numbers are pre-#198: GP7 pitches
   were wrong in the corpus import; re-measured after the fix, holdout
   agreement is v1 35.8%, lowest-fret 33.5%, v1 ceiling 36.2%, fitted models
-  ~44%, with every conclusion unchanged — see the audit's Correction.)
+  ~44%, with every conclusion unchanged — see the audit's Correction; after
+  the tuplet fix #202: v1 35.4%, lowest-fret 33.0%, v1 ceiling 35.8%, fitted
+  models ~44%, conclusions again unchanged.)
   Solver: OR-Tools CP-SAT via a local
   venv adapter (`lab/cpsat/`), never a dependency; idea-level prior art
   only (TablaZinc is MPL-2.0, `guitar-tab-generator` GPL-3.0 — no code
   copied).
-
-- 2026-09-17 — In the context of the fitted fingering objective being
-  under-discriminative (holdout: production tie-break 44.1% agreement, best
-  cost-optimal fingering 55.5%), we decided to **measure optimum sets with
-  exact chain DPs and to learn a lexicographic secondary tie-break instead of
-  refitting the primary objective**, to achieve an attribution of the gap
-  between search, local fingering geometry and context, accepting that the
-  first useful feature comes from the human tab (the hand anchor before a
-  line). Result (`docs/audit/2026-09-fingering-tie-break.md`): the DPs agree
-  with verified CP-SAT optima and ceilings on 1,954 / 1,954 holdout lines; a
-  tie-break over local geometry recovers nothing (44.0%); adding the anchor
-  recovers 3.2 points (47.3%, 28% of the gap). The discriminating
-  information is contextual, so the next Lab subject (chord voicing) is also
-  what makes such anchors available for MIDI-sourced material.
-
-- 2026-09-17 — In the context of the fingering objective failing completely
-  on lines with tapped notes (no human path in the model's optimum set), we
-  decided to **test hand attribution as an oracle first — tap labels from
-  the tab, same weights, exact DPs — before any hidden technique
-  inference**, to achieve a clean attribution of that failure, accepting
-  that the result says nothing yet about MIDI-sourced material. Result
-  (`docs/audit/2026-09-fingering-tap-attribution.md`): attribution brings
-  the tapped slice to parity with length-matched untapped lines on excess
-  per note (2.94 → 1.27 vs 1.26), agreement (39.4% → 44.3% vs 44.9%) and
-  ceiling, but not on exactness (1.3% vs 21.0% of lines with the human path
-  in the optimum set). Under the current objective's decomposition, 75% of
-  the residual cost falls on the fretting-hand travel term; with tapping
-  figures seemingly kept on one string, legato continuity is the hypothesis
-  to test next, as an observed-label oracle before technique inference.
 
 - 2026-09-17 — In the context of GPIF imports losing note techniques in
   `guitarpro` 0.4.2 (the `Tapped` property never read; `HopoOrigin` and
@@ -2904,3 +2877,99 @@ Architectural decisions go to [`adr/`](adr/) instead.
   10,906), hammer edges on the same string 76.8% → 99.7%; GP3/4/5 unchanged.
   Deriving hammer-on versus pull-off direction for all formats is a separate
   decision (it changes corpus technique tags everywhere).
+
+- 2026-09-17 — In the context of the two corpus-directory loaders (the CLI's
+  `load_corpus_material` and the native cockpit's `load_corpus_dir`), facing
+  a CLI parse cache keyed by the pinned `sha256`, which let a record whose own
+  file was missing or held other bytes reuse a parse another file supplied,
+  and a cockpit loader that never checked the pin, we decided to **bind every
+  record to the file it names through one pure core rule,
+  `corpus::bind_source`, and key the CLI cache by filename**, to achieve the
+  same accepted and skipped records from both shells for the same directory
+  (a precondition for comparing headless and cockpit experiment runs),
+  accepting that each shell still owns its own I/O and that the cockpit still
+  parses once per record rather than once per file. On the repository corpus
+  (pre-v9 records, no pins) the change is a no-op: `griff generate --corpus`
+  output is byte-identical before and after.
+
+- 2026-09-17 — In the context of turning the S8 Global Chain Audition into a
+  reproducible surface for comparing generator policies, facing a corpus
+  that is three independent channels (rhythm templates, novelty references,
+  gesture) and metrics whose scale moves with the references a pass saw, we
+  **accepted ADR-0034**. Experiments run as *algorithm variant × information
+  regime* in a separate `griff-experiment` crate. Five decisions:
+  - **Masking only.** A regime only masks the channels of an already
+    prepared population; holdout and population selection remain the
+    Reachability Lab's under ADR-0032, unchanged.
+  - **Separate identities.** The spec, bound population, pass information,
+    evaluation context, requested cell and effective recipe each have their
+    own identity. Equal recipes may later share execution by memoization,
+    never by normalising a request.
+  - **Comparable-only metrics.** Every metric carries
+    `MetricIdentity { kind, name, owner, context }`. A delta exists only
+    between identical identities; an interaction only over four evaluations
+    of one identity; everything else is typed *unavailable*.
+  - **Version ownership.** Policy identities are read from their owners
+    (scorer, chain). The two production identities core does not yet carry
+    are pinned manual-contract debt.
+  - **One canonicalization.** The persisted bundle waits for one canonical
+    projection shared with the fingerprints.
+
+  The goal is an experiment where "can these two numbers be subtracted?" is
+  a property of their identities, not the author's choice. We accept one
+  more workspace crate, manual identities until core owns them, and
+  duplicate passes for coinciding views. Reviewed verbatim at `dc49109`;
+  design note `docs/proposals/generator-observatory.md` is now historical
+  context.
+
+- 2026-09-17 — In the context of the experiment bundle (ADR-0034), facing
+  displayed facts a bundle could carry while still verifying (population
+  counts, a pass's contribution and candidate count, a cell's metric
+  values and diagnostics, variant labels) and a writer that could return an
+  empty artifact, we decided that **every fact a bundle displays is bound
+  to an identity, and writing fails closed**, to achieve a bundle whose
+  "verified" means every shown number is what the run recorded, accepting
+  a population identity bump (`corpus-snapshot.v2`, with its goldens) and
+  three record identities kept apart from the causal ones:
+  - **pass record**: what a pass claims happened, never mixed into pass
+    information;
+  - **cell record**: what a cell claims, including its metrics,
+    diagnostics and refusal;
+  - **run record**: the whole run, including labels.
+
+  Identities are consistency, not authentication: the only sealing path is
+  crate-private, so the public API cannot re-verify an edited run.
+
+- 2026-09-17 — In the context of the fitted fingering objective being
+  under-discriminative (holdout: production tie-break 44.1% agreement, best
+  cost-optimal fingering 55.5%), we decided to **measure optimum sets with
+  exact chain DPs and to learn a lexicographic secondary tie-break instead of
+  refitting the primary objective**, to achieve an attribution of the gap
+  between search, local fingering geometry and context, accepting that the
+  first useful feature comes from the human tab (the hand anchor before a
+  line). Result (`docs/audit/2026-09-fingering-tie-break.md`): the DPs agree
+  with verified CP-SAT optima and ceilings on 1,954 / 1,954 holdout lines; a
+  tie-break over local geometry recovers nothing (44.0%); adding the anchor
+  recovers 3.2 points (47.3%, 28% of the gap; +3.10 points after the
+  tuplet import fix #202). The discriminating
+  information is contextual, so the next Lab subject (chord voicing) is also
+  what makes such anchors available for MIDI-sourced material.
+
+- 2026-09-17 — In the context of the fingering objective failing completely
+  on lines with tapped notes (no human path in the model's optimum set), we
+  decided to **test hand attribution as an oracle first — tap labels from
+  the tab, same weights, exact DPs — before any hidden technique
+  inference**, to achieve a clean attribution of that failure, accepting
+  that the result says nothing yet about MIDI-sourced material. Result
+  (`docs/audit/2026-09-fingering-tap-attribution.md`): attribution brings
+  the tapped slice to parity with length-matched untapped lines on excess
+  per note (2.94 → 1.27 vs 1.26), agreement (39.4% → 44.3% vs 44.9%) and
+  ceiling, but not on exactness (1.3% vs 21.0% of lines with the human path
+  in the optimum set). Under the current objective's decomposition, 75% of
+  the residual cost falls on the fretting-hand travel term; with tapping
+  figures seemingly kept on one string, legato continuity is the hypothesis
+  to test next, as an observed-label oracle before technique inference.
+  (Revised after the import fixes #201 and #202: GP6/7 tapping now reaches
+  the slice (226 lines). Attribution closes most, not all, of the excess gap
+  (3.20 → 1.63 against 1.16, 77%). Exactness stays out of reach, 0.9% against
+  20.0% — see the audit's re-measurements.)

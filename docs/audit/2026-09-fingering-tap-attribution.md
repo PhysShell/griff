@@ -16,6 +16,11 @@ outside the set, the model is missing something the player took into account.
 > The exactness finding stands. The sections from "Question" to "Conclusion"
 > are the original measurement, kept as run; see
 > [Re-measurement after #201](#re-measurement-after-201).
+>
+> **Re-measured again after the tuplet import fix (#202).** The slice is now
+> 226 lines, fewer but longer. All three readings (partial excess closure,
+> exactness out of reach, and the whole-slice share closed: 77%) still hold. See
+> [Re-measurement after #202](#re-measurement-after-202).
 
 ## Question
 
@@ -291,6 +296,68 @@ as follows:
   leave one song out. One song supplies about a quarter of the residual.
 - **Primary target.** Exactness (human path in the optimum set) is the
   primary target, ahead of excess.
+
+## Re-measurement after #202
+
+**Setup.** #202 (merged into `main`) corrects the importer's tuplet durations.
+Before it, bars with tuplets overflowed into the next bar, and tab lines,
+which order notes by onset, interleaved notes from neighbouring bars. For
+this section, this PR was merged with `main` at `e871a44` and
+`fingering_gap taps` was rerun with the same weights. The slice rule (lines
+containing a tapped note) is unchanged.
+
+**What changed in the data (whole corpus).**
+
+- **The slice.** 242 → **226** lines, 23,522 → 25,571 notes, 4,972 → 5,260
+  tapped notes. Lines no longer break where neighbouring bars used to
+  interleave, so the slice has fewer but longer lines.
+- **The untapped pool.** 8,803 → 8,740 lines.
+- **Holdout songs.** 33 → 30 lines. Reported in `taps.json`, not interpreted.
+- **Control.** The tap-blind and tap-aware objectives still agree on every
+  untapped line (0 of 8,740 differ).
+
+**Results (whole corpus).**
+
+`v1-fit`. Tap-aware uses `tap_shift` = 1; the baseline is untapped lines
+reweighted to the slice's line lengths.
+
+| model or baseline | human path in optimum set | excess per note | agreement | on tapped notes | ceiling |
+|---|---|---|---|---|---|
+| tap-blind | 0.0% → 0.0% | 3.17 → 3.20 | 38.3% → 38.5% | 31.4% → 29.0% | 43.8% → 44.1% |
+| **tap-aware** | 1.7% → **0.9%** | 1.60 → **1.63** | 43.8% → 43.1% | 46.0% → 45.3% | 52.2% → 52.3% |
+| *baseline: all untapped* | *20.9% → 20.0%* | *1.17 → 1.16* | *45.3% → 44.9%* | — | *54.6% → 54.5%* |
+
+Other results:
+
+- **Share of the excess gap closed** (tap-blind excess against the pooled
+  baseline, whole slice): 78% → **77%**.
+- **Production `v1` weights.**
+  - Excess per note: tap-blind 8.10, tap-aware (`tap_shift` = 2) 5.41,
+    baseline 4.91.
+  - The human path is in the optimum set for 0.9% of lines, against 13.1% of
+    baseline lines.
+- **`tap_shift = 0` is still the wrong model.** Agreement on tapped notes is
+  15.4%.
+
+**Not re-run.**
+
+- the split into the original 155 and the added 87 lines;
+- the format-matched and same-file baselines;
+- the concentration check;
+- the residual decomposition by cost component.
+
+These came from a local per-line dump keyed to the pre-#202 lines, and #202
+changes those lines. They stay as measured after #201. Stage 2 reports its
+per-format and concentration checks on the 226-line slice.
+
+**Reading.**
+
+- **The #201 revision stands.** Hand attribution closes most of the slice's
+  excess (77%), not all of it.
+- **Exactness remains out of reach.** The human path is in the optimum set in
+  0.9% of tapped lines, against 20.0% for the length-matched baseline.
+- **Stage 2's baseline is this measurement:** 226 lines against an 8,740-line
+  pool.
 
 ## Limitations
 

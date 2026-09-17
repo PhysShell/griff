@@ -154,42 +154,28 @@ pub struct ChainSupplier {
 }
 
 /// What a corpus **actually** contributed to a generation — not merely whether
-/// one was attached.
+/// one was attached. One type with the core's pass-level fact
+/// ([`griff_core::generation_input::CorpusContribution`]), so history
+/// provenance and an experiment cell say "corpus" in exactly the same sense.
+pub use griff_core::generation_input::CorpusContribution;
+
+/// Derives the contribution from the corpus's own rhythm-template count and the
+/// pass's [`SetSummary`].
 ///
 /// An attached corpus that is empty, or whose records were all skipped, gives
 /// no templates, references, or gesture; provenance must say so rather than
-/// claim "corpus". Built from the pass's real result — the corpus's own rhythm
-/// count plus the set summary — via [`CorpusContribution::from_pass`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CorpusContribution {
-    /// Rhythm templates the corpus supplied (its own, not the source's).
-    pub templates: usize,
-    /// Novelty reference chunks the corpus supplied.
-    pub references: usize,
-    /// Whether a corpus gesture was **actually carved** (the ask enabled it and
-    /// the corpus had one) — never merely whether the ask requested gesture.
-    pub gesture: bool,
-}
-
-impl CorpusContribution {
-    /// Derives the contribution from the corpus's own rhythm-template count and
-    /// the pass's [`SetSummary`] — `references` and the actually-carved
-    /// `gesture` come from the summary; `templates` is the corpus's rhythm
-    /// count (0 without a corpus), since the summary's template count also folds
-    /// in the source's own rhythms.
-    #[must_use]
-    pub const fn from_pass(corpus_templates: usize, summary: &SetSummary) -> Self {
-        Self {
-            templates: corpus_templates,
-            references: summary.references,
-            gesture: summary.gesture.is_some(),
-        }
-    }
-
-    /// Whether the corpus contributed nothing — the pass ran on the seed alone.
-    #[must_use]
-    pub const fn is_seed_only(&self) -> bool {
-        self.templates == 0 && self.references == 0 && !self.gesture
+/// claim "corpus". `references` and the actually-carved `gesture` come from the
+/// summary; `templates` is the corpus's rhythm count (0 without a corpus),
+/// since the summary's template count also folds in the source's own rhythms.
+#[must_use]
+pub const fn contribution_from_pass(
+    corpus_templates: usize,
+    summary: &SetSummary,
+) -> CorpusContribution {
+    CorpusContribution {
+        templates: corpus_templates,
+        references: summary.references,
+        gesture: summary.gesture.is_some(),
     }
 }
 
@@ -512,9 +498,9 @@ impl SessionHistory {
 )]
 mod tests {
     use super::{
-        toggle, CandidateSource, ChainError, ChainOutcomeRecord, CorpusContribution,
-        GenerationRunId, GeneratorProvenance, Provenance, SessionHistory, Verdict,
-        PROVENANCE_SCHEMA, PROVENANCE_VERSION,
+        contribution_from_pass, toggle, CandidateSource, ChainError, ChainOutcomeRecord,
+        CorpusContribution, GenerationRunId, GeneratorProvenance, Provenance, SessionHistory,
+        Verdict, PROVENANCE_SCHEMA, PROVENANCE_VERSION,
     };
     use crate::generate::SetSummary;
     use griff_core::score::{LossReport, Score};
@@ -1011,7 +997,7 @@ mod tests {
     #[test]
     fn corpus_contribution_no_corpus_is_seed_only() {
         // Law 1: no corpus → no templates, references, or gesture.
-        let c = CorpusContribution::from_pass(0, &summary(0, false));
+        let c = contribution_from_pass(0, &summary(0, false));
         assert!(c.is_seed_only(), "no corpus contributes nothing");
         assert_eq!(c.templates, 0);
         assert_eq!(c.references, 0);
@@ -1022,7 +1008,7 @@ mod tests {
     fn corpus_contribution_attached_but_empty_is_seed_only() {
         // Law 2: an attached-but-empty corpus (0 rhythms, 0 references, no
         // carved gesture) still reads as seed-only — attachment is not use.
-        let c = CorpusContribution::from_pass(0, &summary(0, false));
+        let c = contribution_from_pass(0, &summary(0, false));
         assert!(c.is_seed_only());
     }
 
@@ -1030,7 +1016,7 @@ mod tests {
     fn corpus_contribution_reflects_references_and_templates() {
         // Law 3/4: references come from the summary; the corpus rhythm count is
         // reported as templates (never the summary's source-inclusive count).
-        let refs_only = CorpusContribution::from_pass(0, &summary(5, false));
+        let refs_only = contribution_from_pass(0, &summary(5, false));
         assert_eq!(refs_only.references, 5);
         assert_eq!(
             refs_only.templates, 0,
@@ -1038,7 +1024,7 @@ mod tests {
         );
         assert!(!refs_only.is_seed_only());
 
-        let with_templates = CorpusContribution::from_pass(3, &summary(0, false));
+        let with_templates = contribution_from_pass(3, &summary(0, false));
         assert_eq!(with_templates.templates, 3, "the corpus's own rhythm count");
         assert!(!with_templates.is_seed_only());
     }
@@ -1047,8 +1033,8 @@ mod tests {
     fn corpus_contribution_gesture_tracks_actual_carving() {
         // Law 5/6: gesture is true only when one was actually carved (the
         // summary carries it), false when the ask disabled it.
-        assert!(!CorpusContribution::from_pass(0, &summary(0, false)).gesture);
-        assert!(CorpusContribution::from_pass(0, &summary(0, true)).gesture);
+        assert!(!contribution_from_pass(0, &summary(0, false)).gesture);
+        assert!(contribution_from_pass(0, &summary(0, true)).gesture);
     }
 
     #[test]

@@ -60,6 +60,97 @@ pub struct CorpusMaterial {
     pub skipped: Vec<String>,
 }
 
+/// A borrowed view of the corpus channels one generation pass may consume: the
+/// whole [`CorpusMaterial`], or any subset of its three channels.
+///
+/// A view never owns or copies material, so a caller can mask a channel (an
+/// empty slice, or `None`) without cloning thousands of reference scores. The
+/// empty view is exactly a pass without a corpus.
+#[derive(Debug, Clone, Copy)]
+pub struct CorpusMaterialView<'a> {
+    /// Rhythm templates the pass may rotate; empty falls back to the source's
+    /// first sounding bar.
+    pub rhythms: &'a [generate::RhythmTemplate],
+    /// Novelty references the pass measures against; empty reads fully novel.
+    pub references: &'a [Score],
+    /// The gesture the pass may carve, when the ask also asks for one.
+    pub gesture: Option<GestureControl>,
+}
+
+impl<'a> CorpusMaterialView<'a> {
+    /// No channel at all — the view of a pass without a corpus.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            rhythms: &[],
+            references: &[],
+            gesture: None,
+        }
+    }
+
+    /// Every channel of `material`.
+    #[must_use]
+    pub const fn of(material: &'a CorpusMaterial) -> Self {
+        Self {
+            rhythms: material.rhythms.as_slice(),
+            references: material.references.as_slice(),
+            gesture: material.gesture,
+        }
+    }
+
+    /// Every channel of `material`, or the empty view without one.
+    #[must_use]
+    pub const fn of_option(material: Option<&'a CorpusMaterial>) -> Self {
+        match material {
+            Some(m) => Self::of(m),
+            None => Self::empty(),
+        }
+    }
+}
+
+/// What a corpus **actually** contributed to one pass, not merely what was
+/// attached or requested.
+///
+/// An attached corpus that is empty, a channel a caller masked, an explicit
+/// palette that overrides the corpus rhythms, or an ask that declines the
+/// gesture all contribute nothing on that channel, and this says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CorpusContribution {
+    /// Corpus rhythm templates the pass rotated (never the source's own).
+    pub templates: usize,
+    /// Novelty references the pass measured against.
+    pub references: usize,
+    /// Whether a corpus gesture was actually carved.
+    pub gesture: bool,
+}
+
+impl CorpusContribution {
+    /// The contribution of the pass that produced `set` from `corpus`.
+    ///
+    /// Corpus templates count only when the pass rotated them: not under an
+    /// explicit palette, and not when the view offered none. Every reference in
+    /// the view was measured against. The gesture counts only when the pass
+    /// carved one, and only the corpus supplies a gesture.
+    #[must_use]
+    pub const fn of_pass(corpus: CorpusMaterialView<'_>, set: &RankedSet) -> Self {
+        Self {
+            templates: if set.rhythm_explicit {
+                0
+            } else {
+                corpus.rhythms.len()
+            },
+            references: corpus.references.len(),
+            gesture: set.gesture.is_some(),
+        }
+    }
+
+    /// Whether the corpus contributed nothing — the pass ran on the seed alone.
+    #[must_use]
+    pub const fn is_seed_only(&self) -> bool {
+        self.templates == 0 && self.references == 0 && !self.gesture
+    }
+}
+
 /// One corpus record ready to contribute: its metadata, its source sliced to the
 /// record's `bar_range` provenance, and the sounding track the slice measures.
 #[derive(Debug)]
@@ -235,32 +326,43 @@ pub fn ranked_candidates(
     ask: &GenerationAsk,
     rhythm_override: Option<&[generate::RhythmTemplate]>,
 ) -> Result<RankedSet, GenerationInputError> {
+    ranked_candidates_from_view(
+        score,
+        CorpusMaterialView::of_option(material),
+        ask,
+        rhythm_override,
+    )
+}
+
+/// Generates and reranks the full candidate set for `score` from a view of the
+/// corpus channels — the one implementation [`ranked_candidates`] enters.
+///
+/// Each channel is read on its own: an empty `rhythms` falls back to the
+/// source's first sounding bar, an empty `references` reads every candidate as
+/// fully novel, and a `None` gesture carves nothing. The empty view is exactly
+/// the pass without a corpus, and a caller masks a channel by emptying it —
+/// nothing is cloned.
+///
+/// # Errors
+/// As [`ranked_candidates`].
+pub fn ranked_candidates_from_view(
+    score: &Score,
+    corpus: CorpusMaterialView<'_>,
+    ask: &GenerationAsk,
+    rhythm_override: Option<&[generate::RhythmTemplate]>,
+) -> Result<RankedSet, GenerationInputError> {
     let base = generation_request_from_score(score, ask.seed, ask.bars)?;
     // Rhythm precedence (ADR-0029 §7): explicit pattern > corpus > source
     // first bar. Novelty references and gesture stay corpus-based either way.
     let explicit: Option<Vec<generate::RhythmTemplate>> = rhythm_override.map(<[_]>::to_vec);
-    let (source_rhythms, gesture) = explicit.as_ref().map_or_else(
-        || {
-            material.map_or_else(
-                || (base.source_rhythms.clone(), None),
-                |m| {
-                    let rhythms = if m.rhythms.is_empty() {
-                        base.source_rhythms.clone()
-                    } else {
-                        m.rhythms.clone()
-                    };
-                    (rhythms, if ask.gesture { m.gesture } else { None })
-                },
-            )
-        },
-        |palette| {
-            (
-                palette.clone(),
-                material.and_then(|m| if ask.gesture { m.gesture } else { None }),
-            )
-        },
-    );
-    let references: &[Score] = material.map_or(&[], |m| &m.references);
+    let source_rhythms = explicit.clone().unwrap_or_else(|| {
+        if corpus.rhythms.is_empty() {
+            base.source_rhythms.clone()
+        } else {
+            corpus.rhythms.to_vec()
+        }
+    });
+    let gesture = if ask.gesture { corpus.gesture } else { None };
 
     let set = rerank::generate_candidate_set(&rerank::SetRequest {
         seed: base.seed,
@@ -272,7 +374,7 @@ pub fn ranked_candidates(
         gesture,
     })?;
     let policy = rerank::rerank_weights_v1();
-    let ranked = rerank::rerank_candidates(set, &base.pitch_material, references, &policy);
+    let ranked = rerank::rerank_candidates(set, &base.pitch_material, corpus.references, &policy);
 
     Ok(RankedSet {
         ranked,
