@@ -51,6 +51,44 @@ evidence on disk always belongs to the run that produced it. The committed
 manifests record both `griff-lab-exact` and `minizinc/chuffed` runs
 (frontend and backend versions separately).
 
+## Optimization phase — fingering gap
+
+The SAT/UNSAT IR answers "does an admissible realization exist?". The
+optimization IR (`src/optir.rs`) adds an objective — binary hard tables plus
+unary/pair cost tables and weighted `|a − b|` / `[a ≠ b]` terms — so an
+external solver can report the *best* admissible realization. The solver is
+untrusted: `optir::verify_record` accepts an optimum only when the solver
+proved it, the witness is admissible, and the in-repo re-score equals the
+claim.
+
+First subject (`src/fingering.rs`, `src/bin/fingering_gap.rs`): monophonic
+fingering, measured two ways —
+
+- **against an external optimum**: the production objective (`v1`, mirrored
+  independently of `infer_positions`) and an experimental hand-position
+  model are exported as IR and solved by OR-Tools CP-SAT
+  (`cpsat/solve_opt.py`); the in-repo DPs are compared with the verified
+  optima, and a lexicographic agreement pass gives the tie-insensitive
+  ceiling of each model's agreement with the tab author;
+- **against human tablature**: per-note agreement with Guitar Pro tabs,
+  how often the human fingering is itself optimal under a model, and by how
+  much it is not — with song-level holdout for fitted weights.
+
+```sh
+cd lab
+cargo build --release --bin fingering_gap
+T=path/to/gp/tabs; O=out            # out/ is git-ignored (ADR-0005)
+./target/release/fingering_gap fit    --tabs $T --out $O
+./target/release/fingering_gap export --tabs $T --out $O --v1 v1=1,1,2,1 --hand hand-fit=0,0,0,2,1,3
+python -m pip install ortools        # any venv
+python cpsat/solve_opt.py $O/v1.problems.jsonl $O/v1.cpsat.jsonl --agreement
+./target/release/fingering_gap report --tabs $T --out $O --v1 v1=1,1,2,1 --hand hand-fit=0,0,0,2,1,3
+```
+
+Everything written to `--out` is corpus-derived and stays local; `report`
+archives aggregates only (`report.json`). Results:
+[`../docs/audit/2026-09-fingering-optimality-gap.md`](../docs/audit/2026-09-fingering-optimality-gap.md).
+
 ## Known spike limits (deliberate)
 
 - The reference solver is leaf-checked backtracking with two sound band
