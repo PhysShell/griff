@@ -336,6 +336,75 @@ fn the_spec_population_and_evaluation_identities_are_separate() {
     );
 }
 
+#[test]
+fn requested_and_effective_identities_never_collapse() {
+    // Without a population, FULL and SEED_ONLY are offered the same empty view.
+    let run = run(&two_by_two(EvaluationContext::None), None);
+    let full = run.cell(INTACT, InformationRegime::FULL).expect("cell");
+    let seed = run
+        .cell(INTACT, InformationRegime::SEED_ONLY)
+        .expect("cell");
+    assert_eq!(
+        full.recipe, seed.recipe,
+        "effective input: equal, so execution may be shared"
+    );
+    assert_ne!(
+        full.requested, seed.requested,
+        "requested: FULL is not SEED_ONLY, even when it yields nothing"
+    );
+    assert_eq!(
+        run.cells.len(),
+        4,
+        "both cells stay: asking for a corpus and getting nothing is the finding"
+    );
+}
+
+#[test]
+fn a_request_names_the_population_asked_over_and_not_the_evaluation() {
+    let spec = two_by_two(EvaluationContext::None);
+    let (c, changed) = (corpus(), corpus_with_other_references());
+    let (before, after) = (run(&spec, Some(&c)), run(&spec, Some(&changed)));
+    let seed = |run: &ExperimentRun| {
+        run.cell(INTACT, InformationRegime::SEED_ONLY)
+            .expect("cell")
+            .clone()
+    };
+    assert_eq!(
+        seed(&before).recipe,
+        seed(&after).recipe,
+        "the seed-only cell consumed nothing that changed"
+    );
+    assert_ne!(
+        seed(&before).requested,
+        seed(&after).requested,
+        "but it was asked over a different population"
+    );
+
+    let evaluated = run(&two_by_two(fixed_evaluation()), Some(&c));
+    assert_eq!(
+        before
+            .cells
+            .iter()
+            .map(|cell| cell.requested)
+            .collect::<Vec<_>>(),
+        evaluated
+            .cells
+            .iter()
+            .map(|cell| cell.requested)
+            .collect::<Vec<_>>(),
+        "how results are measured is not part of what generation was asked"
+    );
+    let requested: Vec<_> = before.cells.iter().map(|cell| cell.requested).collect();
+    let mut distinct = requested.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        requested.len(),
+        "every cell is its own request"
+    );
+}
+
 // ── metric comparability ─────────────────────────────────────────────────────
 
 #[test]

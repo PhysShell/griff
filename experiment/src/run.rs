@@ -213,8 +213,18 @@ pub struct Cell {
     pub regime: InformationRegime,
     /// Index into [`ExperimentRun::passes`].
     pub pass: usize,
-    /// What produced this cell: the pass's information plus the selector and
-    /// realizer identities.
+    /// What was **asked**: source, ask, every stage identity, the requested
+    /// regime, and the bound population's whole identity (or its absence).
+    ///
+    /// Never collapsed into [`Self::recipe`]. `FULL` over no population and
+    /// `SEED_ONLY` consume the same (empty) view and may share execution, but
+    /// they are two requests; asking for a corpus and getting nothing is a
+    /// finding, and normalising `FULL` to `SEED_ONLY` would erase it.
+    pub requested: Fingerprint,
+    /// What produced this cell — the **effective** input: the pass's
+    /// information (channels as offered) plus the selector and realizer
+    /// identities. Equal recipes may share execution; they are still separate
+    /// cells.
     pub recipe: Fingerprint,
     /// The result, or the typed reason there is none.
     pub outcome: CellOutcome,
@@ -299,6 +309,7 @@ pub fn run_experiment(
                 variant: variant_index,
                 regime,
                 pass,
+                requested: Fingerprint([0; 32]),
                 recipe: h.finish(),
                 outcome: live_pass.select(variant, &context),
             });
