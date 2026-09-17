@@ -1869,6 +1869,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "griff-experiment"
+version = "0.1.0"
+dependencies = [
+ "griff-core",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "griff-pattern"
 version = "0.1.0"
 dependencies = [

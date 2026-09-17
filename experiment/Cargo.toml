@@ -1,0 +1,19 @@
+[package]
+name         = "griff-experiment"
+description  = "Generator Observatory contract for griff: algorithm variants x information regimes, identities, and metric comparability"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+readme.workspace       = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[dependencies]
+griff-core = { path = "../core" }
+serde_json = { workspace = true }
+sha2       = "0.10"
+
+[lints]
+workspace = true
