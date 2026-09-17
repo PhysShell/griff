@@ -14,6 +14,8 @@ use griff_core::generate::RhythmTemplate;
 use griff_core::generation_input::GenerationAsk;
 use griff_core::gesture::GestureControl;
 use griff_core::score::Score;
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
 use crate::projection::{GenerationAskV1, GestureControlV1, RhythmTemplateV1, ScoreV1};
@@ -30,6 +32,21 @@ impl Fingerprint {
             write!(acc, "{b:02x}").ok();
             acc
         })
+    }
+}
+
+/// On the wire a fingerprint is its 64-character lowercase hex string.
+impl Serialize for Fingerprint {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let _ = self;
+        serializer.serialize_str("")
+    }
+}
+
+impl<'de> Deserialize<'de> for Fingerprint {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let _ = String::deserialize(deserializer)?;
+        Err(D::Error::custom("not yet"))
     }
 }
 

@@ -22,9 +22,11 @@
 //! - **Results are more than a score**: [`ExperimentResult::realization`] is a
 //!   typed extension point that no current policy fills.
 //!
-//! Pure and deterministic: no I/O, no clock, no hash-map order. Persisting a
-//! run (the experiment bundle) is a later step, gated on its ADR.
+//! Pure and deterministic: no I/O, no clock, no hash-map order. A run is
+//! persisted as an [`ExperimentBundleV1`] — the canonical projection written
+//! down, verified on load, and never regenerated.
 
+mod bundle;
 mod fingerprint;
 mod metric;
 mod projection;
@@ -32,6 +34,15 @@ mod regime;
 mod run;
 mod spec;
 
+pub use bundle::{
+    BundleError, CellOutcomeV1, CellRefusalV1, CellV1, ChainErrorV1, CorpusContributionV1,
+    CorpusSnapshotV1, DiagnosticV1, EdgeIdV1, EvaluationContextV1, ExperimentBundleV1,
+    ExperimentResultV1, ExperimentSpecV1, GenerationPassV1, GeneratorPolicyV1, InformationRegimeV1,
+    MasterBarFieldV1, MetricKindV1, MetricValueV1, Mismatch, PathErrorV1, PolicyIdentityV1,
+    RealizationV1, RealizerPolicyV1, RunIdentitiesV1, ScorerPolicyV1, SelectorPolicyV1, Stage,
+    StageV1, StateIdV1, StrategyV1, TrackFieldV1, TransitionFactErrorV1, VariantSpecV1,
+    BUNDLE_SCHEMA, BUNDLE_VERSION,
+};
 pub use fingerprint::{
     ask_fingerprint, gesture_fingerprint, references_fingerprint, rhythms_fingerprint,
     score_fingerprint, Fingerprint,
