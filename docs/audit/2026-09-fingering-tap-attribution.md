@@ -9,6 +9,14 @@ the tab author's fingering happens to minimize the *model's* cost function.
 It says nothing about how well anyone plays. When the human path falls
 outside the set, the model is missing something the player took into account.
 
+> **Re-measured after the GPIF import fix (#201).** GP6/7 tapping now reaches
+> the lab, so the slice grows from 155 to 242 lines. The length-matched
+> baseline below also contained that unlabelled tapping. Against the corrected
+> baseline, hand attribution closes **most, not all**, of the slice's excess.
+> The exactness finding stands. The sections from "Question" to "Conclusion"
+> are the original measurement, kept as run; see
+> [Re-measurement after #201](#re-measurement-after-201).
+
 ## Question
 
 The `v1` objective reads every note's position as the fretting hand's
@@ -96,6 +104,9 @@ Production `v1` weights:
 
 ## Reading
 
+*(Revised after #201: the excess half of this reading does not survive the
+corrected baseline; see [Re-measurement after #201](#re-measurement-after-201).)*
+
 **Hand attribution explains the slice's *excess*, not its *exactness*.** With
 the tap labels, the tapped slice reaches the untapped baseline of the same
 line lengths on every continuous measure, under both weight sets:
@@ -157,10 +168,135 @@ figures binding notes to one string) as the candidate, to be tested as an
 observed-label oracle before any hidden technique inference. Otherwise an
 inference stage could learn to paper over a continuity cost it cannot see.
 
+*(Revised after #201: "sufficient to remove the slice-specific excess" does
+not hold against the corrected baseline; see below.)*
+
+## Re-measurement after #201
+
+**Setup.** #201 (merged into `main`) imports GPIF `Tapped` and keeps the
+hammer-on flag on origin notes only. This PR's lab code was rebuilt on a
+local, unpushed merge of `main` (`c028609`) and `fingering_gap taps` rerun
+with the same weights. A local per-line dump (not committed) splits the
+slice. Rerun on this PR's head, the command reproduces the report above byte
+for byte.
+
+**What changed in the data (whole corpus).**
+
+- **Lines unchanged.** Line cuts are the same (9,045 lines, same ids). The
+  155 original tapped lines (all GP3–5) are unchanged line by line. The
+  hammer-on fix does not touch this experiment, which has no legato term.
+- **87 GP6/7 lines gain tap labels.** They come from 30 files and hold 9,042
+  notes, 1,840 of them tapped; 18 of the lines are on holdout songs. The
+  slice grows to **242 lines, 23,522 notes, 4,972 tapped**.
+- **The baseline pool shrinks.** The same 87 lines leave the untapped pool
+  (8,890 → 8,803 lines). They had been scored there tap-blind, which inflated
+  the baseline. For the original 155 lines, the `v1-fit` length-matched
+  baseline moves from 1.26 to **1.17** excess per note, and agreement from
+  44.9% to 45.3%.
+
+**Results (whole corpus, `v1-fit`, tap-aware at `tap_shift` = 1).** Baselines
+are untapped lines reweighted to each subset's line lengths, drawn from three
+pools: all untapped lines, the same format family, and the same files.
+
+| subset | model or baseline | human path in optimum set | excess per note | agreement | on tapped notes | ceiling |
+|---|---|---|---|---|---|---|
+| all 242 | tap-blind | 0.0% | 3.17 | 38.3% | 31.4% | 43.8% |
+| all 242 | **tap-aware** | 1.7% | **1.60** | 43.8% | 46.0% | 52.2% |
+| all 242 | *baseline: all untapped* | *20.9%* | *1.17* | *45.3%* | — | *54.6%* |
+| original 155 (GP3–5) | tap-aware | 1.3% | 1.27 | 44.3% | 44.6% | 52.9% |
+| original 155 (GP3–5) | *baseline: all / GP3–5 / same files* | *21.2 / 17.9 / 14.7%* | *1.17 / 1.08 / 0.98* | *45.3 / 45.2 / 48.3%* | — | *54.6 / 54.1 / 56.5%* |
+| added 87 (GP6/7) | tap-blind | 0.0% | 3.52 | 36.5% | 32.6% | 40.8% |
+| added 87 (GP6/7) | tap-aware | 2.3% | 2.13 | 42.9% | 48.4% | 51.1% |
+| added 87 (GP6/7) | *baseline: all / GP6/7 / same files* | *20.4 / 23.7 / 20.7%* | *1.16 / 1.41 / 1.22* | *45.3 / 45.2 / 44.8%* | — | *54.7 / 55.4 / 56.4%* |
+
+Share of the gap between tap-blind excess and the baseline that tap
+attribution closes:
+
+| subset | baseline pool | share closed |
+|---|---|---|
+| original 155 | pre-#201 pool, as reported above | 99% |
+| original 155 | all untapped / GP3–5 | 94% / 90% |
+| added 87 | all untapped / GP6/7 | 59% / 66% |
+| all 242 | all untapped | 78% |
+
+Other results:
+
+- **Production `v1` weights (all 242).** Tap-blind 7.89, tap-aware
+  (`tap_shift` = 2) 5.21, baseline 4.92 excess per note. The human path is in
+  the optimum set for 0.8% of lines against 13.7% of baseline lines.
+- **`tap_shift = 0` is still the wrong model.** Agreement on tapped notes
+  falls to 15.7%, and to 3.2% on the added lines.
+- **Holdout songs.** Now 33 lines; they are in `taps.json` but not
+  interpreted.
+
+**Concentration.** Two transcriptions of one song (the same song key, both
+on training songs) supply three lines of 461–541 notes. Those lines carry
+46% of the added lines' residual and 23% of the whole slice's residual. In
+them the tab keeps a repeated tapping figure on one string: tap, pull-off to
+the open string, two fretted notes. The lead-in is played on an open string
+as well. The tap-aware `v1-fit` optimum spreads the same figure over four
+strings at higher frets, which avoids the open-string penalty. Without these
+two files, the added lines sit at their format's baseline on the continuous
+measures:
+
+- excess per note 1.38 against 1.38;
+- agreement 47.8% against 45.4%.
+
+They are still not on the optimum: 2.4% against 24.4%.
+
+**Where the residual is (all 242).** Human cost minus the tap-aware optimum's
+cost, by component, checked per line against the dump. As above, this is a
+decomposition under the current objective, not a causal attribution.
+
+| component | human | tap-aware optimum | human − optimum |
+|---|---|---|---|
+| fretting-hand travel | 48,229 | 20,143 | **+28,086 (75%)** |
+| picking-hand travel | 7,803 | 3,711 | +4,092 (11%) |
+| open-string penalty | 6,624 | 1,158 | +5,466 (15%) |
+
+Fretting-hand travel keeps its 75% share. Within the added lines the
+open-string term takes a larger share: 16%, against 12.5% on the original
+lines. A tap on the string of the immediately preceding untapped note occurs
+as follows:
+
+| subset | human | optimum |
+|---|---|---|
+| all 242 | 1,770 | 832 |
+| original 155 | 1,023 | 525 |
+| added 87 | 747 | 307 |
+
+**Revised reading.**
+
+- **Stands.** Attributing tapped notes to the picking hand is necessary, and
+  picking-hand travel is real. Exactness remains out of reach. The human path
+  lies in the optimum set in 1–2% of tapped lines, against 15–24% for every
+  length-matched untapped baseline. This holds in both format families.
+- **Revised.** Hand attribution does **not** fully explain the slice's
+  excess. It closes most of the gap: 94% on the original lines against the
+  corrected pool, 66% on the added lines against their own format, 78% on
+  the whole slice. The earlier near-exact match (1.27 against 1.26) came
+  partly from unlabelled GP6/7 tapping inside the baseline pool.
+- **Consistent with H1/H2.** Where the remaining excess concentrates, it has
+  the shape H1 and H2 anticipated: one-string tapping figures with
+  open-string pull-offs. This is an observation on a concentrated subset,
+  not a test.
+
+**Consequences for stage 2 (legato continuity).**
+
+- **Baseline.** The baseline is this re-measurement, not the 155-line
+  slice: 242 lines and a pool of 8,803 untapped lines.
+- **Format.** Report per format family, with format-matched baselines next
+  to the pooled one.
+- **Concentration.** Report a concentration check by song key, for example
+  leave one song out. One song supplies about a quarter of the residual.
+- **Primary target.** Exactness (human path in the optimum set) is the
+  primary target, ahead of excess.
+
 ## Limitations
 
-- Oracle labels from the tab; tap marks undercount, including all GP6/7
-  tapping, which the importer drops (above).
+- Oracle labels from the tab; tap marks undercount. The original measurement
+  also missed all GP6/7 tapping, which the importer dropped until #201 (see
+  the re-measurement).
 - Hand attribution is one binary label per note. There are no simultaneous
   two-hand notes, no multi-finger picking-hand tapping, and no per-finger
   model.
@@ -173,7 +309,7 @@ inference stage could learn to paper over a continuity cost it cannot see.
    spans (`TechniqueSpan`) onto tablature lines and add a same-string
    continuity term (or constraint) for notes joined by legato or tap. Measure
    the tap slice's exact-optimum rate against the length-matched baseline
-   again.
+   again, starting from the re-measured slice after #201.
 2. Only then **hidden technique inference** for MIDI-sourced lines: tap,
    hammer-on, pull-off and slide as latent per-note labels, with these
    tab-labelled lines as the supervised check.
