@@ -30,8 +30,10 @@ Reachability Lab and forbids holdout policy in the CLI and cockpit.
 The design note
 [`../proposals/generator-observatory.md`](../proposals/generator-observatory.md)
 §8 records the review that shaped this decision. The in-memory form below is
-implemented and tested (`experiment/`, `core/tests/corpus_material_view.rs`,
-`core/tests/generation_input_characterization.rs`).
+implemented and tested:
+- `experiment/`;
+- `core/tests/corpus_material_view.rs`;
+- `core/tests/generation_input_characterization.rs`.
 
 ## Decision
 
@@ -61,47 +63,84 @@ implemented and tested (`experiment/`, `core/tests/corpus_material_view.rs`,
    - `FULL` means every channel of the bound population. It is neither an
      evaluation corpus, nor `LeakyDiagnostic`, nor a holdout.
    - A bundle may carry facts a caller supplies (population identity, a
-     Lab-produced leak check), never a verdict of its own.
+     Lab-produced leak check), never a verdict of its own. A holdout the Lab
+     refused is never recorded as one that happened.
 
-4. **Four identities, never one.** They are separate fingerprints:
-   - the experiment spec: ask, variants' stage identities, regimes, evaluation
-     context;
-   - the bound population snapshot: per channel and whole;
-   - what a generation pass could consume;
-   - the evaluation context.
+4. **Separate identities, never one.**
+   - **Experiment spec:** ask, variants' stage identities, regimes, evaluation
+     context.
+   - **Bound population snapshot:** per channel and whole.
+   - **Information a generation pass could consume:** each channel *as
+     offered*, so masked or absent channels read as empty.
+   - **Evaluation context.**
+   - **A cell's requested identity** (`Cell::requested`): source, ask, every
+     stage identity, the *requested* regime, and the bound population's
+     identity or its absence. The evaluation context is not part of it.
+   - **A cell's effective identity** (`Cell::recipe`): its pass's information
+     plus its selector and realizer identities.
 
-   A cell's recipe is its pass's information plus its selector and realizer
-   identities.
+   **Requested and effective identities never collapse.** `FULL` over no
+   population and `SEED_ONLY` have equal recipes and different requests, and
+   remain two cells: asking for a corpus and getting nothing is itself a
+   finding. Equal effective identities may share *execution* in the future,
+   but only as memoization keyed by the recipe, never as normalization of the
+   request (`FULL → SEED_ONLY`).
 
-   A pass's information hashes each channel *as offered*: masked or absent
-   channels read as empty. A cell's identity therefore depends only on the
-   channels it could consume, while the run separately records the whole
-   bound snapshot.
+   A cell's recipe depends only on the channels it could consume, while the run
+   separately records the whole bound snapshot. Together they answer "which
+   snapshot?" and "which parts of it could have influenced this cell?".
 
-5. **Fingerprint contract.**
-   - SHA-256 over a domain-tagged, length-prefixed walk of the canonical model.
-     Sequences carry their length, floats hash by bits, and enums hash by
-     exhaustive matches.
-   - Walks destructure public model types exhaustively, so a new field or
-     variant is a compile error.
-   - Three facts are reached through accessors because their fields are
-     private, so the compiler does not guard them: `Tempo`, `Tuning` and
-     `NoteMarks`.
-   - The tonal context hashes through its own serde projection.
+5. **One canonicalization of the score, versioned.**
+   - Fingerprints are SHA-256 over a domain-tagged (`griff.score.v1`, …),
+     length-prefixed walk of the canonical model. Sequences carry their
+     length, floats hash by bits, enums hash by exhaustive matches, and public
+     model types are destructured exhaustively.
    - Palette and reference order are part of identity, because order is
      behaviour.
    - Paths, run and history ids, timestamps and UI state are never hashed.
-   - A persisted form must reproduce these fingerprints; it does not define its
-     own.
+   - When the bundle introduces its wire types, it introduces **one** canonical
+     semantic projection (`…V1`) of the score and the other model values. Both
+     the bundle serialization and the fingerprint derive from that single
+     projection. A second, independent canonicalization is not allowed.
+   - Moving the fingerprint onto the projection either reproduces the pinned
+     v1 goldens (`experiment/tests/identity_pins.rs`) or bumps the domain
+     version together with the golden.
+   - Some facts are reached through accessors, because their fields are
+     private: `Tempo`, `Tuning`, `NoteMarks`. Likewise the tonal context
+     hashes through its own serde projection. This is an accepted property
+     of a versioned projection, not a reason to expose the canonical model's
+     internals.
+   - **Rule:** any change to what the projection observes requires a domain
+     version bump and a golden change in the same edit.
 
-6. **Metrics carry comparability identity.** Every value carries
+6. **Version ownership follows the semantics.** A policy's identity lives next
+   to the implementation it identifies, and the experiment crate consumes it.
+   - Read from core today:
+     - the scorer (`rerank::rerank_weights_v1`);
+     - the global-chain selector (`candidate_chain::chain_weights_v1`).
+   - Owned by `griff-experiment`, because the semantics are its own:
+     - the `generation_axes` evaluator;
+     - the `no_realization` realizer.
+   - **Debt, manual contract:** the S6 candidate-set generator
+     (`s6_candidate_set` v1) and the intact selection (`intact_top` v1). Core
+     carries no identity for either yet. Each is pinned by a characterization
+     golden sharing one assertion with its version, so a behaviour change
+     fails next to the number that must change. Updating only the golden is
+     the one wrong fix.
+   - The debt is retired by giving `griff-core` those identities before any
+     second generator or selector arm is registered.
+   - The Observatory never assigns a version to a policy it does not own
+     without such a pin.
+
+7. **Metrics carry comparability identity.** Every value carries
    `MetricIdentity { kind, name, owner, context }`.
    - An **evaluation** is measured by a fixed evaluator in the spec's explicit
      evaluation context. The context is `EvaluationContext::None` or a supplied
      context with its own fingerprint, and is never defaulted to the runtime
      corpus.
    - A **policy objective** is a policy's own number. Its context is the
-     information of the pass that produced it.
+     information of the pass that produced it. It is not automatically
+     comparable even within one regime: two scorers may live on two scales.
    - A delta exists only between identical identities.
    - An interaction `(B1 − A1) − (B0 − A0)` exists only over four evaluations
      with one identity.
@@ -110,7 +149,7 @@ implemented and tested (`experiment/`, `core/tests/corpus_material_view.rs`,
      it.
    - No aggregate "quality" score is introduced.
 
-7. **One pass per information need, shared; nothing regenerates.**
+8. **One pass per information need, shared; nothing regenerates.**
    - Within a regime, variants with equal generator and scorer share one ranked
      set. The chain is planned at most once per pass.
    - Refusals are typed cell outcomes, never fake results.
@@ -119,19 +158,30 @@ implemented and tested (`experiment/`, `core/tests/corpus_material_view.rs`,
    - Opening, switching, auditioning or exporting a recorded result never runs
      a generator or a planner. The projection's inputs cannot express one.
 
-8. **The bundle is versioned and waits for this ADR.** No persisted experiment
+9. **The bundle is versioned and waits for this ADR.** No persisted experiment
    schema is published before acceptance. The bundle then:
-   - is a versioned wire mirror (`…V1` types) with explicit conversions, not
-     serde on the canonical `Score`;
+   - serializes the canonical projection of decision 5, not serde on the
+     canonical `Score`;
    - is lossless on the represented subset, and any field it does not keep is
      listed, refused with a typed error, or proven irrelevant to replay and
      display;
    - carries schema id and version, spec, source, population and evaluation
-     identities, passes and cells.
+     identities, passes, and cells with both their requested and effective
+     identities.
 
    The frontend-owns-the-wire-format precedent of the Global Chain Audition
    `decisions.log` entry does not apply: the CLI writes bundles and the cockpit
    reads them, so the wire types are shared.
+
+**Characterization evidence (not a performance contract).** All eight regimes ×
+{S6 Intact, S7 Global Chain} were run over one repository-corpus source (9,686
+references, 6,146 rhythm templates, one gesture):
+- 16 cells were produced by 8 generation passes;
+- no cell was refused;
+- a replay was identical;
+- the S6 → S7 chain-cost delta was available within a regime and
+  `IncompatibleIdentity` across regimes;
+- interactions existed only for evaluation axes.
 
 Prior art (reused as ideas; no code or dependency):
 - **Content- vs input-addressed stores.** Nix and Bazel action keys hash a
@@ -154,19 +204,18 @@ Prior art (reused as ideas; no code or dependency):
 - "The corpus helped" becomes testable per channel, and "the algorithm helped
   without a corpus" becomes a direct contrast.
 - Two runs over populations that differ only in references keep identical
-  seed-only, rhythm-only and gesture-only cells.
+  seed-only, rhythm-only and gesture-only recipes. Their requests still record
+  that the population differed.
 - A number that would silently mix scales cannot be computed through the API.
 
 **Bad / cost.**
-- One more workspace crate, and identity versions for the stages the
-  experiment crate names.
-  - The scorer identity is pinned to the core rerank policy by a test.
-  - The generator and evaluator identities are this crate's promise, bumped by
-    hand when behaviour changes.
-- One pass per requested regime: two regimes whose offered views coincide (for
-  example `FULL` without a population and `SEED_ONLY`) still generate twice.
-  That is an explicit, bounded redundancy, kept so every pass has one requested
-  regime.
+- One more workspace crate.
+- Two production identities are manual contracts until core owns them. They
+  are pinned, but they still need a person to bump the version when a golden
+  breaks.
+- One pass per requested regime: two regimes whose offered views coincide
+  still generate twice. That is a measured, bounded cost of simplicity, to be
+  removed only by recipe-keyed memoization.
 - Cross-regime evaluation needs an explicitly supplied context. Without one,
   interactions are unavailable by design.
 
@@ -176,8 +225,7 @@ Prior art (reused as ideas; no code or dependency):
   - a `use_corpus` flag;
   - dynamic plugins or runtime scripting;
   - solver or ML runtimes.
-- A default evaluation corpus, and cross-scale deltas.
+- A default evaluation corpus, cross-scale deltas, request normalization, and a
+  second score canonicalization.
 - A TAB or realization view before a realizing client exists.
 - Leakage facts before the Lab supplies them.
-- Headless-vs-cockpit equality before both corpus loaders accept the same
-  records (PhysShell/griff#203).
