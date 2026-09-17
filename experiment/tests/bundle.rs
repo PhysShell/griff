@@ -20,9 +20,9 @@ use griff_core::candidate_chain::ChainError;
 use griff_core::generation_input::generation_request_from_score;
 use griff_core::layered_path::{PathError, StateId};
 use griff_experiment::{
-    run_experiment, score_fingerprint, BundleError, CellOutcome, CellRefusal, EvaluationContext,
-    ExperimentBundleV1, ExperimentInputs, ExperimentRun, ExperimentSpec, InformationRegime,
-    Mismatch, ScoreV1, Stage, BUNDLE_SCHEMA, BUNDLE_VERSION,
+    run_experiment, score_fingerprint, BundleError, CellOutcome, CellOutcomeV1, CellRefusal,
+    EvaluationContext, ExperimentBundleV1, ExperimentInputs, ExperimentRun, ExperimentSpec,
+    InformationRegime, Mismatch, ScoreV1, Stage, BUNDLE_SCHEMA, BUNDLE_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -52,7 +52,7 @@ fn bundle(run: &ExperimentRun) -> ExperimentBundleV1 {
 }
 
 fn json_of(run: &ExperimentRun) -> Value {
-    serde_json::from_str(&bundle(run).to_json()).expect("valid JSON")
+    serde_json::from_str(&bundle(run).to_json().expect("serializes")).expect("valid JSON")
 }
 
 fn load(value: &Value) -> Result<ExperimentBundleV1, BundleError> {
@@ -65,10 +65,14 @@ fn load(value: &Value) -> Result<ExperimentBundleV1, BundleError> {
 fn a_run_survives_its_bundle_exactly() {
     let run = run();
     let written = bundle(&run);
-    let json = written.to_json();
+    let json = written.to_json().expect("serializes");
     let loaded = ExperimentBundleV1::from_json(&json).expect("loads");
     assert_eq!(loaded, written);
-    assert_eq!(loaded.to_json(), json, "writing is deterministic");
+    assert_eq!(
+        loaded.to_json().expect("serializes"),
+        json,
+        "writing is deterministic"
+    );
     assert_eq!(
         loaded.run(),
         Ok(run.clone()),
@@ -91,7 +95,8 @@ fn a_refused_cell_survives_its_bundle_exactly() {
             cost: f64::INFINITY,
         },
     )));
-    let loaded = ExperimentBundleV1::from_json(&bundle(&run).to_json()).expect("loads");
+    let loaded =
+        ExperimentBundleV1::from_json(&bundle(&run).to_json().expect("serializes")).expect("loads");
     assert_eq!(
         loaded.run(),
         Ok(run),
@@ -182,7 +187,22 @@ fn metric_names_are_owned_strings_and_realization_is_only_absence() {
     let mut renamed = value;
     renamed["cells"][0]["outcome"]["produced"]["metrics"][0]["name"] = json!("made_up_axis");
     assert_eq!(
-        load(&renamed).expect("names are not hashed").run(),
+        load(&renamed),
+        Err(BundleError::IdentityMismatch(Mismatch::CellRecord {
+            cell: 0
+        })),
+        "a metric name is part of what the cell claims"
+    );
+
+    // A name outside the vocabulary never becomes a `&'static str`, even in a
+    // bundle built in memory rather than loaded.
+    let mut in_memory = bundle(&run());
+    let CellOutcomeV1::Produced(result) = &mut in_memory.cells[0].outcome else {
+        panic!("produced");
+    };
+    result.metrics[0].name = "made_up_axis".to_owned();
+    assert_eq!(
+        in_memory.run(),
         Err(BundleError::UnknownName("made_up_axis".to_owned()))
     );
 }
@@ -316,4 +336,149 @@ fn a_spec_whose_recorded_identity_the_code_no_longer_has_is_not_rebuilt() {
         })
     ));
     let _ = InformationRegime::FULL;
+}
+
+// ── C4b: fail-closed writing, and no displayed fact outside an identity ──────
+
+#[test]
+fn a_non_finite_metric_is_refused_before_anything_is_written() {
+    let mut written = bundle(&run());
+    let CellOutcomeV1::Produced(result) = &mut written.cells[0].outcome else {
+        panic!("produced");
+    };
+    result.metrics[0].value = f64::NAN;
+    assert_eq!(
+        written.to_json(),
+        Err(BundleError::NonFiniteMetric { cell: 0, metric: 0 }),
+        "never a `null` standing in for a number"
+    );
+}
+
+#[test]
+fn population_metadata_is_part_of_the_population_identity() {
+    let base = json_of(&run());
+    for (field, value) in [
+        ("reference_count", json!(12)),
+        ("rhythm_count", json!(0)),
+        ("gesture_present", json!(false)),
+    ] {
+        let mut value_edit = base.clone();
+        value_edit["population"][field] = value;
+        assert_eq!(
+            load(&value_edit),
+            Err(BundleError::IdentityMismatch(Mismatch::Population)),
+            "{field} is a displayed fact, bound to the snapshot"
+        );
+    }
+}
+
+#[test]
+fn what_a_pass_claims_happened_is_bound_to_its_record() {
+    let base = json_of(&run());
+    let refused = |edit: &dyn Fn(&mut Value)| {
+        let mut value = base.clone();
+        edit(&mut value);
+        load(&value).expect_err("refused")
+    };
+    for edit in [
+        (&|v: &mut Value| v["passes"][1]["candidate_count"] = json!(3)) as &dyn Fn(&mut Value),
+        &|v: &mut Value| v["passes"][1]["contribution"]["templates"] = json!(99),
+        &|v: &mut Value| v["passes"][1]["contribution"]["references"] = json!(0),
+        &|v: &mut Value| v["passes"][1]["contribution"]["gesture"] = json!(false),
+        &|v: &mut Value| v["passes"][1]["candidates"] = base["passes"][0]["candidates"].clone(),
+    ] {
+        assert_eq!(
+            refused(edit),
+            BundleError::IdentityMismatch(Mismatch::PassRecord { pass: 1 })
+        );
+    }
+}
+
+#[test]
+fn a_pass_regime_is_bound_even_when_no_population_makes_it_invisible_to_generation() {
+    let source = source();
+    let run = run_experiment(
+        &spec(),
+        &ExperimentInputs {
+            source: &source,
+            corpus: None,
+        },
+    )
+    .expect("runs");
+    let mut value: Value = serde_json::from_str(
+        &ExperimentBundleV1::from_run(&spec(), &source, &run)
+            .expect("this run")
+            .to_json()
+            .expect("serializes"),
+    )
+    .expect("valid JSON");
+    // Without a population every regime is offered the same empty view, so
+    // information cannot tell SEED_ONLY from FULL — the record must.
+    value["passes"][0]["regime"]["references"] = json!(true);
+    assert_eq!(
+        load(&value),
+        Err(BundleError::IdentityMismatch(Mismatch::PassRecord {
+            pass: 0
+        }))
+    );
+}
+
+#[test]
+fn what_a_cell_claims_is_bound_to_its_record() {
+    let base = json_of(&run());
+    let refused = |edit: &dyn Fn(&mut Value)| {
+        let mut value = base.clone();
+        edit(&mut value);
+        load(&value).expect_err("refused")
+    };
+    assert_eq!(
+        refused(&|v| v["cells"][0]["outcome"]["produced"]["metrics"][2]["value"] = json!(0.123)),
+        BundleError::IdentityMismatch(Mismatch::CellRecord { cell: 0 }),
+        "the number a delta is computed from"
+    );
+    assert_eq!(
+        refused(
+            &|v| v["cells"][0]["outcome"]["produced"]["metrics"][2]["owner"]["version"] = json!(9)
+        ),
+        BundleError::IdentityMismatch(Mismatch::CellRecord { cell: 0 })
+    );
+    assert_eq!(
+        refused(
+            &|v| v["cells"][2]["outcome"]["produced"]["diagnostics"][0]["chain_bar"]["rank"] =
+                json!(5)
+        ),
+        BundleError::IdentityMismatch(Mismatch::CellRecord { cell: 2 })
+    );
+
+    let mut with_refusal = run();
+    with_refusal.cells[3].outcome = CellOutcome::Refused(CellRefusal::Chain(ChainError::Path(
+        PathError::NonFiniteLocal {
+            state: StateId {
+                layer: 2,
+                ordinal: 7,
+            },
+            cost: f64::INFINITY,
+        },
+    )));
+    let mut value = json_of(&with_refusal);
+    value["cells"][3]["outcome"]["refused"]["chain"]["path"]["non_finite_local"]["state"]
+        ["ordinal"] = json!(8);
+    assert_eq!(
+        load(&value),
+        Err(BundleError::IdentityMismatch(Mismatch::CellRecord {
+            cell: 3
+        })),
+        "a refusal's detail is a claim too"
+    );
+}
+
+#[test]
+fn variant_labels_are_bound_to_the_run_record() {
+    let mut value = json_of(&run());
+    value["spec"]["variants"][0]["label"] = json!("Obviously Better");
+    assert_eq!(
+        load(&value),
+        Err(BundleError::IdentityMismatch(Mismatch::Run)),
+        "labels stay out of the spec identity, but not out of the record"
+    );
 }

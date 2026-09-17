@@ -113,6 +113,11 @@ pub struct GenerationPass {
     pub candidates: Fingerprint,
     /// How many candidates were ranked.
     pub candidate_count: usize,
+    /// What this executed pass **claims happened**: its requested regime, its
+    /// information, the contribution, the candidates and their count. Kept
+    /// apart from [`Self::information`], which is only what could affect
+    /// generation — output metadata never enters a cause.
+    pub record: Fingerprint,
 }
 
 /// A typed realization of a result onto an instrument.
@@ -221,6 +226,10 @@ pub struct Cell {
     pub recipe: Fingerprint,
     /// The result, or the typed reason there is none.
     pub outcome: CellOutcome,
+    /// What this cell **claims**: its indices and regime, both identities, and
+    /// its outcome — content, every metric (kind, name, owner, context,
+    /// value), every diagnostic, or the typed refusal.
+    pub record: Fingerprint,
 }
 
 /// A whole run — immutable once returned.
@@ -239,6 +248,9 @@ pub struct ExperimentRun {
     /// Cells in variant × regime order: variant 0 under every regime, then
     /// variant 1, …
     pub cells: Vec<Cell>,
+    /// The whole recorded run: spec, variant labels, source, evaluation,
+    /// population, and every pass and cell record.
+    pub record: Fingerprint,
 }
 
 impl ExperimentRun {
@@ -307,6 +319,7 @@ pub fn run_experiment(
                 requested: requested_identity(&context, variant, regime),
                 recipe,
                 outcome: live_pass.select(variant, &context),
+                record: Fingerprint([0; 32]),
             });
         }
     }
@@ -318,6 +331,7 @@ pub fn run_experiment(
         evaluation: context.evaluation,
         passes: live.into_iter().map(|p| p.record).collect(),
         cells,
+        record: Fingerprint([0; 32]),
     })
 }
 
@@ -409,6 +423,7 @@ impl LivePass {
             contribution: CorpusContribution::of_pass(view, &set),
             candidates: candidates_fingerprint(&set),
             candidate_count: set.ranked.len(),
+            record: Fingerprint([0; 32]),
         };
         Ok(Self {
             generator: variant.generator,

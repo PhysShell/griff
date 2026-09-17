@@ -182,6 +182,8 @@ pub struct RunIdentitiesV1 {
     pub source: Fingerprint,
     /// The evaluation context's fingerprint, when there is one.
     pub evaluation: Option<Fingerprint>,
+    /// The whole recorded run.
+    pub record: Fingerprint,
 }
 
 /// The bound population's identity.
@@ -236,6 +238,8 @@ pub struct GenerationPassV1 {
     pub candidates: Fingerprint,
     /// How many were ranked.
     pub candidate_count: u64,
+    /// What the pass claims happened.
+    pub record: Fingerprint,
 }
 
 /// A realization — no value exists in version 1, so the only representable
@@ -600,6 +604,8 @@ pub struct CellV1 {
     pub recipe: Fingerprint,
     /// Its outcome.
     pub outcome: CellOutcomeV1,
+    /// What the cell claims.
+    pub record: Fingerprint,
 }
 
 /// A whole run, written down.
@@ -642,6 +648,11 @@ pub enum Mismatch {
         /// The pass.
         pass: usize,
     },
+    /// A pass's record: what it claims happened.
+    PassRecord {
+        /// The pass.
+        pass: usize,
+    },
     /// A cell names a variant the spec does not have.
     CellVariant {
         /// The cell.
@@ -675,6 +686,13 @@ pub enum Mismatch {
         /// The metric's position.
         metric: usize,
     },
+    /// A cell's record: what it claims.
+    CellRecord {
+        /// The cell.
+        cell: usize,
+    },
+    /// The whole run's record (labels included).
+    Run,
 }
 
 /// Which spec stage a recorded identity drifted on.
@@ -698,6 +716,9 @@ pub enum BundleError {
     /// The JSON does not parse into bundle version 1 (including unknown
     /// fields and a present realization); the parser's message.
     Malformed(String),
+    /// The bundle could not be serialised; the serializer's message. Never
+    /// replaced by an empty or partial artifact.
+    Serialize(String),
     /// Another schema.
     UnknownSchema(String),
     /// Another version.
@@ -769,6 +790,7 @@ impl ExperimentBundleV1 {
                 spec: run.spec,
                 source: run.source,
                 evaluation: run.evaluation,
+                record: run.record,
             },
             population: run.corpus.as_ref().map(CorpusSnapshotV1::from),
             passes: run.passes.iter().map(GenerationPassV1::from).collect(),
@@ -778,11 +800,11 @@ impl ExperimentBundleV1 {
 
     /// The bundle as pretty, deterministic JSON.
     ///
-    /// Serialising these types cannot fail: no map keys, and every custom
-    /// serializer writes a string.
-    #[must_use]
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_default()
+    /// # Errors
+    /// [`BundleError::NonFiniteMetric`] for a value JSON cannot carry exactly;
+    /// [`BundleError::Serialize`] if serialisation fails.
+    pub fn to_json(&self) -> Result<String, BundleError> {
+        serde_json::to_string_pretty(self).map_err(|e| BundleError::Serialize(e.to_string()))
     }
 
     /// Reads a bundle: parse, check schema and version, validate every
@@ -1009,6 +1031,7 @@ impl ExperimentBundleV1 {
                 .iter()
                 .map(CellV1::to_cell)
                 .collect::<Result<_, _>>()?,
+            record: self.identities.record,
         })
     }
 }
@@ -1281,6 +1304,7 @@ impl From<&GenerationPass> for GenerationPassV1 {
             contribution,
             candidates,
             candidate_count,
+            record,
         } = *pass;
         let CorpusContribution {
             templates,
@@ -1299,6 +1323,7 @@ impl From<&GenerationPass> for GenerationPassV1 {
             },
             candidates,
             candidate_count: wide(candidate_count),
+            record,
         }
     }
 }
@@ -1317,6 +1342,7 @@ impl GenerationPassV1 {
             },
             candidates: self.candidates,
             candidate_count: narrow(self.candidate_count)?,
+            record: self.record,
         })
     }
 }
@@ -1329,6 +1355,7 @@ fn cell_v1(i: usize, cell: &Cell) -> Result<CellV1, BundleError> {
         requested,
         recipe,
         outcome,
+        record,
     } = cell;
     let outcome = match outcome {
         CellOutcome::Produced(result) => {
@@ -1367,6 +1394,7 @@ fn cell_v1(i: usize, cell: &Cell) -> Result<CellV1, BundleError> {
         requested: *requested,
         recipe: *recipe,
         outcome,
+        record: *record,
     })
 }
 
@@ -1404,6 +1432,7 @@ impl CellV1 {
             requested: self.requested,
             recipe: self.recipe,
             outcome,
+            record: self.record,
         })
     }
 }
