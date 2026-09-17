@@ -55,6 +55,42 @@ What changes and what does not:
   hand-model oracle (Results 1 and 4). Neither conclusion depends on pitch
   correctness in an obvious way, but their numbers are pre-fix.
 
+## Re-measured after #202 (2026-09-17) — tuplet durations
+
+PhysShell/griff#202 fixed a second import defect. The Guitar Pro importer
+applied the tuplet ratio upside down, so every tuplet came out 9/4 too long,
+and it ignored double dots. Bars with tuplets overflowed into the next bar,
+and tab lines, which order notes by onset, interleaved notes from neighbouring
+bars. The tables in the Correction above were measured before this fix.
+
+Re-measured on this branch merged with `main` at `e871a44`, with the same
+corpus, protocol and weights. The weights were not refitted.
+
+- **Corpus.** 9,045 → 8,966 lines (holdout 1,954 → 1,945); 326,130 → 329,095
+  notes.
+- **Oracle.** The CP-SAT oracle was not rerun in full. For each model:
+  - 1,831 of the 1,945 holdout problems have unchanged fingerprints and keep
+    their verified records;
+  - the other 114 (46 with changed fingerprints, 68 new lines) were solved
+    again, agreement pass included.
+- **Solver gap.** All 1,945 are proven optimal, and the DP gap is 0 on every
+  line for both models.
+
+| model | DP agreement, holdout | ceiling at the optimum | human fingering optimal |
+|---|---|---|---|
+| lowest fret | 33.5% → 33.0% | — | — |
+| v1 production | 35.8% → 35.4% | 36.2% → 35.8% | 19.2% → 19.0% |
+| v1-fit | 44.1% → 44.2% | 55.5% → 55.4% | 30.9% → 30.7% |
+| hand-fit (DP only) | 44.3% → 44.7% | — | 37.7% → 37.3% |
+
+No conclusion above changes:
+
+- the solver gap is still zero;
+- v1's optimum set still caps agreement near its DP value;
+- v1-fit still loses about 11 points to ties (44.2% against a 55.4% ceiling).
+
+Results 1–4 stay as first measured, before both fixes.
+
 ## What was built
 
 `lab/` (`griff-constraint-lab`), TDD red → green per commit:

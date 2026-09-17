@@ -7,7 +7,7 @@ stack, Swang Playground Slice 3 (favorite / reject / history / provenance,
 PR #126), and Global Chain Audition (PR #129).
 Remaining: tracked in the progress notes and checklist below
 Depends on: S6
-ADRs: —
+ADRs: ADR-0034 (Generator Observatory contract)
 
 > Progress: the `preview` workspace member ships:
 > - **view-model** (`build_view`: `Score` → `PianoRollView`) — notes on a
@@ -131,6 +131,62 @@ front-ends and audio build on them:
         delta says "lower under `candidate_chain` v1", which is a fact about the
         policy), k-best or Slice C, weight tuning or sliders, S9 learning, S15
         harmony, and S17 rendering.
+- [~] **Generator Observatory** — **contract accepted 2026-09-17**
+      ([ADR-0034](../adr/0034-experiment-axes-and-identities.md)). Global Chain
+      Audition generalised into two experiment axes, *algorithm variant* ×
+      *information regime*.
+      - **In-memory runner landed** (`griff-experiment`): typed variants per
+        pipeline stage, regimes that mask the channels of an already
+        prepared population, one generation pass per regime shared by
+        every variant that can share it, and typed cell refusals.
+      - **Identities.** Separate spec, population, pass-information,
+        evaluation, requested-cell and effective-recipe identities.
+      - **Metrics.** Deltas only between identical metric identities, and
+        interactions only over evaluations.
+      - **Core seam.** `ranked_candidates` now wraps
+        `ranked_candidates_from_view`, pinned output-identical to main.
+      - **Unchanged boundary.** Holdout and population selection stay with
+        the Reachability Lab (ADR-0032).
+      - **Persistent bundle landed** (`ExperimentBundleV1`).
+        - **One projection.** The canonical semantic projection V1 is the
+          only wire form, and every fingerprint walks it; the pinned v1
+          goldens were reproduced unchanged.
+        - **Complete record.** The whole spec, the source, the population
+          identity, every pass, and both identities of every cell.
+        - **Loading.** Parses strictly, validates every projection
+          through the model's constructors, and recomputes every identity
+          with typed mismatches. It never generates.
+        - **Lossless.** `run()` rebuilds the in-memory run exactly.
+        - **Characterization, not a contract.** On one repository-corpus
+          source, 16 cells wrote a 7.9 MB pretty JSON bundle that loaded
+          and verified in about 11 ms in release.
+      - **Hardening (C4b).** Writing fails closed. Every displayed fact is
+        bound to an identity: `corpus-snapshot.v2`, plus pass, cell and run
+        records kept apart from the causal identities. The only sealing
+        path is crate-private.
+      - **Cockpit Observatory landed** (`o`, "🔬 observatory"). One display
+        path: `ExperimentView` is built from a bundle and nothing else.
+        - **Run and Open.** A native Run is written down as a bundle before
+          anything is shown, and a saved bundle opens through the same
+          verification. Their views are equal.
+        - **A and B.** Pick A and B by variant and regime. Requested,
+          effective and actual stay side by side and apart.
+        - **Numbers.** Metric rows and the 2 × 2 interaction are
+          `delta()` / `interaction()` verbatim. A comparison without a
+          number says why ("not comparable: different measurement
+          context").
+        - **Audition.** Plays recorded scores through the Slice 2 transport
+          (`AuditionCandidate::Experiment`), and `b` swaps them. Nothing
+          regenerates or re-plans; a refused cell is shown as its refusal
+          and never played.
+        - **Web.** Opens and auditions bundles ("🔬 Bundle"); running stays
+          native.
+        - **Untouched.** The Generate panel, history and TAB.
+      - **Next increments.**
+        1. Retiring the manual `s6_candidate_set` / `intact_top` identities
+           into core.
+        2. The full variant × channel matrix and the corpus explorer (typed
+           queries first).
 - [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16 and merged
       as PR #126**: favorite/reject controls (mutually exclusive) and a
       session **history** of every auditioned candidate with typed provenance,
