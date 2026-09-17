@@ -2816,6 +2816,25 @@ Architectural decisions go to [`adr/`](adr/) instead.
   lost its only caller and is deleted rather than kept for symmetry, since a
   `pub(crate)` wrapper with nobody behind it is not an API.
 
+- 2026-09-16 — In the context of GPIF imports (GP6 `.gpx`, GP7/8 `.gp`),
+  facing a tuning listed lowest string first with notes numbered from 0 =
+  lowest, and a `guitarpro` 0.4.2 conversion that reaches a staff-level
+  tuning only when the track has an empty property block, we decided to
+  **read the GPIF document in the adapter and renumber every track once at
+  the import boundary** (tuning from track or staff properties, strings
+  highest first, raw string r of n → n − r), to achieve one string
+  convention for every source — griff's string 1 = highest (ADR-0018) — and
+  correct pitches for GP7, accepting that the adapter now depends on the
+  crate's public GPIF model (`guitarpro::io::gpif`) besides its `Song`
+  conversion. Measured before the fix on a 410-file corpus: 177 GP6 tracks
+  imported mirrored (pitches right) and only 0.2% of GP7 notes carried the
+  pitch their GPIF `Midi` property states; after it, every GP7 note's
+  (string, fret, pitch) equals tuning + fret and 98.1% equal `Midi` (the
+  rest are transposed or percussion parts). Found by the Constraint Lab's
+  fingering audit (PhysShell/griff#197), whose line normalization masked
+  the GP6 half. The crate defect is upstream's to fix; this adapter no
+  longer depends on it.
+
 - 2026-09-16 — In the context of the Constraint Lab's optimization phase
   (SLOTHY-style "how far from the best admissible realization is Griff?"),
   facing a production fingering DP that is exact for its own objective, we

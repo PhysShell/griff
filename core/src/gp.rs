@@ -17,6 +17,12 @@
 //! a plain ZIP of `Content/score.gpif`) decode to the same GPIF and run the
 //! same conversion.
 //!
+//! GPIF lists a tuning lowest string first and numbers a note's string from
+//! 0 = lowest, while GP3/4/5 — and griff (ADR-0018) — number from 1 = highest.
+//! A GPIF song is renumbered once, at this boundary, from the tuning GPIF
+//! itself stores (track or staff properties); everything after reads one
+//! convention.
+//!
 //! Every import produces a [`LossReport`] carried on [`Score`].  Tied notes
 //! continue the preceding note on their string (extending its duration);
 //! percussion tracks and other unsupported note kinds remain losses.
@@ -37,8 +43,11 @@ use crate::{
     },
     slice::TickRange,
 };
+use guitarpro::io::gpif::{Gpif, Property as GpifProperty, Track as GpifTrack};
+use guitarpro::io::gpx::{read_gp, read_gpx};
 use guitarpro::model::legacy::key_signature::Duration as GpDuration;
 use guitarpro::model::legacy::note::NoteEffect as GpNoteEffect;
+use guitarpro::SongGpifOps as _;
 use std::collections::HashMap;
 
 /// Guitar Pro internal PPQN (pulses per quarter note).
@@ -153,15 +162,119 @@ pub fn import_gp_score(data: &[u8]) -> Result<Score, GpImportError> {
         Some(3) => song.read_gp3(data)?,
         Some(4) => song.read_gp4(data)?,
         Some(5) => song.read_gp5(data)?,
-        Some(6) => song.read_gpx(data)?,
+        Some(6) => read_gpif_song(&mut song, &read_gpx(data)?, 6),
         // GP7/8 decode to the same GPIF the GP6 path uses; `read_gp` unzips
-        // `Content/score.gpif` and runs the shared conversion. The Song's
-        // version.number.0 becomes 7, so `gp_song_to_score` tags "GP7" and
-        // takes the same `>= 6` behaviour (zero-indexed strings, raw repeats).
-        Some(7) => song.read_gp(data)?,
+        // `Content/score.gpif`. The Song's version.number.0 becomes 7, so
+        // `gp_song_to_score` tags "GP7" and takes the same `>= 6` behaviour
+        // (raw repeat counts).
+        Some(7) => read_gpif_song(&mut song, &read_gp(data)?, 7),
         _ => return Err(GpImportError::UnsupportedFormat),
     }
     Ok(gp_song_to_score(&song))
+}
+
+// ── GPIF string orientation ───────────────────────────────────────────────────
+
+/// Reads a parsed GPIF document (GP6 `.gpx`, GP7/8 `.gp`) into `song` — the
+/// crate's own `read_gpx` / `read_gp` steps — then renumbers its strings to the
+/// convention the rest of this adapter reads ([`normalise_gpif_strings`]).
+fn read_gpif_song(song: &mut guitarpro::Song, gpif: &Gpif, major: u8) {
+    song.version.number = (major, 0, 0);
+    song.read_gpif(gpif);
+    normalise_gpif_strings(song, gpif);
+}
+
+/// A GPIF track's tuning as stored: open-string pitches, **lowest string
+/// first**. Read from the track's own properties (GP6) or else from the first
+/// staff that carries one (GP7/8). The `guitarpro` crate reaches the staff
+/// tuning only when the track has an empty property block, so a GP7 track
+/// with no track properties silently fell back to Standard E there. `None`
+/// when no tuning is present (drums, keys) or a pitch does not parse.
+fn gpif_low_first_tuning(track: &GpifTrack) -> Option<Vec<i8>> {
+    fn from_properties(properties: &[GpifProperty]) -> Option<Vec<i8>> {
+        let pitches = properties
+            .iter()
+            .find(|p| p.name == "Tuning")?
+            .pitches
+            .as_deref()?;
+        let parsed: Option<Vec<i8>> = pitches
+            .split_whitespace()
+            .map(|pitch| pitch.parse::<i8>().ok())
+            .collect();
+        parsed.filter(|tuning| !tuning.is_empty())
+    }
+    track
+        .properties
+        .as_ref()
+        .and_then(|p| from_properties(&p.properties))
+        .or_else(|| {
+            track.staves.as_ref()?.staves.iter().find_map(|staff| {
+                staff
+                    .properties
+                    .as_ref()
+                    .and_then(|p| from_properties(&p.properties))
+            })
+        })
+}
+
+/// Renumbers every track of a GPIF-read song to string 1 = highest, numbered
+/// from 1 — the GP3/4/5 convention and griff's (ADR-0018).
+///
+/// The tuning comes from the GPIF track itself ([`gpif_low_first_tuning`]).
+/// A track without one keeps the crate's fallback strings, which the crate
+/// lists highest first and are reversed here into GPIF order.
+fn normalise_gpif_strings(song: &mut guitarpro::Song, gpif: &Gpif) {
+    for (index, track) in song.tracks.iter_mut().enumerate() {
+        let low_first = gpif
+            .tracks
+            .tracks
+            .get(index)
+            .and_then(gpif_low_first_tuning);
+        normalise_track_strings(track, low_first);
+    }
+}
+
+/// Renumbers one track: `track.strings` becomes the tuning highest string
+/// first, and each note's raw GPIF string `r` of `n` becomes `n − r`
+/// ([`mirror_gpif_string`]). `low_first` is the GPIF tuning; `None` reuses the
+/// crate's fallback strings.
+fn normalise_track_strings(track: &mut guitarpro::Track, low_first: Option<Vec<i8>>) {
+    let low_first = low_first.unwrap_or_else(|| {
+        track
+            .strings
+            .iter()
+            .rev()
+            .map(|&(_, pitch)| pitch)
+            .collect()
+    });
+    let count = low_first.len();
+    track.strings = low_first
+        .iter()
+        .rev()
+        .zip(1..=i8::MAX)
+        .map(|(&pitch, number)| (number, pitch))
+        .collect();
+    for note in track
+        .measures
+        .iter_mut()
+        .flat_map(|measure| measure.voices.iter_mut())
+        .flat_map(|voice| voice.beats.iter_mut())
+        .flat_map(|beat| beat.notes.iter_mut())
+    {
+        note.string = mirror_gpif_string(note.string, count);
+    }
+}
+
+/// Maps a raw GPIF string (0 = lowest of `count`) to the GP3/4/5 number
+/// (1 = highest). A raw string outside the tuning maps to 0, which the pitch
+/// and position readers refuse like any invalid GP string.
+fn mirror_gpif_string(raw: i8, count: usize) -> i8 {
+    usize::try_from(raw)
+        .ok()
+        .filter(|&raw| raw < count)
+        .and_then(|raw| count.checked_sub(raw))
+        .and_then(|number| i8::try_from(number).ok())
+        .unwrap_or(0)
 }
 
 // ── version detection ─────────────────────────────────────────────────────────
@@ -230,14 +343,12 @@ fn gp_song_to_score(song: &guitarpro::Song) -> Score {
         .collect();
 
     let master_bars = build_gp_master_bars(&meters, &starts, &tempos, &repeats);
-    // GP6/GPIF numbers a note's string from 0; GP3/4/5 binary numbers from 1 —
-    // the same per-format divergence the crate exposes for repeat counts above.
-    // Normalised to griff's 1-indexed convention per note during construction.
-    let zero_indexed_strings = version_major >= 6;
+    // GPIF songs arrive renumbered (`normalise_gpif_strings`), so every source
+    // shares the GP3/4/5 string convention here.
     let tracks: Vec<Track> = song
         .tracks
         .iter()
-        .map(|t| build_gp_track(t, song, &starts, zero_indexed_strings, &mut loss))
+        .map(|t| build_gp_track(t, song, &starts, &mut loss))
         .collect();
 
     Score {
@@ -304,7 +415,6 @@ fn build_gp_track(
     gp_track: &guitarpro::Track,
     song: &guitarpro::Song,
     starts: &[u32],
-    zero_indexed: bool,
     loss: &mut LossReport,
 ) -> Track {
     let channel = song
@@ -320,7 +430,7 @@ fn build_gp_track(
         .unwrap_or(0);
 
     let voices: Vec<Voice> = (0..voice_count)
-        .filter_map(|vi| build_gp_voice(gp_track, vi, starts, zero_indexed, loss))
+        .filter_map(|vi| build_gp_voice(gp_track, vi, starts, loss))
         .collect();
 
     Track {
@@ -357,7 +467,6 @@ fn build_gp_voice(
     gp_track: &guitarpro::Track,
     voice_idx: usize,
     starts: &[u32],
-    zero_indexed: bool,
     loss: &mut LossReport,
 ) -> Option<Voice> {
     let mut event_groups: Vec<EventGroup> = Vec::new();
@@ -381,7 +490,6 @@ fn build_gp_voice(
 
         let ctx = StringCtx {
             strings: &gp_track.strings,
-            zero_indexed,
         };
         for beat in &gp_voice.beats {
             let dur_ticks = gp_duration_ticks(&beat.duration).max(1);
@@ -409,15 +517,12 @@ struct VoiceAccum<'a> {
 }
 
 /// Immutable per-track source context for reading `(string, fret)` data: the
-/// open-tuning array plus the source's string-numbering base (GP6/GPIF numbers
-/// strings from 0, GP3/4/5 binary from 1). The read-only complement to
+/// open-tuning array, string 1 (highest) first. The read-only complement to
 /// [`VoiceAccum`]'s mutable accumulators.
 #[derive(Clone, Copy)]
 struct StringCtx<'a> {
     /// `(string_number, open_tuning_midi)` from `guitarpro::Track::strings`.
     strings: &'a [(i8, i8)],
-    /// `true` when the source numbers strings from 0 (GP6/GPIF).
-    zero_indexed: bool,
 }
 
 /// Appends the canonical event representation for one Guitar Pro beat.
@@ -457,7 +562,7 @@ fn append_beat(
     for note in &beat.notes {
         match note.kind {
             guitarpro::NoteType::Normal | guitarpro::NoteType::Dead => {
-                let Some(midi) = gp_note_midi_pitch(note, ctx.strings, ctx.zero_indexed) else {
+                let Some(midi) = gp_note_midi_pitch(note, ctx.strings) else {
                     acc.loss.add(ImportWarning::Other(
                         "GP note pitch out of range; note skipped".to_owned(),
                     ));
@@ -483,16 +588,14 @@ fn append_beat(
                     velocity,
                     marks,
                     // Guitar Pro is a source of truth for (string, fret) — ADR-0018.
-                    position: gp_note_position(note, ctx.zero_indexed).map(NotePosition::explicit),
+                    position: gp_note_position(note).map(NotePosition::explicit),
                 }));
-                if let Ok(string) =
-                    u8::try_from(gp_one_indexed_string(note.string, ctx.zero_indexed))
-                {
+                if let Ok(string) = u8::try_from(note.string) {
                     acc.held.insert(string, (group_index, atom_index));
                 }
             }
             guitarpro::NoteType::Tie => {
-                if extend_tie(note, start, dur_ticks, ctx.zero_indexed, acc) {
+                if extend_tie(note, start, dur_ticks, acc) {
                     continued = true;
                 }
             }
@@ -540,10 +643,9 @@ fn extend_tie(
     note: &guitarpro::Note,
     start: Ticks,
     dur_ticks: u32,
-    zero_indexed: bool,
     acc: &mut VoiceAccum<'_>,
 ) -> bool {
-    let string = gp_one_indexed_string(note.string, zero_indexed);
+    let string = note.string;
     let location = u8::try_from(string)
         .ok()
         .and_then(|string| acc.held.get(&string).copied());
@@ -578,28 +680,14 @@ fn rest_group(start: Ticks, duration: Ticks) -> EventGroup {
 
 // ── note pitch calculation ────────────────────────────────────────────────────
 
-/// Normalises a GP note's raw `string` field to griff's 1-indexed string number.
-///
-/// GP3/4/5 binary number their strings from 1 (string 1 is the first entry of
-/// `Track::strings`); GP6/GPIF number them from 0. Returning `i16` lets callers
-/// reject a non-positive result uniformly — for binary a raw 0 is invalid, while
-/// for GP6 a raw 0 is the legitimate first string and maps to griff string 1.
-fn gp_one_indexed_string(raw: i8, zero_indexed: bool) -> i16 {
-    i16::from(raw).saturating_add(i16::from(zero_indexed))
-}
-
 /// Computes the MIDI pitch for a GP note from string/fret data.
 ///
 /// `strings` is the per-string `(string_number, open_tuning_midi_note)` array
-/// from `guitarpro::Track::strings`.  `zero_indexed` selects the source's string
-/// numbering (see [`gp_one_indexed_string`]). Returns `None` when the string
-/// index is out of range or the resulting MIDI note overflows 0–127.
-fn gp_note_midi_pitch(
-    note: &guitarpro::Note,
-    strings: &[(i8, i8)],
-    zero_indexed: bool,
-) -> Option<u8> {
-    let string = gp_one_indexed_string(note.string, zero_indexed);
+/// from `guitarpro::Track::strings`, string 1 (highest) first — GPIF songs are
+/// renumbered before conversion ([`normalise_gpif_strings`]). Returns `None`
+/// when the string is out of range or the resulting MIDI note overflows 0–127.
+fn gp_note_midi_pitch(note: &guitarpro::Note, strings: &[(i8, i8)]) -> Option<u8> {
+    let string = i16::from(note.string);
     if string <= 0 {
         return None;
     }
@@ -614,8 +702,8 @@ fn gp_note_midi_pitch(
 /// Reads the source-of-truth `(string, fret)` of a GP note as a
 /// [`FretboardPosition`] (ADR-0018), normalised to griff's 1-indexed string
 /// numbering. `None` when the GP string/fret is invalid.
-fn gp_note_position(note: &guitarpro::Note, zero_indexed: bool) -> Option<FretboardPosition> {
-    let string = gp_one_indexed_string(note.string, zero_indexed);
+fn gp_note_position(note: &guitarpro::Note) -> Option<FretboardPosition> {
+    let string = i16::from(note.string);
     if string <= 0 || note.value < 0 {
         return None;
     }
@@ -988,7 +1076,7 @@ mod tests {
             ..Default::default()
         };
         let strings = vec![(1_i8, 64_i8)]; // string 1, tuning E4 = 64
-        assert_eq!(gp_note_midi_pitch(&note, &strings, false), Some(64));
+        assert_eq!(gp_note_midi_pitch(&note, &strings), Some(64));
     }
 
     #[test]
@@ -999,7 +1087,7 @@ mod tests {
             ..Default::default()
         };
         let strings = vec![(1_i8, 64_i8)];
-        assert_eq!(gp_note_midi_pitch(&note, &strings, false), Some(66)); // F#4
+        assert_eq!(gp_note_midi_pitch(&note, &strings), Some(66)); // F#4
     }
 
     #[test]
@@ -1010,7 +1098,7 @@ mod tests {
             ..Default::default()
         };
         let strings = vec![(1_i8, 40_i8)];
-        assert_eq!(gp_note_midi_pitch(&note, &strings, false), None);
+        assert_eq!(gp_note_midi_pitch(&note, &strings), None);
     }
 
     #[test]
@@ -1028,81 +1116,93 @@ mod tests {
             (5_i8, 45_i8),
             (6_i8, 40_i8),
         ];
-        assert_eq!(gp_note_midi_pitch(&note, &strings, false), None);
+        assert_eq!(gp_note_midi_pitch(&note, &strings), None);
     }
 
-    // ── GP6/GPIF zero-indexed strings (ADR-0018) ──────────────────────────────
+    // ── GPIF string orientation (ADR-0018) ────────────────────────────────────
 
     #[test]
-    fn gp_one_indexed_string_normalises_per_format() {
-        // GP3/4/5 binary numbers strings from 1 — left unchanged.
-        assert_eq!(gp_one_indexed_string(1, false), 1);
-        assert_eq!(gp_one_indexed_string(6, false), 6);
-        // GP6/GPIF numbers from 0 — shifted up so the first string becomes 1.
-        assert_eq!(gp_one_indexed_string(0, true), 1);
-        assert_eq!(gp_one_indexed_string(5, true), 6);
+    fn mirror_gpif_string_numbers_from_the_highest_string() {
+        // Six strings: GPIF raw 0 (lowest) is griff string 6, raw 5 (highest) is 1.
+        assert_eq!(mirror_gpif_string(0, 6), 6);
+        assert_eq!(mirror_gpif_string(5, 6), 1);
+        assert_eq!(mirror_gpif_string(0, 7), 7);
+        // Outside the tuning: 0, the invalid GP string the readers refuse.
+        assert_eq!(mirror_gpif_string(6, 6), 0);
+        assert_eq!(mirror_gpif_string(-1, 6), 0);
+        assert_eq!(mirror_gpif_string(0, 0), 0);
     }
 
-    #[test]
-    fn gp6_strings_are_zero_indexed() {
-        // Drop-D, ordered by GP string number. The crate emits string 1 = low D2
-        // for GP6 `.gpx` files, so the open pitches ascend across the array.
-        let strings = vec![
-            (1_i8, 38_i8),
-            (2_i8, 45_i8),
-            (3_i8, 50_i8),
-            (4_i8, 55_i8),
-            (5_i8, 59_i8),
-            (6_i8, 64_i8),
-        ];
-        // Raw string 0 is the legitimate FIRST string in GP6 (open 38), not the
-        // invalid string the 1-indexed guard used to reject.
-        let s0 = guitarpro::Note {
-            value: 0,
-            string: 0,
+    fn track_with_notes(strings: Vec<(i8, i8)>, raw: &[(i8, i16)]) -> guitarpro::Track {
+        let notes = raw
+            .iter()
+            .map(|&(string, value)| guitarpro::Note {
+                string,
+                value,
+                ..Default::default()
+            })
+            .collect();
+        let beat = guitarpro::Beat {
+            notes,
             ..Default::default()
         };
-        assert_eq!(
-            gp_note_midi_pitch(&s0, &strings, true),
-            Some(38),
-            "GP6 raw string 0 maps to the first array entry, not skipped"
-        );
-        // Raw string 1, fret 6 → SECOND entry (45) + 6 = 51, the true sounding
-        // pitch. 1-indexed would wrongly read the first entry: 38 + 6 = 44.
-        let s1 = guitarpro::Note {
-            value: 6,
-            string: 1,
+        let voice = guitarpro::Voice {
+            beats: vec![beat],
             ..Default::default()
         };
-        assert_eq!(gp_note_midi_pitch(&s1, &strings, true), Some(51));
-        assert_eq!(
-            gp_note_midi_pitch(&s1, &strings, false),
-            Some(44),
-            "GP3/4/5 binary numbering stays 1-indexed"
-        );
+        let measure = guitarpro::Measure {
+            voices: vec![voice],
+            ..Default::default()
+        };
+        guitarpro::Track {
+            strings,
+            measures: vec![measure],
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn gp6_note_position_normalises_string_number() {
-        // GP6 raw string 0 → griff string 1; raw 5 → griff 6 (1-indexed model).
-        let lo = guitarpro::Note {
-            value: 7,
-            string: 0,
-            ..Default::default()
-        };
+    fn normalise_track_strings_uses_the_gpif_tuning() {
+        // Drop D, GPIF order; raw 0 fret 5 and raw 5 open.
+        let mut track = track_with_notes(Vec::new(), &[(0, 5), (5, 0)]);
+        normalise_track_strings(&mut track, Some(vec![38, 45, 50, 55, 59, 64]));
         assert_eq!(
-            gp_note_position(&lo, true),
-            Some(FretboardPosition { string: 1, fret: 7 })
+            track.strings,
+            vec![(1, 64), (2, 59), (3, 55), (4, 50), (5, 45), (6, 38)]
         );
-        let hi = guitarpro::Note {
-            value: 3,
-            string: 5,
-            ..Default::default()
-        };
+        let notes = &track.measures[0].voices[0].beats[0].notes;
+        assert_eq!(gp_note_midi_pitch(&notes[0], &track.strings), Some(43));
         assert_eq!(
-            gp_note_position(&hi, true),
-            Some(FretboardPosition { string: 6, fret: 3 })
+            gp_note_position(&notes[0]),
+            Some(FretboardPosition { string: 6, fret: 5 })
         );
+        assert_eq!(gp_note_midi_pitch(&notes[1], &track.strings), Some(64));
+        assert_eq!(
+            gp_note_position(&notes[1]),
+            Some(FretboardPosition { string: 1, fret: 0 })
+        );
+    }
+
+    #[test]
+    fn normalise_track_strings_without_a_gpif_tuning_reads_the_fallback_in_gpif_order() {
+        // The crate's fallback lists Standard E highest first; GPIF raw 0 is
+        // still the lowest string, so it must read E2, not E4.
+        let fallback = vec![(1, 64), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)];
+        let mut track = track_with_notes(fallback.clone(), &[(0, 0), (5, 3)]);
+        normalise_track_strings(&mut track, None);
+        assert_eq!(track.strings, fallback);
+        let notes = &track.measures[0].voices[0].beats[0].notes;
+        assert_eq!(gp_note_midi_pitch(&notes[0], &track.strings), Some(40));
+        assert_eq!(gp_note_midi_pitch(&notes[1], &track.strings), Some(67));
+    }
+
+    #[test]
+    fn normalise_track_strings_refuses_strings_outside_the_tuning() {
+        let mut track = track_with_notes(Vec::new(), &[(6, 1)]);
+        normalise_track_strings(&mut track, Some(vec![40, 45, 50, 55, 59, 64]));
+        let note = &track.measures[0].voices[0].beats[0].notes[0];
+        assert_eq!(gp_note_midi_pitch(note, &track.strings), None);
+        assert_eq!(gp_note_position(note), None);
     }
 
     // ── gp_note_position ──────────────────────────────────────────────────────
@@ -1116,7 +1216,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            gp_note_position(&note, false),
+            gp_note_position(&note),
             Some(FretboardPosition { string: 3, fret: 7 })
         );
     }
@@ -1128,7 +1228,7 @@ mod tests {
             string: 0, // invalid (GP strings are 1-indexed)
             ..Default::default()
         };
-        assert_eq!(gp_note_position(&note, false), None);
+        assert_eq!(gp_note_position(&note), None);
     }
 
     // ── map_gp_note_marks ─────────────────────────────────────────────────────
@@ -1218,16 +1318,7 @@ mod tests {
             held: &mut held,
             loss: &mut loss,
         };
-        append_beat(
-            &beat,
-            0,
-            480,
-            StringCtx {
-                strings: &strings,
-                zero_indexed: false,
-            },
-            &mut acc,
-        );
+        append_beat(&beat, 0, 480, StringCtx { strings: &strings }, &mut acc);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].atoms.len(), 1);
@@ -1266,16 +1357,7 @@ mod tests {
             held: &mut held,
             loss: &mut loss,
         };
-        append_beat(
-            &beat,
-            0,
-            480,
-            StringCtx {
-                strings: &strings,
-                zero_indexed: false,
-            },
-            &mut acc,
-        );
+        append_beat(&beat, 0, 480, StringCtx { strings: &strings }, &mut acc);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].atoms.len(), 1);
@@ -1319,16 +1401,7 @@ mod tests {
             held: &mut held,
             loss: &mut loss,
         };
-        append_beat(
-            &beat,
-            0,
-            480,
-            StringCtx {
-                strings: &strings,
-                zero_indexed: false,
-            },
-            &mut acc,
-        );
+        append_beat(&beat, 0, 480, StringCtx { strings: &strings }, &mut acc);
 
         assert_eq!(groups.len(), 1, "the sounding note still imports");
         assert_eq!(groups[0].atoms.len(), 1);
@@ -1368,16 +1441,7 @@ mod tests {
             held: &mut held,
             loss: &mut loss,
         };
-        append_beat(
-            &beat,
-            0,
-            480,
-            StringCtx {
-                strings: &strings,
-                zero_indexed: false,
-            },
-            &mut acc,
-        );
+        append_beat(&beat, 0, 480, StringCtx { strings: &strings }, &mut acc);
 
         assert!(!loss.is_clean(), "an unknown note kind is a real loss");
         assert_eq!(groups.len(), 1, "the beat still occupies its time...");
@@ -1417,10 +1481,7 @@ mod tests {
             &tie_only,
             1920,
             480,
-            StringCtx {
-                strings: &strings,
-                zero_indexed: false,
-            },
+            StringCtx { strings: &strings },
             &mut acc,
         );
 
@@ -1472,26 +1533,8 @@ mod tests {
             held: &mut held,
             loss: &mut loss,
         };
-        append_beat(
-            &struck,
-            0,
-            480,
-            StringCtx {
-                strings: &strings,
-                zero_indexed: false,
-            },
-            &mut acc,
-        );
-        append_beat(
-            &tie,
-            480,
-            240,
-            StringCtx {
-                strings: &strings,
-                zero_indexed: false,
-            },
-            &mut acc,
-        );
+        append_beat(&struck, 0, 480, StringCtx { strings: &strings }, &mut acc);
+        append_beat(&tie, 480, 240, StringCtx { strings: &strings }, &mut acc);
 
         assert_eq!(groups.len(), 1, "a tie must not create a new event group");
         assert_eq!(groups[0].atoms.len(), 1);
