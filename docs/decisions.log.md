@@ -2858,3 +2858,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   venv adapter (`lab/cpsat/`), never a dependency; idea-level prior art
   only (TablaZinc is MPL-2.0, `guitar-tab-generator` GPL-3.0 — no code
   copied).
+
+- 2026-09-17 — In the context of the fitted fingering objective being
+  under-discriminative (holdout: production tie-break 44.1% agreement, best
+  cost-optimal fingering 55.5%), we decided to **measure optimum sets with
+  exact chain DPs and to learn a lexicographic secondary tie-break instead of
+  refitting the primary objective**, to achieve an attribution of the gap
+  between search, local fingering geometry and context, accepting that the
+  first useful feature comes from the human tab (the hand anchor before a
+  line). Result (`docs/audit/2026-09-fingering-tie-break.md`): the DPs agree
+  with verified CP-SAT optima and ceilings on 1,954 / 1,954 holdout lines; a
+  tie-break over local geometry recovers nothing (44.0%); adding the anchor
+  recovers 3.2 points (47.3%, 28% of the gap). The discriminating
+  information is contextual, so the next Lab subject (chord voicing) is also
+  what makes such anchors available for MIDI-sourced material.
