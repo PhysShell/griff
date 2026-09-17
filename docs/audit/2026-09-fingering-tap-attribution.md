@@ -64,9 +64,15 @@ technique recognition at once would leave one number and two suspects.
   lines are long: 93 notes on average.
 - **Holdout songs:** only 15 of these lines. Those numbers are in
   `taps.json`, but no conclusion rests on them.
-- **Tap labels undercount.** Tab authors often leave tapping unmarked. Some
-  tapping therefore sits unlabelled in the "untapped" lines, and the counts
-  above are a lower bound.
+- **Tap labels undercount — and one cause is the importer.** Tab authors
+  sometimes leave tapping unmarked. More importantly, the `guitarpro` 0.4.2
+  GPIF import never reads the `Tapped` note property: it leaves the beat's
+  tap effect as a placeholder. As a result, **no GP6/GP7 tapping reaches
+  griff**, although 31 of the corpus's 145 GPIF files contain it: 1,006
+  `Tapped` note definitions, plus 45 `LeftHandTapped`. The 155-line slice is
+  therefore GP3–5 material only, and GP6/7 tapping sits unlabelled inside the
+  "untapped" lines and the length-matched baseline. (GPIF deduplicates
+  repeated notes, so 1,006 is a lower bound on played tapped notes.)
 
 ## Results (whole corpus)
 
@@ -153,7 +159,8 @@ inference stage could learn to paper over a continuity cost it cannot see.
 
 ## Limitations
 
-- Oracle labels from the tab, and tap marks undercount (above).
+- Oracle labels from the tab; tap marks undercount, including all GP6/7
+  tapping, which the importer drops (above).
 - Hand attribution is one binary label per note. There are no simultaneous
   two-hand notes, no multi-finger picking-hand tapping, and no per-finger
   model.
