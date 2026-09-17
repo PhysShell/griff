@@ -27,6 +27,7 @@
 
 mod fingerprint;
 mod metric;
+mod projection;
 mod regime;
 mod run;
 mod spec;
@@ -38,6 +39,12 @@ pub use fingerprint::{
 pub use metric::{
     delta, interaction, Comparison, MetricIdentity, MetricKind, MetricValue, Unavailable,
     EVALUATOR_GENERATION_AXES,
+};
+pub use projection::{
+    AtomV1, EventGroupKindV1, EventGroupV1, EvidenceV1, GenerationAskV1, GestureControlV1,
+    ImportWarningV1, MarksV1, MasterBarV1, NotePositionV1, NoteV1, PitchMaterialV1,
+    ProjectionError, RestV1, RhythmTemplateV1, ScoreV1, SourceMetaV1, SpanTechniqueV1,
+    TechniqueSourceV1, TechniqueSpanV1, TemplateNoteV1, TickRangeV1, TrackV1, VoiceV1,
 };
 pub use regime::InformationRegime;
 pub use run::{

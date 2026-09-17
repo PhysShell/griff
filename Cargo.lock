@@ -1873,6 +1873,7 @@ name = "griff-experiment"
 version = "0.1.0"
 dependencies = [
  "griff-core",
+ "serde",
  "serde_json",
  "sha2",
 ]
