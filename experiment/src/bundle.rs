@@ -32,8 +32,11 @@ use griff_core::rerank::RERANK_AXIS_LABELS;
 use griff_core::score::Score;
 use serde::{Deserialize, Serialize};
 
+use crate::fingerprint::Hasher;
 use crate::fingerprint::{score_fingerprint, Fingerprint};
-use crate::identity::{self, Channels, PolicyRef, Stages};
+use crate::identity::{
+    self, wide, Channels, PassClaims, PolicyRef, RunClaims, SnapshotFacts, Stages,
+};
 use crate::metric::{MetricIdentity, MetricKind, MetricValue, EVALUATOR_GENERATION_AXES};
 use crate::projection::{count, GenerationAskV1, PitchMaterialV1, ProjectionError, ScoreV1};
 use crate::regime::InformationRegime;
@@ -761,12 +764,14 @@ struct Header {
 }
 
 impl ExperimentBundleV1 {
-    /// Writes down `run`, made from `spec` over `source`.
+    /// Writes down `run`, made from `spec` over `source` — and verifies the
+    /// result, so a bundle that would not load is never produced.
     ///
     /// # Errors
     /// [`BundleError::NotThisRun`] when `spec` or `source` does not match the
     /// run's identities; [`BundleError::NonFiniteMetric`] for a value JSON
-    /// cannot carry exactly.
+    /// cannot carry exactly; [`BundleError::IdentityMismatch`] when the run was
+    /// edited after it was made and its records no longer describe its data.
     pub fn from_run(
         spec: &ExperimentSpec,
         source: &Score,
@@ -781,7 +786,7 @@ impl ExperimentBundleV1 {
             .enumerate()
             .map(|(i, cell)| cell_v1(i, cell))
             .collect::<Result<_, _>>()?;
-        Ok(Self {
+        let bundle = Self {
             schema: BUNDLE_SCHEMA.to_owned(),
             version: BUNDLE_VERSION,
             spec: ExperimentSpecV1::from(spec),
@@ -795,7 +800,9 @@ impl ExperimentBundleV1 {
             population: run.corpus.as_ref().map(CorpusSnapshotV1::from),
             passes: run.passes.iter().map(GenerationPassV1::from).collect(),
             cells,
-        })
+        };
+        bundle.verify()?;
+        Ok(bundle)
     }
 
     /// The bundle as pretty, deterministic JSON.
@@ -804,6 +811,13 @@ impl ExperimentBundleV1 {
     /// [`BundleError::NonFiniteMetric`] for a value JSON cannot carry exactly;
     /// [`BundleError::Serialize`] if serialisation fails.
     pub fn to_json(&self) -> Result<String, BundleError> {
+        for (i, cell) in self.cells.iter().enumerate() {
+            if let CellOutcomeV1::Produced(result) = &cell.outcome {
+                if let Some(m) = result.metrics.iter().position(|m| !m.value.is_finite()) {
+                    return Err(BundleError::NonFiniteMetric { cell: i, metric: m });
+                }
+            }
+        }
         serde_json::to_string_pretty(self).map_err(|e| BundleError::Serialize(e.to_string()))
     }
 
@@ -875,7 +889,13 @@ impl ExperimentBundleV1 {
             gesture: p.gesture,
         });
         if let (Some(p), Some(channels)) = (&self.population, population) {
-            if identity::snapshot_whole(channels, &p.skipped) != p.whole {
+            let facts = SnapshotFacts {
+                rhythm_count: p.rhythm_count,
+                reference_count: p.reference_count,
+                gesture_present: p.gesture_present,
+                skipped: &p.skipped,
+            };
+            if identity::snapshot_whole(channels, facts) != p.whole {
                 return mismatch(Mismatch::Population);
             }
         }
@@ -891,9 +911,32 @@ impl ExperimentBundleV1 {
             if information != pass.information {
                 return mismatch(Mismatch::PassInformation { pass: i });
             }
+            if identity::pass_record(PassClaims::of_v1(pass)) != pass.record {
+                return mismatch(Mismatch::PassRecord { pass: i });
+            }
         }
         for (i, cell) in self.cells.iter().enumerate() {
             self.verify_cell(i, cell, (source, ask))?;
+        }
+        let labels: Vec<&str> = self
+            .spec
+            .variants
+            .iter()
+            .map(|v| v.label.as_str())
+            .collect();
+        let record = identity::run_record(
+            RunClaims {
+                spec: self.identities.spec,
+                source: self.identities.source,
+                evaluation: self.identities.evaluation,
+                population: self.population.as_ref().map(|p| p.whole),
+                passes: &self.passes.iter().map(|p| p.record).collect::<Vec<_>>(),
+                cells: &self.cells.iter().map(|c| c.record).collect::<Vec<_>>(),
+            },
+            &labels,
+        );
+        if record != self.identities.record {
+            return mismatch(Mismatch::Run);
         }
         Ok(())
     }
@@ -952,6 +995,9 @@ impl ExperimentBundleV1 {
                     return mismatch(Mismatch::MetricContext { cell: i, metric: m });
                 }
             }
+        }
+        if identity::record_of_cell_v1(cell) != cell.record {
+            return mismatch(Mismatch::CellRecord { cell: i });
         }
         Ok(())
     }
@@ -1081,10 +1127,6 @@ fn undrifted(
             recorded: recorded.clone(),
         })
     }
-}
-
-fn wide(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn index(value: u64) -> Option<usize> {
@@ -1460,6 +1502,24 @@ impl From<&MetricValue> for MetricValueV1 {
 }
 
 impl MetricValueV1 {
+    pub(crate) fn write(&self, h: &mut Hasher) {
+        let Self {
+            kind,
+            name,
+            owner,
+            context,
+            value,
+        } = self;
+        h.u8(match kind {
+            MetricKindV1::Evaluation => 0,
+            MetricKindV1::PolicyObjective => 1,
+        });
+        h.str(name);
+        write_policy_v1(h, owner);
+        h.fingerprint(*context);
+        h.f64(*value);
+    }
+
     fn to_metric(&self) -> Result<MetricValue, BundleError> {
         Ok(MetricValue {
             identity: MetricIdentity {
@@ -1941,5 +2001,262 @@ impl TryFrom<ChainErrorV1> for ChainError {
             }),
             ChainErrorV1::Path(path) => Self::Path(path.try_into()?),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
+// ── record walks ─────────────────────────────────────────────────────────────
+//
+// What a cell claims is walked like every other identity: domain-tagged by the
+// caller, length-prefixed, exhaustive, floats by their bits.
+
+fn write_policy_v1(h: &mut Hasher, policy: &PolicyIdentityV1) {
+    h.str(&policy.id);
+    h.u32(policy.version);
+}
+
+impl StrategyV1 {
+    const fn code(self) -> u8 {
+        match self {
+            Self::RhythmCopyPitchSubstitute => 0,
+            Self::MotifTransposeVariation => 1,
+            Self::ConstrainedRandomWalk => 2,
+            Self::ShuffleMotifs => 3,
+            Self::RepeatVariation => 4,
+        }
+    }
+}
+
+impl DiagnosticV1 {
+    pub(crate) fn write(&self, h: &mut Hasher) {
+        match *self {
+            Self::Selected {
+                candidate,
+                rank,
+                strategy,
+                variant_seed,
+            } => {
+                h.u8(0);
+                h.u64(candidate);
+                h.u64(rank);
+                h.u8(strategy.code());
+                h.u64(variant_seed);
+            }
+            Self::ChainBar {
+                bar,
+                candidate,
+                rank,
+                strategy,
+                variant_seed,
+            } => {
+                h.u8(1);
+                h.u64(bar);
+                h.u64(candidate);
+                h.u64(rank);
+                h.u8(strategy.code());
+                h.u64(variant_seed);
+            }
+        }
+    }
+}
+
+impl CellRefusalV1 {
+    pub(crate) fn write(&self, h: &mut Hasher) {
+        match self {
+            Self::EmptySet => h.u8(0),
+            Self::Chain(error) => {
+                h.u8(1);
+                error.write(h);
+            }
+        }
+    }
+}
+
+impl StateIdV1 {
+    fn write(self, h: &mut Hasher) {
+        h.u64(self.layer);
+        h.u64(self.ordinal);
+    }
+}
+
+impl PathErrorV1 {
+    fn write(self, h: &mut Hasher) {
+        match self {
+            Self::NoLayers => h.u8(0),
+            Self::EmptyLayer { layer } => {
+                h.u8(1);
+                h.u64(layer);
+            }
+            Self::TransitionCount { expected, found } => {
+                h.u8(2);
+                h.u64(expected);
+                h.u64(found);
+            }
+            Self::TransitionShape {
+                layer,
+                expected,
+                found,
+            } => {
+                h.u8(3);
+                h.u64(layer);
+                h.u64(expected.0);
+                h.u64(expected.1);
+                h.u64(found.0);
+                h.u64(found.1);
+            }
+            Self::NonFiniteLocal { state, cost_bits } => {
+                h.u8(4);
+                state.write(h);
+                h.u64(cost_bits);
+            }
+            Self::NonFiniteTransition { edge, cost_bits } => {
+                h.u8(5);
+                edge.from.write(h);
+                edge.to.write(h);
+                h.u64(cost_bits);
+            }
+            Self::NonFiniteAccumulation { state, cost_bits } => {
+                h.u8(6);
+                state.write(h);
+                h.u64(cost_bits);
+            }
+            Self::KZero => h.u8(7),
+            Self::MinDistanceZero => h.u8(8),
+            Self::MinDistanceUnsatisfiable {
+                min_distance,
+                layers,
+            } => {
+                h.u8(9);
+                h.u64(min_distance);
+                h.u64(layers);
+            }
+        }
+    }
+}
+
+impl ChainErrorV1 {
+    #[allow(clippy::too_many_lines)] // one arm per variant
+    fn write(self, h: &mut Hasher) {
+        match self {
+            Self::EmptySet => h.u8(0),
+            Self::NoBars => h.u8(1),
+            Self::BarCountMismatch {
+                candidate,
+                expected,
+                found,
+            } => {
+                h.u8(2);
+                h.u64(candidate);
+                h.u64(expected);
+                h.u64(found);
+            }
+            Self::PpqMismatch {
+                candidate,
+                expected,
+                found,
+            } => {
+                h.u8(3);
+                h.u64(candidate);
+                h.u16(expected);
+                h.u16(found);
+            }
+            Self::MasterBarMismatch {
+                candidate,
+                bar,
+                field,
+            } => {
+                h.u8(4);
+                h.u64(candidate);
+                h.u64(bar);
+                h.u8(match field {
+                    MasterBarFieldV1::Index => 0,
+                    MasterBarFieldV1::TickRange => 1,
+                    MasterBarFieldV1::TimeSignature => 2,
+                    MasterBarFieldV1::Tempo => 3,
+                    MasterBarFieldV1::Repeat => 4,
+                });
+            }
+            Self::TrackCountMismatch {
+                candidate,
+                expected,
+                found,
+            } => {
+                h.u8(5);
+                h.u64(candidate);
+                h.u64(expected);
+                h.u64(found);
+            }
+            Self::TrackMetadataMismatch {
+                candidate,
+                track,
+                field,
+            } => {
+                h.u8(6);
+                h.u64(candidate);
+                h.u64(track);
+                h.u8(match field {
+                    TrackFieldV1::Name => 0,
+                    TrackFieldV1::Channel => 1,
+                    TrackFieldV1::Tuning => 2,
+                    TrackFieldV1::VoiceCount => 3,
+                    TrackFieldV1::VoiceId => 4,
+                });
+            }
+            Self::SourceMetaMismatch { candidate } => {
+                h.u8(7);
+                h.u64(candidate);
+            }
+            Self::LossReportMismatch { candidate } => {
+                h.u8(8);
+                h.u64(candidate);
+            }
+            Self::CrossBarMaterial { candidate, bar } => {
+                h.u8(9);
+                h.u64(candidate);
+                h.u64(bar);
+            }
+            Self::EmptyEventGroup { candidate } => {
+                h.u8(10);
+                h.u64(candidate);
+            }
+            Self::MaterialOutsideTimeline { candidate, tick } => {
+                h.u8(11);
+                h.u64(candidate);
+                h.u32(tick);
+            }
+            Self::MissingMaterial {
+                candidate,
+                track,
+                voice,
+                bar,
+            } => {
+                h.u8(12);
+                h.u64(candidate);
+                h.u64(track);
+                h.u64(voice);
+                h.u64(bar);
+            }
+            Self::BoundaryFact(fact) => {
+                h.u8(13);
+                match fact {
+                    TransitionFactErrorV1::MissingFromBar { bar, bars } => {
+                        h.u8(0);
+                        h.u64(bar);
+                        h.u64(bars);
+                    }
+                    TransitionFactErrorV1::MissingToBar { bar, bars } => {
+                        h.u8(1);
+                        h.u64(bar);
+                        h.u64(bars);
+                    }
+                }
+            }
+            Self::Path(path) => {
+                h.u8(14);
+                path.write(h);
+            }
+        }
     }
 }

@@ -186,9 +186,9 @@ fn run_identity_domains_are_pinned() {
         (
             "d777770f67afa8532114422b2b922c7348f3e8684b5e7cc33e94d3168f37d79c".to_owned(),
             vec!["51bed29516571573c2606d283bbd193f0b295f69fbc704f3025605f3d33d143c".to_owned(), "1b7f8597b401ed16bc8619b6161ad2c179feffb125040ae41b61aea2a1ce2b28".to_owned()],
-            vec!["PIN_REQ".to_owned()],
+            vec!["3cfde681b7f02b746ac96c97332a6762451cb9f43436830b3cd8c68bbf8e3dc8".to_owned(), "44bd6fe0eb7fa55f6c4c5b7784033c25818d3a948da3f75745461b4424d84398".to_owned(), "a6f03e1e96484d17698828a5beef637260eea77b0fb023c56c0ae20c488cd17e".to_owned(), "3e79947b090ce44441802604dcf7ccb6f2db66938ff3ac441b5b2167d4f841c3".to_owned()],
             vec!["f812b82c594daea718d6046bbae00566e09bdefab10aa58505e44e89c856cf7d".to_owned(), "f03694ae19d57571eb292ec8caf6b945d150b3807d920c042a32f95d4aa86f5a".to_owned(), "ef61e7e0ec75ed83208d04ca0038090711392e25458577a3b26f97b751b7f72d".to_owned(), "331c0fef28f9a08113cb1bb80160ec6f8a927c4e8582ee4e70056861ce77fee4".to_owned()],
-            "PIN_POPULATION".to_owned(),
+            "d5e865d3dbb02835b06aa650902a0ddc8486bc373e93cd7e710b259b990dac83".to_owned(),
         ),
         "griff.experiment.{{spec,pass,cell-request,cell}}.v1 / corpus-snapshot.v2 changed: bump the domain version"
     );
@@ -206,9 +206,9 @@ fn record_identity_domains_v1_are_pinned() {
             run.record.to_hex(),
         ),
         (
-            vec!["PIN_PASS_RECORD".to_owned()],
-            vec!["PIN_CELL_RECORD".to_owned()],
-            "PIN_RUN_RECORD".to_owned(),
+            vec!["e6b6d02f330efde513923535040866c02f0e8409742fd23244db2c5f292abc6e".to_owned(), "c5b51b2ec11421dc24ca1065f18b014225ad8cfed9d84d17d910c79652965b70".to_owned()],
+            vec!["e3e31572912c3943ccabaf0ce280449952e5e72610a983c2caf00186beb61044".to_owned(), "e9a88857ed29ebbf331cc6ef64a70bb0b6866715ea66618565feaaa90cb11374".to_owned(), "06b7c977a439fca7a48e0bafc6f7727cbcf725363b7c281b21eaf5af6e3abe4f".to_owned(), "4f915d93836f65a3da9feddcf6088edcb219ad2e6b9ebcacd4835210643478e0".to_owned()],
+            "4f1342d82638b1d3e28f7265b3253bc959cef98b396ce8d3a58eaaed24c13025".to_owned(),
         ),
         "griff.experiment.{{pass-record,cell-record,run-record}}.v1 changed: bump the domain version"
     );

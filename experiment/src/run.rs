@@ -18,7 +18,7 @@ use crate::fingerprint::{
     ask_fingerprint, gesture_fingerprint, references_fingerprint, rhythms_fingerprint,
     score_fingerprint, Fingerprint, Hasher,
 };
-use crate::identity::{self, Channels, Stages};
+use crate::identity::{self, wide, Channels, SnapshotFacts, Stages};
 use crate::metric::{MetricIdentity, MetricKind, MetricValue, EVALUATOR_GENERATION_AXES};
 use crate::regime::InformationRegime;
 use crate::spec::{
@@ -88,7 +88,15 @@ pub fn corpus_snapshot(material: &CorpusMaterial) -> CorpusSnapshot {
         reference_count: references.len(),
         gesture_present: gesture.is_some(),
         skipped: skipped.clone(),
-        whole: identity::snapshot_whole(channels, skipped),
+        whole: identity::snapshot_whole(
+            channels,
+            SnapshotFacts {
+                rhythm_count: wide(rhythms.len()),
+                reference_count: wide(references.len()),
+                gesture_present: gesture.is_some(),
+                skipped,
+            },
+        ),
     }
 }
 
@@ -324,7 +332,7 @@ pub fn run_experiment(
         }
     }
 
-    Ok(ExperimentRun {
+    let mut run = ExperimentRun {
         spec: spec.fingerprint(),
         source: context.source,
         corpus: context.population,
@@ -332,7 +340,10 @@ pub fn run_experiment(
         passes: live.into_iter().map(|p| p.record).collect(),
         cells,
         record: Fingerprint([0; 32]),
-    })
+    };
+    let labels: Vec<&str> = spec.variants.iter().map(|v| v.label.as_str()).collect();
+    identity::seal(&mut run, &labels);
+    Ok(run)
 }
 
 /// What every pass and cell of one run shares.

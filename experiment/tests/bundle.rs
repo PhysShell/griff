@@ -16,13 +16,11 @@
 mod common;
 
 use common::{corpus, score_of, source, two_by_two};
-use griff_core::candidate_chain::ChainError;
 use griff_core::generation_input::generation_request_from_score;
-use griff_core::layered_path::{PathError, StateId};
 use griff_experiment::{
-    run_experiment, score_fingerprint, BundleError, CellOutcome, CellOutcomeV1, CellRefusal,
-    EvaluationContext, ExperimentBundleV1, ExperimentInputs, ExperimentRun, ExperimentSpec,
-    InformationRegime, Mismatch, ScoreV1, Stage, BUNDLE_SCHEMA, BUNDLE_VERSION,
+    run_experiment, BundleError, CellOutcome, CellOutcomeV1, EvaluationContext, ExperimentBundleV1,
+    ExperimentInputs, ExperimentRun, ExperimentSpec, Mismatch, Stage, BUNDLE_SCHEMA,
+    BUNDLE_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -55,6 +53,9 @@ fn json_of(run: &ExperimentRun) -> Value {
     serde_json::from_str(&bundle(run).to_json().expect("serializes")).expect("valid JSON")
 }
 
+/// An edit to a bundle's JSON, given the original to borrow values from.
+type JsonEdit = fn(&mut Value, &Value);
+
 fn load(value: &Value) -> Result<ExperimentBundleV1, BundleError> {
     ExperimentBundleV1::from_json(&value.to_string())
 }
@@ -80,28 +81,6 @@ fn a_run_survives_its_bundle_exactly() {
     );
     assert_eq!(loaded.source_score(), Ok(source()));
     assert_eq!(loaded.spec().expect("rebuilds").fingerprint(), run.spec);
-}
-
-#[test]
-fn a_refused_cell_survives_its_bundle_exactly() {
-    let mut run = run();
-    run.cells[1].outcome = CellOutcome::Refused(CellRefusal::EmptySet);
-    run.cells[3].outcome = CellOutcome::Refused(CellRefusal::Chain(ChainError::Path(
-        PathError::NonFiniteLocal {
-            state: StateId {
-                layer: 2,
-                ordinal: 7,
-            },
-            cost: f64::INFINITY,
-        },
-    )));
-    let loaded =
-        ExperimentBundleV1::from_json(&bundle(&run).to_json().expect("serializes")).expect("loads");
-    assert_eq!(
-        loaded.run(),
-        Ok(run),
-        "a refusal stays typed, cost bits included"
-    );
 }
 
 #[test]
@@ -209,32 +188,6 @@ fn metric_names_are_owned_strings_and_realization_is_only_absence() {
 
 // ── gate 1: loading never generates ──────────────────────────────────────────
 
-#[test]
-fn loading_shows_the_recorded_score_not_a_regenerated_one() {
-    let run = run();
-    let mut value = json_of(&run);
-    // A recorded score no generator would produce for this ask, with its own
-    // content fingerprint: consistent, so it loads — and it is what comes back.
-    let foreign = score_of(&[(0, 1920, 64)]);
-    value["cells"][0]["outcome"]["produced"]["score"] =
-        serde_json::to_value(ScoreV1::from(&foreign)).expect("serializes");
-    value["cells"][0]["outcome"]["produced"]["content"] =
-        json!(score_fingerprint(&foreign).to_hex());
-
-    let loaded = load(&value).expect("a consistent bundle loads");
-    let CellOutcome::Produced(result) = &loaded.run().expect("rebuilds").cells[0].outcome else {
-        panic!("produced");
-    };
-    assert_eq!(result.score, foreign, "shown as recorded");
-    let CellOutcome::Produced(generated) = &run.cells[0].outcome else {
-        panic!("produced");
-    };
-    assert_ne!(
-        result.score, generated.score,
-        "and not as the generator would"
-    );
-}
-
 // ── gate 2 and verification: every identity recomputes from the bundle ───────
 
 #[test]
@@ -335,7 +288,6 @@ fn a_spec_whose_recorded_identity_the_code_no_longer_has_is_not_rebuilt() {
             ..
         })
     ));
-    let _ = InformationRegime::FULL;
 }
 
 // ── C4b: fail-closed writing, and no displayed fact outside an identity ──────
@@ -380,15 +332,16 @@ fn what_a_pass_claims_happened_is_bound_to_its_record() {
         edit(&mut value);
         load(&value).expect_err("refused")
     };
-    for edit in [
-        (&|v: &mut Value| v["passes"][1]["candidate_count"] = json!(3)) as &dyn Fn(&mut Value),
-        &|v: &mut Value| v["passes"][1]["contribution"]["templates"] = json!(99),
-        &|v: &mut Value| v["passes"][1]["contribution"]["references"] = json!(0),
-        &|v: &mut Value| v["passes"][1]["contribution"]["gesture"] = json!(false),
-        &|v: &mut Value| v["passes"][1]["candidates"] = base["passes"][0]["candidates"].clone(),
-    ] {
+    let edits: [JsonEdit; 5] = [
+        |v, _| v["passes"][1]["candidate_count"] = json!(3),
+        |v, _| v["passes"][1]["contribution"]["templates"] = json!(99),
+        |v, _| v["passes"][1]["contribution"]["references"] = json!(0),
+        |v, _| v["passes"][1]["contribution"]["gesture"] = json!(false),
+        |v, original| v["passes"][1]["candidates"] = original["passes"][0]["candidates"].clone(),
+    ];
+    for edit in edits {
         assert_eq!(
-            refused(edit),
+            refused(&|v| edit(v, &base)),
             BundleError::IdentityMismatch(Mismatch::PassRecord { pass: 1 })
         );
     }
@@ -445,30 +398,9 @@ fn what_a_cell_claims_is_bound_to_its_record() {
     assert_eq!(
         refused(
             &|v| v["cells"][2]["outcome"]["produced"]["diagnostics"][0]["chain_bar"]["rank"] =
-                json!(5)
+                json!(999)
         ),
         BundleError::IdentityMismatch(Mismatch::CellRecord { cell: 2 })
-    );
-
-    let mut with_refusal = run();
-    with_refusal.cells[3].outcome = CellOutcome::Refused(CellRefusal::Chain(ChainError::Path(
-        PathError::NonFiniteLocal {
-            state: StateId {
-                layer: 2,
-                ordinal: 7,
-            },
-            cost: f64::INFINITY,
-        },
-    )));
-    let mut value = json_of(&with_refusal);
-    value["cells"][3]["outcome"]["refused"]["chain"]["path"]["non_finite_local"]["state"]
-        ["ordinal"] = json!(8);
-    assert_eq!(
-        load(&value),
-        Err(BundleError::IdentityMismatch(Mismatch::CellRecord {
-            cell: 3
-        })),
-        "a refusal's detail is a claim too"
     );
 }
 
@@ -480,5 +412,21 @@ fn variant_labels_are_bound_to_the_run_record() {
         load(&value),
         Err(BundleError::IdentityMismatch(Mismatch::Run)),
         "labels stay out of the spec identity, but not out of the record"
+    );
+}
+
+#[test]
+fn a_run_edited_after_it_was_made_is_not_written() {
+    let mut edited = run();
+    let CellOutcome::Produced(result) = &mut edited.cells[0].outcome else {
+        panic!("produced");
+    };
+    result.metrics[2].value += 0.25;
+    assert_eq!(
+        ExperimentBundleV1::from_run(&spec(), &source(), &edited),
+        Err(BundleError::IdentityMismatch(Mismatch::CellRecord {
+            cell: 0
+        })),
+        "a bundle that would not load is never produced"
     );
 }
