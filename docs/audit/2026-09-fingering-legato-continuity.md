@@ -146,3 +146,96 @@ slice, per stage.
 - slides;
 - `LeftHandTapped`;
 - importing hammer-on/pull-off direction in core.
+
+## Deviations from the protocol
+
+Recorded as they happened; none changed a stage, a weight or a metric.
+
+1. **Implementation preceded the census; measurement did not.** The C1, C2
+   and D objectives were implemented and unit-tested (brute force against
+   the chain encoding) before the phase-1 census ran. They were not run on
+   the corpus. After the census no stage, weight, `k` value or waiver
+   definition was changed.
+2. **The first census ran on a broken import and is used only as a
+   diagnosis.** On `main` before #202, legato edges kept their notes on one
+   string only 96.6% of the time (whole corpus). The cross-string cases were
+   concentrated: 4 files held 67% of them. Inspecting them showed imported
+   onsets running backwards in time within a voice.
+   - **Cause.** The Guitar Pro importer applied the tuplet ratio upside down
+     (`× enters / times`), making every tuplet 9/4 too long, and it ignored
+     double dots. Bars with tuplets overfilled into the next bar, and tab
+     lines, which sort notes by onset, interleaved notes of adjacent bars.
+   - **Fix.** #202 corrected the importer. Its backward onset steps fell from
+     1,051 to 17 (GP6/7) and from 1,517 to 371 (GP3–5).
+   - **Use here.** That census is not a result of this stage. The phase-1
+     results below come from the corrected import, after the baselines were
+     re-measured.
+3. **The slice and the pool changed size with #202.** Both are defined by
+   rule (lines with or without a tapped note), and the rule stands. After
+   #202 the tap slice is **226** lines (not 242) and the untapped pool is
+   **8,740** lines (not 8,803).
+
+## Baselines after #202 (impact sweep, before the census)
+
+Each earlier experiment was rebuilt on its own branch head, merged locally
+(not pushed) with `main` at `4f6c505` (#202). The commands and weights are
+the same as in the original runs.
+
+### #197 — optimality gap (holdout songs)
+
+- **Corpus.** 9,045 → 8,966 lines (holdout 1,954 → 1,945); 326,130 → 329,095
+  notes.
+- **Oracle.** The CP-SAT oracle was not rerun in full. Of the 1,945 holdout
+  problems per model:
+  - 1,831 have unchanged fingerprints and keep their verified records;
+  - the 114 changed or new problems were solved again, agreement pass
+    included.
+- **DP exactness.** All 1,945 are proven optimal, and the in-repo DP gap is 0
+  on every line for both models.
+
+| model | DP agreement | ceiling at optimum | human path in optimum set |
+|---|---|---|---|
+| lowest-fret | 33.5% → 33.0% | — | — |
+| `v1` | 35.8% → 35.4% | 36.2% → 35.8% | 19.2% → 19.0% |
+| `v1-fit` | 44.1% → 44.2% | 55.5% → 55.4% | 30.9% → 30.7% |
+| hand-fit (DP only) | 44.3% → 44.7% | — | — |
+
+### #199 — tie-break ladder (holdout songs)
+
+The exact optimum-set DPs still equal CP-SAT on all 1,945 lines, for both the
+optimum and the ceiling, under both models.
+
+| weights | features | floor | uniform | production | learned | ceiling | learned − production |
+|---|---|---|---|---|---|---|---|
+| `v1-fit` | local only | 32.4 → 32.6% | 42.9 → 43.0% | 44.1 → 44.2% | 44.0 → 44.1% | 55.5 → 55.4% | −0.18 → −0.15 pt |
+| `v1-fit` | local + anchor | 32.4 → 32.6% | 42.9 → 43.0% | 44.1 → 44.2% | 47.3 → 47.3% | 55.5 → 55.4% | **+3.11 → +3.10 pt** |
+| `v1` | local + anchor | 35.7 → 35.3% | 35.9 → 35.5% | 35.8 → 35.4% | 36.1 → 35.7% | 36.2 → 35.8% | +0.33 → +0.32 pt |
+
+The validation-chosen margins are unchanged. The anchor's contribution
+survives the corrected timeline, even though it depends on the preceding
+context.
+
+### #200 — tap slice (whole corpus, `v1-fit`)
+
+| | after #201 | after #202 |
+|---|---|---|
+| tapped lines (notes, tapped notes) | 242 (23,522, 4,972) | **226** (25,571, 5,260) |
+| untapped pool | 8,803 | 8,740 |
+| tap-blind: in optimum set / excess per note / agreement | 0.0% / 3.17 / 38.3% | 0.0% / 3.20 / 38.5% |
+| tap-aware (`tap_shift` = 1) | 1.7% / 1.60 / 43.8% | **0.9% / 1.63 / 43.1%** |
+| length-matched untapped | 20.9% / 1.17 / 45.3% | **20.0% / 1.16 / 44.9%** |
+| control: untapped lines where the objectives differ | 0 | 0 |
+
+On the whole corpus the slice has fewer but longer lines. Lines no longer
+break where adjacent bars used to interleave. Holdout songs: 30 lines,
+reported, not interpreted.
+
+### Frozen stage-2 baseline
+
+- **Slice.** 226 tapped lines against an 8,740-line untapped pool.
+- **Stage B exactness.** 0.9% of tapped lines against 20.0% (`v1-fit`, whole
+  corpus).
+- **Per format.** Per-format rows come with stages A and B in phase 2, from
+  the same command.
+- **Earlier conclusions.** None of the conclusions of #197, #199 or #200
+  changes.
