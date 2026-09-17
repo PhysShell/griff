@@ -387,6 +387,21 @@ pub fn lexicographic_path(
     path
 }
 
+/// The latent learning target for one line: among the optimal paths that
+/// agree most with `reference`, the one cheapest under the secondary `weights`
+/// (remaining ties: lowest candidate indices). With zero weights it is
+/// [`AgreementRange::best_path`]. `None` when the reference length differs from
+/// the chain's.
+#[must_use]
+pub fn latent_target(
+    chain: &Chain,
+    weights: &Features,
+    reference: &[FretboardPosition],
+) -> Option<Vec<usize>> {
+    let _ = (chain, weights, reference);
+    todo!("latent target — green step")
+}
+
 /// One training line: its primary chain and the tab author's positions.
 #[derive(Debug, Clone)]
 pub struct Example {

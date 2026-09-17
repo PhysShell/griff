@@ -26,8 +26,8 @@ use griff_constraint_lab::{
     fingering::v1_cost,
     problems::LabError,
     ties::{
-        lexicographic_path, optimum_set, path_features, path_matches, train_secondary, Chain,
-        Example, Features, PerceptronConfig, FEATURES, FEATURE_NAMES,
+        latent_target, lexicographic_path, optimum_set, path_features, path_matches,
+        train_secondary, Chain, Example, Features, PerceptronConfig, FEATURES, FEATURE_NAMES,
     },
 };
 use griff_core::{
@@ -363,6 +363,54 @@ fn loss_augmentation_finds_the_least_agreeing_optimal_path() {
                 path_matches(&chain, &path, &reference),
                 Some(set.agreement.unwrap().min)
             );
+        }
+    }
+}
+
+#[test]
+fn latent_target_is_the_cheapest_most_agreeing_optimal_path() {
+    let tuning = Tuning::standard_e();
+    let mut secondary: Features = [0; FEATURES];
+    for (i, w) in secondary.iter_mut().enumerate() {
+        *w = 2 - (i as i64 % 5);
+    }
+    for w in weight_sets() {
+        for raw in sequences(&ALPHABET, 3) {
+            let chain = Chain::v1(&pitches_of(&raw), &tuning, &w, STANDARD_MAX_FRET).unwrap();
+            let paths = all_paths(&chain);
+            let optimum = paths.iter().map(|p| chain.cost(p).unwrap()).min().unwrap();
+            for reference_path in paths.iter().step_by(3) {
+                let reference = chain.positions_of(reference_path).unwrap();
+                let best = paths
+                    .iter()
+                    .filter(|p| chain.cost(p) == Some(optimum))
+                    .map(|p| {
+                        (
+                            std::cmp::Reverse(path_matches(&chain, p, &reference).unwrap()),
+                            dot(&secondary, &path_features(&chain, p).unwrap()),
+                        )
+                    })
+                    .min()
+                    .unwrap();
+                let target = latent_target(&chain, &secondary, &reference).unwrap();
+                assert_eq!(chain.cost(&target), Some(optimum));
+                assert_eq!(
+                    (
+                        std::cmp::Reverse(path_matches(&chain, &target, &reference).unwrap()),
+                        dot(&secondary, &path_features(&chain, &target).unwrap())
+                    ),
+                    best,
+                    "{raw:?} {w:?}"
+                );
+                assert_eq!(
+                    latent_target(&chain, &[0; FEATURES], &reference),
+                    optimum_set(&chain, Some(&reference))
+                        .agreement
+                        .map(|a| a.best_path),
+                    "zero weights give the best_path"
+                );
+            }
+            assert_eq!(latent_target(&chain, &secondary, &[]), None);
         }
     }
 }
