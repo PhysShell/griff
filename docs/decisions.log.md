@@ -2950,6 +2950,7 @@ Architectural decisions go to [`adr/`](adr/) instead.
   line). Result (`docs/audit/2026-09-fingering-tie-break.md`): the DPs agree
   with verified CP-SAT optima and ceilings on 1,954 / 1,954 holdout lines; a
   tie-break over local geometry recovers nothing (44.0%); adding the anchor
-  recovers 3.2 points (47.3%, 28% of the gap). The discriminating
+  recovers 3.2 points (47.3%, 28% of the gap; +3.10 points after the
+  tuplet import fix #202). The discriminating
   information is contextual, so the next Lab subject (chord voicing) is also
   what makes such anchors available for MIDI-sourced material.

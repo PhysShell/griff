@@ -17,6 +17,11 @@ optimality-gap audit: 410 Guitar Pro files, 1,149 guitar tracks, 9,045
 monophonic lines, song-level holdout (1,954 test lines, 70,933 notes). Only
 aggregates are recorded; tab content stays out of git (ADR-0005).
 
+> **Re-measured after the tuplet import fix (#202).** The ladder below was
+> measured before #202. Rerun on the corrected import (1,945 holdout lines),
+> it moves by at most 0.4 points, and the anchor still recovers +3.10 points.
+> See [Re-measured after #202](#re-measured-after-202).
+
 ## What was built
 
 `lab/src/ties.rs`, red → green per commit:
@@ -118,6 +123,38 @@ and the author's choice tracks where the hand was before the cut. On
 differing notes the author's fret is closer to the anchor than production's
 in 56.7% of notes against 37.8% (5.5% equal); per line, 63.4% against 32.8%.
 Adding that one feature produced the only real gain.
+
+## Re-measured after #202
+
+PhysShell/griff#202 corrected the importer's tuplet durations. Before the
+fix, bars with tuplets overflowed and tab lines interleaved neighbouring
+bars. This section's numbers come from this branch merged with `main` at
+`e871a44`. The commands, weights, epochs and validation split are unchanged.
+The holdout songs now yield 1,945 lines and 72,245 notes.
+
+- **DPs against CP-SAT** (`ties-check`). Checked against the verified records
+  of the re-measured optimality-gap run. On **1,945 / 1,945** holdout lines,
+  under both `v1` and `v1-fit`, the DP optimum equals the CP-SAT optimum and
+  the DP ceiling equals CP-SAT's.
+- **Ladder** (`tiebreak`, holdout songs). The validation-chosen margins are
+  unchanged (`v1-fit` 10⁴; `v1` 10³ local, 10⁴ anchored).
+
+| weights | features | floor | uniform | production | learned | lines changed | ceiling | learned − production |
+|---|---|---|---|---|---|---|---|---|
+| `v1-fit` | local | 32.4 → 32.6% | 42.9 → 43.0% | 44.1 → 44.2% | 44.0 → 44.1% | 89 → 81 | 55.5 → 55.4% | −0.18 → −0.15 pt |
+| `v1-fit` | local + anchor | 32.4 → 32.6% | 42.9 → 43.0% | 44.1 → 44.2% | 47.3 → 47.3% | 411 → 409 | 55.5 → 55.4% | **+3.11 → +3.10 pt** |
+| `v1` | local + anchor | 35.7 → 35.3% | 35.9 → 35.5% | 35.8 → 35.4% | 36.1 → 35.7% | 253 → 246 | 36.2 → 35.8% | +0.33 → +0.32 pt |
+
+- **Tie structure under `v1-fit`.**
+  - The optimum is unique in 44.9% of lines (was 45.3%).
+  - ln(#optimal paths): median and p75 are unchanged; p90 is 5.70 (was 5.55).
+  - The human fingering is optimal in 30.7% of lines (was 30.9%).
+- **Not re-run.** The diagnostic probe over train songs (string and fret
+  offsets, repeated-pitch runs, anchor distances) was not re-run, so its
+  percentages are pre-#202.
+
+The anchor's gain survives the corrected timeline, even though the anchor is
+the note just before the line. Nothing in the readings below changes.
 
 ## Reading
 
