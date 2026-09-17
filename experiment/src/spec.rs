@@ -8,8 +8,9 @@ use griff_core::rerank::rerank_weights_v1;
 use griff_core::score::Score;
 use griff_core::scoring::WeightPolicy;
 
-use crate::fingerprint::{self, ask_fingerprint, references_fingerprint, Fingerprint, Hasher};
+use crate::fingerprint::{ask_fingerprint, references_fingerprint, Fingerprint, Hasher};
 use crate::metric::EVALUATOR_GENERATION_AXES;
+use crate::projection::PitchMaterialV1;
 use crate::regime::InformationRegime;
 
 /// Writes a policy identity.
@@ -211,7 +212,7 @@ impl EvaluationContext {
             } => {
                 let mut h = Hasher::new("griff.experiment.evaluation.v1");
                 policy(&mut h, EVALUATOR_GENERATION_AXES);
-                fingerprint::pitch_material(&mut h, pitch_material);
+                PitchMaterialV1::from(pitch_material).write(&mut h);
                 h.fingerprint(references_fingerprint(references));
                 Some(h.finish())
             }

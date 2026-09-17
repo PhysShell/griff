@@ -7,7 +7,8 @@
     clippy::missing_assert_message,
     clippy::indexing_slicing,
     clippy::panic,
-    clippy::arithmetic_side_effects
+    clippy::arithmetic_side_effects,
+    clippy::too_many_lines
 )]
 
 mod common;
@@ -246,14 +247,14 @@ fn the_generation_inputs_survive_the_projection() {
         Some(TonalContext::measure(&source(), EvidenceScope::WholeScore)),
     ] {
         let asked = GenerationAsk { tonal, ..ask() };
-        let back = GenerationAskV1::from(&asked).to_ask().expect("valid");
+        let restored = GenerationAskV1::from(&asked).to_ask().expect("valid");
         assert_eq!(
             (
-                back.seed,
-                back.bars,
-                back.variants_per_strategy,
-                back.gesture,
-                back.tonal
+                restored.seed,
+                restored.bars,
+                restored.variants_per_strategy,
+                restored.gesture,
+                restored.tonal
             ),
             (
                 asked.seed,
@@ -357,7 +358,7 @@ fn an_unknown_field_is_refused_not_dropped() {
     let mut json: serde_json::Value =
         serde_json::to_value(ScoreV1::from(&source())).expect("serializes");
     json["tracks"][0]["capo"] = serde_json::json!(2);
-    assert!(serde_json::from_value::<ScoreV1>(json).is_err());
+    serde_json::from_value::<ScoreV1>(json).expect_err("an unknown field is refused");
 }
 
 // ── the one canonicalization ─────────────────────────────────────────────────
