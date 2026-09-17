@@ -2853,7 +2853,9 @@ Architectural decisions go to [`adr/`](adr/) instead.
   vocabulary, is what to improve next. (Numbers are pre-#198: GP7 pitches
   were wrong in the corpus import; re-measured after the fix, holdout
   agreement is v1 35.8%, lowest-fret 33.5%, v1 ceiling 36.2%, fitted models
-  ~44%, with every conclusion unchanged — see the audit's Correction.)
+  ~44%, with every conclusion unchanged — see the audit's Correction; after
+  the tuplet fix #202: v1 35.4%, lowest-fret 33.0%, v1 ceiling 35.8%, fitted
+  models ~44%, conclusions again unchanged.)
   Solver: OR-Tools CP-SAT via a local
   venv adapter (`lab/cpsat/`), never a dependency; idea-level prior art
   only (TablaZinc is MPL-2.0, `guitar-tab-generator` GPL-3.0 — no code
