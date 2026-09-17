@@ -17,8 +17,8 @@ use griff_core::rerank::{rerank_weights_v1, RERANK_AXIS_LABELS};
 use griff_experiment::{
     ask_fingerprint, gesture_fingerprint, references_fingerprint, rhythms_fingerprint,
     run_experiment, score_fingerprint, CellOutcome, EvaluationContext, ExperimentInputs,
-    ExperimentRun, GeneratorPolicy, InformationRegime, MetricKind, PolicyIdentity, ScorerPolicy,
-    SelectorPolicy, EVALUATOR_GENERATION_AXES,
+    ExperimentRun, Fingerprint, GeneratorPolicy, InformationRegime, MetricKind, PolicyIdentity,
+    ScorerPolicy, SelectorPolicy, EVALUATOR_GENERATION_AXES,
 };
 
 const INTACT: usize = 0;
@@ -165,5 +165,42 @@ fn the_generation_axes_evaluator_identity_is_pinned_to_its_behaviour() {
                 .to_vec()
         ),
         "the generation-axes evaluator changed: bump generation_axes with this golden"
+    );
+}
+
+// ── run identities v1 ────────────────────────────────────────────────────────
+
+#[test]
+fn run_identity_domains_v1_are_pinned() {
+    let run = run();
+    let hex =
+        |fps: Vec<Fingerprint>| -> Vec<String> { fps.iter().map(Fingerprint::to_hex).collect() };
+    assert_eq!(
+        (
+            run.spec.to_hex(),
+            hex(run.passes.iter().map(|p| p.information).collect()),
+            hex(run.cells.iter().map(|c| c.requested).collect()),
+            hex(run.cells.iter().map(|c| c.recipe).collect()),
+        ),
+        (
+            "d777770f67afa8532114422b2b922c7348f3e8684b5e7cc33e94d3168f37d79c".to_owned(),
+            vec![
+                "51bed29516571573c2606d283bbd193f0b295f69fbc704f3025605f3d33d143c".to_owned(),
+                "1b7f8597b401ed16bc8619b6161ad2c179feffb125040ae41b61aea2a1ce2b28".to_owned()
+            ],
+            vec![
+                "ef0eacd328e53db1f76b10d396e0f3ec4130afad79914a516096a42572da350b".to_owned(),
+                "7d1cbceec47bb121629d3a7440c83105d063e3f92dc9f2746c82565050c954cd".to_owned(),
+                "c816572d4a0618cc1604f23c1d91fcfaccbc18128db86b3a38f04ce3251e9d71".to_owned(),
+                "81aba1a51bb3d24ef44800cd32c0eb2784e852d1d590270fe07492615eab59a4".to_owned()
+            ],
+            vec![
+                "f812b82c594daea718d6046bbae00566e09bdefab10aa58505e44e89c856cf7d".to_owned(),
+                "f03694ae19d57571eb292ec8caf6b945d150b3807d920c042a32f95d4aa86f5a".to_owned(),
+                "ef61e7e0ec75ed83208d04ca0038090711392e25458577a3b26f97b751b7f72d".to_owned(),
+                "331c0fef28f9a08113cb1bb80160ec6f8a927c4e8582ee4e70056861ce77fee4".to_owned()
+            ],
+        ),
+        "griff.experiment.{{spec,pass,cell-request,cell}}.v1 changed: bump the domain version"
     );
 }
