@@ -136,14 +136,14 @@ fn assert_same_pass(a: &RankedSet, b: &RankedSet) {
         assert_eq!(x.value.seed, y.value.seed);
         assert_eq!(x.value.gesture, y.value.gesture);
         assert_eq!(x.aggregate().to_bits(), y.aggregate().to_bits());
-        let bits = |s: &RankedSet| -> Vec<u64> {
-            s.ranked
-                .iter()
-                .flat_map(|c| c.axes.iter().map(|a| a.value.to_bits()))
-                .collect()
-        };
-        assert_eq!(bits(a), bits(b), "axis values");
     }
+    let bits = |set: &RankedSet| -> Vec<u64> {
+        set.ranked
+            .iter()
+            .flat_map(|c| c.axes.iter().map(|axis| axis.value.to_bits()))
+            .collect()
+    };
+    assert_eq!(bits(a), bits(b), "axis values");
     assert_eq!(a.source_rhythms, b.source_rhythms);
     assert_eq!(a.rhythm_explicit, b.rhythm_explicit);
     assert_eq!(a.gesture, b.gesture);
