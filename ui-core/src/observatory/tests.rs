@@ -18,9 +18,10 @@ use griff_core::score::{
 };
 use griff_core::slice::TickRange;
 use griff_experiment::{
-    delta, interaction, run_experiment, CellOutcome, CellRefusal, Comparison, EvaluationContext,
-    ExperimentBundleV1, ExperimentInputs, ExperimentRun, ExperimentSpec, InformationRegime,
-    MetricKind, Unavailable, VariantSpec, METRIC_AGGREGATE, METRIC_CHAIN_COST,
+    delta, interaction, run_experiment, BundleError, CellOutcome, CellOutcomeV1, CellRefusal,
+    CellRefusalV1, Comparison, DiagnosticV1, EvaluationContext, ExperimentBundleV1,
+    ExperimentInputs, ExperimentResultV1, ExperimentRun, ExperimentSpec, InformationRegime,
+    MetricKind, Mismatch, Unavailable, VariantSpec, METRIC_AGGREGATE, METRIC_CHAIN_COST,
 };
 
 use super::{cell_views, CellOutcomeView, EvaluationView, ExperimentView, RegimeName, StageKind};
@@ -356,6 +357,61 @@ fn an_interaction_is_the_experiment_apis_for_evaluations_only() {
             interaction(get(0, 0), get(1, 0), get(0, 1), get(1, 1)),
             "{}",
             row.name
+        );
+    }
+}
+
+// ── only a bundle that verifies becomes a view ───────────────────────────────
+
+/// One edit to a sealed bundle, and the identity the edit must break.
+type Tamper = (&'static str, fn(&mut ExperimentBundleV1), Mismatch);
+
+fn produced(bundle: &mut ExperimentBundleV1, cell: usize) -> &mut ExperimentResultV1 {
+    match &mut bundle.cells[cell].outcome {
+        CellOutcomeV1::Produced(result) => result,
+        CellOutcomeV1::Refused(refusal) => panic!("refused: {refusal:?}"),
+    }
+}
+
+#[test]
+fn a_tampered_bundle_does_not_become_a_view() {
+    let tampers: [Tamper; 4] = [
+        (
+            "outcome",
+            |b| b.cells[3].outcome = CellOutcomeV1::Refused(CellRefusalV1::EmptySet),
+            Mismatch::CellRecord { cell: 3 },
+        ),
+        (
+            "metric",
+            |b| produced(b, 0).metrics[0].value = 12_345.5,
+            Mismatch::CellRecord { cell: 0 },
+        ),
+        (
+            "diagnostic",
+            |b| match &mut produced(b, 0).diagnostics[0] {
+                DiagnosticV1::Selected { rank, .. } | DiagnosticV1::ChainBar { rank, .. } => {
+                    *rank = 999;
+                }
+            },
+            Mismatch::CellRecord { cell: 0 },
+        ),
+        (
+            "label",
+            |b| b.spec.variants[1].label = "S7 Renamed".to_owned(),
+            Mismatch::Run,
+        ),
+    ];
+    for (what, tamper, broken) in tampers {
+        let mut bundle = bundle();
+        tamper(&mut bundle);
+        assert!(
+            bundle.run().is_ok(),
+            "{what}: an edit rebuilding the run alone would not notice"
+        );
+        assert_eq!(
+            ExperimentView::from_bundle(&bundle),
+            Err(BundleError::IdentityMismatch(broken)),
+            "{what}: a frontend is given only a bundle that verifies"
         );
     }
 }

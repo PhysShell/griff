@@ -4142,7 +4142,7 @@ mod tests {
     use eframe::egui::epaint::ClippedShape;
     use eframe::egui::Shape;
     use griff_core::classify::BarClass;
-    use griff_experiment::CellRefusal;
+    use griff_experiment::{BundleError, CellOutcomeV1, CellRefusal, CellRefusalV1, Mismatch};
     use griff_ui_core::history::CorpusContribution;
     use griff_ui_core::playback::ticks_per_second;
     use griff_ui_core::scene::CellRole;
@@ -6872,6 +6872,36 @@ mod tests {
         );
         elsewhere.show_experiment_cell(a);
         assert_eq!(elsewhere.score, Some(produced_score(&ran, a)));
+    }
+
+    #[test]
+    fn a_tampered_bundle_cannot_displace_the_shown_experiment() {
+        let mut app = observatory_app();
+        app.run_experiment_panel();
+        let shown = app.observatory.loaded.clone().expect("shown");
+        let mut tampered = shown.bundle.clone();
+        tampered.cells[3].outcome = CellOutcomeV1::Refused(CellRefusalV1::EmptySet);
+
+        let arranged =
+            observatory::LoadedExperiment::from_bundle(tampered.clone(), observatory::Origin::Run);
+        assert!(
+            matches!(
+                arranged,
+                Err(BundleError::IdentityMismatch(Mismatch::CellRecord {
+                    cell: 3
+                }))
+            ),
+            "a bundle edited in memory is refused, not arranged: {arranged:?}"
+        );
+
+        app.open_bundle_json(&tampered.to_json().expect("serializes"), "tampered.json");
+        let still = app.observatory.loaded.as_ref().expect("still shown");
+        assert_eq!(still.view, shown.view);
+        assert_eq!(still.bundle, shown.bundle);
+        assert_eq!(still.origin, observatory::Origin::Run);
+        assert!(app.observatory.status.as_deref().is_some_and(|s| {
+            s.contains("tampered.json") && s.contains("does not match its recorded identities")
+        }));
     }
 
     #[test]
