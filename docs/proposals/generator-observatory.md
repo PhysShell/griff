@@ -5,8 +5,8 @@ experiment surface: **algorithm variant × information regime**, run
 headlessly, stored as an immutable bundle, inspected in the cockpit by eye
 and ear.
 
-Status: for discussion (design note — inventory and seams, before any code)
-Scope: binds nothing. Implementation is gated on review of §7.
+Status: design note — reviewed 2026-09-17; decisions in §8 (not normative; the ADR will be)
+Scope: binds nothing; §8 records the review. Durable contracts move to an ADR.
 
 ## 1. Inventory: the seams main already has (4f6c505)
 
@@ -280,3 +280,90 @@ throughout.
    bundle (a new persisted contract), an S8 progress note, and a
    decisions.log entry for placement. This proposal then becomes historical
    context, per the proposals lifecycle.
+
+## 8. Review decisions (2026-09-17)
+
+The review settled §7 as follows. Where these decisions differ from §3–§6,
+the decisions win.
+
+1. **Placement: a separate shared workspace library.** The new crate is
+   `experiment/` (package `griff-experiment`); the CLI and the cockpit
+   depend on it, and ui-core projects results where appropriate.
+   - Experiment orchestration, the bundle schema, the variant matrix and
+     evaluation metadata are not the canonical music model.
+   - `griff-core` gains only production-neutral generation seams, such as a
+     borrowed corpus-material view. `ranked_candidates` stays the public
+     wrapper and must remain output-identical to main on fixed seeds.
+2. **`Score` in the bundle: versioned mirror wire types** (`…V1`) with
+   explicit conversions both ways and lossless round-trip tests. Any field
+   bundle v1 does not keep must be listed, refused with a typed error, or
+   proven irrelevant to replay and display. No silent loss. `Score` gets no
+   serde.
+3. **Evaluation context: explicit, never defaulted to the corpus.**
+   - `EvaluationContext::None`, or a caller-supplied context with its own
+     fingerprint.
+   - Every metric carries a comparability identity: kind, evaluator or
+     policy id, version, context fingerprint.
+   - A delta or interaction is computed only between compatible
+     identities; otherwise it is *unavailable*, and the UI shows no number.
+   - A `PolicyObjective` is not automatically comparable even within one
+     regime: two scorers can live on different scales.
+4. **ADR-0032 is unchanged.** Holdout, population selection and split
+   policy exist only in `reachability-lab`. `InformationRegime` masks only
+   the channels of an already prepared runtime material:
+   `holdout/population selection [lab only] → prepared population →
+   InformationRegime → rhythm / reference / gesture masking`.
+   - The bundle may carry facts: fingerprints, caller-supplied source/song
+     identity, population identity, and a leak-check result produced by the
+     lab.
+   - The Observatory never declares a population a valid holdout. A bundle
+     is never written as if a refused holdout had happened.
+5. **No TAB in milestone 1.** `ExperimentResult` keeps a typed
+   `realization` extension point. No placeholder fingering realization is
+   created to fill the UI; the first real client (fingering or chord
+   voicing) introduces it.
+6. **The loader divergence (F4) is a separate small PR from main first**
+   (step C0). A pure core helper binds source bytes to a `SourceRef`; I/O
+   stays in the shells. The Observatory branch rebases after it merges, and
+   "headless == cockpit" cannot close before then.
+7. **Documents.** This file stays a design note. A separate ADR covers
+   experiment identity, information-regime semantics, metric comparability,
+   bundle identity and versioning, and the no-regeneration rule. The ADR is
+   written from the tested in-memory shape and does not block the red phase.
+   Order: C0 loader fix → C1 red in-memory contract → C2 minimal in-memory
+   runner → C3 ADR → C4 persistent bundle only after the ADR is accepted →
+   C5 cockpit projection. No persistent schema is presented as stable before
+   acceptance.
+
+**Four identities, never one.** These are separate identities:
+- **Experiment spec:** source, ask, variants, regimes, evaluation context.
+- **Corpus population:** the bound snapshot the caller prepared, with its
+  per-channel fingerprints.
+- **Information regime:** the channel mask.
+- **Evaluation context.**
+
+The runtime full corpus is not the evaluation corpus, is not
+`LeakyDiagnostic`, and is not a valid holdout. A cell's identity depends
+only on the channels it could actually consume. The run separately records
+the whole bound snapshot, so it answers both "which snapshot" and "which
+parts could have influenced this cell".
+
+**Milestone 1 slice.** Variants S6 Intact (A) and S7 Global Chain (B) ×
+regimes `SEED_ONLY` and `FULL` gives four cells over one source, seed, ask
+and bound snapshot. Evaluation context is fixed or absent; when it is
+absent, no evaluation interaction is computed. The slice must prove seven
+things:
+1. deterministic replay;
+2. unchanged S6/S7 results;
+3. no unnecessary regeneration per cell;
+4. a shared `RankedSet` wherever variants can share one;
+5. no re-generation or re-planning on a UI switch;
+6. requested regime ≠ actual contribution;
+7. opening a bundle never runs the generator.
+
+Native runs experiments and opens bundles. The web runs seed-only where
+existing inputs allow, and views bundles.
+
+**Invariant.** The Observatory governs algorithm variants and information
+channels; the Reachability Lab governs holdout populations. Neither layer
+pretends to be the other.
