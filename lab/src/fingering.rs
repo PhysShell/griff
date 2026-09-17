@@ -131,6 +131,12 @@ pub struct TabLine {
     pub pitches: Vec<Pitch>,
     /// The tab author's positions — one per pitch, each sounding it.
     pub human: Vec<FretboardPosition>,
+    /// Where the fretting hand was just before the line: the fret of the
+    /// latest positioned, fretted note of this voice with an earlier onset
+    /// (the lowest such fret when that onset is a chord). `None` when nothing
+    /// fretted precedes the line. Taken from the tab — context for tab
+    /// completion, not something MIDI-sourced material carries.
+    pub anchor_fret: Option<u8>,
 }
 
 /// Cuts one track into monophonic tablature lines, per voice.
@@ -1038,6 +1044,7 @@ impl<'a> LineBuilder<'a> {
             tuning: self.tuning.clone(),
             pitches,
             human,
+            anchor_fret: None,
         });
     }
 }

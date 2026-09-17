@@ -19,7 +19,7 @@ use crate::fingering::v1_unary;
 use crate::problems::LabError;
 
 /// Number of secondary features ([`FEATURE_NAMES`]).
-pub const FEATURES: usize = 20;
+pub const FEATURES: usize = 21;
 
 /// Secondary feature names, in [`Features`] order. Per note: `fret`, `open`,
 /// one-hot `string_1` … `string_7` (strings above 7 count as 7). Per
@@ -28,7 +28,9 @@ pub const FEATURES: usize = 20;
 /// [Δfret = 0, both fretted], `span_over_3` / `span_over_5` [|Δfret| > 3 / 5,
 /// both fretted], `open_transition` [either open], `diagonal` [Δstring ≠ 0 and
 /// Δfret ≠ 0], `toward_high_string` [Δstring < 0], `fret_up` [Δfret > 0],
-/// `box_move` [Δstring and Δfret nonzero with the same sign].
+/// `box_move` [Δstring and Δfret nonzero with the same sign]. With an anchor
+/// ([`Chain::with_anchor`]), per fretted note: `anchor_distance`
+/// |fret − anchor|.
 pub const FEATURE_NAMES: [&str; FEATURES] = [
     "fret",
     "open",
@@ -50,6 +52,7 @@ pub const FEATURE_NAMES: [&str; FEATURES] = [
     "toward_high_string",
     "fret_up",
     "box_move",
+    "anchor_distance",
 ];
 
 /// A feature vector (or a weight vector over it).
@@ -65,6 +68,8 @@ pub struct Chain {
     /// `pairwise[i][a][b]`: candidate `a` of note `i − 1` to candidate `b` of
     /// note `i`; `pairwise[0]` is empty.
     pairwise: Vec<Vec<Vec<i64>>>,
+    /// Fret the hand was at before the line, when known.
+    anchor: Option<u8>,
 }
 
 impl Chain {
@@ -128,7 +133,22 @@ impl Chain {
             positions,
             unary,
             pairwise,
+            anchor: None,
         })
+    }
+
+    /// The same chain with a hand anchor (e.g. `TabLine::anchor_fret`) for the
+    /// `anchor_distance` secondary feature. The primary objective is unchanged.
+    #[must_use]
+    pub fn with_anchor(self, anchor: Option<u8>) -> Self {
+        let _ = anchor;
+        todo!("chain anchor — green step")
+    }
+
+    /// The hand anchor, when set.
+    #[must_use]
+    pub const fn anchor(&self) -> Option<u8> {
+        self.anchor
     }
 
     /// Notes in the line.

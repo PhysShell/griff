@@ -463,6 +463,76 @@ fn path_features_are_summed_over_notes_and_transitions() {
 }
 
 #[test]
+fn anchor_distance_sums_fretted_distance_to_the_anchor() {
+    let tuning = Tuning::standard_e();
+    let pitches = pitches_of(&[52, 57, 64]);
+    let chain = Chain::v1(
+        &pitches,
+        &tuning,
+        &FingeringWeights::v1(),
+        STANDARD_MAX_FRET,
+    )
+    .unwrap();
+    let want = [pos(6, 12), pos(5, 12), pos(1, 0)];
+    let path: Vec<usize> = want
+        .iter()
+        .enumerate()
+        .map(|(i, p)| chain.candidates(i).iter().position(|c| c == p).unwrap())
+        .collect();
+    assert_eq!(chain.anchor(), None);
+    assert_eq!(
+        feature(&path_features(&chain, &path).unwrap(), "anchor_distance"),
+        0
+    );
+    let anchored = chain.clone().with_anchor(Some(10));
+    assert_eq!(anchored.anchor(), Some(10));
+    // |12 − 10| + |12 − 10|; the open string does not count.
+    assert_eq!(
+        feature(&path_features(&anchored, &path).unwrap(), "anchor_distance"),
+        4
+    );
+    assert_eq!(anchored.cost(&path), chain.cost(&path), "primary unchanged");
+}
+
+#[test]
+fn anchored_lexicographic_path_is_secondary_optimal() {
+    let tuning = Tuning::standard_e();
+    let mut secondary: Features = [0; FEATURES];
+    secondary[FEATURE_NAMES
+        .iter()
+        .position(|n| *n == "anchor_distance")
+        .unwrap()] = 3;
+    secondary[0] = -1;
+    for w in weight_sets() {
+        for raw in sequences(&ALPHABET, 3) {
+            for anchor in [1, 7, 15] {
+                let chain = Chain::v1(&pitches_of(&raw), &tuning, &w, STANDARD_MAX_FRET)
+                    .unwrap()
+                    .with_anchor(Some(anchor));
+                let best = all_paths(&chain)
+                    .iter()
+                    .map(|p| {
+                        (
+                            chain.cost(p).unwrap(),
+                            dot(&secondary, &path_features(&chain, p).unwrap()),
+                        )
+                    })
+                    .min()
+                    .unwrap();
+                let path = lexicographic_path(&chain, &secondary, None);
+                assert_eq!(
+                    (
+                        chain.cost(&path).unwrap(),
+                        dot(&secondary, &path_features(&chain, &path).unwrap())
+                    ),
+                    best
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn path_matches_counts_equal_positions() {
     let tuning = Tuning::standard_e();
     let chain = Chain::v1(
@@ -522,6 +592,55 @@ fn perceptron_learns_a_separable_tie_break() {
         "held-out agreement {agree}/{notes} below 90%"
     );
     assert_eq!(train_secondary(&train, &config), trained, "deterministic");
+}
+
+/// Zero primary weights; each line has its own anchor, and the "author" plays
+/// every note at the candidate nearest that anchor.
+fn anchored_examples(lines: &[Vec<Pitch>], offset: usize) -> Vec<Example> {
+    let tuning = Tuning::standard_e();
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, pitches)| {
+            let anchor = 3 + ((i + offset) % 13) as u8;
+            let chain = Chain::v1(pitches, &tuning, &weights(0, 0, 0, 0), STANDARD_MAX_FRET)
+                .unwrap()
+                .with_anchor(Some(anchor));
+            let human = (0..chain.len())
+                .map(|n| {
+                    *chain
+                        .candidates(n)
+                        .iter()
+                        .filter(|c| c.fret > 0)
+                        .min_by_key(|c| (c.fret.abs_diff(anchor), c.string))
+                        .unwrap()
+                })
+                .collect();
+            Example { chain, human }
+        })
+        .collect()
+}
+
+#[test]
+fn perceptron_learns_an_anchor_tie_break() {
+    let train = anchored_examples(&lcg_lines(60, 8, 45, 64), 0);
+    let trained = train_secondary(
+        &train,
+        &PerceptronConfig {
+            epochs: 30,
+            margin: 1,
+        },
+    );
+    let (mut agree, mut notes) = (0, 0);
+    for ex in anchored_examples(&lcg_lines(12, 10, 45, 64), 5) {
+        let path = lexicographic_path(&ex.chain, &trained.weights, None);
+        agree += path_matches(&ex.chain, &path, &ex.human).unwrap();
+        notes += ex.chain.len();
+    }
+    assert!(
+        agree * 10 >= notes * 9,
+        "held-out anchored agreement {agree}/{notes} below 90%"
+    );
 }
 
 #[test]
