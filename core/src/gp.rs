@@ -43,7 +43,10 @@ use crate::{
     },
     slice::TickRange,
 };
-use guitarpro::io::gpif::{Gpif, Property as GpifProperty, Track as GpifTrack};
+use guitarpro::io::gpif::{
+    Bar as GpifBar, Beat as GpifBeat, Gpif, Note as GpifNote, Property as GpifProperty,
+    Track as GpifTrack, Voice as GpifVoice,
+};
 use guitarpro::io::gpx::{read_gp, read_gpx};
 use guitarpro::model::legacy::key_signature::Duration as GpDuration;
 use guitarpro::model::legacy::note::NoteEffect as GpNoteEffect;
@@ -158,10 +161,19 @@ pub enum GpImportError {
 /// Conversion losses are carried on the returned [`Score`] as a [`LossReport`].
 pub fn import_gp_score(data: &[u8]) -> Result<Score, GpImportError> {
     let mut song = guitarpro::Song::default();
-    match detect_gp_version(data) {
-        Some(3) => song.read_gp3(data)?,
-        Some(4) => song.read_gp4(data)?,
-        Some(5) => song.read_gp5(data)?,
+    let unrestored_voices = match detect_gp_version(data) {
+        Some(3) => {
+            song.read_gp3(data)?;
+            0
+        }
+        Some(4) => {
+            song.read_gp4(data)?;
+            0
+        }
+        Some(5) => {
+            song.read_gp5(data)?;
+            0
+        }
         Some(6) => read_gpif_song(&mut song, &read_gpx(data)?, 6),
         // GP7/8 decode to the same GPIF the GP6 path uses; `read_gp` unzips
         // `Content/score.gpif`. The Song's version.number.0 becomes 7, so
@@ -169,19 +181,125 @@ pub fn import_gp_score(data: &[u8]) -> Result<Score, GpImportError> {
         // (raw repeat counts).
         Some(7) => read_gpif_song(&mut song, &read_gp(data)?, 7),
         _ => return Err(GpImportError::UnsupportedFormat),
+    };
+    let mut score = gp_song_to_score(&song);
+    if unrestored_voices > 0 {
+        score.loss.add(ImportWarning::Other(format!(
+            "GPIF tapping and hammer-on origins not restored in {unrestored_voices} voice(s): \
+             the converted beat/note layout differs from the GPIF document"
+        )));
     }
-    Ok(gp_song_to_score(&song))
+    Ok(score)
 }
 
 // ── GPIF string orientation ───────────────────────────────────────────────────
 
 /// Reads a parsed GPIF document (GP6 `.gpx`, GP7/8 `.gp`) into `song` — the
-/// crate's own `read_gpx` / `read_gp` steps — then renumbers its strings to the
-/// convention the rest of this adapter reads ([`normalise_gpif_strings`]).
-fn read_gpif_song(song: &mut guitarpro::Song, gpif: &Gpif, major: u8) {
+/// crate's own `read_gpx` / `read_gp` steps — then restores the note
+/// techniques the conversion loses ([`restore_gpif_note_techniques`]) and
+/// renumbers its strings to the convention the rest of this adapter reads
+/// ([`normalise_gpif_strings`]). Returns how many voices could not be restored.
+fn read_gpif_song(song: &mut guitarpro::Song, gpif: &Gpif, major: u8) -> usize {
     song.version.number = (major, 0, 0);
     song.read_gpif(gpif);
+    let unrestored = restore_gpif_note_techniques(song, gpif);
     normalise_gpif_strings(song, gpif);
+    unrestored
+}
+
+/// Whitespace-separated GPIF ids (`-1` marks an empty voice slot).
+fn gpif_ids(ids: &str) -> Vec<i32> {
+    ids.split_whitespace()
+        .filter_map(|id| id.parse().ok())
+        .collect()
+}
+
+/// Restores the GPIF note techniques the `guitarpro` 0.4.2 conversion drops
+/// or merges:
+///
+/// - **`Tapped`** is never read there (the beat's tap effect stays a
+///   placeholder). A beat with a tapped note gets the legacy beat-level
+///   `SlapEffect::Tapping`, exactly how GP3/4/5 store tapping, so the rest of
+///   this adapter marks its notes `NoteMark::Tap`;
+/// - **`HopoOrigin` / `HopoDestination`** both set the one legacy `hammer`
+///   flag there, while GP3/4/5 set it on the origin note only (the flag means
+///   "legato to the next note on this string"). The flag is reset to
+///   `HopoOrigin` alone.
+///
+/// The GPIF document is walked the way the crate walks it — each track's bar
+/// per master bar, voice slots skipping `-1`, then existing beats and notes in
+/// order — and zipped with the converted song. A voice whose converted beats
+/// or notes do not line up with the document is left as converted and
+/// counted, never re-labelled out of step. Returns that count.
+fn restore_gpif_note_techniques(song: &mut guitarpro::Song, gpif: &Gpif) -> usize {
+    let bars: HashMap<i32, &GpifBar> = gpif.bars.bars.iter().map(|b| (b.id, b)).collect();
+    let voices: HashMap<i32, &GpifVoice> = gpif.voices.voices.iter().map(|v| (v.id, v)).collect();
+    let beats: HashMap<i32, &GpifBeat> = gpif.beats.beats.iter().map(|b| (b.id, b)).collect();
+    let notes: HashMap<i32, &GpifNote> = gpif.notes.notes.iter().map(|n| (n.id, n)).collect();
+    let enabled = |note: &GpifNote, name: &str| {
+        note.properties
+            .properties
+            .iter()
+            .any(|p| p.name == name && p.enable.is_some())
+    };
+
+    let mut unrestored = 0_usize;
+    for (track_index, track) in song.tracks.iter_mut().enumerate() {
+        for (measure, master_bar) in track.measures.iter_mut().zip(&gpif.master_bars.master_bars) {
+            let Some(bar) = gpif_ids(&master_bar.bars)
+                .get(track_index)
+                .and_then(|id| bars.get(id))
+            else {
+                continue;
+            };
+            let voice_ids: Vec<i32> = gpif_ids(&bar.voices)
+                .into_iter()
+                .filter(|&id| id >= 0)
+                .collect();
+            for (voice, voice_id) in measure.voices.iter_mut().zip(voice_ids) {
+                let Some(g_voice) = voices.get(&voice_id) else {
+                    continue;
+                };
+                let g_beats: Vec<&GpifBeat> = gpif_ids(&g_voice.beats)
+                    .iter()
+                    .filter_map(|id| beats.get(id).copied())
+                    .collect();
+                let g_notes: Vec<Vec<&GpifNote>> = g_beats
+                    .iter()
+                    .map(|b| {
+                        b.notes
+                            .as_deref()
+                            .map(gpif_ids)
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|id| notes.get(id).copied())
+                            .collect()
+                    })
+                    .collect();
+                let aligned = voice.beats.len() == g_notes.len()
+                    && voice
+                        .beats
+                        .iter()
+                        .zip(&g_notes)
+                        .all(|(beat, g)| beat.notes.len() == g.len());
+                if !aligned {
+                    unrestored = unrestored.saturating_add(1);
+                    continue;
+                }
+                for (beat, g_beat_notes) in voice.beats.iter_mut().zip(&g_notes) {
+                    let mut tapped = false;
+                    for (note, g_note) in beat.notes.iter_mut().zip(g_beat_notes) {
+                        note.effect.hammer = enabled(g_note, "HopoOrigin");
+                        tapped |= enabled(g_note, "Tapped");
+                    }
+                    if tapped {
+                        beat.effect.slap_effect = guitarpro::SlapEffect::Tapping;
+                    }
+                }
+            }
+        }
+    }
+    unrestored
 }
 
 /// A GPIF track's tuning as stored: open-string pitches, **lowest string
@@ -776,11 +894,15 @@ fn map_gp_note_marks(
 
 // ── duration helpers ──────────────────────────────────────────────────────────
 
-/// Computes the beat duration in GP ticks from the public `Duration` fields.
+/// Computes the beat duration in GP ticks from the public `Duration` fields:
+/// `base = PPQN * 4 / value`, plus half the base for a dot (three quarters for
+/// a double dot), then the tuplet ratio.
 ///
-/// Matches the internal `Duration::time()` logic in the `guitarpro` crate
-/// (which is `pub(crate)` and cannot be called externally):
-/// `base = PPQN * 4 / value`, with dotted and tuplet adjustments.
+/// A tuplet plays `tuplet_enters` notes in the time of `tuplet_times` — the GP
+/// readers store a triplet as 3 : 2 — so each note lasts `times / enters` of
+/// its written value. The crate's own `Duration::time()` (0.4.2) applies the
+/// inverse ratio and ignores double dots; following it overfilled every bar
+/// with a tuplet, starting its last beats after the next bar's first.
 fn gp_duration_ticks(dur: &GpDuration) -> u32 {
     if dur.value == 0 {
         return u32::from(GP_PPQN);
@@ -789,18 +911,19 @@ fn gp_duration_ticks(dur: &GpDuration) -> u32 {
         .saturating_mul(4)
         .checked_div(u32::from(dur.value))
         .unwrap_or_else(|| u32::from(GP_PPQN));
-    let dotted_extra = if dur.dotted {
+    let dots = if dur.double_dotted {
+        base.saturating_mul(3).checked_div(4).unwrap_or(0)
+    } else if dur.dotted {
         base.checked_div(2).unwrap_or(0)
     } else {
         0
     };
-    let time = base.saturating_add(dotted_extra);
-    // Apply tuplet factor (same convention as guitarpro's convert_time).
+    let time = base.saturating_add(dots);
     if dur.tuplet_enters == 0 || dur.tuplet_times == 0 || dur.tuplet_enters == dur.tuplet_times {
         return time;
     }
-    time.saturating_mul(u32::from(dur.tuplet_enters))
-        .checked_div(u32::from(dur.tuplet_times))
+    time.saturating_mul(u32::from(dur.tuplet_times))
+        .checked_div(u32::from(dur.tuplet_enters))
         .unwrap_or(time)
 }
 
@@ -1063,6 +1186,86 @@ mod tests {
             tuplet_times: 1,
         };
         assert_eq!(gp_duration_ticks(&dur), 960); // fallback quarter
+    }
+
+    fn duration(value: u16, dotted: bool, double_dotted: bool, tuplet: (u8, u8)) -> GpDurationTest {
+        GpDurationTest {
+            value,
+            dotted,
+            double_dotted,
+            min_time: 0,
+            tuplet_enters: tuplet.0,
+            tuplet_times: tuplet.1,
+        }
+    }
+
+    #[test]
+    fn duration_ticks_tuplets_play_their_notes_in_the_time_of_fewer() {
+        // The GP readers store `enters` notes in the time of `times` (a triplet
+        // is 3 : 2): a triplet eighth lasts two thirds of an eighth.
+        assert_eq!(gp_duration_ticks(&duration(8, false, false, (3, 2))), 320);
+        assert_eq!(gp_duration_ticks(&duration(4, false, false, (3, 2))), 640);
+        assert_eq!(gp_duration_ticks(&duration(16, false, false, (5, 4))), 192);
+        assert_eq!(gp_duration_ticks(&duration(16, false, false, (6, 4))), 160);
+        assert_eq!(gp_duration_ticks(&duration(4, true, false, (3, 2))), 960);
+    }
+
+    #[test]
+    fn duration_ticks_double_dotted_adds_three_quarters() {
+        assert_eq!(gp_duration_ticks(&duration(4, false, true, (1, 1))), 1680);
+        assert_eq!(gp_duration_ticks(&duration(8, false, true, (1, 1))), 840);
+    }
+
+    #[test]
+    fn a_triplet_bar_ends_where_the_next_bar_starts() {
+        // Two 4/4 bars on the open high E: three triplet eighths, a half and a
+        // quarter fill bar 1 exactly; bar 2 opens with a quarter.
+        let beat = |duration: GpDurationTest| guitarpro::Beat {
+            duration,
+            notes: vec![guitarpro::Note {
+                string: 1,
+                value: 0,
+                kind: guitarpro::NoteType::Normal,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let measure = |beats: Vec<guitarpro::Beat>| guitarpro::Measure {
+            voices: vec![guitarpro::Voice {
+                beats,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let triplet = duration(8, false, false, (3, 2));
+        let song = guitarpro::Song {
+            measure_headers: vec![guitarpro::MeasureHeader::default(); 2],
+            tracks: vec![guitarpro::Track {
+                strings: vec![(1, 64), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)],
+                measures: vec![
+                    measure(vec![
+                        beat(triplet.clone()),
+                        beat(triplet.clone()),
+                        beat(triplet),
+                        beat(duration(2, false, false, (1, 1))),
+                        beat(duration(4, false, false, (1, 1))),
+                    ]),
+                    measure(vec![beat(duration(4, false, false, (1, 1)))]),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let score = gp_song_to_score(&song);
+        let onsets: Vec<u32> = score.tracks[0].voices[0]
+            .event_groups
+            .iter()
+            .map(|g| match &g.atoms[0] {
+                AtomEvent::Note(n) => n.absolute_start.0,
+                AtomEvent::Rest(r) => r.absolute_start.0,
+            })
+            .collect();
+        assert_eq!(onsets, vec![0, 320, 640, 960, 2880, 3840]);
     }
 
     // ── gp_note_midi_pitch ────────────────────────────────────────────────────

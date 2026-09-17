@@ -28,6 +28,8 @@
     <div id="bar">
       <label id="open" title="open a MIDI or Guitar Pro file">📂 Open<input
           id="file" type="file" accept=".mid,.gp3,.gp4,.gp5,.gpx" hidden /></label>
+      <label id="open-bundle" title="open an experiment bundle in the Observatory">🔬 Bundle<input
+          id="bundle" type="file" accept=".json" hidden /></label>
       <button id="capture" title="capture the focused track as chunk.json">⤓ Capture</button>
       <button id="corpus" title="browse the OPFS corpus in the dock">📚 Corpus</button>
       <button id="manifest" title="fold the OPFS corpus into a manifest.json">📦 Manifest</button>
@@ -37,7 +39,7 @@
       // `wasm-bindgen --target web` emits griff_cockpit.js (the loader) and the
       // wasm; boot the egui app on the canvas and wire the toolbar to the wasm
       // exports (ADR-0027 Slices 2–4).
-      import init, { start, load_score, request_capture, build_manifest_json, load_corpus }
+      import init, { start, load_score, load_bundle, request_capture, build_manifest_json, load_corpus }
         from "./griff_cockpit.js";
 
       function download(name, text) {
@@ -93,6 +95,10 @@
           document.getElementById("file").addEventListener("change", async (event) => {
             const file = event.target.files[0];
             if (file) load_score(file.name, new Uint8Array(await file.arrayBuffer()));
+          });
+          document.getElementById("bundle").addEventListener("change", async (event) => {
+            const file = event.target.files[0];
+            if (file) load_bundle(file.name, await file.text());
           });
           document.getElementById("capture").addEventListener("click", () => request_capture());
           document.getElementById("corpus").addEventListener("click", openCorpus);

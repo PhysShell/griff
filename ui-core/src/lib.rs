@@ -31,6 +31,7 @@ pub mod curation_session;
 pub mod dock;
 pub mod generate;
 pub mod history;
+pub mod observatory;
 pub mod playback;
 pub mod scene;
 pub mod theme;
