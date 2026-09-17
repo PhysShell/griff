@@ -1006,6 +1006,16 @@ fn chain_of(line: &Line, weights: &FingeringWeights) -> Chain {
     .expect("tab lines only hold positionable pitches")
 }
 
+/// A chain with or without the line's hand anchor (the tie-break ablation).
+fn feature_chain(line: &Line, weights: &FingeringWeights, anchored: bool) -> Chain {
+    let chain = chain_of(line, weights);
+    if anchored {
+        chain.with_anchor(line.tab.anchor_fret)
+    } else {
+        chain
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 struct TiesCheck {
     records: usize,
@@ -1122,11 +1132,16 @@ fn line_ties(line: &Line, weights: &FingeringWeights) -> LineTies {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn ladder(lines: &[&Line], weights: &FingeringWeights, learned: Option<&Features>) -> Ladder {
+fn ladder(
+    lines: &[&Line],
+    weights: &FingeringWeights,
+    learned: Option<&Features>,
+    anchored: bool,
+) -> Ladder {
     let rows = par_map(lines, |line| {
         let ties = line_ties(line, weights);
         let learned_matches = learned.map(|w| {
-            let chain = chain_of(line, weights);
+            let chain = feature_chain(line, weights, anchored);
             let path = lexicographic_path(&chain, w, None);
             let production = lexicographic_path(&chain, &[0; FEATURES], None);
             (
@@ -1164,11 +1179,11 @@ fn ladder(lines: &[&Line], weights: &FingeringWeights, learned: Option<&Features
     }
 }
 
-fn examples_of(lines: &[&Line], weights: &FingeringWeights) -> Vec<Example> {
+fn examples_of(lines: &[&Line], weights: &FingeringWeights, anchored: bool) -> Vec<Example> {
     lines
         .iter()
         .map(|line| Example {
-            chain: chain_of(line, weights),
+            chain: feature_chain(line, weights, anchored),
             human: line.tab.human.clone(),
         })
         .collect()
@@ -1183,11 +1198,8 @@ struct MarginTrial {
 }
 
 #[derive(Serialize)]
-struct TiebreakReport {
-    schema: &'static str,
-    version: u32,
-    primary: String,
-    epochs: usize,
+struct TiebreakVariant {
+    features: &'static str,
     trials: Vec<MarginTrial>,
     chosen_margin: i64,
     final_updates: u64,
@@ -1195,12 +1207,21 @@ struct TiebreakReport {
     weights: BTreeMap<&'static str, i64>,
     train: Ladder,
     test: Ladder,
+}
+
+#[derive(Serialize)]
+struct TiebreakReport {
+    schema: &'static str,
+    version: u32,
+    primary: String,
+    epochs: usize,
+    variants: Vec<TiebreakVariant>,
     corpus: CorpusFacts,
 }
 
 const VALIDATION_BUCKET: u64 = 1;
-const TIEBREAK_EPOCHS: usize = 10;
-const MARGINS: [i64; 5] = [0, 1, 2, 4, 8];
+const TIEBREAK_EPOCHS: usize = 20;
+const MARGINS: [i64; 7] = [0, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000];
 
 #[allow(clippy::cast_precision_loss)]
 fn tiebreak(corpus: Corpus, models: &[Model], out: &Path) -> std::io::Result<()> {
@@ -1228,99 +1249,109 @@ fn tiebreak(corpus: Corpus, models: &[Model], out: &Path) -> std::io::Result<()>
         test.len()
     );
 
-    let fit_examples = examples_of(&fit, &weights);
-    let mut trials = Vec::new();
-    for margin in MARGINS {
-        let started = Instant::now();
-        let trained = train_secondary(
-            &fit_examples,
+    let mut variants = Vec::new();
+    for anchored in [false, true] {
+        let label = if anchored {
+            "local + anchor"
+        } else {
+            "local only"
+        };
+        let fit_examples = examples_of(&fit, &weights, anchored);
+        let mut trials = Vec::new();
+        for margin in MARGINS {
+            let started = Instant::now();
+            let trained = train_secondary(
+                &fit_examples,
+                &PerceptronConfig {
+                    epochs: TIEBREAK_EPOCHS,
+                    margin,
+                },
+            );
+            let score = ladder(&validation, &weights, Some(&trained.weights), anchored)
+                .learned
+                .unwrap_or(0.0);
+            eprintln!(
+                "[{label}] margin {margin}: {} updates, {} epochs, validation agreement {:.2}% ({:.1}s)",
+                trained.updates,
+                trained.epochs,
+                100.0 * score,
+                started.elapsed().as_secs_f64()
+            );
+            trials.push(MarginTrial {
+                margin,
+                epochs: trained.epochs,
+                updates: trained.updates,
+                validation_agreement: score,
+            });
+        }
+        let chosen_margin = trials
+            .iter()
+            .fold(None::<&MarginTrial>, |best, t| match best {
+                Some(b) if b.validation_agreement >= t.validation_agreement => Some(b),
+                _ => Some(t),
+            })
+            .map_or(0, |t| t.margin);
+        let final_trained = train_secondary(
+            &examples_of(&train, &weights, anchored),
             &PerceptronConfig {
                 epochs: TIEBREAK_EPOCHS,
-                margin,
+                margin: chosen_margin,
             },
         );
-        let score = ladder(&validation, &weights, Some(&trained.weights))
-            .learned
-            .unwrap_or(0.0);
-        eprintln!(
-            "margin {margin}: {} updates, {} epochs, validation agreement {:.2}% ({:.1}s)",
-            trained.updates,
-            trained.epochs,
-            100.0 * score,
-            started.elapsed().as_secs_f64()
-        );
-        trials.push(MarginTrial {
-            margin,
-            epochs: trained.epochs,
-            updates: trained.updates,
-            validation_agreement: score,
+        variants.push(TiebreakVariant {
+            features: label,
+            trials,
+            chosen_margin,
+            final_updates: final_trained.updates,
+            final_epochs: final_trained.epochs,
+            weights: FEATURE_NAMES
+                .iter()
+                .copied()
+                .zip(final_trained.weights)
+                .collect(),
+            train: ladder(&train, &weights, Some(&final_trained.weights), anchored),
+            test: ladder(&test, &weights, Some(&final_trained.weights), anchored),
         });
     }
-    let chosen_margin = trials
-        .iter()
-        .fold(None::<&MarginTrial>, |best, t| match best {
-            Some(b) if b.validation_agreement >= t.validation_agreement => Some(b),
-            _ => Some(t),
-        })
-        .map_or(0, |t| t.margin);
 
-    let final_trained = train_secondary(
-        &examples_of(&train, &weights),
-        &PerceptronConfig {
-            epochs: TIEBREAK_EPOCHS,
-            margin: chosen_margin,
-        },
-    );
-    let train_ladder = ladder(&train, &weights, Some(&final_trained.weights));
-    let test_ladder = ladder(&test, &weights, Some(&final_trained.weights));
-
-    println!(
-        "\nprimary {} — margin {chosen_margin} (validation), {} updates over {} epochs on all train songs",
-        model.description_short(),
-        final_trained.updates,
-        final_trained.epochs
-    );
-    println!("\n| split | lines | human optimal | unique optimum | ln #optima p50 / p90 | floor | uniform over optima | production tie-break | learned tie-break | ceiling |");
-    println!("|---|---|---|---|---|---|---|---|---|---|");
-    for (name, l) in [
-        ("train", &train_ladder),
-        ("test (holdout songs)", &test_ladder),
-    ] {
-        println!(
-            "| {name} | {} | {:.1}% | {:.1}% | {:.2} / {:.2} | {:.1}% | {:.1}% | {:.1}% | {} | {:.1}% |",
-            l.lines,
-            100.0 * l.human_optimal_lines as f64 / l.lines.max(1) as f64,
-            100.0 * l.unique_optimum_lines as f64 / l.lines.max(1) as f64,
-            l.ln_count.p50 as f64 / 1000.0,
-            l.ln_count.p90 as f64 / 1000.0,
-            100.0 * l.floor,
-            100.0 * l.uniform,
-            100.0 * l.production,
-            l.learned.map_or("—".into(), |x| format!("{:.1}%", 100.0 * x)),
-            100.0 * l.ceiling
-        );
+    println!("\nprimary {}", model.description_short());
+    println!("\n| features | split | lines | human optimal | unique optimum | ln #optima p50 / p90 | floor | uniform over optima | production tie-break | learned tie-break | lines changed | ceiling | margin |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for v in &variants {
+        for (name, l) in [("train", &v.train), ("test (holdout)", &v.test)] {
+            println!(
+                "| {} | {name} | {} | {:.1}% | {:.1}% | {:.2} / {:.2} | {:.1}% | {:.1}% | {:.1}% | {} | {} | {:.1}% | {} |",
+                v.features,
+                l.lines,
+                100.0 * l.human_optimal_lines as f64 / l.lines.max(1) as f64,
+                100.0 * l.unique_optimum_lines as f64 / l.lines.max(1) as f64,
+                l.ln_count.p50 as f64 / 1000.0,
+                l.ln_count.p90 as f64 / 1000.0,
+                100.0 * l.floor,
+                100.0 * l.uniform,
+                100.0 * l.production,
+                l.learned.map_or("—".into(), |x| format!("{:.1}%", 100.0 * x)),
+                l.learned_changed_lines.map_or("—".into(), |x| x.to_string()),
+                100.0 * l.ceiling,
+                v.chosen_margin
+            );
+        }
     }
-    let weights_by_name: BTreeMap<&'static str, i64> = FEATURE_NAMES
-        .iter()
-        .copied()
-        .zip(final_trained.weights)
-        .collect();
-    println!("\nlearned secondary weights (averaged, unnormalized):");
-    for (name, w) in FEATURE_NAMES.iter().zip(final_trained.weights) {
-        println!("  {name:>20} {w}");
+    for v in &variants {
+        println!(
+            "\n[{}] learned secondary weights (averaged, unnormalized):",
+            v.features
+        );
+        for (name, w) in &v.weights {
+            println!("  {name:>20} {w}");
+        }
     }
     let report = TiebreakReport {
         schema: "griff.constraint-lab-tiebreak",
-        version: 1,
+        version: 2,
         primary: model.description_short(),
         epochs: TIEBREAK_EPOCHS,
-        trials,
-        chosen_margin,
-        final_updates: final_trained.updates,
-        final_epochs: final_trained.epochs,
-        weights: weights_by_name,
-        train: train_ladder,
-        test: test_ladder,
+        variants,
         corpus: corpus.facts,
     };
     write_json(&out.join("tiebreak.json"), &report)
