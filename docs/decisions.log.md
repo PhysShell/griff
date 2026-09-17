@@ -2851,3 +2851,17 @@ Architectural decisions go to [`adr/`](adr/) instead.
   10,906), hammer edges on the same string 76.8% → 99.7%; GP3/4/5 unchanged.
   Deriving hammer-on versus pull-off direction for all formats is a separate
   decision (it changes corpus technique tags everywhere).
+
+- 2026-09-17 — In the context of the two corpus-directory loaders (the CLI's
+  `load_corpus_material` and the native cockpit's `load_corpus_dir`), facing
+  a CLI parse cache keyed by the pinned `sha256`, which let a record whose own
+  file was missing or held other bytes reuse a parse another file supplied,
+  and a cockpit loader that never checked the pin, we decided to **bind every
+  record to the file it names through one pure core rule,
+  `corpus::bind_source`, and key the CLI cache by filename**, to achieve the
+  same accepted and skipped records from both shells for the same directory
+  (a precondition for comparing headless and cockpit experiment runs),
+  accepting that each shell still owns its own I/O and that the cockpit still
+  parses once per record rather than once per file. On the repository corpus
+  (pre-v9 records, no pins) the change is a no-op: `griff generate --corpus`
+  output is byte-identical before and after.
