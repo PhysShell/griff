@@ -202,6 +202,8 @@ pub fn tab_lines(
 
         let mut line = LineBuilder::new(track_index, voice.id, &tuning);
         let mut sounding_until: Option<u64> = None;
+        // Lowest fretted position at the latest onset seen so far.
+        let mut last_fretted: Option<u8> = None;
         let mut rest = notes.as_slice();
         while let Some(first) = rest.first() {
             let onset = first.absolute_start.0;
@@ -210,6 +212,16 @@ pub fn tab_lines(
                 .position(|n| n.absolute_start.0 != onset)
                 .unwrap_or(rest.len());
             let (group, tail) = rest.split_at(width);
+            let anchor_here = last_fretted;
+            if let Some(fret) = group
+                .iter()
+                .filter_map(|n| n.position)
+                .map(|p| p.position.fret)
+                .filter(|&fret| fret > 0)
+                .min()
+            {
+                last_fretted = Some(fret);
+            }
             rest = tail;
             stats.notes_seen = stats.notes_seen.saturating_add(count(group.len()));
 
@@ -247,7 +259,7 @@ pub fn tab_lines(
                 line.flush(cut, &mut lines, &mut stats);
                 continue;
             }
-            line.push(onset, note.pitch, orient(position));
+            line.push(onset, note.pitch, orient(position), anchor_here);
         }
         line.flush(cut, &mut lines, &mut stats);
     }
@@ -993,6 +1005,7 @@ struct LineBuilder<'a> {
     voice: u8,
     tuning: &'a Tuning,
     start_tick: u32,
+    anchor: Option<u8>,
     pitches: Vec<Pitch>,
     human: Vec<FretboardPosition>,
 }
@@ -1004,6 +1017,7 @@ impl<'a> LineBuilder<'a> {
             voice,
             tuning,
             start_tick: 0,
+            anchor: None,
             pitches: Vec::new(),
             human: Vec::new(),
         }
@@ -1013,9 +1027,10 @@ impl<'a> LineBuilder<'a> {
         self.pitches.is_empty()
     }
 
-    fn push(&mut self, onset: u32, pitch: Pitch, position: FretboardPosition) {
+    fn push(&mut self, onset: u32, pitch: Pitch, position: FretboardPosition, anchor: Option<u8>) {
         if self.pitches.is_empty() {
             self.start_tick = onset;
+            self.anchor = anchor;
         }
         self.pitches.push(pitch);
         self.human.push(position);
@@ -1044,7 +1059,7 @@ impl<'a> LineBuilder<'a> {
             tuning: self.tuning.clone(),
             pitches,
             human,
-            anchor_fret: None,
+            anchor_fret: self.anchor,
         });
     }
 }

@@ -141,8 +141,7 @@ impl Chain {
     /// `anchor_distance` secondary feature. The primary objective is unchanged.
     #[must_use]
     pub fn with_anchor(self, anchor: Option<u8>) -> Self {
-        let _ = anchor;
-        todo!("chain anchor — green step")
+        Self { anchor, ..self }
     }
 
     /// The hand anchor, when set.
@@ -307,7 +306,7 @@ pub fn path_features(chain: &Chain, path: &[usize]) -> Option<Features> {
     let positions = chain.positions_of(path)?;
     let mut total = [0_i64; FEATURES];
     for (note, position) in positions.iter().enumerate() {
-        add_features(&mut total, &note_features(*position));
+        add_features(&mut total, &note_features(*position, chain.anchor));
         if let Some(previous) = note.checked_sub(1).and_then(|i| positions.get(i)) {
             add_features(&mut total, &transition_features(*previous, *position));
         }
@@ -486,7 +485,7 @@ fn lexicographic_dp(
                 .unwrap_or(0);
             let matched = reference.is_some_and(|r| r.get(note) == Some(position));
             let mut middle = 0_i64;
-            let mut secondary = dot(weights, &note_features(*position));
+            let mut secondary = dot(weights, &note_features(*position, chain.anchor));
             match mode {
                 Tiebreak::Plain => {}
                 Tiebreak::Augment(margin) => {
@@ -829,12 +828,15 @@ fn add_features(total: &mut Features, part: &Features) {
     }
 }
 
-fn note_features(position: FretboardPosition) -> Features {
+fn note_features(position: FretboardPosition, anchor: Option<u8>) -> Features {
     let mut f = [0_i64; FEATURES];
     f[0] = i64::from(position.fret);
     f[1] = i64::from(position.fret == 0);
     let string = usize::from(position.string.clamp(1, 7));
     f[1 + string] = 1;
+    if position.fret > 0 {
+        f[20] = anchor.map_or(0, |a| i64::from(position.fret.abs_diff(a)));
+    }
     f
 }
 
