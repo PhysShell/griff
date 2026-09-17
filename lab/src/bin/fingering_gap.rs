@@ -47,6 +47,13 @@
 //! compares the tap-blind `v1` objective with the tap-aware one under the same
 //! weights on lines with tapped notes, on the whole corpus and on holdout songs.
 //!
+//! Oracle stage 2, legato continuity — phase 1, the census of observed legato
+//! edges (protocol: `docs/audit/2026-09-fingering-legato-continuity.md`):
+//!
+//! ```text
+//! cargo run --release --bin fingering_gap -- legato-census --tabs DIR --out DIR
+//! ```
+//!
 //! `MODELS`: `--v1 NAME=fret,open_string,position_shift,string_change` and
 //! `--hand NAME=height,open_string,stretch,shift,shift_distance,string_distance`,
 //! repeatable; default `--v1 v1=1,1,2,1` (the production weights).
@@ -65,13 +72,15 @@ use std::time::Instant;
 use griff_constraint_lab::fingering::{
     best_hands, decode_positions, hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key,
     tab_lines, v1_cost, v1_problem, with_repeat_consistency, with_string_tiebreak, CutStats,
-    HandModel, HandWeights, LineCut, TabLine, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
+    HandModel, HandWeights, LineCut, TabLine, TechniqueEdge, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
 };
 use griff_constraint_lab::ir::VarId;
 use griff_constraint_lab::optir::{
     verify_agreement, verify_record, OptProblem, ProblemRecord, SolveRecord, Verdict,
 };
-use griff_constraint_lab::technique::{tap_aware_chain, tap_aware_cost};
+use griff_constraint_lab::technique::{
+    derived_direction, tap_aware_chain, tap_aware_cost, LegatoDirection,
+};
 use griff_constraint_lab::ties::{
     lexicographic_path, optimum_set, path_matches, train_secondary, Chain, Example, Features,
     PerceptronConfig, FEATURES, FEATURE_NAMES,
@@ -1694,6 +1703,287 @@ fn taps(corpus: Corpus, out: &Path) -> std::io::Result<()> {
     write_json(&out.join("taps.json"), &report)
 }
 
+// ── legato census (oracle stage 2, phase 1) ──────────────────────────────────
+
+/// Format family of a corpus file, by extension: GPIF (`.gp`, `.gpx`) or the
+/// GP3–5 binaries.
+fn format_family(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".gp") || lower.ends_with(".gpx") {
+        "GP6/7"
+    } else {
+        "GP3–5"
+    }
+}
+
+/// Edges, and how many keep both notes on one string.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+struct SameString {
+    edges: u64,
+    same_string: u64,
+}
+
+impl SameString {
+    fn add(&mut self, same: bool) {
+        self.edges += 1;
+        self.same_string += u64::from(same);
+    }
+}
+
+/// Edges, and how many land on an open string.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+struct OpenTarget {
+    edges: u64,
+    open_target: u64,
+}
+
+impl OpenTarget {
+    fn add(&mut self, open: bool) {
+        self.edges += 1;
+        self.open_target += u64::from(open);
+    }
+}
+
+/// Edge counts behind the stage-2 laws. Legato edges are observed (imported
+/// span kinds); directions are derived from pitch.
+#[derive(Debug, Clone, Default, Serialize)]
+struct LegatoCensus {
+    lines: u64,
+    edges: u64,
+    /// L1: all legato edges, then per imported kind; `plain` is the base rate.
+    legato: SameString,
+    hammer_on: SameString,
+    pull_off: SameString,
+    legato_span: SameString,
+    plain: SameString,
+    /// L2: legato edges per derived direction.
+    ascending: SameString,
+    descending: SameString,
+    unison: SameString,
+    /// L3: open-string targets of descending edges, legato against plain.
+    descending_legato_open: OpenTarget,
+    descending_plain_open: OpenTarget,
+    /// L4: edges out of a tapped note; their legato edges per direction.
+    out_of_tap: u64,
+    out_of_tap_legato: SameString,
+    out_of_tap_legato_ascending: u64,
+    out_of_tap_legato_descending: u64,
+    out_of_tap_legato_unison: u64,
+    out_of_tap_legato_open_target: u64,
+    /// L4: edges into a tapped note.
+    into_tap: u64,
+    into_tap_legato: SameString,
+}
+
+impl LegatoCensus {
+    fn record(&mut self, tab: &TabLine) {
+        self.lines += 1;
+        for i in 1..tab.pitches.len() {
+            let (before, here) = (tab.human[i - 1], tab.human[i]);
+            let same = before.string == here.string;
+            let open = here.fret == 0;
+            let edge = tab.edges[i];
+            let direction = derived_direction(&tab.pitches, i);
+            self.edges += 1;
+            if edge.is_legato() {
+                self.legato.add(same);
+                match edge {
+                    TechniqueEdge::HammerOn => self.hammer_on.add(same),
+                    TechniqueEdge::PullOff => self.pull_off.add(same),
+                    TechniqueEdge::Legato => self.legato_span.add(same),
+                    TechniqueEdge::Plain => {}
+                }
+                match direction {
+                    Some(LegatoDirection::Ascending) => self.ascending.add(same),
+                    Some(LegatoDirection::Descending) => {
+                        self.descending.add(same);
+                        self.descending_legato_open.add(open);
+                    }
+                    Some(LegatoDirection::Unison) => self.unison.add(same),
+                    None => {}
+                }
+            } else {
+                self.plain.add(same);
+                if direction == Some(LegatoDirection::Descending) {
+                    self.descending_plain_open.add(open);
+                }
+            }
+            if tab.tapped[i - 1] {
+                self.out_of_tap += 1;
+                if edge.is_legato() {
+                    self.out_of_tap_legato.add(same);
+                    match direction {
+                        Some(LegatoDirection::Ascending) => self.out_of_tap_legato_ascending += 1,
+                        Some(LegatoDirection::Descending) => {
+                            self.out_of_tap_legato_descending += 1;
+                        }
+                        Some(LegatoDirection::Unison) => self.out_of_tap_legato_unison += 1,
+                        None => {}
+                    }
+                    self.out_of_tap_legato_open_target += u64::from(open);
+                }
+            }
+            if tab.tapped[i] {
+                self.into_tap += 1;
+                if edge.is_legato() {
+                    self.into_tap_legato.add(same);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct CensusRow {
+    split: &'static str,
+    family: &'static str,
+    population: &'static str,
+    census: LegatoCensus,
+}
+
+#[derive(Serialize)]
+struct CensusReport {
+    schema: &'static str,
+    version: u32,
+    /// Legato origins on the last note of a kept line (whole corpus, all
+    /// formats): they project onto no edge.
+    dangling_legato: u64,
+    rows: Vec<CensusRow>,
+    corpus: CorpusFacts,
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn pct(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        "—".into()
+    } else {
+        format!("{:.1}%", 100.0 * part as f64 / whole as f64)
+    }
+}
+
+fn same_cell(s: SameString) -> String {
+    format!("{} ({})", pct(s.same_string, s.edges), s.edges)
+}
+
+#[allow(clippy::too_many_lines)]
+fn legato_census(corpus: Corpus, out: &Path) -> std::io::Result<()> {
+    const SPLITS: [&str; 2] = ["whole corpus", "holdout songs"];
+    const FAMILIES: [&str; 3] = ["GP3–5", "GP6/7", "all"];
+    const POPULATIONS: [&str; 2] = ["all lines", "tap slice"];
+    let mut census: BTreeMap<(usize, usize, usize), LegatoCensus> = BTreeMap::new();
+    for line in &corpus.lines {
+        let family = format_family(&corpus.names[line.file]);
+        let tapped = line.tab.tapped.iter().any(|t| *t);
+        for (split, _) in SPLITS
+            .iter()
+            .enumerate()
+            .filter(|(s, _)| *s == 0 || line.test)
+        {
+            for (fam, _) in FAMILIES
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| **f == family || **f == "all")
+            {
+                for (pop, _) in POPULATIONS
+                    .iter()
+                    .enumerate()
+                    .filter(|(p, _)| *p == 0 || tapped)
+                {
+                    census
+                        .entry((split, fam, pop))
+                        .or_default()
+                        .record(&line.tab);
+                }
+            }
+        }
+    }
+    let rows: Vec<CensusRow> = census
+        .into_iter()
+        .map(|((split, fam, pop), census)| CensusRow {
+            split: SPLITS[split],
+            family: FAMILIES[fam],
+            population: POPULATIONS[pop],
+            census,
+        })
+        .collect();
+
+    let dangling = corpus.facts.cut_stats.dangling_legato;
+    println!("\nlegato origins ending a kept line (no edge): {dangling}");
+    println!("\nL1/L2 — P(same string | edge): share (edges). Legato kinds are imported; directions are derived from pitch.\n");
+    println!("| split | family | population | legato edges | HammerOn | PullOff | Legato | plain edges (base rate) | ascending legato | descending legato | unison legato |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    for r in &rows {
+        let c = &r.census;
+        println!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            r.split,
+            r.family,
+            r.population,
+            same_cell(c.legato),
+            same_cell(c.hammer_on),
+            same_cell(c.pull_off),
+            same_cell(c.legato_span),
+            same_cell(c.plain),
+            same_cell(c.ascending),
+            same_cell(c.descending),
+            same_cell(c.unison)
+        );
+    }
+    println!("\nL3 — P(target open | descending edge): share (edges).\n");
+    println!("| split | family | population | descending legato edges | descending plain edges (base rate) |");
+    println!("|---|---|---|---|---|");
+    for r in &rows {
+        let c = &r.census;
+        println!(
+            "| {} | {} | {} | {} ({}) | {} ({}) |",
+            r.split,
+            r.family,
+            r.population,
+            pct(
+                c.descending_legato_open.open_target,
+                c.descending_legato_open.edges
+            ),
+            c.descending_legato_open.edges,
+            pct(
+                c.descending_plain_open.open_target,
+                c.descending_plain_open.edges
+            ),
+            c.descending_plain_open.edges
+        );
+    }
+    println!("\nL4 — tap-adjacent edges.\n");
+    println!("| split | family | population | edges out of a tapped note | legato share | legato: same string | legato: ascending / descending / unison | legato: open target | edges into a tapped note | legato share | legato: same string |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    for r in &rows {
+        let c = &r.census;
+        let legato_out = c.out_of_tap_legato.edges;
+        println!(
+            "| {} | {} | {} | {} | {} | {} | {} / {} / {} | {} | {} | {} | {} |",
+            r.split,
+            r.family,
+            r.population,
+            c.out_of_tap,
+            pct(legato_out, c.out_of_tap),
+            pct(c.out_of_tap_legato.same_string, legato_out),
+            pct(c.out_of_tap_legato_ascending, legato_out),
+            pct(c.out_of_tap_legato_descending, legato_out),
+            pct(c.out_of_tap_legato_unison, legato_out),
+            pct(c.out_of_tap_legato_open_target, legato_out),
+            c.into_tap,
+            pct(c.into_tap_legato.edges, c.into_tap),
+            pct(c.into_tap_legato.same_string, c.into_tap_legato.edges)
+        );
+    }
+    let report = CensusReport {
+        schema: "griff.constraint-lab-legato-census",
+        version: 1,
+        dangling_legato: dangling,
+        rows,
+        corpus: corpus.facts,
+    };
+    write_json(&out.join("legato-census.json"), &report)
+}
+
 // ── repeat consistency ────────────────────────────────────────────────────────
 
 /// Window of a repeated figure, in notes.
@@ -2002,6 +2292,7 @@ fn run() -> Result<(), String> {
         "ties-check" => ties_check(&corpus, &args.models, &args.out),
         "tiebreak" => tiebreak(corpus, &args.models, &args.out),
         "taps" => taps(corpus, &args.out),
+        "legato-census" => legato_census(corpus, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
