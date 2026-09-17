@@ -2883,6 +2883,7 @@ Architectural decisions go to [`adr/`](adr/) instead.
   the tapped slice to parity with length-matched untapped lines on excess
   per note (2.94 → 1.27 vs 1.26), agreement (39.4% → 44.3% vs 44.9%) and
   ceiling, but not on exactness (1.3% vs 21.0% of lines with the human path
-  in the optimum set); 75% of the residual is fretting-hand travel spent
-  keeping tapping figures on one string. Legato continuity comes before
-  technique inference.
+  in the optimum set). Under the current objective's decomposition, 75% of
+  the residual cost falls on the fretting-hand travel term; with tapping
+  figures seemingly kept on one string, legato continuity is the hypothesis
+  to test next, as an observed-label oracle before technique inference.

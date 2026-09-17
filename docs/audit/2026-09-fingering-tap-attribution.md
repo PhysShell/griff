@@ -119,26 +119,37 @@ Human cost minus the tap-aware optimum's cost on the slice (`v1-fit`,
 | picking-hand travel | 4,659 | 2,357 | +2,302 (12.5%) |
 | open-string penalty | 2,769 | 450 | +2,319 (12.5%) |
 
-- **The residual is mostly fretting-hand travel**, and it has a musical
-  shape. Tapping figures are built **on one string**: tap, pull off to a
-  fretted note on the same string, often on to an open string. The tab
-  authors put a tap on the string of the preceding fretted note 1,023 times;
-  the model's optimum does so 525 times. With string changes free under
-  `v1-fit`, the model scatters the figure across strings to save fret travel.
-  The player keeps it on one string, pays the travel, and gets the legato.
-- **The open-string residual is the same story.** An open string is a natural
-  pull-off target in these figures, but `v1-fit` penalizes open strings,
-  having been fitted mostly on untapped material.
+This is a **decomposition under the current objective, not a causal
+attribution**. The terms interact: adding a cost for, say, string continuity
+would move the optimum path and redistribute the residual across all three
+components. Read the table as "75% of the residual cost under the current
+objective falls on the fretting-hand travel term", not as "75% of the problem
+is the fretting hand".
+
+What the decomposition suggests, as hypotheses for the next stage:
+
+- **H1, string continuity.** Tapping figures appear to live **on one string**:
+  tap, pull off to a fretted note on the same string, often on to an open
+  string. The tab authors put a tap on the string of the preceding fretted
+  note 1,023 times; the model's optimum does so 525 times. With string
+  changes free under `v1-fit`, the optimum can scatter a figure across
+  strings to save fret travel, and a player keeping it on one string would
+  pay exactly this kind of travel.
+- **H2, conditional open strings.** An open string looks like a natural
+  pull-off target in these figures, while `v1-fit` penalizes open strings
+  everywhere (it was fitted mostly on untapped material). This points to an
+  interaction (open target under a pull-off), not to a different global open
+  weight.
 
 ## Conclusion
 
-Attributing tapped notes to the picking hand is necessary, and on this slice
-it is sufficient to remove the slice-specific penalty. What remains is not a
-hand-attribution problem but a **technique-continuity** problem: legato
-figures (tap, pull-off, hammer-on) bind notes to one string, and that binding
-is missing from the objective. Hidden hand inference should wait until that is
-modelled. Otherwise the inference stage would learn to paper over a
-continuity cost it cannot see.
+Attributing tapped notes to the picking hand is necessary. On this slice it
+is sufficient to remove the slice-specific *excess*, but not to put the human
+paths into the optimum set. The residual has a systematic structure that the
+objective does not model; H1 and H2 point to technique continuity (legato
+figures binding notes to one string) as the candidate, to be tested as an
+observed-label oracle before any hidden technique inference. Otherwise an
+inference stage could learn to paper over a continuity cost it cannot see.
 
 ## Limitations
 
