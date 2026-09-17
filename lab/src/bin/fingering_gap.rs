@@ -38,6 +38,15 @@
 //! secondary objective on train songs (margin chosen on a validation bucket)
 //! and reports the tie-break ladder on holdout songs.
 //!
+//! Technique-aware fingering, oracle stage (tap labels from the tab):
+//!
+//! ```text
+//! cargo run --release --bin fingering_gap -- taps --tabs DIR --out DIR
+//! ```
+//!
+//! compares the tap-blind `v1` objective with the tap-aware one under the same
+//! weights on lines with tapped notes, on the whole corpus and on holdout songs.
+//!
 //! `MODELS`: `--v1 NAME=fret,open_string,position_shift,string_change` and
 //! `--hand NAME=height,open_string,stretch,shift,shift_distance,string_distance`,
 //! repeatable; default `--v1 v1=1,1,2,1` (the production weights).
@@ -62,6 +71,7 @@ use griff_constraint_lab::ir::VarId;
 use griff_constraint_lab::optir::{
     verify_agreement, verify_record, OptProblem, ProblemRecord, SolveRecord, Verdict,
 };
+use griff_constraint_lab::technique::{tap_aware_chain, tap_aware_cost};
 use griff_constraint_lab::ties::{
     lexicographic_path, optimum_set, path_matches, train_secondary, Chain, Example, Features,
     PerceptronConfig, FEATURES, FEATURE_NAMES,
@@ -1357,6 +1367,333 @@ fn tiebreak(corpus: Corpus, models: &[Model], out: &Path) -> std::io::Result<()>
     write_json(&out.join("tiebreak.json"), &report)
 }
 
+// ── technique-aware fingering (oracle labels) ────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct TapSlice {
+    lines: usize,
+    notes: u64,
+    tapped_notes: u64,
+    /// Lines whose human path lies in the model's optimum set.
+    human_in_optimum_set: usize,
+    /// `cost(human) − optimum` per line, in the model's cost units.
+    human_excess: Quantiles,
+    /// Total excess over total notes — comparable across line lengths.
+    excess_per_note: f64,
+    unique_optimum_lines: usize,
+    /// Agreement of the production-order path (lowest candidate on ties).
+    agree: f64,
+    agree_tapped: f64,
+    agree_fretted: f64,
+    /// Most agreement reachable inside the optimum set.
+    ceiling: f64,
+}
+
+struct TapLine {
+    notes: u64,
+    tapped: u64,
+    in_set: bool,
+    excess: i64,
+    unique: bool,
+    agree: u64,
+    agree_tapped: u64,
+    ceiling: u64,
+}
+
+fn tap_line(line: &Line, weights: &FingeringWeights, tap_shift: Option<i64>) -> TapLine {
+    let tab = &line.tab;
+    let (chain, human_cost) = match tap_shift {
+        None => (chain_of(line, weights), v1_cost(&tab.human, weights)),
+        Some(shift) => (
+            tap_aware_chain(
+                &tab.pitches,
+                &tab.tuning,
+                weights,
+                shift,
+                &tab.tapped,
+                STANDARD_MAX_FRET,
+            )
+            .expect("tab lines are positionable and fully labelled"),
+            tap_aware_cost(&tab.human, &tab.tapped, weights, shift).expect("labels cover the line"),
+        ),
+    };
+    let set = optimum_set(&chain, Some(&tab.human));
+    let range = set.agreement.expect("human positions per note");
+    let path = chain
+        .positions_of(&lexicographic_path(&chain, &[0; FEATURES], None))
+        .expect("a path of the chain");
+    let matched: Vec<bool> = path.iter().zip(&tab.human).map(|(a, h)| a == h).collect();
+    TapLine {
+        notes: tab.human.len() as u64,
+        tapped: tab.tapped.iter().filter(|t| **t).count() as u64,
+        in_set: human_cost == set.optimum,
+        excess: human_cost - set.optimum,
+        unique: !set.count.saturated && set.count.exact == 1,
+        agree: matched.iter().filter(|m| **m).count() as u64,
+        agree_tapped: matched
+            .iter()
+            .zip(&tab.tapped)
+            .filter(|(m, t)| **m && **t)
+            .count() as u64,
+        ceiling: range.max as u64,
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn tap_slice(lines: &[&Line], weights: &FingeringWeights, tap_shift: Option<i64>) -> TapSlice {
+    let rows = par_map(lines, |line| tap_line(line, weights, tap_shift));
+    let notes: u64 = rows.iter().map(|r| r.notes).sum();
+    let tapped: u64 = rows.iter().map(|r| r.tapped).sum();
+    let agree: u64 = rows.iter().map(|r| r.agree).sum();
+    let agree_tapped: u64 = rows.iter().map(|r| r.agree_tapped).sum();
+    let share = |x: u64, of: u64| x as f64 / of.max(1) as f64;
+    TapSlice {
+        lines: rows.len(),
+        notes,
+        tapped_notes: tapped,
+        human_in_optimum_set: rows.iter().filter(|r| r.in_set).count(),
+        human_excess: quantiles(rows.iter().map(|r| r.excess).collect()),
+        excess_per_note: rows.iter().map(|r| r.excess as f64).sum::<f64>() / notes.max(1) as f64,
+        unique_optimum_lines: rows.iter().filter(|r| r.unique).count(),
+        agree: share(agree, notes),
+        agree_tapped: share(agree_tapped, tapped),
+        agree_fretted: share(agree - agree_tapped, notes - tapped),
+        ceiling: share(rows.iter().map(|r| r.ceiling).sum(), notes),
+    }
+}
+
+/// Line-length bins for the length-matched baseline.
+fn length_bin(notes: u64) -> usize {
+    match notes {
+        0..=15 => 0,
+        16..=31 => 1,
+        32..=63 => 2,
+        64..=127 => 3,
+        _ => 4,
+    }
+}
+
+/// Untapped lines reweighted to the tapped slice's length distribution — the
+/// baseline a tap-aware model should be compared with, since exact line
+/// optimality gets rarer as lines grow.
+#[derive(Debug, Clone, Default, Serialize)]
+struct LengthMatched {
+    human_in_optimum_set: f64,
+    excess_per_note: f64,
+    agree: f64,
+    ceiling: f64,
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn length_matched(
+    tapped: &[&Line],
+    untapped: &[&Line],
+    weights: &FingeringWeights,
+) -> LengthMatched {
+    const BINS: usize = 5;
+    let mut target_lines = [0_f64; BINS];
+    let mut target_notes = [0_f64; BINS];
+    for line in tapped {
+        let n = line.tab.human.len() as u64;
+        target_lines[length_bin(n)] += 1.0;
+        target_notes[length_bin(n)] += n as f64;
+    }
+    let rows = par_map(untapped, |line| tap_line(line, weights, None));
+    let mut lines = [0_f64; BINS];
+    let mut in_set = [0_f64; BINS];
+    let mut notes = [0_f64; BINS];
+    let mut excess = [0_f64; BINS];
+    let mut agree = [0_f64; BINS];
+    let mut ceiling = [0_f64; BINS];
+    for r in &rows {
+        let b = length_bin(r.notes);
+        lines[b] += 1.0;
+        in_set[b] += f64::from(u8::from(r.in_set));
+        notes[b] += r.notes as f64;
+        excess[b] += r.excess as f64;
+        agree[b] += r.agree as f64;
+        ceiling[b] += r.ceiling as f64;
+    }
+    let (mut m, mut line_weight, mut note_weight) = (LengthMatched::default(), 0.0, 0.0);
+    for b in 0..BINS {
+        if lines[b] == 0.0 || target_lines[b] == 0.0 {
+            continue;
+        }
+        m.human_in_optimum_set += target_lines[b] * in_set[b] / lines[b];
+        line_weight += target_lines[b];
+        m.excess_per_note += target_notes[b] * excess[b] / notes[b];
+        m.agree += target_notes[b] * agree[b] / notes[b];
+        m.ceiling += target_notes[b] * ceiling[b] / notes[b];
+        note_weight += target_notes[b];
+    }
+    m.human_in_optimum_set /= line_weight.max(1.0);
+    m.excess_per_note /= note_weight.max(1.0);
+    m.agree /= note_weight.max(1.0);
+    m.ceiling /= note_weight.max(1.0);
+    m
+}
+
+#[derive(Serialize)]
+struct TapTrial {
+    weights: String,
+    model: String,
+    split: &'static str,
+    slice: TapSlice,
+}
+
+#[derive(Serialize)]
+struct TapsReport {
+    schema: &'static str,
+    version: u32,
+    /// Untapped lines where the tap-aware and tap-blind objectives disagree on
+    /// the optimum or the production-order path (must be 0).
+    control_mismatches: usize,
+    control_lines: usize,
+    trials: Vec<TapTrial>,
+    /// Per weight set: untapped lines reweighted to the tapped slice's lengths
+    /// (whole corpus).
+    length_matched: BTreeMap<&'static str, LengthMatched>,
+    corpus: CorpusFacts,
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn taps(corpus: Corpus, out: &Path) -> std::io::Result<()> {
+    let tap_lines: Vec<&Line> = corpus
+        .lines
+        .iter()
+        .filter(|l| l.tab.tapped.iter().any(|t| *t))
+        .collect();
+    let untapped: Vec<&Line> = corpus
+        .lines
+        .iter()
+        .filter(|l| l.tab.tapped.iter().all(|t| !*t))
+        .collect();
+    let weight_sets = [
+        (
+            "v1-fit",
+            FingeringWeights {
+                fret: 0,
+                open_string: -3,
+                position_shift: 1,
+                string_change: 0,
+            },
+        ),
+        ("v1", FingeringWeights::v1()),
+    ];
+
+    // Control: without taps the two objectives must be the same objective.
+    let control_mismatches = par_map(&untapped, |line| {
+        weight_sets.iter().any(|(_, w)| {
+            let blind = chain_of(line, w);
+            let aware = tap_aware_chain(
+                &line.tab.pitches,
+                &line.tab.tuning,
+                w,
+                w.position_shift,
+                &line.tab.tapped,
+                STANDARD_MAX_FRET,
+            )
+            .expect("positionable");
+            let zero = [0; FEATURES];
+            optimum_set(&blind, None).optimum != optimum_set(&aware, None).optimum
+                || blind.positions_of(&lexicographic_path(&blind, &zero, None))
+                    != aware.positions_of(&lexicographic_path(&aware, &zero, None))
+        })
+    })
+    .into_iter()
+    .filter(|m| *m)
+    .count();
+
+    let mut trials = Vec::new();
+    for (name, w) in &weight_sets {
+        let models: [(String, Option<i64>); 3] = [
+            ("tap-blind".into(), None),
+            (
+                format!(
+                    "tap-aware, tap_shift = position_shift ({})",
+                    w.position_shift
+                ),
+                Some(w.position_shift),
+            ),
+            ("tap-aware, tap_shift = 0".into(), Some(0)),
+        ];
+        for (model, shift) in models {
+            for (split, lines) in [
+                ("whole corpus", tap_lines.clone()),
+                (
+                    "holdout songs",
+                    tap_lines
+                        .iter()
+                        .copied()
+                        .filter(|l| l.test)
+                        .collect::<Vec<_>>(),
+                ),
+            ] {
+                trials.push(TapTrial {
+                    weights: (*name).to_string(),
+                    model: model.clone(),
+                    split,
+                    slice: tap_slice(&lines, w, shift),
+                });
+            }
+        }
+    }
+
+    println!(
+        "\ncontrol: {control_mismatches} of {} untapped lines differ between tap-blind and tap-aware objectives",
+        untapped.len()
+    );
+    let mut matched = BTreeMap::new();
+    for (name, w) in &weight_sets {
+        matched.insert(*name, length_matched(&tap_lines, &untapped, w));
+    }
+    println!("\n| weights | model | split | lines | notes (tapped) | human path in optimum set | human excess p50 / p90 | excess per note | unique optimum | agreement | on tapped notes | on fretted notes | ceiling |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for t in &trials {
+        let s = &t.slice;
+        println!(
+            "| {} | {} | {} | {} | {} ({}) | {:.1}% | {} / {} | {:.2} | {:.1}% | {:.1}% | {:.1}% | {:.1}% | {:.1}% |",
+            t.weights,
+            t.model,
+            t.split,
+            s.lines,
+            s.notes,
+            s.tapped_notes,
+            100.0 * s.human_in_optimum_set as f64 / s.lines.max(1) as f64,
+            s.human_excess.p50,
+            s.human_excess.p90,
+            s.excess_per_note,
+            100.0 * s.unique_optimum_lines as f64 / s.lines.max(1) as f64,
+            100.0 * s.agree,
+            100.0 * s.agree_tapped,
+            100.0 * s.agree_fretted,
+            100.0 * s.ceiling
+        );
+    }
+    println!("\nLength-matched untapped baseline (whole corpus, reweighted to the tapped slice's line lengths):");
+    println!("\n| weights | human path in optimum set | excess per note | agreement | ceiling |");
+    println!("|---|---|---|---|---|");
+    for (name, m) in &matched {
+        println!(
+            "| {name} | {:.1}% | {:.2} | {:.1}% | {:.1}% |",
+            100.0 * m.human_in_optimum_set,
+            m.excess_per_note,
+            100.0 * m.agree,
+            100.0 * m.ceiling
+        );
+    }
+    let report = TapsReport {
+        schema: "griff.constraint-lab-taps",
+        version: 1,
+        control_mismatches,
+        control_lines: untapped.len(),
+        trials,
+        length_matched: matched,
+        corpus: corpus.facts,
+    };
+    write_json(&out.join("taps.json"), &report)
+}
+
 // ── repeat consistency ────────────────────────────────────────────────────────
 
 /// Window of a repeated figure, in notes.
@@ -1664,6 +2001,7 @@ fn run() -> Result<(), String> {
         "repeat-report" => repeat_report(&corpus, &args.models, &args.out),
         "ties-check" => ties_check(&corpus, &args.models, &args.out),
         "tiebreak" => tiebreak(corpus, &args.models, &args.out),
+        "taps" => taps(corpus, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
