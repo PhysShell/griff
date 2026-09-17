@@ -2969,3 +2969,7 @@ Architectural decisions go to [`adr/`](adr/) instead.
   the residual cost falls on the fretting-hand travel term; with tapping
   figures seemingly kept on one string, legato continuity is the hypothesis
   to test next, as an observed-label oracle before technique inference.
+  (Revised after the import fixes #201 and #202: GP6/7 tapping now reaches
+  the slice (226 lines). Attribution closes most, not all, of the excess gap
+  (3.20 → 1.63 against 1.16, 77%). Exactness stays out of reach, 0.9% against
+  20.0% — see the audit's re-measurements.)
