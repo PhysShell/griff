@@ -1,9 +1,12 @@
 //! What an experiment asks: the fixed ask, the variant axis, the information
 //! axis, and the evaluation context.
 
+use griff_core::candidate_chain::chain_weights_v1;
 use griff_core::generate::PitchMaterial;
 use griff_core::generation_input::GenerationAsk;
+use griff_core::rerank::rerank_weights_v1;
 use griff_core::score::Score;
+use griff_core::scoring::WeightPolicy;
 
 use crate::fingerprint::{self, ask_fingerprint, references_fingerprint, Fingerprint, Hasher};
 use crate::metric::EVALUATOR_GENERATION_AXES;
@@ -17,12 +20,29 @@ pub(crate) fn policy(h: &mut Hasher, identity: PolicyIdentity) {
 
 /// A policy's stable name and version — the identity an experiment records for
 /// every stage it ran.
+///
+/// Ownership follows the semantics: a production policy's identity is read
+/// from the crate that implements it, never assigned here. Where the owning
+/// crate has no identity yet, the value below is a manual contract pinned by a
+/// characterization golden (`experiment/tests/identity_pins.rs`), recorded as
+/// debt in ADR-0034.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PolicyIdentity {
     /// Stable identifier.
     pub id: &'static str,
     /// Version, bumped when the policy's behaviour changes.
     pub version: u32,
+}
+
+impl PolicyIdentity {
+    /// The identity a core weight policy carries itself.
+    #[must_use]
+    pub const fn of_weights(policy: &WeightPolicy) -> Self {
+        Self {
+            id: policy.id,
+            version: policy.version,
+        }
+    }
 }
 
 /// Which generator fans out the candidate set.
@@ -57,6 +77,10 @@ pub enum RealizerPolicy {
 
 impl GeneratorPolicy {
     /// The recorded identity.
+    ///
+    /// **Manual contract (debt):** `griff_core::rerank::generate_candidate_set`
+    /// carries no identity of its own yet; this value is pinned to the
+    /// candidate set's behaviour by a characterization golden.
     #[must_use]
     pub const fn identity(self) -> PolicyIdentity {
         match self {
@@ -69,37 +93,38 @@ impl GeneratorPolicy {
 }
 
 impl ScorerPolicy {
-    /// The recorded identity — the core weight policy's own id and version.
+    /// The recorded identity — read from the core weight policy the scorer
+    /// runs under.
     #[must_use]
-    pub const fn identity(self) -> PolicyIdentity {
+    pub fn identity(self) -> PolicyIdentity {
         match self {
-            Self::GenerationRerankV1 => PolicyIdentity {
-                id: "generation_rerank",
-                version: 1,
-            },
+            Self::GenerationRerankV1 => PolicyIdentity::of_weights(&rerank_weights_v1()),
         }
     }
 }
 
 impl SelectorPolicy {
     /// The recorded identity.
+    ///
+    /// The global chain's is read from the core chain policy. **Manual
+    /// contract (debt):** the intact selection (`select_ranked` with no
+    /// strategy) carries no identity in core yet; its value is pinned by a
+    /// characterization golden.
     #[must_use]
-    pub const fn identity(self) -> PolicyIdentity {
+    pub fn identity(self) -> PolicyIdentity {
         match self {
             Self::IntactTop => PolicyIdentity {
                 id: "intact_top",
                 version: 1,
             },
-            Self::GlobalChainV1 => PolicyIdentity {
-                id: "candidate_chain",
-                version: 1,
-            },
+            Self::GlobalChainV1 => PolicyIdentity::of_weights(&chain_weights_v1()),
         }
     }
 }
 
 impl RealizerPolicy {
-    /// The recorded identity.
+    /// The recorded identity — owned here: "no realization" is this crate's
+    /// own policy.
     #[must_use]
     pub const fn identity(self) -> PolicyIdentity {
         match self {
