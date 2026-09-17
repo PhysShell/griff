@@ -307,84 +307,11 @@ pub fn lexicographic_path(
     weights: &Features,
     augment: Option<(&[FretboardPosition], i64)>,
 ) -> Vec<usize> {
-    let n = chain.len();
-    if n == 0 {
-        return Vec::new();
+    let reference = augment.filter(|(r, _)| r.len() == chain.len());
+    match reference {
+        Some((r, margin)) => lexicographic_dp(chain, weights, Some(r), Tiebreak::Augment(margin)),
+        None => lexicographic_dp(chain, weights, None, Tiebreak::Plain),
     }
-    let reference = augment.filter(|(r, _)| r.len() == n);
-    // best[i][c] = lexicographically least (primary, secondary) of a prefix ending
-    // at candidate c of note i; parent[i][c] its predecessor. Strict `<` keeps the
-    // lowest index on ties, as the production DP does.
-    let mut best: Vec<Vec<Lexi>> = Vec::with_capacity(n);
-    let mut parent: Vec<Vec<usize>> = Vec::with_capacity(n);
-    for note in 0..n {
-        let candidates = chain.candidates(note);
-        let mut layer = Vec::with_capacity(candidates.len());
-        let mut parents = Vec::with_capacity(candidates.len());
-        for (c, position) in candidates.iter().enumerate() {
-            let unary = chain
-                .unary
-                .get(note)
-                .and_then(|u| u.get(c))
-                .copied()
-                .unwrap_or(0);
-            let mut secondary = dot(weights, &note_features(*position));
-            if let Some((r, margin)) = reference {
-                if r.get(note) == Some(position) {
-                    secondary = secondary.saturating_add(i128::from(margin));
-                }
-            }
-            let (from, parent_index) = match note.checked_sub(1) {
-                None => ((0_i64, 0_i128), 0),
-                Some(previous) => {
-                    let mut chosen: Option<(Lexi, usize)> = None;
-                    for (a, (prev_value, prev_position)) in best[previous]
-                        .iter()
-                        .zip(chain.candidates(previous))
-                        .enumerate()
-                    {
-                        let transition = chain
-                            .pairwise
-                            .get(note)
-                            .and_then(|p| p.get(a))
-                            .and_then(|p| p.get(c))
-                            .copied()
-                            .unwrap_or(0);
-                        let value = (
-                            prev_value.0.saturating_add(transition),
-                            prev_value.1.saturating_add(dot(
-                                weights,
-                                &transition_features(*prev_position, *position),
-                            )),
-                        );
-                        if chosen.is_none_or(|(v, _)| value < v) {
-                            chosen = Some((value, a));
-                        }
-                    }
-                    chosen.unwrap_or(((0, 0), 0))
-                }
-            };
-            layer.push((
-                from.0.saturating_add(unary),
-                from.1.saturating_add(secondary),
-            ));
-            parents.push(parent_index);
-        }
-        best.push(layer);
-        parent.push(parents);
-    }
-    let mut c = 0;
-    for (index, value) in best[n - 1].iter().enumerate() {
-        if *value < best[n - 1][c] {
-            c = index;
-        }
-    }
-    let mut path = vec![0; n];
-    for note in (0..n).rev() {
-        path[note] = c;
-        c = parent[note][c];
-    }
-    path
 }
 
 /// The latent learning target for one line: among the optimal paths that
@@ -398,8 +325,15 @@ pub fn latent_target(
     weights: &Features,
     reference: &[FretboardPosition],
 ) -> Option<Vec<usize>> {
-    let _ = (chain, weights, reference);
-    todo!("latent target — green step")
+    if reference.len() != chain.len() {
+        return None;
+    }
+    Some(lexicographic_dp(
+        chain,
+        weights,
+        Some(reference),
+        Tiebreak::Latent,
+    ))
 }
 
 /// One training line: its primary chain and the tab author's positions.
@@ -433,22 +367,22 @@ pub struct TrainedSecondary {
     pub epochs: usize,
 }
 
-/// Learns secondary weights with an averaged, loss-augmented structured
-/// perceptron **inside the primary optimum set**. The target per example is
-/// the achievable one — [`AgreementRange::best_path`], not the human path,
-/// which is often not primary-optimal. When the (augmented) prediction agrees
-/// with the tab author less than the target does, the weights move by
+/// Learns secondary weights with an averaged, loss-augmented, latent-target
+/// structured perceptron **inside the primary optimum set**. The target per
+/// step is the achievable one under the current weights — [`latent_target`]:
+/// the cheapest of the most-agreeing optimal paths, not the human path, which
+/// is often not primary-optimal. When the (augmented) prediction agrees with
+/// the tab author less than the target does, the weights move by
 /// `features(prediction) − features(target)`. Deterministic: examples in the
 /// given order, integer arithmetic.
 #[must_use]
 pub fn train_secondary(examples: &[Example], config: &PerceptronConfig) -> TrainedSecondary {
-    // The achievable target per example: a most-agreeing optimal path.
-    let prepared: Vec<(&Example, usize, Features)> = examples
+    // The most agreement any optimal path reaches, per example.
+    let prepared: Vec<(&Example, usize)> = examples
         .iter()
         .filter_map(|example| {
             let range = optimum_set(&example.chain, Some(&example.human)).agreement?;
-            let target = path_features(&example.chain, &range.best_path)?;
-            Some((example, range.max, target))
+            Some((example, range.max))
         })
         .collect();
     let mut weights = [0_i64; FEATURES];
@@ -458,14 +392,18 @@ pub fn train_secondary(examples: &[Example], config: &PerceptronConfig) -> Train
     while epochs < config.epochs {
         epochs += 1;
         let mut changed = false;
-        for (example, target_matches, target_features) in &prepared {
+        for (example, most) in &prepared {
             let augment = (config.margin != 0).then_some((example.human.as_slice(), config.margin));
             let predicted = lexicographic_path(&example.chain, &weights, augment);
             let matches = path_matches(&example.chain, &predicted, &example.human).unwrap_or(0);
-            if matches < *target_matches {
-                if let Some(features) = path_features(&example.chain, &predicted) {
-                    for ((w, f), t) in weights.iter_mut().zip(features).zip(target_features) {
-                        *w = w.saturating_add(f.saturating_sub(*t));
+            if matches < *most {
+                let target = latent_target(&example.chain, &weights, &example.human)
+                    .and_then(|t| path_features(&example.chain, &t));
+                if let (Some(features), Some(target)) =
+                    (path_features(&example.chain, &predicted), target)
+                {
+                    for ((w, f), t) in weights.iter_mut().zip(features).zip(target) {
+                        *w = w.saturating_add(f.saturating_sub(t));
                     }
                     updates = updates.saturating_add(1);
                     changed = true;
@@ -487,6 +425,111 @@ pub fn train_secondary(examples: &[Example], config: &PerceptronConfig) -> Train
 }
 
 // ── private machinery ─────────────────────────────────────────────────────────
+
+/// What the lexicographic DP does with reference matches.
+#[derive(Clone, Copy)]
+enum Tiebreak {
+    /// Ignore the reference: `(primary, secondary)`.
+    Plain,
+    /// Add `margin` to the secondary cost per matching note.
+    Augment(i64),
+    /// `(primary, −matches, secondary)`: the most-agreeing optimal paths first.
+    Latent,
+}
+
+/// The lexicographic chain DP behind [`lexicographic_path`] and
+/// [`latent_target`]: minimizes `(primary, middle, secondary)` with strict
+/// comparisons, so ties keep the lowest candidate indices as the production DP
+/// does. `reference` must have the chain's length when given.
+fn lexicographic_dp(
+    chain: &Chain,
+    weights: &Features,
+    reference: Option<&[FretboardPosition]>,
+    mode: Tiebreak,
+) -> Vec<usize> {
+    let n = chain.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut best: Vec<Vec<Lexi>> = Vec::with_capacity(n);
+    let mut parent: Vec<Vec<usize>> = Vec::with_capacity(n);
+    for note in 0..n {
+        let candidates = chain.candidates(note);
+        let mut layer = Vec::with_capacity(candidates.len());
+        let mut parents = Vec::with_capacity(candidates.len());
+        for (c, position) in candidates.iter().enumerate() {
+            let unary = chain
+                .unary
+                .get(note)
+                .and_then(|u| u.get(c))
+                .copied()
+                .unwrap_or(0);
+            let matched = reference.is_some_and(|r| r.get(note) == Some(position));
+            let mut middle = 0_i64;
+            let mut secondary = dot(weights, &note_features(*position));
+            match mode {
+                Tiebreak::Plain => {}
+                Tiebreak::Augment(margin) => {
+                    if matched {
+                        secondary = secondary.saturating_add(i128::from(margin));
+                    }
+                }
+                Tiebreak::Latent => middle = -i64::from(matched),
+            }
+            let (from, parent_index) = match note.checked_sub(1) {
+                None => ((0_i64, 0_i64, 0_i128), 0),
+                Some(previous) => {
+                    let mut chosen: Option<(Lexi, usize)> = None;
+                    for (a, (prev_value, prev_position)) in best[previous]
+                        .iter()
+                        .zip(chain.candidates(previous))
+                        .enumerate()
+                    {
+                        let transition = chain
+                            .pairwise
+                            .get(note)
+                            .and_then(|p| p.get(a))
+                            .and_then(|p| p.get(c))
+                            .copied()
+                            .unwrap_or(0);
+                        let value = (
+                            prev_value.0.saturating_add(transition),
+                            prev_value.1,
+                            prev_value.2.saturating_add(dot(
+                                weights,
+                                &transition_features(*prev_position, *position),
+                            )),
+                        );
+                        if chosen.is_none_or(|(v, _)| value < v) {
+                            chosen = Some((value, a));
+                        }
+                    }
+                    chosen.unwrap_or(((0, 0, 0), 0))
+                }
+            };
+            layer.push((
+                from.0.saturating_add(unary),
+                from.1.saturating_add(middle),
+                from.2.saturating_add(secondary),
+            ));
+            parents.push(parent_index);
+        }
+        best.push(layer);
+        parent.push(parents);
+    }
+    let mut c = 0;
+    for (index, value) in best[n - 1].iter().enumerate() {
+        if *value < best[n - 1][c] {
+            c = index;
+        }
+    }
+    let mut path = vec![0; n];
+    for note in (0..n).rev() {
+        path[note] = c;
+        c = parent[note][c];
+    }
+    path
+}
 
 /// A path count carried through the DPs: exact (saturating) and in logs.
 #[derive(Debug, Clone, Copy)]
@@ -554,8 +597,9 @@ fn log_add(a: f64, b: f64) -> f64 {
     hi + (lo - hi).exp().ln_1p()
 }
 
-/// A lexicographic `(primary, secondary)` cost.
-type Lexi = (i64, i128);
+/// A lexicographic `(primary, middle, secondary)` cost; the middle term is
+/// `−matches` for [`latent_target`] and 0 otherwise.
+type Lexi = (i64, i64, i128);
 
 /// Most reference matches reaching a candidate along optimal edges, with the
 /// predecessor attaining it; `None` off the optimum.
