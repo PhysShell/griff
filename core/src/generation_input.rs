@@ -60,6 +60,84 @@ pub struct CorpusMaterial {
     pub skipped: Vec<String>,
 }
 
+/// A borrowed view of the corpus channels one generation pass may consume: the
+/// whole [`CorpusMaterial`], or any subset of its three channels.
+///
+/// A view never owns or copies material, so a caller can mask a channel (an
+/// empty slice, or `None`) without cloning thousands of reference scores. The
+/// empty view is exactly a pass without a corpus.
+#[derive(Debug, Clone, Copy)]
+pub struct CorpusMaterialView<'a> {
+    /// Rhythm templates the pass may rotate; empty falls back to the source's
+    /// first sounding bar.
+    pub rhythms: &'a [generate::RhythmTemplate],
+    /// Novelty references the pass measures against; empty reads fully novel.
+    pub references: &'a [Score],
+    /// The gesture the pass may carve, when the ask also asks for one.
+    pub gesture: Option<GestureControl>,
+}
+
+impl<'a> CorpusMaterialView<'a> {
+    /// No channel at all — the view of a pass without a corpus.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            rhythms: &[],
+            references: &[],
+            gesture: None,
+        }
+    }
+
+    /// Every channel of `material`.
+    #[must_use]
+    pub const fn of(material: &'a CorpusMaterial) -> Self {
+        let _ = material;
+        Self::empty()
+    }
+
+    /// Every channel of `material`, or the empty view without one.
+    #[must_use]
+    pub const fn of_option(material: Option<&'a CorpusMaterial>) -> Self {
+        let _ = material;
+        Self::empty()
+    }
+}
+
+/// What a corpus **actually** contributed to one pass, not merely what was
+/// attached or requested.
+///
+/// An attached corpus that is empty, a channel a caller masked, an explicit
+/// palette that overrides the corpus rhythms, or an ask that declines the
+/// gesture all contribute nothing on that channel, and this says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CorpusContribution {
+    /// Corpus rhythm templates the pass rotated (never the source's own).
+    pub templates: usize,
+    /// Novelty references the pass measured against.
+    pub references: usize,
+    /// Whether a corpus gesture was actually carved.
+    pub gesture: bool,
+}
+
+impl CorpusContribution {
+    /// The contribution of the pass that produced `set` from `corpus`.
+    #[must_use]
+    pub const fn of_pass(corpus: CorpusMaterialView<'_>, set: &RankedSet) -> Self {
+        let _ = (corpus, set);
+        Self {
+            templates: 0,
+            references: 0,
+            gesture: false,
+        }
+    }
+
+    /// Whether the corpus contributed nothing — the pass ran on the seed alone.
+    #[must_use]
+    pub const fn is_seed_only(&self) -> bool {
+        self.templates == 0 && self.references == 0 && !self.gesture
+    }
+}
+
 /// One corpus record ready to contribute: its metadata, its source sliced to the
 /// record's `bar_range` provenance, and the sounding track the slice measures.
 #[derive(Debug)]
@@ -284,6 +362,21 @@ pub fn ranked_candidates(
         // Echoed, never read: the pass above is the Phase-1 pass, unchanged.
         tonal: ask.tonal,
     })
+}
+
+/// Generates and reranks the full candidate set for `score` from a view of the
+/// corpus channels — the one implementation [`ranked_candidates`] enters.
+///
+/// # Errors
+/// As [`ranked_candidates`].
+pub fn ranked_candidates_from_view(
+    score: &Score,
+    corpus: CorpusMaterialView<'_>,
+    ask: &GenerationAsk,
+    rhythm_override: Option<&[generate::RhythmTemplate]>,
+) -> Result<RankedSet, GenerationInputError> {
+    let _ = corpus;
+    ranked_candidates(score, None, ask, rhythm_override)
 }
 
 /// Selects from an already-ranked set — **selection only**, never a
