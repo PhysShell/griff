@@ -1,7 +1,7 @@
 # ADR 0034: Run generator experiments as variant × information regime, with separate identities and comparable-only metrics
 
 Date: 2026-09-17
-Status: Proposed
+Status: Accepted (2026-09-17, reviewed verbatim at `dc49109`)
 
 ## Context
 

@@ -5,8 +5,10 @@ experiment surface: **algorithm variant × information regime**, run
 headlessly, stored as an immutable bundle, inspected in the cockpit by eye
 and ear.
 
-Status: design note — reviewed 2026-09-17; decisions in §8 (not normative; the ADR will be)
-Scope: binds nothing; §8 records the review. Durable contracts move to an ADR.
+Status: historical context — durable decisions accepted in
+[ADR-0034](../adr/0034-experiment-axes-and-identities.md) (2026-09-17).
+Scope: binds nothing. §8 records the review that shaped the ADR; where this
+note and the ADR differ, the ADR is the contract.
 
 ## 1. Inventory: the seams main already has (4f6c505)
 

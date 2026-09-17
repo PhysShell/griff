@@ -7,7 +7,7 @@ stack, Swang Playground Slice 3 (favorite / reject / history / provenance,
 PR #126), and Global Chain Audition (PR #129).
 Remaining: tracked in the progress notes and checklist below
 Depends on: S6
-ADRs: —
+ADRs: ADR-0034 (Generator Observatory contract)
 
 > Progress: the `preview` workspace member ships:
 > - **view-model** (`build_view`: `Score` → `PianoRollView`) — notes on a
@@ -131,6 +131,28 @@ front-ends and audio build on them:
         delta says "lower under `candidate_chain` v1", which is a fact about the
         policy), k-best or Slice C, weight tuning or sliders, S9 learning, S15
         harmony, and S17 rendering.
+- [~] **Generator Observatory** — **contract accepted 2026-09-17**
+      ([ADR-0034](../adr/0034-experiment-axes-and-identities.md)). Global Chain
+      Audition generalised into two experiment axes, *algorithm variant* ×
+      *information regime*.
+      - **In-memory runner landed** (`griff-experiment`): typed variants per
+        pipeline stage, regimes that mask the channels of an already
+        prepared population, one generation pass per regime shared by
+        every variant that can share it, and typed cell refusals.
+      - **Identities.** Separate spec, population, pass-information,
+        evaluation, requested-cell and effective-recipe identities.
+      - **Metrics.** Deltas only between identical metric identities, and
+        interactions only over evaluations.
+      - **Core seam.** `ranked_candidates` now wraps
+        `ranked_candidates_from_view`, pinned output-identical to main.
+      - **Unchanged boundary.** Holdout and population selection stay with
+        the Reachability Lab (ADR-0032).
+      - **Next increments.**
+        1. The persistent experiment bundle: one canonical projection for
+           the bundle and fingerprints, and loading never generates.
+        2. The cockpit A/B projection over the Slice 2 transport.
+        3. Retiring the manual `s6_candidate_set` / `intact_top` identities
+           into core.
 - [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16 and merged
       as PR #126**: favorite/reject controls (mutually exclusive) and a
       session **history** of every auditioned candidate with typed provenance,
