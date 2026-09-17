@@ -239,3 +239,84 @@ reported, not interpreted.
   the same command.
 - **Earlier conclusions.** None of the conclusions of #197, #199 or #200
   changes.
+
+## Phase 1 — legato census (corrected import)
+
+`fingering_gap legato-census`, on `main` at `4f6c505` merged into this branch.
+
+- **Imported kinds.** All 29,778 legato edges arrive as `HammerOn` on the
+  whole corpus; `PullOff` and `Legato` edges number 0, and direction is
+  derived.
+- **Dangling origins.** 26 legato origins end a kept line (89 before #202).
+
+**L1 — one string across the edge** (whole corpus). Share of edges whose two
+notes lie on the same string, with the edge count in parentheses:
+
+| family | population | legato edges | plain edges (base rate) |
+|---|---|---|---|
+| GP3–5 | all lines | 99.4% (18,093) | 59.9% (192,551) |
+| GP3–5 | tap slice | 99.1% (5,965) | 51.3% (9,372) |
+| GP6/7 | all lines | 99.8% (11,685) | 56.0% (97,800) |
+| GP6/7 | tap slice | 99.9% (4,046) | 58.4% (5,962) |
+| all | all lines | **99.6%** (29,778) | 58.6% (290,351) |
+| all | tap slice | **99.4%** (10,011) | 54.0% (15,334) |
+
+Holdout songs: 99.8% of 5,889 legato edges (all lines) and 99.4% of 1,270
+(tap slice).
+
+**L2 — per derived direction** (whole corpus, all formats):
+
+| population | ascending | descending | unison |
+|---|---|---|---|
+| all lines | 99.4% (12,879) | 99.7% (16,878) | 71.4% (21) |
+| tap slice | 99.3% (3,489) | 99.6% (6,516) | 0.0% (6) |
+
+**L3 — open-string target of a descending edge** (whole corpus):
+
+| family | population | legato edges | plain edges (base rate) |
+|---|---|---|---|
+| GP3–5 | all lines | 30.5% (10,315) | 11.5% (61,296) |
+| GP3–5 | tap slice | 19.7% (3,880) | 8.2% (2,841) |
+| GP6/7 | all lines | 33.6% (6,563) | 11.1% (32,545) |
+| GP6/7 | tap slice | 34.6% (2,636) | 9.6% (1,714) |
+| all | all lines | **31.7%** (16,878) | 11.3% (93,841) |
+| all | tap slice | **25.7%** (6,516) | 8.7% (4,555) |
+
+Holdout songs:
+
+- all lines: 14.2% (3,047) against 9.5% (20,377);
+- tap slice: **5.1% (844) against 6.3% (648)**, the opposite direction.
+
+**L4 — tap-adjacent edges** (whole corpus; every tapped note lies in the tap
+slice). "Legato" columns count only the legato edges among them.
+
+| family | edges out of a tapped note | legato share | legato: one string | legato: ascending / descending / unison | legato: open target | edges into a tapped note | legato share | legato: one string |
+|---|---|---|---|---|---|---|---|---|
+| GP3–5 | 3,148 | 74.0% | 99.3% | 4.3 / 95.5 / 0.2% | 12.7% | 3,121 | 8.3% | 96.2% |
+| GP6/7 | 2,059 | 75.2% | 100.0% | 1.2 / 98.8 / 0.0% | 17.9% | 2,032 | 8.6% | 98.9% |
+| all | 5,207 | 74.5% | 99.6% | 3.1 / 96.8 / 0.1% | 14.8% | 5,153 | 8.4% | 97.2% |
+
+Holdout songs: 777 edges out of a tapped note, 65.8% legato; all of those
+stay on one string and descend.
+
+**Reading** (descriptive; the tests are in phase 2):
+
+- **L1: an observed legato origin keeps its target on its string.** This
+  holds in 99.6% of edges on the whole corpus, in both format families (99.4%
+  and 99.8%) and in the tap slice (99.4%), against 58.6% for plain edges. At
+  that level a hard constraint is plausible, so C1 is tested beside C2, as
+  registered.
+- **L2: the law does not depend on the derived direction.** Ascending
+  99.4%, descending 99.7%. The 21 unison edges are too few to read.
+- **L3: a descending legato edge lands on an open string about 2.8 times as
+  often as a descending plain edge.** 31.7% against 11.3%; the lift appears in
+  both families and in the tap slice (25.7% against 8.7%). This is the
+  interaction D encodes.
+  - The tap-slice holdout shows no lift (5.1% against 6.3%, 844 edges). This
+    is reported, not interpreted, and it is one more reason D must pass the
+    leave-one-song-out rule.
+- **L4: tapping figures are legato figures.**
+  - Three quarters of the edges out of a tapped note are legato.
+  - Of those legato edges, 96.8% descend (tap, then pull-off) and 99.6% stay
+    on the string.
+  - 14.8% land on an open string.
