@@ -160,11 +160,33 @@ front-ends and audio build on them:
         - **Characterization, not a contract.** On one repository-corpus
           source, 16 cells wrote a 7.9 MB pretty JSON bundle that loaded
           and verified in about 11 ms in release.
+      - **Hardening (C4b).** Writing fails closed. Every displayed fact is
+        bound to an identity: `corpus-snapshot.v2`, plus pass, cell and run
+        records kept apart from the causal identities. The only sealing
+        path is crate-private.
+      - **Cockpit Observatory landed** (`o`, "🔬 observatory"). One display
+        path: `ExperimentView` is built from a bundle and nothing else.
+        - **Run and Open.** A native Run is written down as a bundle before
+          anything is shown, and a saved bundle opens through the same
+          verification. Their views are equal.
+        - **A and B.** Pick A and B by variant and regime. Requested,
+          effective and actual stay side by side and apart.
+        - **Numbers.** Metric rows and the 2 × 2 interaction are
+          `delta()` / `interaction()` verbatim. A comparison without a
+          number says why ("not comparable: different measurement
+          context").
+        - **Audition.** Plays recorded scores through the Slice 2 transport
+          (`AuditionCandidate::Experiment`), and `b` swaps them. Nothing
+          regenerates or re-plans; a refused cell is shown as its refusal
+          and never played.
+        - **Web.** Opens and auditions bundles ("🔬 Bundle"); running stays
+          native.
+        - **Untouched.** The Generate panel, history and TAB.
       - **Next increments.**
-        1. The cockpit A/B projection over the Slice 2 transport, built
-           from a bundle.
-        2. Retiring the manual `s6_candidate_set` / `intact_top` identities
+        1. Retiring the manual `s6_candidate_set` / `intact_top` identities
            into core.
+        2. The full variant × channel matrix and the corpus explorer (typed
+           queries first).
 - [~] **Feedback/evolution surface** — **Slice 3 landed 2026-07-16 and merged
       as PR #126**: favorite/reject controls (mutually exclusive) and a
       session **history** of every auditioned candidate with typed provenance,
