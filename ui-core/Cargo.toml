@@ -11,7 +11,8 @@ keywords.workspace     = true
 categories.workspace   = true
 
 [dependencies]
-griff-core = { path = "../core" }
+griff-core       = { path = "../core" }
+griff-experiment = { path = "../experiment" }
 serde_json = { workspace = true }
 
 [lints]
