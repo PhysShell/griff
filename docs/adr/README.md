@@ -39,6 +39,7 @@ immutable; supersede it with a new one. New ADRs: copy
 | [0031](0031-canonical-song-identity.md) | Add a curator-assigned canonical song identity to the corpus (schema v10) | Accepted |
 | [0032](0032-holdout-filtering-boundary.md) | Filter holdout over `LoadedChunk` before corpus material, owned by the offline Reachability Lab | Accepted |
 | [0033](0033-song-id-curation-workflow.md) | Human-confirmed, transactional song-id curation workflow (standalone `song-curation/` tool) | Accepted |
+| [0034](0034-experiment-axes-and-identities.md) | Run generator experiments as variant × information regime, with separate identities and comparable-only metrics | Accepted |
 
 See also: [`../SPEC.md`](../SPEC.md), [`../glossary.md`](../glossary.md),
 [`../decisions.log.md`](../decisions.log.md).

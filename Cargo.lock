@@ -1841,6 +1841,7 @@ dependencies = [
  "eframe",
  "getrandom 0.4.2",
  "griff-core",
+ "griff-experiment",
  "griff-swang",
  "griff-ui-core",
  "js-sys",
@@ -1866,6 +1867,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "griff-experiment"
+version = "0.1.0"
+dependencies = [
+ "griff-core",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1902,6 +1913,7 @@ name = "griff-ui-core"
 version = "0.1.0"
 dependencies = [
  "griff-core",
+ "griff-experiment",
  "serde_json",
 ]
 
