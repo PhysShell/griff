@@ -17,7 +17,7 @@
 
 use std::ops::RangeInclusive;
 
-use griff_core::event::{FretboardPosition, Pitch, Tuning};
+use griff_core::event::{FretboardPosition, NoteMark, Pitch, Tuning};
 use griff_core::fretboard::{FingeringWeights, STANDARD_MAX_FRET};
 use griff_core::score::{AtomEvent, AtomNote, Score};
 use serde::{Deserialize, Serialize};
@@ -262,7 +262,15 @@ pub fn tab_lines(
                 line.flush(cut, &mut lines, &mut stats);
                 continue;
             }
-            line.push(onset, note.pitch, orient(position), anchor_here);
+            line.push(
+                onset,
+                note.pitch,
+                orient(position),
+                NoteContext {
+                    anchor: anchor_here,
+                    tapped: note.marks.contains(NoteMark::Tap),
+                },
+            );
         }
         line.flush(cut, &mut lines, &mut stats);
     }
@@ -1002,6 +1010,15 @@ pub fn with_string_tiebreak(
 
 // ── private helpers ───────────────────────────────────────────────────────────
 
+/// Per-note context captured while a voice is scanned.
+#[derive(Clone, Copy)]
+struct NoteContext {
+    /// The hand anchor before this note's onset.
+    anchor: Option<u8>,
+    /// Whether the tab marks the note tapped.
+    tapped: bool,
+}
+
 /// Accumulates one tablature line while a voice is scanned.
 struct LineBuilder<'a> {
     track: usize,
@@ -1009,6 +1026,7 @@ struct LineBuilder<'a> {
     tuning: &'a Tuning,
     start_tick: u32,
     anchor: Option<u8>,
+    tapped: Vec<bool>,
     pitches: Vec<Pitch>,
     human: Vec<FretboardPosition>,
 }
@@ -1021,6 +1039,7 @@ impl<'a> LineBuilder<'a> {
             tuning,
             start_tick: 0,
             anchor: None,
+            tapped: Vec::new(),
             pitches: Vec::new(),
             human: Vec::new(),
         }
@@ -1030,13 +1049,20 @@ impl<'a> LineBuilder<'a> {
         self.pitches.is_empty()
     }
 
-    fn push(&mut self, onset: u32, pitch: Pitch, position: FretboardPosition, anchor: Option<u8>) {
+    fn push(
+        &mut self,
+        onset: u32,
+        pitch: Pitch,
+        position: FretboardPosition,
+        context: NoteContext,
+    ) {
         if self.pitches.is_empty() {
             self.start_tick = onset;
-            self.anchor = anchor;
+            self.anchor = context.anchor;
         }
         self.pitches.push(pitch);
         self.human.push(position);
+        self.tapped.push(context.tapped);
     }
 
     /// Ends the current line: kept when long enough, otherwise counted as
@@ -1048,6 +1074,7 @@ impl<'a> LineBuilder<'a> {
         }
         let pitches = std::mem::take(&mut self.pitches);
         let human = std::mem::take(&mut self.human);
+        let tapped = std::mem::take(&mut self.tapped);
         if len < cut.min_notes {
             stats.short_lines = stats.short_lines.saturating_add(1);
             stats.short_line_notes = stats.short_line_notes.saturating_add(count(len));
@@ -1063,7 +1090,7 @@ impl<'a> LineBuilder<'a> {
             pitches,
             human,
             anchor_fret: self.anchor,
-            tapped: vec![false; len],
+            tapped,
         });
     }
 }
