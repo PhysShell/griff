@@ -28,6 +28,7 @@
 
 mod bundle;
 mod fingerprint;
+mod identity;
 mod metric;
 mod projection;
 mod regime;

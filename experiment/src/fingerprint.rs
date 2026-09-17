@@ -25,6 +25,20 @@ use crate::projection::{GenerationAskV1, GestureControlV1, RhythmTemplateV1, Sco
 pub struct Fingerprint(pub [u8; 32]);
 
 impl Fingerprint {
+    /// Parses 64 lowercase hex characters; `None` for anything else.
+    #[must_use]
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        let (pairs, rest) = hex.as_bytes().as_chunks::<2>();
+        if pairs.len() != 32 || !rest.is_empty() {
+            return None;
+        }
+        let mut out = [0_u8; 32];
+        for (slot, &[high, low]) in out.iter_mut().zip(pairs) {
+            *slot = nibble(high)?.checked_mul(16)?.checked_add(nibble(low)?)?;
+        }
+        Some(Self(out))
+    }
+
     /// Lowercase hex, 64 characters.
     #[must_use]
     pub fn to_hex(&self) -> String {
@@ -35,18 +49,31 @@ impl Fingerprint {
     }
 }
 
+/// A lowercase hex digit's value.
+fn nibble(digit: u8) -> Option<u8> {
+    if !matches!(digit, b'0'..=b'9' | b'a'..=b'f') {
+        return None;
+    }
+    char::from(digit)
+        .to_digit(16)
+        .and_then(|value| u8::try_from(value).ok())
+}
+
 /// On the wire a fingerprint is its 64-character lowercase hex string.
 impl Serialize for Fingerprint {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let _ = self;
-        serializer.serialize_str("")
+        serializer.serialize_str(&self.to_hex())
     }
 }
 
 impl<'de> Deserialize<'de> for Fingerprint {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let _ = String::deserialize(deserializer)?;
-        Err(D::Error::custom("not yet"))
+        let hex = String::deserialize(deserializer)?;
+        Self::from_hex(&hex).ok_or_else(|| {
+            D::Error::custom(format!(
+                "not a 64-character lowercase hex fingerprint: {hex:?}"
+            ))
+        })
     }
 }
 

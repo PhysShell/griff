@@ -8,16 +8,10 @@ use griff_core::rerank::rerank_weights_v1;
 use griff_core::score::Score;
 use griff_core::scoring::WeightPolicy;
 
-use crate::fingerprint::{ask_fingerprint, references_fingerprint, Fingerprint, Hasher};
-use crate::metric::EVALUATOR_GENERATION_AXES;
-use crate::projection::PitchMaterialV1;
+use crate::bundle::{EvaluationContextV1, ExperimentSpecV1};
+use crate::fingerprint::Fingerprint;
+use crate::identity;
 use crate::regime::InformationRegime;
-
-/// Writes a policy identity.
-pub(crate) fn policy(h: &mut Hasher, identity: PolicyIdentity) {
-    h.str(identity.id);
-    h.u32(identity.version);
-}
 
 /// A policy's stable name and version — the identity an experiment records for
 /// every stage it ran.
@@ -204,19 +198,7 @@ impl EvaluationContext {
     /// The context's own fingerprint; `None` for [`EvaluationContext::None`].
     #[must_use]
     pub fn fingerprint(&self) -> Option<Fingerprint> {
-        match self {
-            Self::None => None,
-            Self::GenerationAxes {
-                pitch_material,
-                references,
-            } => {
-                let mut h = Hasher::new("griff.experiment.evaluation.v1");
-                policy(&mut h, EVALUATOR_GENERATION_AXES);
-                PitchMaterialV1::from(pitch_material).write(&mut h);
-                h.fingerprint(references_fingerprint(references));
-                Some(h.finish())
-            }
-        }
+        identity::evaluation_fingerprint(&EvaluationContextV1::from(self))
     }
 }
 
@@ -292,22 +274,6 @@ impl ExperimentSpec {
     /// stage identities are.
     #[must_use]
     pub fn fingerprint(&self) -> Fingerprint {
-        let mut h = Hasher::new("griff.experiment.spec.v1");
-        h.fingerprint(ask_fingerprint(&self.ask));
-        h.usize(self.variants.len());
-        for variant in &self.variants {
-            policy(&mut h, variant.generator.identity());
-            policy(&mut h, variant.scorer.identity());
-            policy(&mut h, variant.selector.identity());
-            policy(&mut h, variant.realizer.identity());
-        }
-        h.usize(self.regimes.len());
-        for regime in &self.regimes {
-            h.bool(regime.rhythms);
-            h.bool(regime.references);
-            h.bool(regime.gesture);
-        }
-        h.option_fingerprint(self.evaluation.fingerprint());
-        h.finish()
+        identity::spec_fingerprint(&ExperimentSpecV1::from(self))
     }
 }

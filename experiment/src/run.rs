@@ -18,10 +18,11 @@ use crate::fingerprint::{
     ask_fingerprint, gesture_fingerprint, references_fingerprint, rhythms_fingerprint,
     score_fingerprint, Fingerprint, Hasher,
 };
+use crate::identity::{self, Channels, Stages};
 use crate::metric::{MetricIdentity, MetricKind, MetricValue, EVALUATOR_GENERATION_AXES};
 use crate::regime::InformationRegime;
 use crate::spec::{
-    policy, EvaluationContext, ExperimentSpec, GeneratorPolicy, PolicyIdentity, RealizerPolicy,
+    EvaluationContext, ExperimentSpec, GeneratorPolicy, PolicyIdentity, RealizerPolicy,
     ScorerPolicy, SelectorPolicy, SpecError, VariantSpec,
 };
 
@@ -74,28 +75,20 @@ pub fn corpus_snapshot(material: &CorpusMaterial) -> CorpusSnapshot {
         gesture,
         skipped,
     } = material;
-    let (r, n, g) = (
-        rhythms_fingerprint(rhythms),
-        references_fingerprint(references),
-        gesture_fingerprint(*gesture),
-    );
-    let mut h = Hasher::new("griff.experiment.corpus-snapshot.v1");
-    h.fingerprint(r);
-    h.fingerprint(n);
-    h.fingerprint(g);
-    h.usize(skipped.len());
-    for name in skipped {
-        h.str(name);
-    }
+    let channels = Channels {
+        rhythms: rhythms_fingerprint(rhythms),
+        references: references_fingerprint(references),
+        gesture: gesture_fingerprint(*gesture),
+    };
     CorpusSnapshot {
-        rhythms: r,
-        references: n,
-        gesture: g,
+        rhythms: channels.rhythms,
+        references: channels.references,
+        gesture: channels.gesture,
         rhythm_count: rhythms.len(),
         reference_count: references.len(),
         gesture_present: gesture.is_some(),
         skipped: skipped.clone(),
-        whole: h.finish(),
+        whole: identity::snapshot_whole(channels, skipped),
     }
 }
 
@@ -302,16 +295,17 @@ pub fn run_experiment(
             let Some(live_pass) = live.get_mut(pass) else {
                 continue;
             };
-            let mut h = Hasher::new("griff.experiment.cell.v1");
-            h.fingerprint(live_pass.record.information);
-            policy(&mut h, variant.selector.identity());
-            policy(&mut h, variant.realizer.identity());
+            let recipe = identity::cell_recipe(
+                live_pass.record.information,
+                variant.selector.identity().into(),
+                variant.realizer.identity().into(),
+            );
             cells.push(Cell {
                 variant: variant_index,
                 regime,
                 pass,
                 requested: requested_identity(&context, variant, regime),
-                recipe: h.finish(),
+                recipe,
                 outcome: live_pass.select(variant, &context),
             });
         }
@@ -345,18 +339,17 @@ fn requested_identity(
     variant: &VariantSpec,
     regime: InformationRegime,
 ) -> Fingerprint {
-    let mut h = Hasher::new("griff.experiment.cell-request.v1");
-    h.fingerprint(context.source);
-    h.fingerprint(context.ask);
-    policy(&mut h, variant.generator.identity());
-    policy(&mut h, variant.scorer.identity());
-    policy(&mut h, variant.selector.identity());
-    policy(&mut h, variant.realizer.identity());
-    h.bool(regime.rhythms);
-    h.bool(regime.references);
-    h.bool(regime.gesture);
-    h.option_fingerprint(context.population.as_ref().map(|p| p.whole));
-    h.finish()
+    identity::cell_request(
+        (context.source, context.ask),
+        Stages {
+            generator: variant.generator.identity().into(),
+            scorer: variant.scorer.identity().into(),
+            selector: variant.selector.identity().into(),
+            realizer: variant.realizer.identity().into(),
+        },
+        regime,
+        context.population.as_ref().map(|p| p.whole),
+    )
 }
 
 /// A pass while the run is still selecting from it: its record, and the ranked
@@ -397,16 +390,16 @@ impl LivePass {
             }
         };
 
-        let mut h = Hasher::new("griff.experiment.pass.v1");
-        h.fingerprint(context.source);
-        h.fingerprint(context.ask);
-        policy(&mut h, variant.generator.identity());
-        policy(&mut h, variant.scorer.identity());
-        // Channels as offered: a masked or absent channel hashes as empty.
-        h.fingerprint(rhythms_fingerprint(view.rhythms));
-        h.fingerprint(references_fingerprint(view.references));
-        h.fingerprint(gesture_fingerprint(view.gesture));
-        let information = h.finish();
+        // Channels as offered: a masked or absent channel hashes as empty. The
+        // view borrows each open channel whole, so the population's channel
+        // fingerprints are the offered ones — hashed once per run, not per pass.
+        let information = identity::pass_information(
+            context.source,
+            context.ask,
+            variant.generator.identity().into(),
+            variant.scorer.identity().into(),
+            identity::offered(regime, context.population.as_ref().map(Channels::of)),
+        );
 
         let record = GenerationPass {
             regime,
