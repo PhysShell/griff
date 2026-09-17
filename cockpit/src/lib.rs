@@ -66,9 +66,11 @@ use griff_ui_core::{
 pub mod audio;
 pub mod curation_io;
 pub mod generation;
+pub mod observatory;
 pub mod swang;
 
 use generation::{kept_provenance, ActiveGenerateRun, GeneratePanel, GenerateRunContext};
+use observatory::ObservatoryPanel;
 use swang::SwangPanel;
 
 /// Pixel width of one grid cell.
@@ -540,6 +542,9 @@ enum AuditionCandidate {
     /// (S8 Slice 3) — so A/B and the playhead survive a switch to an entry from
     /// an earlier generation whose panel set is long gone.
     History(HistoryId),
+    /// A cell of the shown experiment bundle, by its index in the view — a
+    /// recorded score, never a regenerated one.
+    Experiment(usize),
 }
 
 /// The history dedupe key for a run's global chain.
@@ -622,6 +627,9 @@ pub struct CockpitApp {
     swang_ctx: Option<SwangRunContext>,
     /// Whether the history window is shown (the `y` key toggles it).
     history_open: bool,
+    /// The Generator Observatory: the shown experiment bundle and its A/B
+    /// selection (ADR-0034). Holds bundles only — never a run.
+    observatory: ObservatoryPanel,
     /// The playhead tick at the end of the last frame — so an input that
     /// seeks the head (a section jump) is noticed and the audio repositioned.
     last_play_tick: u32,
@@ -1354,6 +1362,7 @@ impl CockpitApp {
             history: SessionHistory::new(),
             swang_ctx: None,
             history_open: false,
+            observatory: ObservatoryPanel::default(),
             last_play_tick: 0,
             material: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1756,8 +1765,34 @@ impl CockpitApp {
             Some(AuditionCandidate::GlobalChain) => self.show_global_chain(),
             Some(AuditionCandidate::Swang(i)) => self.swang_show(i),
             Some(AuditionCandidate::History(id)) => self.select_history(id),
+            Some(AuditionCandidate::Experiment(i)) => self.show_experiment_cell(i),
             None => {}
         }
+    }
+
+    /// Runs the milestone experiment over the Generate panel's source and ask
+    /// and the attached corpus, and shows it — as its bundle. Native only: the
+    /// web opens bundles.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn run_experiment_panel(&mut self) {}
+
+    /// Reads, verifies and shows a saved experiment bundle; a refusal is
+    /// reported and leaves the shown experiment as it was.
+    pub fn open_bundle_json(&mut self, json: &str, name: String) {
+        let _ = (json, name);
+    }
+
+    /// Writes the shown bundle beside the kept candidates.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_bundle(&mut self) -> Result<PathBuf, String> {
+        Err(String::new())
+    }
+
+    /// Auditions cell `i` of the shown experiment: its recorded score through
+    /// the same transport as every other candidate. A refused cell has nothing
+    /// to play and says so.
+    fn show_experiment_cell(&mut self, i: usize) {
+        let _ = i;
     }
 
     /// Replays a recorded history candidate by its stable id: switches the roll
@@ -6291,6 +6326,174 @@ mod tests {
             ),
             other => panic!("a Generate candidate is not {other:?}"),
         }
+    }
+
+    // ── Generator Observatory (ADR-0034, C5) ─────────────────────────────────
+
+    fn observatory_app() -> CockpitApp {
+        let mut app = demo_app();
+        app.gen_panel.variants = 2;
+        app.gen_panel.bars = 4;
+        app.attach_corpus(two_rhythm_material(), Vec::new());
+        app
+    }
+
+    fn produced_score(app: &CockpitApp, cell: usize) -> Score {
+        match &app
+            .observatory
+            .loaded
+            .as_ref()
+            .expect("an experiment is shown")
+            .view
+            .cells[cell]
+            .outcome
+        {
+            griff_ui_core::observatory::CellOutcomeView::Produced { score, .. } => score.clone(),
+            griff_ui_core::observatory::CellOutcomeView::Refused(r) => panic!("refused: {r:?}"),
+        }
+    }
+
+    #[test]
+    fn running_an_experiment_shows_its_bundle_and_touches_no_generate_state() {
+        let mut app = observatory_app();
+        app.run_experiment_panel();
+        let loaded = app.observatory.loaded.as_ref().expect("the run is shown");
+        assert_eq!(loaded.origin, observatory::Origin::Run);
+        assert_eq!(
+            Ok(loaded.view.clone()),
+            griff_ui_core::observatory::ExperimentView::from_bundle(&loaded.bundle),
+            "the panel shows the bundle arranged, nothing else"
+        );
+        assert_eq!(loaded.view.cells.len(), 4);
+        assert!(app.observatory.open);
+        assert!(
+            app.gen_panel.active.is_none(),
+            "the Generate panel neither ran nor changed"
+        );
+        assert!(
+            app.history.entries().is_empty(),
+            "no candidate was recorded"
+        );
+    }
+
+    #[test]
+    fn auditioning_cells_plays_their_recorded_scores_and_b_swaps_between_them() {
+        let mut app = observatory_app();
+        app.run_experiment_panel();
+        let (a, b) = (app.observatory.a.expect("A"), app.observatory.b.expect("B"));
+        let (score_a, score_b) = (produced_score(&app, a), produced_score(&app, b));
+        assert_ne!(
+            score_a, score_b,
+            "S6 seed-only and S7 full differ in this fixture"
+        );
+
+        app.show_experiment_cell(a);
+        assert_eq!(app.score.as_ref(), Some(&score_a));
+        app.show_experiment_cell(b);
+        assert_eq!(app.score.as_ref(), Some(&score_b));
+        assert_eq!(app.current, Some(AuditionCandidate::Experiment(b)));
+        assert_eq!(app.ab_other, Some(AuditionCandidate::Experiment(a)));
+
+        press(&mut app, Key::B);
+        assert_eq!(
+            app.score.as_ref(),
+            Some(&score_a),
+            "A/B swaps recorded scores; nothing is regenerated"
+        );
+        assert!(app.gen_panel.active.is_none());
+        assert!(app.history.entries().is_empty());
+    }
+
+    #[test]
+    fn a_saved_bundle_opens_elsewhere_to_the_same_view_and_the_same_music() {
+        let mut ran = observatory_app();
+        ran.run_experiment_panel();
+        let loaded = ran.observatory.loaded.as_ref().expect("shown");
+        let json = loaded.bundle.to_json().expect("serializes");
+        let view = loaded.view.clone();
+        let a = ran.observatory.a.expect("A");
+
+        let mut elsewhere = demo_app(); // no corpus attached, nothing generated
+        elsewhere.open_bundle_json(&json, "saved.json".to_owned());
+        let opened = elsewhere.observatory.loaded.as_ref().expect("opened");
+        assert_eq!(opened.view, view);
+        assert_eq!(
+            opened.origin,
+            observatory::Origin::File("saved.json".to_owned())
+        );
+        elsewhere.show_experiment_cell(a);
+        assert_eq!(elsewhere.score, Some(produced_score(&ran, a)));
+    }
+
+    #[test]
+    fn a_refused_cell_is_shown_as_a_refusal_and_never_played() {
+        let mut app = observatory_app();
+        app.run_experiment_panel();
+        let mut bundle = app
+            .observatory
+            .loaded
+            .as_ref()
+            .expect("shown")
+            .bundle
+            .clone();
+        bundle.cells[3].outcome =
+            griff_experiment::CellOutcomeV1::Refused(griff_experiment::CellRefusalV1::EmptySet);
+        app.observatory.install(
+            observatory::LoadedExperiment::from_bundle(bundle, observatory::Origin::Run)
+                .expect("arranges"),
+        );
+        let before = app.score.clone();
+        app.show_experiment_cell(3);
+        assert_eq!(app.score, before, "no fake score stands in for a refusal");
+        assert!(app
+            .observatory
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("refused")));
+    }
+
+    #[test]
+    fn a_broken_bundle_is_reported_and_the_shown_experiment_stays() {
+        let mut app = observatory_app();
+        app.run_experiment_panel();
+        let record = app.observatory.loaded.as_ref().expect("shown").view.record;
+        app.open_bundle_json("{", "broken.json".to_owned());
+        assert_eq!(
+            app.observatory.loaded.as_ref().map(|l| l.view.record),
+            Some(record)
+        );
+        assert!(app
+            .observatory
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("broken.json")));
+    }
+
+    #[test]
+    fn a_saved_bundle_file_reopens_to_the_same_view() {
+        let dir = env::temp_dir().join(format!("griff_observatory_save_{}", std::process::id()));
+        let mut app = observatory_app();
+        app.set_out_dir(dir.clone());
+        app.run_experiment_panel();
+        let path = app.save_bundle().expect("writes");
+        let json = fs::read_to_string(&path).expect("reads back");
+        let mut reopened = demo_app();
+        reopened.open_bundle_json(&json, "reopened.json".to_owned());
+        assert_eq!(
+            reopened.observatory.loaded.map(|l| l.view),
+            app.observatory.loaded.map(|l| l.view)
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn o_toggles_the_observatory() {
+        let mut app = demo_app();
+        assert!(!app.observatory.open);
+        press(&mut app, Key::O);
+        assert!(app.observatory.open);
+        press(&mut app, Key::O);
+        assert!(!app.observatory.open);
     }
 
     fn two_rhythm_material() -> CorpusMaterial {
