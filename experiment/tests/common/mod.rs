@@ -107,7 +107,9 @@ pub(crate) fn corpus() -> CorpusMaterial {
 /// The same population with one reference changed, every other channel equal.
 pub(crate) fn corpus_with_other_references() -> CorpusMaterial {
     let mut material = corpus();
-    material.references[1] = score_of(&[(0, 240, 53), (240, 240, 50), (480, 960, 47)]);
+    if let Some(reference) = material.references.get_mut(1) {
+        *reference = score_of(&[(0, 240, 53), (240, 240, 50), (480, 960, 47)]);
+    }
     material
 }
 
