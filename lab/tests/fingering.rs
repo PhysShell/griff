@@ -223,8 +223,10 @@ fn tab_lines_cut_at_every_cause_and_count_it() {
             dangling_legato: 0,
         }
     );
-    assert!(lines.iter().all(|l| l.edges.len() == l.pitches.len()
-        && l.edges.iter().all(|e| *e == TechniqueEdge::Plain)));
+    assert!(lines
+        .iter()
+        .all(|l| l.edges.len() == l.pitches.len()
+            && l.edges.iter().all(|e| *e == TechniqueEdge::Plain)));
 }
 
 #[test]

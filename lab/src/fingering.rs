@@ -17,9 +17,9 @@
 
 use std::ops::RangeInclusive;
 
-use griff_core::event::{FretboardPosition, NoteMark, Pitch, Tuning};
+use griff_core::event::{FretboardPosition, NoteMark, Pitch, SpanTechnique, Tuning};
 use griff_core::fretboard::{FingeringWeights, STANDARD_MAX_FRET};
-use griff_core::score::{AtomEvent, AtomNote, Score};
+use griff_core::score::{AtomEvent, AtomNote, EventGroup, Score};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -105,7 +105,7 @@ impl CutStats {
             kept_lines,
             kept_notes,
             mirrored_tracks,
-            dangling_legato: _,
+            dangling_legato,
         } = *other;
         self.notes_seen = self.notes_seen.saturating_add(notes_seen);
         self.chord_onsets = self.chord_onsets.saturating_add(chord_onsets);
@@ -118,6 +118,7 @@ impl CutStats {
         self.kept_lines = self.kept_lines.saturating_add(kept_lines);
         self.kept_notes = self.kept_notes.saturating_add(kept_notes);
         self.mirrored_tracks = self.mirrored_tracks.saturating_add(mirrored_tracks);
+        self.dangling_legato = self.dangling_legato.saturating_add(dangling_legato);
     }
 }
 
@@ -148,7 +149,22 @@ impl TechniqueEdge {
     /// Whether a legato span of any kind joins the two notes.
     #[must_use]
     pub const fn is_legato(self) -> bool {
-        todo!()
+        !matches!(self, Self::Plain)
+    }
+
+    /// The legato edge a note in `group` starts: its group's first hammer-on,
+    /// pull-off or legato span, or [`TechniqueEdge::Plain`].
+    fn out_of(group: &EventGroup) -> Self {
+        group
+            .technique_spans
+            .iter()
+            .find_map(|span| match span.technique {
+                SpanTechnique::HammerOn => Some(Self::HammerOn),
+                SpanTechnique::PullOff => Some(Self::PullOff),
+                SpanTechnique::Legato => Some(Self::Legato),
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -231,33 +247,36 @@ pub fn tab_lines(
     };
 
     for voice in &track.voices {
-        let mut notes: Vec<&AtomNote> = voice
+        // Each note with the legato edge it starts (its group's span).
+        let mut notes: Vec<(&AtomNote, TechniqueEdge)> = voice
             .event_groups
             .iter()
-            .flat_map(|g| &g.atoms)
-            .filter_map(|a| match a {
-                AtomEvent::Note(n) => Some(n),
-                AtomEvent::Rest(_) => None,
+            .flat_map(|g| {
+                let out = TechniqueEdge::out_of(g);
+                g.atoms.iter().filter_map(move |a| match a {
+                    AtomEvent::Note(n) => Some((n, out)),
+                    AtomEvent::Rest(_) => None,
+                })
             })
             .collect();
-        notes.sort_by_key(|n| n.absolute_start.0);
+        notes.sort_by_key(|(n, _)| n.absolute_start.0);
 
         let mut line = LineBuilder::new(track_index, voice.id, &tuning);
         let mut sounding_until: Option<u64> = None;
         // Lowest fretted position at the latest onset seen so far.
         let mut last_fretted: Option<u8> = None;
         let mut rest = notes.as_slice();
-        while let Some(first) = rest.first() {
+        while let Some((first, _)) = rest.first() {
             let onset = first.absolute_start.0;
             let width = rest
                 .iter()
-                .position(|n| n.absolute_start.0 != onset)
+                .position(|(n, _)| n.absolute_start.0 != onset)
                 .unwrap_or(rest.len());
             let (group, tail) = rest.split_at(width);
             let anchor_here = last_fretted;
             if let Some(fret) = group
                 .iter()
-                .filter_map(|n| n.position)
+                .filter_map(|(n, _)| n.position)
                 .map(|p| p.position.fret)
                 .filter(|&fret| fret > 0)
                 .min()
@@ -272,7 +291,7 @@ pub fn tab_lines(
                 && sounding_until.is_some_and(|end| onset_ticks >= end.saturating_add(rest_ticks));
             let group_end = group
                 .iter()
-                .map(|n| onset_ticks.saturating_add(u64::from(n.duration.0)))
+                .map(|(n, _)| onset_ticks.saturating_add(u64::from(n.duration.0)))
                 .max()
                 .unwrap_or(onset_ticks);
             sounding_until = Some(sounding_until.map_or(group_end, |end| end.max(group_end)));
@@ -281,7 +300,7 @@ pub fn tab_lines(
                 line.flush(cut, &mut lines, &mut stats);
             }
 
-            let [note] = group else {
+            let [(note, legato_out)] = group else {
                 stats.chord_onsets = stats.chord_onsets.saturating_add(1);
                 line.flush(cut, &mut lines, &mut stats);
                 continue;
@@ -308,6 +327,7 @@ pub fn tab_lines(
                 NoteContext {
                     anchor: anchor_here,
                     tapped: note.marks.contains(NoteMark::Tap),
+                    legato_out: *legato_out,
                 },
             );
         }
@@ -1056,6 +1076,8 @@ struct NoteContext {
     anchor: Option<u8>,
     /// Whether the tab marks the note tapped.
     tapped: bool,
+    /// The legato edge the note starts, towards the next note of its voice.
+    legato_out: TechniqueEdge,
 }
 
 /// Accumulates one tablature line while a voice is scanned.
@@ -1067,6 +1089,8 @@ struct LineBuilder<'a> {
     anchor: Option<u8>,
     tapped: Vec<bool>,
     edges: Vec<TechniqueEdge>,
+    /// The legato edge the last pushed note starts.
+    pending: TechniqueEdge,
     pitches: Vec<Pitch>,
     human: Vec<FretboardPosition>,
 }
@@ -1081,6 +1105,7 @@ impl<'a> LineBuilder<'a> {
             anchor: None,
             tapped: Vec::new(),
             edges: Vec::new(),
+            pending: TechniqueEdge::Plain,
             pitches: Vec::new(),
             human: Vec::new(),
         }
@@ -1104,7 +1129,8 @@ impl<'a> LineBuilder<'a> {
         self.pitches.push(pitch);
         self.human.push(position);
         self.tapped.push(context.tapped);
-        self.edges.push(TechniqueEdge::Plain);
+        self.edges.push(self.pending);
+        self.pending = context.legato_out;
     }
 
     /// Ends the current line: kept when long enough, otherwise counted as
@@ -1118,6 +1144,7 @@ impl<'a> LineBuilder<'a> {
         let human = std::mem::take(&mut self.human);
         let tapped = std::mem::take(&mut self.tapped);
         let edges = std::mem::take(&mut self.edges);
+        let dangling = std::mem::take(&mut self.pending).is_legato();
         if len < cut.min_notes {
             stats.short_lines = stats.short_lines.saturating_add(1);
             stats.short_line_notes = stats.short_line_notes.saturating_add(count(len));
@@ -1125,6 +1152,9 @@ impl<'a> LineBuilder<'a> {
         }
         stats.kept_lines = stats.kept_lines.saturating_add(1);
         stats.kept_notes = stats.kept_notes.saturating_add(count(len));
+        if dangling {
+            stats.dangling_legato = stats.dangling_legato.saturating_add(1);
+        }
         lines.push(TabLine {
             track: self.track,
             voice: self.voice,
