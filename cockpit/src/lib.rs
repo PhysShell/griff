@@ -6920,6 +6920,93 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// Every text the frame painted, in paint order.
+    fn painted_texts(shapes: &[ClippedShape]) -> Vec<String> {
+        fn walk(shape: &Shape, out: &mut Vec<String>) {
+            match shape {
+                Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                Shape::Vec(inner) => {
+                    for nested in inner {
+                        walk(nested, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// The Observatory window's texts after a few frames (windows settle
+    /// their layout over the first frames).
+    #[allow(deprecated)]
+    fn observatory_texts(app: &mut CockpitApp) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(1600.0, 1400.0),
+                )),
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| app.observatory_window(ctx));
+            texts = painted_texts(&output.shapes);
+        }
+        texts
+    }
+
+    #[test]
+    fn the_observatory_window_says_why_a_row_has_no_number() {
+        let mut app = observatory_app();
+        app.observatory.evaluate_against_source = true;
+        app.run_experiment_panel();
+        let texts = observatory_texts(&mut app);
+        let shows = |needle: &str| texts.iter().any(|t| t.contains(needle));
+        assert!(
+            shows("not comparable: different measurement context"),
+            "A (seed only) and B (full) weigh chain cost on two scales: {texts:?}"
+        );
+        assert!(shows("interaction — evaluations only"));
+        assert!(shows(
+            "S7 Global Chain · full (rhythms + references + gesture)"
+        ));
+        assert!(shows("actual contribution"));
+        assert!(
+            shows("nothing (seed only)"),
+            "A took nothing from the corpus"
+        );
+    }
+
+    #[test]
+    fn the_observatory_window_shows_a_refusal_in_place_of_a_score() {
+        let mut app = observatory_app();
+        app.run_experiment_panel();
+        let mut bundle = app
+            .observatory
+            .loaded
+            .as_ref()
+            .expect("shown")
+            .bundle
+            .clone();
+        bundle.cells[3].outcome = CellOutcomeV1::Refused(CellRefusalV1::EmptySet);
+        app.observatory.install(
+            observatory::LoadedExperiment::from_bundle(bundle, observatory::Origin::Run)
+                .expect("arranges"),
+        );
+        let texts = observatory_texts(&mut app);
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("refused: empty candidate set")),
+            "{texts:?}"
+        );
+    }
+
     #[test]
     fn o_toggles_the_observatory() {
         let mut app = demo_app();
