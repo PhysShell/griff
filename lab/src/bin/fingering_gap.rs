@@ -54,6 +54,13 @@
 //! cargo run --release --bin fingering_gap -- legato-census --tabs DIR --out DIR
 //! ```
 //!
+//! and phase 2, the registered ablation A / B / C1 / C2(k) / D1 / D2 with
+//! per-stage length-matched baselines and the leave-one-song-out check:
+//!
+//! ```text
+//! cargo run --release --bin fingering_gap -- legato --tabs DIR --out DIR
+//! ```
+//!
 //! `MODELS`: `--v1 NAME=fret,open_string,position_shift,string_change` and
 //! `--hand NAME=height,open_string,stretch,shift,shift_distance,string_distance`,
 //! repeatable; default `--v1 v1=1,1,2,1` (the production weights).
@@ -79,7 +86,8 @@ use griff_constraint_lab::optir::{
     verify_agreement, verify_record, OptProblem, ProblemRecord, SolveRecord, Verdict,
 };
 use griff_constraint_lab::technique::{
-    derived_direction, tap_aware_chain, tap_aware_cost, LegatoDirection,
+    derived_direction, tap_aware_chain, tap_aware_cost, technique_chain, technique_cost,
+    Continuity, LegatoDirection, TechniqueObjective,
 };
 use griff_constraint_lab::ties::{
     lexicographic_path, optimum_set, path_matches, train_secondary, Chain, Example, Features,
@@ -1708,11 +1716,13 @@ fn taps(corpus: Corpus, out: &Path) -> std::io::Result<()> {
 /// Format family of a corpus file, by extension: GPIF (`.gp`, `.gpx`) or the
 /// GP3–5 binaries.
 fn format_family(name: &str) -> &'static str {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".gp") || lower.ends_with(".gpx") {
-        "GP6/7"
-    } else {
-        "GP3–5"
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("gp" | "gpx") => "GP6/7",
+        _ => "GP3–5",
     }
 }
 
@@ -1982,6 +1992,604 @@ fn legato_census(corpus: Corpus, out: &Path) -> std::io::Result<()> {
         corpus: corpus.facts,
     };
     write_json(&out.join("legato-census.json"), &report)
+}
+
+// ── legato continuity ablation (oracle stage 2, phase 2) ─────────────────────
+
+/// A stage of the registered ablation (protocol:
+/// `docs/audit/2026-09-fingering-legato-continuity.md`). Each differs from its
+/// predecessor by one term.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegatoStage {
+    /// Tap-blind `v1`.
+    A,
+    /// Tap-aware (stage 1).
+    B,
+    /// B + hard same-string continuity across legato edges.
+    C1,
+    /// B + soft continuity, `k · position_shift` per cross-string legato edge.
+    C2(i64),
+    /// C1 + the pull-off open-string waiver.
+    D1,
+    /// C2(3) + the pull-off open-string waiver.
+    D2,
+}
+
+const LEGATO_STAGES: [LegatoStage; 8] = [
+    LegatoStage::A,
+    LegatoStage::B,
+    LegatoStage::C1,
+    LegatoStage::C2(1),
+    LegatoStage::C2(3),
+    LegatoStage::C2(10),
+    LegatoStage::D1,
+    LegatoStage::D2,
+];
+
+/// The registered steps for the leave-one-song-out check, as indices into
+/// [`LEGATO_STAGES`]: A→B, B→C1, B→C2(3), C1→D1, C2(3)→D2.
+const LEGATO_STEPS: [(usize, usize); 5] = [(0, 1), (1, 2), (1, 4), (2, 6), (4, 7)];
+
+impl LegatoStage {
+    fn name(self) -> String {
+        match self {
+            Self::A => "A tap-blind".into(),
+            Self::B => "B tap-aware".into(),
+            Self::C1 => "C1 hard continuity".into(),
+            Self::C2(k) => format!("C2 soft continuity, k = {k}"),
+            Self::D1 => "D1 = C1 + pull-off open waiver".into(),
+            Self::D2 => "D2 = C2(3) + pull-off open waiver".into(),
+        }
+    }
+
+    /// The stage's technique objective; `None` for the tap-blind `v1` chain.
+    const fn objective(self, weights: FingeringWeights) -> Option<TechniqueObjective> {
+        let base = TechniqueObjective::tap_aware(weights, weights.position_shift);
+        let (continuity, pull_open_waiver) = match self {
+            Self::A => return None,
+            Self::B => (Continuity::Off, false),
+            Self::C1 => (Continuity::Hard, false),
+            Self::C2(k) => (Continuity::Soft { k }, false),
+            Self::D1 => (Continuity::Hard, true),
+            Self::D2 => (Continuity::Soft { k: 3 }, true),
+        };
+        Some(TechniqueObjective {
+            continuity,
+            pull_open_waiver,
+            ..base
+        })
+    }
+
+    const fn hard(self) -> bool {
+        matches!(self, Self::C1 | Self::D1)
+    }
+}
+
+/// One line under one stage.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct StageRow {
+    in_set: bool,
+    unique: bool,
+    agree: u64,
+    agree_tapped: u64,
+    ceiling: u64,
+    /// `cost(human) − optimum`; `None` under a hard stage when the human path
+    /// has more cross-string legato edges than the optimum.
+    excess: Option<i64>,
+    /// Cross-string legato edges of the human path and of the optimum.
+    human_violations: u64,
+    optimum_violations: u64,
+}
+
+struct LegatoLine {
+    notes: u64,
+    tapped: u64,
+    rows: Vec<StageRow>,
+    /// No legato edge, yet a legato stage moved B's optimum or path.
+    legato_control_mismatch: bool,
+    /// No tapped note, yet B's optimum or path differs from A's.
+    tap_control_mismatch: bool,
+}
+
+fn cross_string_legato(path: &[FretboardPosition], edges: &[TechniqueEdge]) -> u64 {
+    path.windows(2)
+        .zip(edges.iter().skip(1))
+        .filter(|(pair, edge)| {
+            edge.is_legato() && pair.first().map(|p| p.string) != pair.last().map(|p| p.string)
+        })
+        .count() as u64
+}
+
+fn legato_line(line: &Line, weights: &FingeringWeights) -> LegatoLine {
+    let tab = &line.tab;
+    let zero = [0; FEATURES];
+    let mut rows = Vec::with_capacity(LEGATO_STAGES.len());
+    let mut optima = Vec::with_capacity(LEGATO_STAGES.len());
+    let mut paths = Vec::with_capacity(LEGATO_STAGES.len());
+    for stage in LEGATO_STAGES {
+        let (chain, human_cost) = match stage.objective(*weights) {
+            None => (chain_of(line, weights), v1_cost(&tab.human, weights)),
+            Some(objective) => (
+                technique_chain(
+                    &tab.pitches,
+                    &tab.tuning,
+                    &tab.tapped,
+                    &tab.edges,
+                    &objective,
+                    STANDARD_MAX_FRET,
+                )
+                .expect("tab lines are positionable and fully labelled"),
+                technique_cost(
+                    &tab.human,
+                    &tab.pitches,
+                    &tab.tapped,
+                    &tab.edges,
+                    &objective,
+                )
+                .expect("labels cover the line"),
+            ),
+        };
+        let set = optimum_set(&chain, Some(&tab.human));
+        let range = set.agreement.expect("human positions per note");
+        let path = chain
+            .positions_of(&lexicographic_path(&chain, &zero, None))
+            .expect("a path of the chain");
+        let matched: Vec<bool> = path.iter().zip(&tab.human).map(|(a, h)| a == h).collect();
+        let human_violations = cross_string_legato(&tab.human, &tab.edges);
+        let optimum_violations = cross_string_legato(&path, &tab.edges);
+        rows.push(StageRow {
+            in_set: human_cost == set.optimum,
+            unique: !set.count.saturated && set.count.exact == 1,
+            agree: matched.iter().filter(|m| **m).count() as u64,
+            agree_tapped: matched
+                .iter()
+                .zip(&tab.tapped)
+                .filter(|(m, t)| **m && **t)
+                .count() as u64,
+            ceiling: range.max as u64,
+            excess: (!stage.hard() || human_violations == optimum_violations)
+                .then(|| human_cost - set.optimum),
+            human_violations,
+            optimum_violations,
+        });
+        optima.push(set.optimum);
+        paths.push(path);
+    }
+    let tapped = tab.tapped.iter().filter(|t| **t).count() as u64;
+    let has_legato = tab.edges.iter().any(|e| e.is_legato());
+    LegatoLine {
+        notes: tab.human.len() as u64,
+        tapped,
+        legato_control_mismatch: !has_legato
+            && (2..LEGATO_STAGES.len()).any(|s| optima[s] != optima[1] || paths[s] != paths[1]),
+        tap_control_mismatch: tapped == 0 && (optima[0] != optima[1] || paths[0] != paths[1]),
+        rows,
+    }
+}
+
+/// Sums of [`StageRow`]s over lines.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+struct StageAgg {
+    lines: u64,
+    notes: u64,
+    tapped_notes: u64,
+    in_set: u64,
+    unique: u64,
+    agree: u64,
+    agree_tapped: u64,
+    ceiling: u64,
+    /// Lines (and their notes) with a defined excess.
+    excess_lines: u64,
+    excess_notes: u64,
+    excess: i64,
+    /// Lines whose human path has more cross-string legato edges than the optimum.
+    human_violates_more: u64,
+    /// Lines whose optimum keeps a cross-string legato edge.
+    optimum_violates: u64,
+}
+
+impl StageAgg {
+    fn add(&mut self, line: &LegatoLine, row: &StageRow) {
+        self.lines += 1;
+        self.notes += line.notes;
+        self.tapped_notes += line.tapped;
+        self.in_set += u64::from(row.in_set);
+        self.unique += u64::from(row.unique);
+        self.agree += row.agree;
+        self.agree_tapped += row.agree_tapped;
+        self.ceiling += row.ceiling;
+        if let Some(excess) = row.excess {
+            self.excess_lines += 1;
+            self.excess_notes += line.notes;
+            self.excess += excess;
+        }
+        self.human_violates_more += u64::from(row.human_violations > row.optimum_violations);
+        self.optimum_violates += u64::from(row.optimum_violations > 0);
+    }
+}
+
+/// An untapped pool reweighted to a subset's line lengths, under one stage.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+struct MatchedBaseline {
+    pool_lines: usize,
+    in_set: f64,
+    excess_per_note: f64,
+    agree: f64,
+    ceiling: f64,
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn matched_baseline(target: &[&LegatoLine], pool: &[&LegatoLine], stage: usize) -> MatchedBaseline {
+    const BINS: usize = 5;
+    let mut target_lines = [0_f64; BINS];
+    let mut target_notes = [0_f64; BINS];
+    for line in target {
+        target_lines[length_bin(line.notes)] += 1.0;
+        target_notes[length_bin(line.notes)] += line.notes as f64;
+    }
+    let mut bins = [StageAgg::default(); BINS];
+    for line in pool {
+        bins[length_bin(line.notes)].add(line, &line.rows[stage]);
+    }
+    let mut m = MatchedBaseline {
+        pool_lines: pool.len(),
+        ..MatchedBaseline::default()
+    };
+    let (mut line_w, mut note_w, mut excess_w) = (0.0, 0.0, 0.0);
+    for b in 0..BINS {
+        let bin = &bins[b];
+        if bin.lines == 0 || target_lines[b] == 0.0 {
+            continue;
+        }
+        m.in_set += target_lines[b] * bin.in_set as f64 / bin.lines as f64;
+        line_w += target_lines[b];
+        m.agree += target_notes[b] * bin.agree as f64 / bin.notes as f64;
+        m.ceiling += target_notes[b] * bin.ceiling as f64 / bin.notes as f64;
+        note_w += target_notes[b];
+        if bin.excess_notes > 0 {
+            m.excess_per_note += target_notes[b] * bin.excess as f64 / bin.excess_notes as f64;
+            excess_w += target_notes[b];
+        }
+    }
+    m.in_set /= f64::max(line_w, 1.0);
+    m.agree /= f64::max(note_w, 1.0);
+    m.ceiling /= f64::max(note_w, 1.0);
+    m.excess_per_note /= f64::max(excess_w, 1.0);
+    m
+}
+
+#[derive(Serialize)]
+struct StageReport {
+    stage: String,
+    slice: StageAgg,
+    baseline_all_untapped: MatchedBaseline,
+    baseline_same_format: MatchedBaseline,
+}
+
+#[derive(Serialize)]
+struct SubsetReport {
+    split: &'static str,
+    family: &'static str,
+    stages: Vec<StageReport>,
+}
+
+/// Leave-one-song-out for one registered step on one subset.
+#[derive(Serialize)]
+struct StepReport {
+    family: &'static str,
+    step: String,
+    lines: usize,
+    songs: usize,
+    /// Lines entering the optimum set minus lines leaving it.
+    net_line_gain: i64,
+    delta_pp: f64,
+    loso_min_pp: f64,
+    loso_max_pp: f64,
+    /// The largest single song's share of the net gain (when it is positive).
+    largest_song_share: Option<f64>,
+    /// Δ > 0 on the full subset and under every leave-one-song-out removal.
+    corpus_evidence: bool,
+}
+
+#[derive(Serialize)]
+struct WeightsReport {
+    weights: &'static str,
+    subsets: Vec<SubsetReport>,
+    steps: Vec<StepReport>,
+}
+
+#[derive(Serialize)]
+struct LegatoReport {
+    schema: &'static str,
+    version: u32,
+    legato_control_mismatches: usize,
+    lines_without_legato: usize,
+    tap_control_mismatches: usize,
+    untapped_lines: usize,
+    reports: Vec<WeightsReport>,
+    corpus: CorpusFacts,
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn share(part: u64, whole: u64) -> f64 {
+    part as f64 / whole.max(1) as f64
+}
+
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_wrap)]
+fn step_report(
+    family: &'static str,
+    lines: &[(usize, &LegatoLine)],
+    (from, to): (usize, usize),
+) -> StepReport {
+    let mut per_song: BTreeMap<usize, (i64, i64)> = BTreeMap::new();
+    let (mut net, mut n) = (0_i64, 0_i64);
+    for (song, line) in lines {
+        let gain = i64::from(line.rows[to].in_set) - i64::from(line.rows[from].in_set);
+        let entry = per_song.entry(*song).or_default();
+        entry.0 += gain;
+        entry.1 += 1;
+        net += gain;
+        n += 1;
+    }
+    let pp = |gain: i64, count: i64| 100.0 * gain as f64 / count.max(1) as f64;
+    let loso: Vec<f64> = per_song
+        .values()
+        .filter(|(_, count)| *count < n)
+        .map(|(gain, count)| pp(net - gain, n - count))
+        .collect();
+    let corpus_evidence = net > 0
+        && per_song
+            .values()
+            .all(|(gain, count)| *count < n && net - gain > 0);
+    StepReport {
+        family,
+        step: format!(
+            "{} → {}",
+            LEGATO_STAGES[from].name(),
+            LEGATO_STAGES[to].name()
+        ),
+        lines: lines.len(),
+        songs: per_song.len(),
+        net_line_gain: net,
+        delta_pp: pp(net, n),
+        loso_min_pp: loso.iter().copied().fold(f64::INFINITY, f64::min),
+        loso_max_pp: loso.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        largest_song_share: (net > 0).then(|| {
+            per_song.values().map(|(gain, _)| *gain).max().unwrap_or(0) as f64 / net as f64
+        }),
+        corpus_evidence,
+    }
+}
+
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+fn legato(corpus: Corpus, out: &Path) -> std::io::Result<()> {
+    const SPLITS: [&str; 2] = ["whole corpus", "holdout songs"];
+    const FAMILIES: [&str; 3] = ["all", "GP3–5", "GP6/7"];
+    let weight_sets = [
+        (
+            "v1-fit",
+            FingeringWeights {
+                fret: 0,
+                open_string: -3,
+                position_shift: 1,
+                string_change: 0,
+            },
+        ),
+        ("v1", FingeringWeights::v1()),
+    ];
+    let families: Vec<&'static str> = corpus
+        .lines
+        .iter()
+        .map(|l| format_family(&corpus.names[l.file]))
+        .collect();
+    let mut song_ids: BTreeMap<String, usize> = BTreeMap::new();
+    let songs: Vec<usize> = corpus
+        .lines
+        .iter()
+        .map(|l| {
+            let next = song_ids.len();
+            *song_ids
+                .entry(song_key(&corpus.names[l.file]))
+                .or_insert(next)
+        })
+        .collect();
+    let refs: Vec<&Line> = corpus.lines.iter().collect();
+
+    let mut reports = Vec::new();
+    let mut controls = (0, 0);
+    let mut dump = BufWriter::new(fs::File::create(out.join("legato-lines.jsonl"))?);
+    for (weights_name, weights) in &weight_sets {
+        let started = Instant::now();
+        let computed = par_map(&refs, |line| legato_line(line, weights));
+        eprintln!(
+            "{weights_name}: {} lines × {} stages in {:.1}s",
+            computed.len(),
+            LEGATO_STAGES.len(),
+            started.elapsed().as_secs_f64()
+        );
+        controls.0 += computed
+            .iter()
+            .filter(|l| l.legato_control_mismatch)
+            .count();
+        controls.1 += computed.iter().filter(|l| l.tap_control_mismatch).count();
+        for (line, c) in corpus.lines.iter().zip(&computed) {
+            if c.tapped > 0 {
+                let record = serde_json::json!({
+                    "weights": weights_name,
+                    "id": line.id,
+                    "file": corpus.names.get(line.file),
+                    "test": line.test,
+                    "notes": c.notes,
+                    "tapped": c.tapped,
+                    "stages": c.rows,
+                });
+                serde_json::to_writer(&mut dump, &record).map_err(std::io::Error::other)?;
+                dump.write_all(b"\n")?;
+            }
+        }
+
+        let mut subsets = Vec::new();
+        for (split_index, split) in SPLITS.iter().enumerate() {
+            for family in FAMILIES {
+                let in_subset = |i: usize| {
+                    (split_index == 0 || corpus.lines[i].test)
+                        && (family == "all" || families[i] == family)
+                };
+                let target: Vec<&LegatoLine> = (0..computed.len())
+                    .filter(|&i| in_subset(i) && computed[i].tapped > 0)
+                    .map(|i| &computed[i])
+                    .collect();
+                let pool_all: Vec<&LegatoLine> = (0..computed.len())
+                    .filter(|&i| {
+                        (split_index == 0 || corpus.lines[i].test) && computed[i].tapped == 0
+                    })
+                    .map(|i| &computed[i])
+                    .collect();
+                let pool_family: Vec<&LegatoLine> = (0..computed.len())
+                    .filter(|&i| in_subset(i) && computed[i].tapped == 0)
+                    .map(|i| &computed[i])
+                    .collect();
+                let stages = (0..LEGATO_STAGES.len())
+                    .map(|s| {
+                        let mut slice = StageAgg::default();
+                        for line in &target {
+                            slice.add(line, &line.rows[s]);
+                        }
+                        StageReport {
+                            stage: LEGATO_STAGES[s].name(),
+                            slice,
+                            baseline_all_untapped: matched_baseline(&target, &pool_all, s),
+                            baseline_same_format: matched_baseline(&target, &pool_family, s),
+                        }
+                    })
+                    .collect();
+                subsets.push(SubsetReport {
+                    split,
+                    family,
+                    stages,
+                });
+            }
+        }
+
+        let mut steps = Vec::new();
+        for family in FAMILIES {
+            let lines: Vec<(usize, &LegatoLine)> = (0..computed.len())
+                .filter(|&i| computed[i].tapped > 0 && (family == "all" || families[i] == family))
+                .map(|i| (songs[i], &computed[i]))
+                .collect();
+            for step in LEGATO_STEPS {
+                steps.push(step_report(family, &lines, step));
+            }
+        }
+        reports.push(WeightsReport {
+            weights: weights_name,
+            subsets,
+            steps,
+        });
+    }
+    dump.flush()?;
+
+    let without_legato = corpus
+        .lines
+        .iter()
+        .filter(|l| l.tab.edges.iter().all(|e| !e.is_legato()))
+        .count();
+    let untapped = corpus
+        .lines
+        .iter()
+        .filter(|l| l.tab.tapped.iter().all(|t| !*t))
+        .count();
+    println!(
+        "\ncontrol: {} of {} (lines without legato edges × weight sets) differ between B and a legato stage; {} of {} (untapped lines × weight sets) between A and B",
+        controls.0,
+        without_legato * weight_sets.len(),
+        controls.1,
+        untapped * weight_sets.len()
+    );
+    let pc = |x: f64| format!("{:.1}%", 100.0 * x);
+    for r in &reports {
+        println!("\n### {} — slice\n", r.weights);
+        println!("| split | family | stage | lines (tapped notes) | human path in optimum set | excess per note (lines) | agreement | on tapped notes | ceiling | unique optimum | human more cross-string legato / optimum keeps one |");
+        println!("|---|---|---|---|---|---|---|---|---|---|---|");
+        for sub in &r.subsets {
+            for st in &sub.stages {
+                let a = &st.slice;
+                println!(
+                    "| {} | {} | {} | {} ({}) | {} | {:.2} ({}) | {} | {} | {} | {} | {} / {} |",
+                    sub.split,
+                    sub.family,
+                    st.stage,
+                    a.lines,
+                    a.tapped_notes,
+                    pc(share(a.in_set, a.lines)),
+                    a.excess as f64 / a.excess_notes.max(1) as f64,
+                    a.excess_lines,
+                    pc(share(a.agree, a.notes)),
+                    pc(share(a.agree_tapped, a.tapped_notes)),
+                    pc(share(a.ceiling, a.notes)),
+                    pc(share(a.unique, a.lines)),
+                    a.human_violates_more,
+                    a.optimum_violates
+                );
+            }
+        }
+        println!("\n### {} — baselines (untapped lines, same stage objective, length-matched) and the exactness gap\n", r.weights);
+        println!("| split | family | stage | slice in optimum set | all untapped: in set / excess per note / agreement / ceiling | same format: in set / excess per note | gap to all untapped (pt) | gap to same format (pt) |");
+        println!("|---|---|---|---|---|---|---|---|");
+        for sub in &r.subsets {
+            for st in &sub.stages {
+                let slice = share(st.slice.in_set, st.slice.lines);
+                let (b, f) = (&st.baseline_all_untapped, &st.baseline_same_format);
+                println!(
+                    "| {} | {} | {} | {} | {} / {:.2} / {} / {} | {} / {:.2} | {:.1} | {:.1} |",
+                    sub.split,
+                    sub.family,
+                    st.stage,
+                    pc(slice),
+                    pc(b.in_set),
+                    b.excess_per_note,
+                    pc(b.agree),
+                    pc(b.ceiling),
+                    pc(f.in_set),
+                    f.excess_per_note,
+                    100.0 * (b.in_set - slice),
+                    100.0 * (f.in_set - slice)
+                );
+            }
+        }
+        println!(
+            "\n### {} — leave one song out (whole corpus, tapped lines)\n",
+            r.weights
+        );
+        println!("| family | step | lines | songs | net line gain | Δ exactness (pt) | leave-one-song-out min / max (pt) | largest song share of gain | corpus evidence |");
+        println!("|---|---|---|---|---|---|---|---|---|");
+        for st in &r.steps {
+            println!(
+                "| {} | {} | {} | {} | {} | {:+.1} | {:+.1} / {:+.1} | {} | {} |",
+                st.family,
+                st.step,
+                st.lines,
+                st.songs,
+                st.net_line_gain,
+                st.delta_pp,
+                st.loso_min_pp,
+                st.loso_max_pp,
+                st.largest_song_share.map_or_else(|| "—".into(), &pc),
+                if st.corpus_evidence { "yes" } else { "no" }
+            );
+        }
+    }
+    let report = LegatoReport {
+        schema: "griff.constraint-lab-legato",
+        version: 1,
+        legato_control_mismatches: controls.0,
+        lines_without_legato: without_legato * weight_sets.len(),
+        tap_control_mismatches: controls.1,
+        untapped_lines: untapped * weight_sets.len(),
+        reports,
+        corpus: corpus.facts,
+    };
+    write_json(&out.join("legato.json"), &report)
 }
 
 // ── repeat consistency ────────────────────────────────────────────────────────
@@ -2293,6 +2901,7 @@ fn run() -> Result<(), String> {
         "tiebreak" => tiebreak(corpus, &args.models, &args.out),
         "taps" => taps(corpus, &args.out),
         "legato-census" => legato_census(corpus, &args.out),
+        "legato" => legato(corpus, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
