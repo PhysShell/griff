@@ -10,6 +10,7 @@ on:
       - 'cockpit/**'
       - 'core/**'
       - 'ui-core/**'
+      - 'experiment/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/cockpit-web-test.yml'
@@ -19,6 +20,7 @@ on:
       - 'cockpit/**'
       - 'core/**'
       - 'ui-core/**'
+      - 'experiment/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/cockpit-web-test.yml'
@@ -46,7 +48,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cockpit-wasm-${{ hashFiles('cockpit/Cargo.toml', 'core/Cargo.toml', 'ui-core/Cargo.toml', 'Cargo.lock') }}
+          key: cockpit-wasm-${{ hashFiles('cockpit/Cargo.toml', 'core/Cargo.toml', 'ui-core/Cargo.toml', 'experiment/Cargo.toml', 'Cargo.lock') }}
       # build-web.sh needs wasm-bindgen-cli matching the crate version pinned in
       # cockpit/Cargo.toml; cache the built binary across runs (as web.yml does).
       - name: Cache wasm-bindgen-cli

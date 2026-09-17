@@ -70,6 +70,8 @@ pub mod observatory;
 pub mod swang;
 
 use generation::{kept_provenance, ActiveGenerateRun, GeneratePanel, GenerateRunContext};
+use griff_experiment::MetricKind;
+use griff_ui_core::observatory::{CellOutcomeView, CellView, EvaluationView, ExperimentView};
 use observatory::ObservatoryPanel;
 use swang::SwangPanel;
 
@@ -1774,25 +1776,101 @@ impl CockpitApp {
     /// and the attached corpus, and shows it — as its bundle. Native only: the
     /// web opens bundles.
     #[cfg(not(target_arch = "wasm32"))]
-    fn run_experiment_panel(&mut self) {}
+    fn run_experiment_panel(&mut self) {
+        let evaluate = self.observatory.evaluate_against_source;
+        let outcome = self.generation_source().and_then(|source| {
+            let spec = observatory::milestone_spec(self.gen_panel.ask(), &source, evaluate)?;
+            observatory::LoadedExperiment::run(&spec, &source, self.material.as_ref())
+                .map_err(|failure| observatory::failure_text(&failure))
+        });
+        match outcome {
+            Ok(loaded) => {
+                self.install_experiment(loaded);
+                self.observatory.status =
+                    Some("ran S6 Intact and S7 Global Chain under seed only and full".to_owned());
+            }
+            Err(err) => self.observatory.status = Some(format!("run failed: {err}")),
+        }
+    }
+
+    /// Shows `loaded` in the Observatory, starting a fresh audition: cells of a
+    /// previous experiment are gone, so an A/B target pointing at one would be
+    /// stale.
+    fn install_experiment(&mut self, loaded: observatory::LoadedExperiment) {
+        self.reset_audition();
+        self.observatory.install(loaded);
+    }
 
     /// Reads, verifies and shows a saved experiment bundle; a refusal is
     /// reported and leaves the shown experiment as it was.
-    pub fn open_bundle_json(&mut self, json: &str, name: String) {
-        let _ = (json, name);
+    pub fn open_bundle_json(&mut self, json: &str, name: &str) {
+        match observatory::LoadedExperiment::open_json(
+            json,
+            observatory::Origin::File(name.to_owned()),
+        ) {
+            Ok(loaded) => {
+                self.install_experiment(loaded);
+                self.observatory.status = Some(format!("opened {name}"));
+            }
+            Err(err) => {
+                self.observatory.status = Some(format!(
+                    "cannot open {name}: {}",
+                    observatory::bundle_error_text(&err)
+                ));
+            }
+        }
     }
 
     /// Writes the shown bundle beside the kept candidates.
     #[cfg(not(target_arch = "wasm32"))]
     fn save_bundle(&mut self) -> Result<PathBuf, String> {
-        Err(String::new())
+        let loaded = self
+            .observatory
+            .loaded
+            .as_ref()
+            .ok_or("no experiment is shown")?;
+        let json = loaded
+            .bundle
+            .to_json()
+            .map_err(|err| observatory::bundle_error_text(&err))?;
+        fs::create_dir_all(&self.out_dir)
+            .map_err(|e| format!("cannot create {}: {e}", self.out_dir.display()))?;
+        let path = self.out_dir.join(format!(
+            "experiment-{}.json",
+            observatory::short(loaded.view.record)
+        ));
+        fs::write(&path, json).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        self.observatory.path = path.display().to_string();
+        Ok(path)
     }
 
     /// Auditions cell `i` of the shown experiment: its recorded score through
     /// the same transport as every other candidate. A refused cell has nothing
     /// to play and says so.
     fn show_experiment_cell(&mut self, i: usize) {
-        let _ = i;
+        let Some(loaded) = self.observatory.loaded.as_ref() else {
+            return;
+        };
+        let Some(cell) = loaded.view.cells.get(i) else {
+            return;
+        };
+        let title = observatory::cell_title(&loaded.view, i);
+        match &cell.outcome {
+            CellOutcomeView::Refused(refusal) => {
+                self.observatory.status =
+                    Some(format!("{title}: {}", observatory::refusal_text(*refusal)));
+            }
+            CellOutcomeView::Produced { score, .. } => {
+                let score = score.clone();
+                self.remember_shown(AuditionCandidate::Experiment(i));
+                // A recorded experiment cell is sounding: no live row and no
+                // history entry is.
+                self.gen_panel.selected = None;
+                self.swang.selected = None;
+                self.history.clear_selection();
+                self.show_score(score, title);
+            }
+        }
     }
 
     /// Replays a recorded history candidate by its stable id: switches the roll
@@ -2108,6 +2186,333 @@ impl CockpitApp {
                 self.generate_candidates(ui, &mut acts);
             });
         self.apply_generate_actions(&acts);
+    }
+
+    /// The Generator Observatory window (ADR-0034): the shown bundle, cells A
+    /// and B, what each requested and what it actually took, their comparison
+    /// through the experiment API, and audition through the shared transport.
+    fn observatory_window(&mut self, ctx: &egui::Context) {
+        let mut acts = observatory::Actions::default();
+        egui::Window::new("observatory · experiments")
+            .default_width(640.0)
+            .default_height(560.0)
+            .show(ctx, |ui| {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.observatory_controls(ui, &mut acts);
+                #[cfg(target_arch = "wasm32")]
+                ui.weak("open a saved bundle with 🔬 Bundle in the page bar");
+                if let Some(status) = &self.observatory.status {
+                    ui.weak(status);
+                }
+                ui.separator();
+                let Some(loaded) = self.observatory.loaded.as_ref() else {
+                    ui.weak("no experiment shown — run one, or open a saved bundle");
+                    return;
+                };
+                Self::observatory_header(ui, loaded);
+                let view = &loaded.view;
+                let (a, play_a) = Self::observatory_pick(ui, view, "A", self.observatory.a);
+                let (b, play_b) = Self::observatory_pick(ui, view, "B", self.observatory.b);
+                acts.select_a = a.filter(|&i| Some(i) != self.observatory.a);
+                acts.select_b = b.filter(|&i| Some(i) != self.observatory.b);
+                acts.play = if play_a {
+                    a
+                } else if play_b {
+                    b
+                } else {
+                    None
+                };
+                if ui
+                    .button("⇄ A/B")
+                    .on_hover_text("swap to the other of the last two auditions (b)")
+                    .clicked()
+                {
+                    acts.ab = true;
+                }
+                if let (Some(a), Some(b)) = (a, b) {
+                    ui.separator();
+                    Self::observatory_cells(ui, view, a, b);
+                    ui.separator();
+                    Self::observatory_comparison(ui, view, a, b);
+                }
+            });
+        self.apply_observatory_actions(&acts);
+    }
+
+    /// Run / open / save (native); the web opens bundles from the page bar.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn observatory_controls(&mut self, ui: &mut egui::Ui, acts: &mut observatory::Actions) {
+        ui.horizontal(|ui| {
+            if ui
+                .button("▶ run S6/S7 × seed only/full")
+                .on_hover_text("uses the Generate panel's source, ask and attached corpus")
+                .clicked()
+            {
+                acts.run = true;
+            }
+            ui.checkbox(
+                &mut self.observatory.evaluate_against_source,
+                "evaluate against the source",
+            )
+            .on_hover_text(
+                "supply an explicit evaluation context: the source's scale, and the \
+                 source itself as the only reference",
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("bundle");
+            ui.text_edit_singleline(&mut self.observatory.path);
+            if ui.button("📂 open").clicked() {
+                acts.open = true;
+            }
+            if ui.button("💾 save").clicked() {
+                acts.save = true;
+            }
+        });
+    }
+
+    /// Where the experiment came from, its population, and its evaluation
+    /// context.
+    fn observatory_header(ui: &mut egui::Ui, loaded: &observatory::LoadedExperiment) {
+        let view = &loaded.view;
+        let origin = match &loaded.origin {
+            observatory::Origin::Run => "ran here".to_owned(),
+            observatory::Origin::File(name) => format!("opened {name}"),
+        };
+        ui.label(format!(
+            "{origin} · record {}",
+            observatory::short(view.record)
+        ));
+        ui.weak(view.population.as_ref().map_or_else(
+            || "population: none bound — every regime ran on the seed".to_owned(),
+            |p| {
+                format!(
+                    "population: {} rhythm templates · {} references · gesture {} · {} skipped",
+                    p.rhythm_count,
+                    p.reference_count,
+                    if p.gesture_present { "yes" } else { "no" },
+                    p.skipped
+                )
+            },
+        ));
+        ui.weak(match &view.evaluation {
+            EvaluationView::None => {
+                "evaluation: none supplied — cross-regime comparisons are unavailable".to_owned()
+            }
+            EvaluationView::GenerationAxes {
+                evaluator,
+                version,
+                references,
+                ..
+            } => format!(
+                "evaluation: {evaluator} v{version} against {references} supplied reference(s)"
+            ),
+        });
+    }
+
+    /// A variant and a regime for cell `which`; returns the picked cell and
+    /// whether its play button was pressed.
+    fn observatory_pick(
+        ui: &mut egui::Ui,
+        view: &ExperimentView,
+        which: &str,
+        current: Option<usize>,
+    ) -> (Option<usize>, bool) {
+        let (mut variant, mut regime) = current
+            .and_then(|i| view.cells.get(i))
+            .map_or((0, 0), |cell| (cell.variant, cell.regime));
+        let mut play = false;
+        ui.horizontal(|ui| {
+            ui.strong(which);
+            egui::ComboBox::from_id_salt(format!("observatory-{which}-variant"))
+                .selected_text(view.variants.get(variant).map_or("?", |v| v.label.as_str()))
+                .show_ui(ui, |ui| {
+                    for (i, v) in view.variants.iter().enumerate() {
+                        ui.selectable_value(&mut variant, i, &v.label);
+                    }
+                });
+            egui::ComboBox::from_id_salt(format!("observatory-{which}-regime"))
+                .selected_text(view.regimes.get(regime).map_or_else(
+                    || "?".to_owned(),
+                    |r| observatory::regime_text(r.name, r.channels),
+                ))
+                .show_ui(ui, |ui| {
+                    for (i, r) in view.regimes.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut regime,
+                            i,
+                            observatory::regime_text(r.name, r.channels),
+                        );
+                    }
+                });
+            play = ui
+                .button(format!("▶ {which}"))
+                .on_hover_text("audition this cell's recorded score")
+                .clicked();
+        });
+        (view.cell_index(variant, regime), play)
+    }
+
+    /// A and B side by side: requested, effective, actual, outcome — three
+    /// facts kept apart on purpose.
+    fn observatory_cells(ui: &mut egui::Ui, view: &ExperimentView, a: usize, b: usize) {
+        let (Some(ca), Some(cb)) = (view.cells.get(a), view.cells.get(b)) else {
+            return;
+        };
+        let requested = |cell: &CellView| {
+            view.regimes.get(cell.regime).map_or_else(
+                || "?".to_owned(),
+                |r| observatory::regime_text(r.name, r.channels),
+            )
+        };
+        let outcome = |cell: &CellView| match &cell.outcome {
+            CellOutcomeView::Produced { content, .. } => {
+                format!("score {}", observatory::short(*content))
+            }
+            CellOutcomeView::Refused(refusal) => observatory::refusal_text(*refusal),
+        };
+        let rows: [(&str, String, String); 8] = [
+            (
+                "cell",
+                observatory::cell_title(view, a),
+                observatory::cell_title(view, b),
+            ),
+            ("requested regime", requested(ca), requested(cb)),
+            (
+                "requested id",
+                observatory::short(ca.requested),
+                observatory::short(cb.requested),
+            ),
+            (
+                "effective recipe",
+                observatory::short(ca.effective.recipe),
+                observatory::short(cb.effective.recipe),
+            ),
+            (
+                "offered information",
+                observatory::short(ca.effective.information),
+                observatory::short(cb.effective.information),
+            ),
+            (
+                "actual contribution",
+                observatory::contribution_text(ca.effective.contribution),
+                observatory::contribution_text(cb.effective.contribution),
+            ),
+            (
+                "candidates ranked",
+                ca.effective.candidate_count.to_string(),
+                cb.effective.candidate_count.to_string(),
+            ),
+            ("outcome", outcome(ca), outcome(cb)),
+        ];
+        egui::Grid::new("observatory-cells")
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("");
+                ui.strong("A");
+                ui.strong("B");
+                ui.end_row();
+                for (label, left, right) in rows {
+                    ui.weak(label);
+                    ui.label(left);
+                    ui.label(right);
+                    ui.end_row();
+                }
+            });
+    }
+
+    /// Every metric of A against B, the interaction when A and B are the
+    /// opposite corners of a 2 × 2, and how each was selected. Every
+    /// difference is the experiment API's; none is computed here.
+    fn observatory_comparison(ui: &mut egui::Ui, view: &ExperimentView, a: usize, b: usize) {
+        egui::Grid::new("observatory-compare")
+            .striped(true)
+            .show(ui, |ui| {
+                for header in ["metric", "kind", "A", "B", "B − A"] {
+                    ui.strong(header);
+                }
+                ui.end_row();
+                let value =
+                    |v: Option<f64>| v.map_or_else(|| "—".to_owned(), |v| format!("{v:.3}"));
+                for row in view.compare(a, b) {
+                    ui.label(row.name);
+                    ui.weak(match row.kind {
+                        MetricKind::Evaluation => "evaluation",
+                        MetricKind::PolicyObjective => "policy objective",
+                    });
+                    ui.label(value(row.a));
+                    ui.label(value(row.b));
+                    ui.label(observatory::comparison_text(row.comparison));
+                    ui.end_row();
+                }
+            });
+        let (Some(ca), Some(cb)) = (view.cells.get(a), view.cells.get(b)) else {
+            return;
+        };
+        if ca.variant != cb.variant && ca.regime != cb.regime {
+            ui.separator();
+            ui.strong("interaction — evaluations only");
+            let rows = view.interaction((ca.variant, cb.variant), (ca.regime, cb.regime));
+            if rows.is_empty() {
+                ui.weak("no evaluation context was supplied — the interaction is unavailable");
+            }
+            for row in rows {
+                ui.label(format!(
+                    "{}: {}",
+                    row.name,
+                    observatory::comparison_text(row.comparison)
+                ));
+            }
+        }
+        ui.collapsing("how each was selected", |ui| {
+            for (which, cell) in [("A", ca), ("B", cb)] {
+                if let CellOutcomeView::Produced { diagnostics, .. } = &cell.outcome {
+                    for diagnostic in diagnostics {
+                        ui.weak(format!(
+                            "{which}: {}",
+                            observatory::diagnostic_text(*diagnostic)
+                        ));
+                    }
+                }
+            }
+        });
+    }
+
+    /// Acts on what the Observatory window asked for.
+    fn apply_observatory_actions(&mut self, acts: &observatory::Actions) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if acts.run {
+                self.run_experiment_panel();
+            }
+            if acts.open {
+                let path = self.observatory.path.clone();
+                match fs::read_to_string(&path) {
+                    Ok(json) => self.open_bundle_json(&json, &path),
+                    Err(err) => {
+                        self.observatory.status = Some(format!("cannot read {path}: {err}"));
+                    }
+                }
+            }
+            if acts.save {
+                self.observatory.status = Some(match self.save_bundle() {
+                    Ok(path) => format!("saved {}", path.display()),
+                    Err(err) => format!("save failed: {err}"),
+                });
+            }
+        }
+        if let Some(a) = acts.select_a {
+            self.observatory.a = Some(a);
+        }
+        if let Some(b) = acts.select_b {
+            self.observatory.b = Some(b);
+        }
+        if let Some(cell) = acts.play {
+            self.show_experiment_cell(cell);
+        }
+        if acts.ab {
+            self.ab_swap();
+        }
     }
 
     /// Acts on what the Generate window asked for, once it is no longer holding
@@ -2883,6 +3288,9 @@ impl CockpitApp {
         if ctx.input(|i| i.key_pressed(Key::Y)) {
             self.history_open = !self.history_open; // the session candidate history
         }
+        if ctx.input(|i| i.key_pressed(Key::O)) {
+            self.observatory.open = !self.observatory.open; // the Generator Observatory
+        }
         if ctx.input(|i| i.key_pressed(Key::B)) {
             self.ab_swap(); // A/B between the last two candidates
         }
@@ -3023,6 +3431,13 @@ impl CockpitApp {
             .clicked()
         {
             self.history_open = !self.history_open;
+        }
+        if ui
+            .button("🔬 observatory")
+            .on_hover_text("compare experiment variants and information regimes (o)")
+            .clicked()
+        {
+            self.observatory.open = !self.observatory.open;
         }
     }
 
@@ -3406,6 +3821,9 @@ impl eframe::App for CockpitApp {
         if self.history_open {
             self.history_window(&ctx);
         }
+        if self.observatory.open {
+            self.observatory_window(&ctx);
+        }
     }
 }
 
@@ -3518,6 +3936,9 @@ pub mod web {
         static CAPTURE: Cell<bool> = const { Cell::new(false) };
         /// Set by `load_corpus` (the page read the OPFS tree); drained into the dock.
         static CORPUS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+        /// Set by `load_bundle` (the page read an experiment bundle); drained
+        /// into the Observatory.
+        static BUNDLE: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
         // The running app's egui context, stashed at start so the inbox/capture
         // requests can wake the reactive web runner.
         static CTX: RefCell<Option<egui::Context>> = const { RefCell::new(None) };
@@ -3572,6 +3993,15 @@ pub mod web {
         wake();
     }
 
+    /// Hands a picked experiment bundle (name + JSON text) to the Observatory;
+    /// the page calls this from its bundle input. It is read and verified on
+    /// the next frame — never run.
+    #[wasm_bindgen]
+    pub fn load_bundle(name: String, json: String) {
+        BUNDLE.with(|cell| *cell.borrow_mut() = Some((name, json)));
+        wake();
+    }
+
     /// Applies a pending file and/or capture request. Called by the app at the
     /// top of each frame.
     pub(crate) fn drain(app: &mut CockpitApp) {
@@ -3586,6 +4016,9 @@ pub mod web {
         }
         if let Some(jsons) = CORPUS.with(|cell| cell.borrow_mut().take()) {
             app.load_corpus(&jsons);
+        }
+        if let Some((name, json)) = BUNDLE.with(|cell| cell.borrow_mut().take()) {
+            app.open_bundle_json(&json, &name);
         }
     }
 
@@ -3709,9 +4142,11 @@ mod tests {
     use eframe::egui::epaint::ClippedShape;
     use eframe::egui::Shape;
     use griff_core::classify::BarClass;
+    use griff_experiment::{CellOutcomeV1, CellRefusalV1};
     use griff_ui_core::history::CorpusContribution;
     use griff_ui_core::playback::ticks_per_second;
     use griff_ui_core::scene::CellRole;
+    use std::process;
 
     /// Every fill the painter emitted in one frame.
     fn painted_fills(shapes: &[ClippedShape]) -> HashSet<(u8, u8, u8)> {
@@ -6348,8 +6783,8 @@ mod tests {
             .cells[cell]
             .outcome
         {
-            griff_ui_core::observatory::CellOutcomeView::Produced { score, .. } => score.clone(),
-            griff_ui_core::observatory::CellOutcomeView::Refused(r) => panic!("refused: {r:?}"),
+            CellOutcomeView::Produced { score, .. } => score.clone(),
+            CellOutcomeView::Refused(r) => panic!("refused: {r:?}"),
         }
     }
 
@@ -6361,7 +6796,7 @@ mod tests {
         assert_eq!(loaded.origin, observatory::Origin::Run);
         assert_eq!(
             Ok(loaded.view.clone()),
-            griff_ui_core::observatory::ExperimentView::from_bundle(&loaded.bundle),
+            ExperimentView::from_bundle(&loaded.bundle),
             "the panel shows the bundle arranged, nothing else"
         );
         assert_eq!(loaded.view.cells.len(), 4);
@@ -6414,7 +6849,7 @@ mod tests {
         let a = ran.observatory.a.expect("A");
 
         let mut elsewhere = demo_app(); // no corpus attached, nothing generated
-        elsewhere.open_bundle_json(&json, "saved.json".to_owned());
+        elsewhere.open_bundle_json(&json, "saved.json");
         let opened = elsewhere.observatory.loaded.as_ref().expect("opened");
         assert_eq!(opened.view, view);
         assert_eq!(
@@ -6436,8 +6871,7 @@ mod tests {
             .expect("shown")
             .bundle
             .clone();
-        bundle.cells[3].outcome =
-            griff_experiment::CellOutcomeV1::Refused(griff_experiment::CellRefusalV1::EmptySet);
+        bundle.cells[3].outcome = CellOutcomeV1::Refused(CellRefusalV1::EmptySet);
         app.observatory.install(
             observatory::LoadedExperiment::from_bundle(bundle, observatory::Origin::Run)
                 .expect("arranges"),
@@ -6457,7 +6891,7 @@ mod tests {
         let mut app = observatory_app();
         app.run_experiment_panel();
         let record = app.observatory.loaded.as_ref().expect("shown").view.record;
-        app.open_bundle_json("{", "broken.json".to_owned());
+        app.open_bundle_json("{", "broken.json");
         assert_eq!(
             app.observatory.loaded.as_ref().map(|l| l.view.record),
             Some(record)
@@ -6471,14 +6905,14 @@ mod tests {
 
     #[test]
     fn a_saved_bundle_file_reopens_to_the_same_view() {
-        let dir = env::temp_dir().join(format!("griff_observatory_save_{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("griff_observatory_save_{}", process::id()));
         let mut app = observatory_app();
         app.set_out_dir(dir.clone());
         app.run_experiment_panel();
         let path = app.save_bundle().expect("writes");
         let json = fs::read_to_string(&path).expect("reads back");
         let mut reopened = demo_app();
-        reopened.open_bundle_json(&json, "reopened.json".to_owned());
+        reopened.open_bundle_json(&json, "reopened.json");
         assert_eq!(
             reopened.observatory.loaded.map(|l| l.view),
             app.observatory.loaded.map(|l| l.view)

@@ -12,11 +12,14 @@
 //! view: a comparison the experiment API calls unavailable is said to be not
 //! comparable, never shown as a number.
 
-use griff_core::generation_input::{CorpusContribution, CorpusMaterial, GenerationAsk};
+use griff_core::generation_input::{
+    generation_request_from_score, CorpusContribution, CorpusMaterial, GenerationAsk,
+};
 use griff_core::score::Score;
 use griff_experiment::{
-    BundleError, CellRefusal, Comparison, ExperimentBundleV1, ExperimentSpec, InformationRegime,
-    RunError,
+    run_experiment, BundleError, CellRefusal, Comparison, Diagnostic, EvaluationContext,
+    ExperimentBundleV1, ExperimentInputs, ExperimentSpec, Fingerprint, InformationRegime, RunError,
+    SpecError, Unavailable, VariantSpec,
 };
 use griff_ui_core::observatory::{ExperimentView, RegimeName};
 
@@ -55,8 +58,12 @@ impl LoadedExperiment {
     /// # Errors
     /// Whatever arranging the bundle refuses.
     pub fn from_bundle(bundle: ExperimentBundleV1, origin: Origin) -> Result<Self, BundleError> {
-        let _ = (bundle, origin);
-        Err(BundleError::NotThisRun)
+        let view = ExperimentView::from_bundle(&bundle)?;
+        Ok(Self {
+            bundle,
+            view,
+            origin,
+        })
     }
 
     /// Reads, verifies, and arranges a saved bundle.
@@ -64,8 +71,7 @@ impl LoadedExperiment {
     /// # Errors
     /// Whatever loading or arranging refuses.
     pub fn open_json(json: &str, origin: Origin) -> Result<Self, BundleError> {
-        let _ = (json, origin);
-        Err(BundleError::NotThisRun)
+        Self::from_bundle(ExperimentBundleV1::from_json(json)?, origin)
     }
 
     /// Runs `spec`, writes the run down as a bundle, and arranges the bundle.
@@ -78,8 +84,11 @@ impl LoadedExperiment {
         source: &Score,
         corpus: Option<&CorpusMaterial>,
     ) -> Result<Self, RunFailure> {
-        let _ = (spec, source, corpus);
-        Err(RunFailure::Bundle(BundleError::NotThisRun))
+        let run =
+            run_experiment(spec, &ExperimentInputs { source, corpus }).map_err(RunFailure::Run)?;
+        let bundle =
+            ExperimentBundleV1::from_run(spec, source, &run).map_err(RunFailure::Bundle)?;
+        Self::from_bundle(bundle, Origin::Run).map_err(RunFailure::Bundle)
     }
 }
 
@@ -96,8 +105,22 @@ pub fn milestone_spec(
     source: &Score,
     evaluate_against_source: bool,
 ) -> Result<ExperimentSpec, String> {
-    let _ = (ask, source, evaluate_against_source);
-    Err(String::new())
+    let evaluation = if evaluate_against_source {
+        let base = generation_request_from_score(source, ask.seed, ask.bars)
+            .map_err(|err| format!("the source cannot seed an evaluation context: {err:?}"))?;
+        EvaluationContext::GenerationAxes {
+            pitch_material: base.pitch_material,
+            references: vec![source.clone()],
+        }
+    } else {
+        EvaluationContext::None
+    };
+    Ok(ExperimentSpec {
+        ask,
+        variants: vec![VariantSpec::s6_intact(), VariantSpec::s7_global_chain()],
+        regimes: vec![InformationRegime::SEED_ONLY, InformationRegime::FULL],
+        evaluation,
+    })
 }
 
 /// The Observatory panel's state.
@@ -123,42 +146,194 @@ impl ObservatoryPanel {
     /// Shows `loaded`: A is the first variant under the first regime, B the
     /// last variant under the last regime.
     pub fn install(&mut self, loaded: LoadedExperiment) {
-        let _ = loaded;
+        let view = &loaded.view;
+        self.a = view.cell_index(0, 0);
+        self.b = view.cell_index(
+            view.variants.len().saturating_sub(1),
+            view.regimes.len().saturating_sub(1),
+        );
+        self.loaded = Some(loaded);
+        self.open = true;
     }
+}
+
+/// What the Observatory window asked for, applied once the window no longer
+/// borrows the panel.
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // one flag per button
+pub struct Actions {
+    /// Run the milestone experiment (native).
+    pub run: bool,
+    /// Open the bundle at the panel's path (native).
+    pub open: bool,
+    /// Save the shown bundle (native).
+    pub save: bool,
+    /// Make this cell A.
+    pub select_a: Option<usize>,
+    /// Make this cell B.
+    pub select_b: Option<usize>,
+    /// Audition this cell.
+    pub play: Option<usize>,
+    /// Swap to the other of the last two auditions.
+    pub ab: bool,
+}
+
+/// The first twelve hex digits of a fingerprint, for a label.
+#[must_use]
+pub fn short(fingerprint: Fingerprint) -> String {
+    fingerprint.to_hex().chars().take(12).collect()
 }
 
 /// A comparison, in words: the signed number when the experiment API gives
 /// one, and otherwise why there is none.
 #[must_use]
 pub fn comparison_text(comparison: Comparison) -> String {
-    let _ = comparison;
-    String::new()
+    match comparison {
+        Comparison::Available(value) => format!("{value:+.3}"),
+        Comparison::Unavailable(Unavailable::IncompatibleIdentity) => {
+            "not comparable: different measurement context".to_owned()
+        }
+        Comparison::Unavailable(Unavailable::NotAnEvaluation) => {
+            "not comparable: not an evaluation".to_owned()
+        }
+        Comparison::Unavailable(Unavailable::Missing) => "not measured on both".to_owned(),
+    }
 }
 
 /// A requested regime, in words.
 #[must_use]
 pub fn regime_text(name: RegimeName, channels: InformationRegime) -> String {
-    let _ = (name, channels);
-    String::new()
+    match name {
+        RegimeName::SeedOnly => "seed only".to_owned(),
+        RegimeName::RhythmsOnly => "rhythms only".to_owned(),
+        RegimeName::ReferencesOnly => "references only".to_owned(),
+        RegimeName::GestureOnly => "gesture only".to_owned(),
+        RegimeName::Full => "full (rhythms + references + gesture)".to_owned(),
+        RegimeName::Custom => [
+            (channels.rhythms, "rhythms"),
+            (channels.references, "references"),
+            (channels.gesture, "gesture"),
+        ]
+        .iter()
+        .filter(|(open, _)| *open)
+        .map(|(_, channel)| *channel)
+        .collect::<Vec<_>>()
+        .join(" + "),
+    }
 }
 
 /// What a corpus actually contributed, in words.
 #[must_use]
 pub fn contribution_text(contribution: CorpusContribution) -> String {
-    let _ = contribution;
-    String::new()
+    if contribution.is_seed_only() {
+        return "nothing (seed only)".to_owned();
+    }
+    format!(
+        "{} rhythm templates · {} references · {}",
+        contribution.templates,
+        contribution.references,
+        if contribution.gesture {
+            "gesture carved"
+        } else {
+            "no gesture"
+        }
+    )
 }
 
 /// A refusal, in words.
 #[must_use]
 pub fn refusal_text(refusal: CellRefusal) -> String {
-    let _ = refusal;
-    String::new()
+    match refusal {
+        CellRefusal::EmptySet => "refused: empty candidate set".to_owned(),
+        CellRefusal::Chain(error) => format!("refused: {}", crate::chain_refusal_summary(error)),
+    }
+}
+
+/// How a result was selected, in words.
+#[must_use]
+pub fn diagnostic_text(diagnostic: Diagnostic) -> String {
+    match diagnostic {
+        Diagnostic::Selected {
+            rank,
+            strategy,
+            variant_seed,
+            ..
+        } => format!("took rank {rank} whole ({strategy:?}, seed {variant_seed:016x})"),
+        Diagnostic::ChainBar {
+            bar,
+            rank,
+            strategy,
+            ..
+        } => format!(
+            "bar {} from rank {rank} ({strategy:?})",
+            bar.saturating_add(1)
+        ),
+    }
+}
+
+/// A cell's label: its variant and requested regime.
+#[must_use]
+pub fn cell_title(view: &ExperimentView, cell: usize) -> String {
+    view.cells.get(cell).map_or_else(String::new, |c| {
+        let variant = view
+            .variants
+            .get(c.variant)
+            .map_or("?", |v| v.label.as_str());
+        let regime = view
+            .regimes
+            .get(c.regime)
+            .map_or_else(|| "?".to_owned(), |r| regime_text(r.name, r.channels));
+        format!("{variant} · {regime}")
+    })
+}
+
+/// Why a bundle could not be opened, in words.
+#[must_use]
+pub fn bundle_error_text(error: &BundleError) -> String {
+    match error {
+        BundleError::Malformed(message) => format!("not a readable bundle ({message})"),
+        BundleError::Serialize(message) => format!("could not be written ({message})"),
+        BundleError::UnknownSchema(schema) => format!("not an experiment bundle ({schema})"),
+        BundleError::UnsupportedVersion(version) => {
+            format!("bundle version {version} is not supported")
+        }
+        BundleError::Projection(projection) => {
+            format!("records a value the model cannot hold ({projection:?})")
+        }
+        BundleError::IdentityMismatch(mismatch) => {
+            format!("its data does not match its recorded identities ({mismatch:?})")
+        }
+        BundleError::UnknownName(name) => format!("records an unknown name ({name})"),
+        BundleError::IdentityDrift { stage, recorded } => format!(
+            "its {stage:?} {} v{} is not this code's",
+            recorded.id, recorded.version
+        ),
+        BundleError::Spec(spec) => format!("records an invalid spec ({spec:?})"),
+        BundleError::NotThisRun => "the spec or source is not this run's".to_owned(),
+        BundleError::NonFiniteMetric { cell, metric } => {
+            format!("cell {cell} metric {metric} is not a finite number")
+        }
+    }
+}
+
+/// Why a Run produced nothing, in words.
+#[must_use]
+pub fn failure_text(failure: &RunFailure) -> String {
+    match failure {
+        RunFailure::Run(RunError::Spec(SpecError::GestureChannelDeclinedByAsk(_))) => {
+            "the full regime opens the gesture channel — turn gesture on in Generate".to_owned()
+        }
+        RunFailure::Run(RunError::Spec(spec)) => format!("invalid experiment ({spec:?})"),
+        RunFailure::Run(RunError::Generation(generation)) => {
+            format!("the source cannot seed a generation pass ({generation:?})")
+        }
+        RunFailure::Bundle(error) => bundle_error_text(error),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::panic)]
+    #![allow(clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
     use super::*;
     use griff_core::import::import_score_auto;
@@ -216,15 +391,12 @@ mod tests {
             spec.regimes,
             [InformationRegime::SEED_ONLY, InformationRegime::FULL]
         );
-        assert!(matches!(
-            spec.evaluation,
-            griff_experiment::EvaluationContext::None
-        ));
+        assert!(matches!(spec.evaluation, EvaluationContext::None));
         assert!(matches!(
             milestone_spec(ask(), &source, true)
                 .expect("seeds")
                 .evaluation,
-            griff_experiment::EvaluationContext::GenerationAxes { .. }
+            EvaluationContext::GenerationAxes { .. }
         ));
     }
 
