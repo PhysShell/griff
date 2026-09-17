@@ -1183,6 +1183,86 @@ mod tests {
         assert_eq!(gp_duration_ticks(&dur), 960); // fallback quarter
     }
 
+    fn duration(value: u16, dotted: bool, double_dotted: bool, tuplet: (u8, u8)) -> GpDurationTest {
+        GpDurationTest {
+            value,
+            dotted,
+            double_dotted,
+            min_time: 0,
+            tuplet_enters: tuplet.0,
+            tuplet_times: tuplet.1,
+        }
+    }
+
+    #[test]
+    fn duration_ticks_tuplets_play_their_notes_in_the_time_of_fewer() {
+        // The GP readers store `enters` notes in the time of `times` (a triplet
+        // is 3 : 2): a triplet eighth lasts two thirds of an eighth.
+        assert_eq!(gp_duration_ticks(&duration(8, false, false, (3, 2))), 320);
+        assert_eq!(gp_duration_ticks(&duration(4, false, false, (3, 2))), 640);
+        assert_eq!(gp_duration_ticks(&duration(16, false, false, (5, 4))), 192);
+        assert_eq!(gp_duration_ticks(&duration(16, false, false, (6, 4))), 160);
+        assert_eq!(gp_duration_ticks(&duration(4, true, false, (3, 2))), 960);
+    }
+
+    #[test]
+    fn duration_ticks_double_dotted_adds_three_quarters() {
+        assert_eq!(gp_duration_ticks(&duration(4, false, true, (1, 1))), 1680);
+        assert_eq!(gp_duration_ticks(&duration(8, false, true, (1, 1))), 840);
+    }
+
+    #[test]
+    fn a_triplet_bar_ends_where_the_next_bar_starts() {
+        // Two 4/4 bars on the open high E: three triplet eighths, a half and a
+        // quarter fill bar 1 exactly; bar 2 opens with a quarter.
+        let beat = |duration: GpDurationTest| guitarpro::Beat {
+            duration,
+            notes: vec![guitarpro::Note {
+                string: 1,
+                value: 0,
+                kind: guitarpro::NoteType::Normal,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let measure = |beats: Vec<guitarpro::Beat>| guitarpro::Measure {
+            voices: vec![guitarpro::Voice {
+                beats,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let triplet = duration(8, false, false, (3, 2));
+        let song = guitarpro::Song {
+            measure_headers: vec![guitarpro::MeasureHeader::default(); 2],
+            tracks: vec![guitarpro::Track {
+                strings: vec![(1, 64), (2, 59), (3, 55), (4, 50), (5, 45), (6, 40)],
+                measures: vec![
+                    measure(vec![
+                        beat(triplet.clone()),
+                        beat(triplet.clone()),
+                        beat(triplet),
+                        beat(duration(2, false, false, (1, 1))),
+                        beat(duration(4, false, false, (1, 1))),
+                    ]),
+                    measure(vec![beat(duration(4, false, false, (1, 1)))]),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let score = gp_song_to_score(&song);
+        let onsets: Vec<u32> = score.tracks[0].voices[0]
+            .event_groups
+            .iter()
+            .map(|g| match &g.atoms[0] {
+                AtomEvent::Note(n) => n.absolute_start.0,
+                AtomEvent::Rest(r) => r.absolute_start.0,
+            })
+            .collect();
+        assert_eq!(onsets, vec![0, 320, 640, 960, 2880, 3840]);
+    }
+
     // ── gp_note_midi_pitch ────────────────────────────────────────────────────
 
     #[test]
