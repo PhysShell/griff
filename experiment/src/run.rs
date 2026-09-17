@@ -284,6 +284,7 @@ pub fn run_experiment(
         source: score_fingerprint(inputs.source),
         ask: ask_fingerprint(&spec.ask),
         evaluation: spec.evaluation.fingerprint(),
+        population: inputs.corpus.map(corpus_snapshot),
     };
 
     let mut live: Vec<LivePass> = Vec::new();
@@ -309,7 +310,7 @@ pub fn run_experiment(
                 variant: variant_index,
                 regime,
                 pass,
-                requested: Fingerprint([0; 32]),
+                requested: requested_identity(&context, variant, regime),
                 recipe: h.finish(),
                 outcome: live_pass.select(variant, &context),
             });
@@ -319,7 +320,7 @@ pub fn run_experiment(
     Ok(ExperimentRun {
         spec: spec.fingerprint(),
         source: context.source,
-        corpus: inputs.corpus.map(corpus_snapshot),
+        corpus: context.population,
         evaluation: context.evaluation,
         passes: live.into_iter().map(|p| p.record).collect(),
         cells,
@@ -333,6 +334,29 @@ struct RunContext<'a> {
     source: Fingerprint,
     ask: Fingerprint,
     evaluation: Option<Fingerprint>,
+    population: Option<CorpusSnapshot>,
+}
+
+/// What a cell asked of generation: the inputs, every stage, the requested
+/// regime and the bound population — never the channels it was actually
+/// offered (that is its recipe) and never how it is measured.
+fn requested_identity(
+    context: &RunContext<'_>,
+    variant: &VariantSpec,
+    regime: InformationRegime,
+) -> Fingerprint {
+    let mut h = Hasher::new("griff.experiment.cell-request.v1");
+    h.fingerprint(context.source);
+    h.fingerprint(context.ask);
+    policy(&mut h, variant.generator.identity());
+    policy(&mut h, variant.scorer.identity());
+    policy(&mut h, variant.selector.identity());
+    policy(&mut h, variant.realizer.identity());
+    h.bool(regime.rhythms);
+    h.bool(regime.references);
+    h.bool(regime.gesture);
+    h.option_fingerprint(context.population.as_ref().map(|p| p.whole));
+    h.finish()
 }
 
 /// A pass while the run is still selecting from it: its record, and the ranked
