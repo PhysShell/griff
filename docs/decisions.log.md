@@ -2834,3 +2834,20 @@ Architectural decisions go to [`adr/`](adr/) instead.
   fingering audit (PhysShell/griff#197), whose line normalization masked
   the GP6 half. The crate defect is upstream's to fix; this adapter no
   longer depends on it.
+
+- 2026-09-17 — In the context of GPIF imports losing note techniques in
+  `guitarpro` 0.4.2 (the `Tapped` property never read; `HopoOrigin` and
+  `HopoDestination` merged into one hammer flag), we decided to **restore
+  them at the import boundary in griff, walking the GPIF document as the
+  crate walks it, rather than depend on a fork of the crate**, to achieve
+  GP6/7 technique labels with the same semantics as GP3/4/5 now, accepting
+  a second workaround next to the tuning one (#198) until upstream ships a
+  fix. A git dependency on a fork is ruled out by `deny.toml`
+  (`unknown-git = "deny"`) and would need vendoring hashes in the nix and
+  wasm builds; the fix is instead offered upstream (Codeberg
+  `slundi/scorelib`), and griff drops the workaround once a release carries
+  it, keeping its regression tests. Measured on the corpus's 145 GPIF files:
+  tapped notes 0 → 2,013, destination-only hammer spans removed (18,284 →
+  10,906), hammer edges on the same string 76.8% → 99.7%; GP3/4/5 unchanged.
+  Deriving hammer-on versus pull-off direction for all formats is a separate
+  decision (it changes corpus technique tags everywhere).
