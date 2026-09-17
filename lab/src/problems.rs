@@ -58,6 +58,14 @@ pub enum LabError {
         /// The duplicated onset.
         onset: u32,
     },
+    /// Per-note labels (e.g. technique flags) do not cover the line.
+    #[error("{labels} per-note labels for {notes} notes")]
+    LabelLength {
+        /// Notes in the line.
+        notes: usize,
+        /// Labels supplied.
+        labels: usize,
+    },
 }
 
 /// Problem A: assign one fret per line note so consecutive travel stays

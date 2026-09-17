@@ -31,8 +31,8 @@ use griff_constraint_lab::{
 };
 use griff_core::{
     event::{
-        FretboardPosition, NoteMarks, NotePosition, Pitch, Tempo, Ticks, TimeSignature, Tuning,
-        Velocity,
+        FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, Tempo, Ticks, TimeSignature,
+        Tuning, Velocity,
     },
     fretboard::{infer_positions, FingeringWeights, STANDARD_MAX_FRET},
     score::{
@@ -112,6 +112,14 @@ fn score_with_tuning(voices: Vec<Vec<EventGroup>>, tuning: Tuning) -> Score {
 
 fn single(onset: u32, p: u8, position: Option<(u8, u8)>) -> EventGroup {
     group(vec![note(onset, p, position)])
+}
+
+fn tapped_single(onset: u32, p: u8, position: (u8, u8)) -> EventGroup {
+    let AtomEvent::Note(mut n) = note(onset, p, Some(position)) else {
+        unreachable!("note builds a note")
+    };
+    n.marks = NoteMarks::empty().with(NoteMark::Tap);
+    group(vec![AtomEvent::Note(n)])
 }
 
 // ── tablature lines ───────────────────────────────────────────────────────────
@@ -317,6 +325,24 @@ fn tab_lines_record_the_hand_anchor_before_each_line() {
     assert_eq!(lines[0].anchor_fret, None);
     assert_eq!(lines[1].anchor_fret, Some(2));
     assert_eq!(lines[3].anchor_fret, None, "voice 1 starts fresh");
+}
+
+#[test]
+fn tab_lines_flag_tapped_notes() {
+    // D string: fret 5, 8, tapped 12, 8, 5 — a tap-and-pull figure.
+    let s = score(vec![vec![
+        single(0, 55, Some((4, 5))),
+        single(Q, 58, Some((4, 8))),
+        tapped_single(2 * Q, 62, (4, 12)),
+        single(3 * Q, 58, Some((4, 8))),
+        single(4 * Q, 55, Some((4, 5))),
+    ]]);
+    let (lines, _) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    assert_eq!(lines[0].tapped, vec![false, false, true, false, false]);
+    let (plain, _) = tab_lines(&cut_fixture(), 0, &LineCut::v1()).unwrap();
+    assert!(plain
+        .iter()
+        .all(|l| l.tapped.len() == l.pitches.len() && l.tapped.iter().all(|t| !t)));
 }
 
 #[test]
