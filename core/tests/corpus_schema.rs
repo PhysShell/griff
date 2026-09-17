@@ -9,10 +9,10 @@
 
 use griff_core::complement::AxisScores;
 use griff_core::corpus::{
-    song_holdout_preflight, Acquisition, BoundaryEntry, ChunkId, ChunkMeta, CorpusManifest,
-    EnsembleGroup, EnsembleRef, PairRelation, QualityFlag, ReviewerDecision, RightsInfo,
-    RightsStatus, SongHoldoutRefusal, SongId, SourceFormat, SourceRef, StyleCohort, SwancoreTag,
-    SCHEMA_VERSION,
+    bind_source, song_holdout_preflight, source_sha256, Acquisition, BoundaryEntry, ChunkId,
+    ChunkMeta, CorpusManifest, EnsembleGroup, EnsembleRef, PairRelation, QualityFlag,
+    ReviewerDecision, RightsInfo, RightsStatus, SongHoldoutRefusal, SongId, SourceBindingError,
+    SourceFormat, SourceRef, StyleCohort, SwancoreTag, SCHEMA_VERSION,
 };
 use griff_core::gesture::GestureStats;
 use griff_core::novelty::PhraseDuplicate;
@@ -108,6 +108,33 @@ fn schema_version_is_10() {
         SCHEMA_VERSION, 10,
         "SourceRef.song_id + CorpusManifest.songs bump the corpus schema to v10"
     );
+}
+
+// ── source binding: a record accepts only the bytes it pins ──────────────────
+
+#[test]
+fn a_pinned_record_binds_only_the_bytes_it_pins() {
+    let mut source = minimal_chunk().source;
+    let pinned = source_sha256(b"the tab the record was cut from");
+    let other = source_sha256(b"a different file under the same name");
+    source.sha256 = Some(pinned.clone());
+
+    assert_eq!(bind_source(&source, &pinned), Ok(()));
+    assert_eq!(
+        bind_source(&source, &other),
+        Err(SourceBindingError::HashMismatch {
+            expected: pinned,
+            found: other,
+        }),
+        "a filename is not an identity: other bytes never supply the notes"
+    );
+}
+
+#[test]
+fn a_pre_v9_record_pins_nothing_and_binds_unverified() {
+    let source = minimal_chunk().source;
+    assert_eq!(source.sha256, None, "the fixture is a pre-v9 record");
+    assert_eq!(bind_source(&source, &source_sha256(b"any bytes")), Ok(()));
 }
 
 // ── schema v10: canonical song identity (ADR-0031) ───────────────────────────
