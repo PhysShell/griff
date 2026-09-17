@@ -137,6 +137,9 @@ pub struct TabLine {
     /// fretted precedes the line. Taken from the tab — context for tab
     /// completion, not something MIDI-sourced material carries.
     pub anchor_fret: Option<u8>,
+    /// Per note, whether the tab marks it tapped (`NoteMark::Tap`) — played by
+    /// the picking hand on the fretboard, not fretted by the fretting hand.
+    pub tapped: Vec<bool>,
 }
 
 /// Cuts one track into monophonic tablature lines, per voice.
@@ -1060,6 +1063,7 @@ impl<'a> LineBuilder<'a> {
             pitches,
             human,
             anchor_fret: self.anchor,
+            tapped: vec![false; len],
         });
     }
 }

@@ -24,4 +24,5 @@ pub mod manifest;
 pub mod optir;
 pub mod problems;
 pub mod solve;
+pub mod technique;
 pub mod ties;

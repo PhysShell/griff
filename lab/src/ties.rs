@@ -73,6 +73,23 @@ pub struct Chain {
 }
 
 impl Chain {
+    /// A chain from explicit parts, for objectives built outside this module
+    /// (e.g. [`crate::technique::tap_aware_chain`]). Callers guarantee the
+    /// shapes: one candidate list per note, matching unary lengths, and
+    /// `pairwise[i][a][b]` for every candidate pair of consecutive notes.
+    pub(crate) const fn from_parts(
+        positions: Vec<Vec<FretboardPosition>>,
+        unary: Vec<Vec<i64>>,
+        pairwise: Vec<Vec<Vec<i64>>>,
+    ) -> Self {
+        Self {
+            positions,
+            unary,
+            pairwise,
+            anchor: None,
+        }
+    }
+
     /// The production `v1` objective (as `griff_core::fretboard::infer_positions`
     /// minimizes it) as a chain.
     ///
