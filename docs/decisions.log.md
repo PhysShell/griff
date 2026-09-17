@@ -2895,3 +2895,21 @@ Architectural decisions go to [`adr/`](adr/) instead.
   duplicate passes for coinciding views. Reviewed verbatim at `dc49109`;
   design note `docs/proposals/generator-observatory.md` is now historical
   context.
+
+- 2026-09-17 — In the context of the experiment bundle (ADR-0034), facing
+  displayed facts a bundle could carry while still verifying (population
+  counts, a pass's contribution and candidate count, a cell's metric
+  values and diagnostics, variant labels) and a writer that could return an
+  empty artifact, we decided that **every fact a bundle displays is bound
+  to an identity, and writing fails closed**, to achieve a bundle whose
+  "verified" means every shown number is what the run recorded, accepting
+  a population identity bump (`corpus-snapshot.v2`, with its goldens) and
+  three record identities kept apart from the causal ones:
+  - **pass record**: what a pass claims happened, never mixed into pass
+    information;
+  - **cell record**: what a cell claims, including its metrics,
+    diagnostics and refusal;
+  - **run record**: the whole run, including labels.
+
+  Identities are consistency, not authentication: the only sealing path is
+  crate-private, so the public API cannot re-verify an edited run.
