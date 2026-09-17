@@ -295,6 +295,150 @@ pub fn kept_provenance<'a>(
 mod tests {
     use super::*;
 
+    /// One 4/4 bar of four quarter notes opening on `first` — a valid tab
+    /// whose bytes change with `first`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::expect_used)]
+    fn one_bar(first: u8) -> griff_core::score::Score {
+        use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
+        use griff_core::score::{
+            AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+            Score, Track, Voice,
+        };
+        use griff_core::slice::TickRange;
+
+        let event_groups = [(0_u32, first), (480, 43), (960, 45), (1440, 47)]
+            .into_iter()
+            .map(|(start, pitch)| EventGroup {
+                kind: EventGroupKind::Single,
+                atoms: vec![AtomEvent::Note(AtomNote {
+                    absolute_start: Ticks(start),
+                    duration: Ticks(480),
+                    pitch: Pitch::new(pitch).expect("valid pitch"),
+                    velocity: Velocity::new(90).expect("valid velocity"),
+                    marks: NoteMarks::empty(),
+                    position: None,
+                })],
+                technique_spans: Vec::new(),
+            })
+            .collect();
+        Score {
+            ticks_per_quarter: 480,
+            master_bars: vec![MasterBar {
+                index: 0,
+                tick_range: TickRange::new(Ticks(0), Ticks(1920)).expect("ordered"),
+                time_signature: TimeSignature::new(4, 4).expect("4/4"),
+                tempo: Tempo::from_bpm_integer(120).expect("120 BPM"),
+                repeat: RepeatMarker::default(),
+            }],
+            tracks: vec![Track {
+                name: None,
+                channel: 0,
+                voices: vec![Voice {
+                    id: 0,
+                    event_groups,
+                }],
+                tuning: Tuning::standard_e(),
+            }],
+            source_meta: None,
+            loss: LossReport::new(),
+        }
+    }
+
+    /// The source-binding scenario, mirrored verbatim from the CLI loader's
+    /// test (`cli/src/generation_input.rs`): the same directory must yield the
+    /// same accepted and skipped records in both shells.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn a_record_binds_only_the_file_it_names_holding_the_bytes_it_pins() {
+        use std::{env, fs, process};
+
+        use griff_core::corpus::{source_sha256, ChunkId, SourceFormat, SourceRef};
+        use griff_core::midi::export_score;
+
+        let dir = env::temp_dir().join(format!("griff_binding_cockpit_{}", process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let x = export_score(&one_bar(40)).expect("exports").bytes;
+        let y = export_score(&one_bar(41)).expect("exports").bytes;
+        let (sha_x, sha_y) = (source_sha256(&x), source_sha256(&y));
+        assert_ne!(sha_x, sha_y, "the fixture holds two different files");
+        fs::write(dir.join("a.mid"), &x).expect("write a.mid");
+        fs::write(dir.join("b.mid"), &y).expect("write b.mid");
+        let records = [
+            ("a_pinned", "a.mid", Some(&sha_x)),
+            ("b_legacy", "a.mid", None),
+            ("c_ghost", "missing.mid", Some(&sha_x)),
+            ("d_renamed", "b.mid", Some(&sha_x)),
+            ("e_stale", "a.mid", Some(&sha_y)),
+        ];
+        for (id, filename, sha) in records {
+            let meta = ChunkMeta {
+                id: ChunkId(id.to_owned()),
+                title: String::new(),
+                source: SourceRef {
+                    filename: filename.to_owned(),
+                    format: SourceFormat::Midi,
+                    bar_range: Some((0, 0)),
+                    track_index: Some(0),
+                    sha256: sha.cloned(),
+                    song_id: None,
+                },
+                tempo_bpm: 120.0,
+                ticks_per_quarter: 480,
+                time_signature: (4, 4),
+                tuning: "standard_e".to_owned(),
+                tags: Vec::new(),
+                boundaries: Vec::new(),
+                techniques: Vec::new(),
+                quality_flags: Vec::new(),
+                reviewer: None,
+                structure: None,
+                gesture: None,
+                complexity: None,
+                duplicate: None,
+                style_cohort: None,
+                ensemble: None,
+                rights: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+            };
+            fs::write(
+                dir.join(format!("{id}.chunk.json")),
+                serde_json::to_string(&meta).expect("serializes"),
+            )
+            .expect("write record");
+        }
+
+        let loaded = load_corpus_dir(&dir).expect("corpus loads");
+
+        assert_eq!(
+            loaded.material.skipped,
+            [
+                "c_ghost.chunk.json",
+                "d_renamed.chunk.json",
+                "e_stale.chunk.json"
+            ],
+            "a record binds only the file it names, holding the bytes it pins"
+        );
+        assert_eq!(
+            loaded.material.references.len(),
+            2,
+            "a_pinned and b_legacy load"
+        );
+        assert_eq!(
+            loaded
+                .sources
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a.mid"],
+            "a file no accepted record binds is not offered as a seed tab"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_fresh_panel_carries_the_cli_generate_defaults() {
         let panel = GeneratePanel::new();

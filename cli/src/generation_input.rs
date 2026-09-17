@@ -109,7 +109,7 @@ fn load_chunk(
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-    use super::{import, load_corpus_material_with, source_sha256, Score};
+    use super::{import, load_corpus_material, load_corpus_material_with, source_sha256, Score};
     use griff_core::corpus::{ChunkId, ChunkMeta, SourceFormat, SourceRef};
     use griff_core::event::{NoteMarks, Pitch, Tempo, Ticks, TimeSignature, Tuning, Velocity};
     use griff_core::midi;
@@ -244,6 +244,73 @@ mod tests {
             1,
             "the shared source is parsed once, not once per chunk"
         );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `two_bar_source` with its first note moved: a valid tab with other bytes.
+    fn other_source() -> Score {
+        let mut score = two_bar_source();
+        let first = score
+            .tracks
+            .iter_mut()
+            .flat_map(|t| &mut t.voices)
+            .flat_map(|v| &mut v.event_groups)
+            .flat_map(|g| &mut g.atoms)
+            .next()
+            .unwrap();
+        if let AtomEvent::Note(n) = first {
+            n.pitch = Pitch::new(41).unwrap();
+        }
+        score
+    }
+
+    /// The source-binding scenario. The native cockpit loader's test builds the
+    /// same directory and expects the same accepted and skipped records: the
+    /// two loaders are two shells over one binding rule.
+    #[test]
+    fn a_record_binds_only_the_file_it_names_holding_the_bytes_it_pins() {
+        let dir = env::temp_dir().join(format!("griff_binding_cli_{}", process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let x = midi::export_score(&two_bar_source()).unwrap().bytes;
+        let y = midi::export_score(&other_source()).unwrap().bytes;
+        let (sha_x, sha_y) = (source_sha256(&x), source_sha256(&y));
+        assert_ne!(sha_x, sha_y, "the fixture holds two different files");
+        fs::write(dir.join("a.mid"), &x).unwrap();
+        fs::write(dir.join("b.mid"), &y).unwrap();
+        let records = [
+            ("a_pinned", "a.mid", Some(&sha_x)),
+            ("b_legacy", "a.mid", None),
+            // Loads after `a_pinned`, whose hash it pins: a parse cached under
+            // that hash must not stand in for a file that does not exist…
+            ("c_ghost", "missing.mid", Some(&sha_x)),
+            // …or for a file that holds other bytes.
+            ("d_renamed", "b.mid", Some(&sha_x)),
+            ("e_stale", "a.mid", Some(&sha_y)),
+        ];
+        for (id, filename, sha) in records {
+            let mut meta = chunk_meta(id, "", (0, 0));
+            meta.source.filename = filename.to_owned();
+            meta.source.sha256 = sha.cloned();
+            fs::write(
+                dir.join(format!("{id}.chunk.json")),
+                serde_json::to_string(&meta).unwrap(),
+            )
+            .unwrap();
+        }
+
+        let material = load_corpus_material(&dir).expect("corpus loads");
+
+        assert_eq!(
+            material.skipped,
+            [
+                "c_ghost.chunk.json",
+                "d_renamed.chunk.json",
+                "e_stale.chunk.json"
+            ],
+            "a record binds only the file it names, holding the bytes it pins"
+        );
+        assert_eq!(material.references.len(), 2, "a_pinned and b_legacy load");
 
         fs::remove_dir_all(&dir).ok();
     }

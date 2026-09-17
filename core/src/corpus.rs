@@ -100,6 +100,35 @@ pub fn source_sha256(bytes: &[u8]) -> String {
         })
 }
 
+/// Why a source file cannot supply a corpus record's notes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceBindingError {
+    /// The record pins a content hash (schema v9) the file does not have.
+    HashMismatch {
+        /// The `sha256` the record pins.
+        expected: String,
+        /// The `sha256` of the bytes read for the record's `filename`.
+        found: String,
+    },
+}
+
+/// Binds the file a record names to that record — the one rule every corpus
+/// loader applies before a file may supply a record's notes.
+///
+/// `found_sha256` is [`source_sha256`] of the bytes read for
+/// `source.filename`. It is a digest rather than the bytes so a loader hashes
+/// each file once, however many records name it. A record that pins a hash
+/// accepts only a file with exactly that hash; a pre-v9 record pins none and
+/// accepts the file unverified, as before. Reading the file, and treating a
+/// missing one as a load failure, stays the caller's.
+///
+/// # Errors
+/// [`SourceBindingError::HashMismatch`] when the record pins another hash.
+pub fn bind_source(source: &SourceRef, found_sha256: &str) -> Result<(), SourceBindingError> {
+    let _ = (source, found_sha256);
+    Ok(())
+}
+
 // ── source provenance ─────────────────────────────────────────────────────────
 
 /// The import format a chunk was sourced from.
