@@ -5,8 +5,15 @@ use griff_core::generate::PitchMaterial;
 use griff_core::generation_input::GenerationAsk;
 use griff_core::score::Score;
 
-use crate::fingerprint::Fingerprint;
+use crate::fingerprint::{self, ask_fingerprint, references_fingerprint, Fingerprint, Hasher};
+use crate::metric::EVALUATOR_GENERATION_AXES;
 use crate::regime::InformationRegime;
+
+/// Writes a policy identity.
+pub(crate) fn policy(h: &mut Hasher, identity: PolicyIdentity) {
+    h.str(identity.id);
+    h.u32(identity.version);
+}
 
 /// A policy's stable name and version — the identity an experiment records for
 /// every stage it ran.
@@ -171,8 +178,19 @@ impl EvaluationContext {
     /// The context's own fingerprint; `None` for [`EvaluationContext::None`].
     #[must_use]
     pub fn fingerprint(&self) -> Option<Fingerprint> {
-        let _ = self;
-        None
+        match self {
+            Self::None => None,
+            Self::GenerationAxes {
+                pitch_material,
+                references,
+            } => {
+                let mut h = Hasher::new("griff.experiment.evaluation.v1");
+                policy(&mut h, EVALUATOR_GENERATION_AXES);
+                fingerprint::pitch_material(&mut h, pitch_material);
+                h.fingerprint(references_fingerprint(references));
+                Some(h.finish())
+            }
+        }
     }
 }
 
@@ -210,17 +228,60 @@ impl ExperimentSpec {
     ///
     /// # Errors
     /// The first [`SpecError`] found.
-    pub const fn validate(&self) -> Result<(), SpecError> {
-        let _ = self;
+    pub fn validate(&self) -> Result<(), SpecError> {
+        if self.variants.is_empty() {
+            return Err(SpecError::NoVariants);
+        }
+        if self.regimes.is_empty() {
+            return Err(SpecError::NoRegimes);
+        }
+        for (i, regime) in self.regimes.iter().enumerate() {
+            if self.regimes.iter().take(i).any(|seen| seen == regime) {
+                return Err(SpecError::DuplicateRegime(*regime));
+            }
+        }
+        for (i, variant) in self.variants.iter().enumerate() {
+            if self
+                .variants
+                .iter()
+                .take(i)
+                .any(|seen| seen.label == variant.label)
+            {
+                return Err(SpecError::DuplicateVariantLabel(variant.label.clone()));
+            }
+        }
+        if let Some(regime) = self
+            .regimes
+            .iter()
+            .find(|regime| regime.gesture && !self.ask.gesture)
+        {
+            return Err(SpecError::GestureChannelDeclinedByAsk(*regime));
+        }
         Ok(())
     }
 
     /// The spec's fingerprint: ask, variants' stage identities, regimes, and
     /// the evaluation context. Inputs (source, corpus) are identities of their
-    /// own.
+    /// own. Variant labels are for people and are not hashed; each variant's
+    /// stage identities are.
     #[must_use]
-    pub const fn fingerprint(&self) -> Fingerprint {
-        let _ = self;
-        Fingerprint([0; 32])
+    pub fn fingerprint(&self) -> Fingerprint {
+        let mut h = Hasher::new("griff.experiment.spec.v1");
+        h.fingerprint(ask_fingerprint(&self.ask));
+        h.usize(self.variants.len());
+        for variant in &self.variants {
+            policy(&mut h, variant.generator.identity());
+            policy(&mut h, variant.scorer.identity());
+            policy(&mut h, variant.selector.identity());
+            policy(&mut h, variant.realizer.identity());
+        }
+        h.usize(self.regimes.len());
+        for regime in &self.regimes {
+            h.bool(regime.rhythms);
+            h.bool(regime.references);
+            h.bool(regime.gesture);
+        }
+        h.option_fingerprint(self.evaluation.fingerprint());
+        h.finish()
     }
 }

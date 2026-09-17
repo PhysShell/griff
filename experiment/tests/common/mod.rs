@@ -12,10 +12,10 @@ use griff_core::score::{
 use griff_core::slice::TickRange;
 use griff_experiment::{EvaluationContext, ExperimentSpec, InformationRegime, VariantSpec};
 
-pub const BAR: u32 = 1920;
+pub(crate) const BAR: u32 = 1920;
 
 /// Two 4/4 bars of the given `(onset, duration, pitch)` notes on one track.
-pub fn score_of(notes: &[(u32, u32, u8)]) -> Score {
+pub(crate) fn score_of(notes: &[(u32, u32, u8)]) -> Score {
     let master_bars = (0..2_usize)
         .map(|i| {
             let start = u32::try_from(i).expect("two bars").saturating_mul(BAR);
@@ -61,7 +61,7 @@ pub fn score_of(notes: &[(u32, u32, u8)]) -> Score {
     }
 }
 
-pub fn source() -> Score {
+pub(crate) fn source() -> Score {
     score_of(&[
         (0, 480, 40),
         (480, 480, 43),
@@ -73,7 +73,7 @@ pub fn source() -> Score {
     ])
 }
 
-pub fn template(notes: &[(u32, u32)]) -> RhythmTemplate {
+pub(crate) fn template(notes: &[(u32, u32)]) -> RhythmTemplate {
     RhythmTemplate {
         notes: notes
             .iter()
@@ -86,7 +86,7 @@ pub fn template(notes: &[(u32, u32)]) -> RhythmTemplate {
 }
 
 /// A population with every channel populated.
-pub fn corpus() -> CorpusMaterial {
+pub(crate) fn corpus() -> CorpusMaterial {
     CorpusMaterial {
         rhythms: vec![
             template(&[(0, 240), (240, 240), (480, 480), (960, 960)]),
@@ -105,13 +105,13 @@ pub fn corpus() -> CorpusMaterial {
 }
 
 /// The same population with one reference changed, every other channel equal.
-pub fn corpus_with_other_references() -> CorpusMaterial {
+pub(crate) fn corpus_with_other_references() -> CorpusMaterial {
     let mut material = corpus();
     material.references[1] = score_of(&[(0, 240, 53), (240, 240, 50), (480, 960, 47)]);
     material
 }
 
-pub const fn ask() -> GenerationAsk {
+pub(crate) const fn ask() -> GenerationAsk {
     GenerationAsk {
         seed: 42,
         bars: 4,
@@ -122,7 +122,7 @@ pub const fn ask() -> GenerationAsk {
 }
 
 /// Milestone 1: S6 Intact and S7 Global Chain × seed-only and full.
-pub fn two_by_two(evaluation: EvaluationContext) -> ExperimentSpec {
+pub(crate) fn two_by_two(evaluation: EvaluationContext) -> ExperimentSpec {
     ExperimentSpec {
         ask: ask(),
         variants: vec![VariantSpec::s6_intact(), VariantSpec::s7_global_chain()],

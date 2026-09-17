@@ -58,6 +58,9 @@ pub enum Unavailable {
 }
 
 /// A comparison's outcome: a number, or the reason there is none.
+// A number and a one-byte reason differ in size by nature; boxing the number
+// to satisfy the lint would buy nothing.
+#[allow(variant_size_differences)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Comparison {
     /// The arithmetic, over compatible identities.
@@ -68,20 +71,37 @@ pub enum Comparison {
 
 /// `to − from`, when both exist and share one identity.
 #[must_use]
-pub const fn delta(from: Option<&MetricValue>, to: Option<&MetricValue>) -> Comparison {
-    let _ = (from, to);
-    Comparison::Unavailable(Unavailable::Missing)
+pub fn delta(from: Option<&MetricValue>, to: Option<&MetricValue>) -> Comparison {
+    match (from, to) {
+        (Some(from), Some(to)) if from.identity == to.identity => {
+            Comparison::Available(to.value - from.value)
+        }
+        (Some(_), Some(_)) => Comparison::Unavailable(Unavailable::IncompatibleIdentity),
+        _ => Comparison::Unavailable(Unavailable::Missing),
+    }
 }
 
 /// `(b1 − a1) − (b0 − a0)`: how much variant B's effect over A changes between
 /// two regimes. Defined only when all four are evaluations with one identity.
 #[must_use]
-pub const fn interaction(
+pub fn interaction(
     a0: Option<&MetricValue>,
     b0: Option<&MetricValue>,
     a1: Option<&MetricValue>,
     b1: Option<&MetricValue>,
 ) -> Comparison {
-    let _ = (a0, b0, a1, b1);
-    Comparison::Unavailable(Unavailable::Missing)
+    let (Some(a0), Some(b0), Some(a1), Some(b1)) = (a0, b0, a1, b1) else {
+        return Comparison::Unavailable(Unavailable::Missing);
+    };
+    let all = [a0, b0, a1, b1];
+    if all
+        .iter()
+        .any(|m| m.identity.kind != MetricKind::Evaluation)
+    {
+        return Comparison::Unavailable(Unavailable::NotAnEvaluation);
+    }
+    if all.iter().any(|m| m.identity != a0.identity) {
+        return Comparison::Unavailable(Unavailable::IncompatibleIdentity);
+    }
+    Comparison::Available((b1.value - a1.value) - (b0.value - a0.value))
 }

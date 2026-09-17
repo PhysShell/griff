@@ -13,13 +13,18 @@
 mod common;
 
 use common::{ask, corpus, corpus_with_other_references, score_of, source, template, two_by_two};
-use griff_core::candidate_chain::plan_candidate_chain;
+use std::slice;
+
+use griff_core::candidate_chain::{intact_s6_cost, plan_candidate_chain};
 use griff_core::closure::closure_axes;
+use griff_core::event::Pitch;
 use griff_core::generation_input::{
     generation_request_from_score, ranked_candidates, CorpusContribution, CorpusMaterial,
+    GenerationAsk,
 };
 use griff_core::novelty::{measure_novelty, novelty_axes};
 use griff_core::rerank::{rerank_weights_v1, RERANK_AXIS_LABELS};
+use griff_core::score::AtomEvent;
 use griff_experiment::{
     delta, interaction, references_fingerprint, rhythms_fingerprint, run_experiment,
     score_fingerprint, CellOutcome, Comparison, Diagnostic, EvaluationContext, ExperimentInputs,
@@ -75,10 +80,8 @@ fn fingerprints_are_content_sensitive_and_order_sensitive() {
     let a = source();
     let mut b = source();
     assert_eq!(score_fingerprint(&a), score_fingerprint(&b));
-    if let Some(griff_core::score::AtomEvent::Note(n)) =
-        b.tracks[0].voices[0].event_groups[0].atoms.first_mut()
-    {
-        n.pitch = griff_core::event::Pitch(41);
+    if let Some(AtomEvent::Note(n)) = b.tracks[0].voices[0].event_groups[0].atoms.first_mut() {
+        n.pitch = Pitch(41);
     }
     assert_ne!(score_fingerprint(&a), score_fingerprint(&b), "one pitch");
 
@@ -91,7 +94,7 @@ fn fingerprints_are_content_sensitive_and_order_sensitive() {
     );
     assert_ne!(
         references_fingerprint(&[]),
-        references_fingerprint(std::slice::from_ref(&a)),
+        references_fingerprint(slice::from_ref(&a)),
     );
 }
 
@@ -320,8 +323,15 @@ fn the_spec_population_and_evaluation_identities_are_separate() {
     assert_eq!(none.corpus, fixed.corpus, "the population is not");
     assert_eq!(none.passes, fixed.passes, "nor is what a pass consumed");
     assert_eq!(
-        none.cells.iter().map(|c| c.recipe).collect::<Vec<_>>(),
-        fixed.cells.iter().map(|c| c.recipe).collect::<Vec<_>>(),
+        none.cells
+            .iter()
+            .map(|cell| cell.recipe)
+            .collect::<Vec<_>>(),
+        fixed
+            .cells
+            .iter()
+            .map(|cell| cell.recipe)
+            .collect::<Vec<_>>(),
         "nor what produced a cell"
     );
 }
@@ -418,7 +428,7 @@ fn a_policy_objective_compares_within_its_pass_and_nowhere_else() {
 
     let set = ranked_candidates(&source(), Some(&c), &ask(), None).expect("seeds");
     let plan = plan_candidate_chain(&set).expect("chain-compatible");
-    let intact_cost = griff_core::candidate_chain::intact_s6_cost(&set).expect("compatible");
+    let intact_cost = intact_s6_cost(&set).expect("compatible");
     assert_eq!(
         delta(
             cost(INTACT, InformationRegime::FULL),
@@ -532,7 +542,7 @@ fn refused(spec: &ExperimentSpec) -> SpecError {
 #[test]
 fn a_regime_whose_gesture_the_ask_declines_is_refused_not_run() {
     let spec = ExperimentSpec {
-        ask: griff_core::generation_input::GenerationAsk {
+        ask: GenerationAsk {
             gesture: false,
             ..ask()
         },

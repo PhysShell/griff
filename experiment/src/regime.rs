@@ -55,7 +55,28 @@ impl InformationRegime {
     /// All eight channel combinations, `SEED_ONLY` first and `FULL` last.
     #[must_use]
     pub const fn all() -> [Self; 8] {
-        [Self::SEED_ONLY; 8]
+        [
+            Self::SEED_ONLY,
+            Self::RHYTHMS_ONLY,
+            Self::REFERENCES_ONLY,
+            Self {
+                rhythms: true,
+                references: true,
+                gesture: false,
+            },
+            Self::GESTURE_ONLY,
+            Self {
+                rhythms: true,
+                references: false,
+                gesture: true,
+            },
+            Self {
+                rhythms: false,
+                references: true,
+                gesture: true,
+            },
+            Self::FULL,
+        ]
     }
 
     /// The view of `corpus` this regime lets a pass consume: each masked
@@ -63,7 +84,21 @@ impl InformationRegime {
     /// channel is empty, whatever the regime asks for.
     #[must_use]
     pub const fn view(self, corpus: Option<&CorpusMaterial>) -> CorpusMaterialView<'_> {
-        let _ = corpus;
-        CorpusMaterialView::empty()
+        let Some(material) = corpus else {
+            return CorpusMaterialView::empty();
+        };
+        CorpusMaterialView {
+            rhythms: if self.rhythms {
+                material.rhythms.as_slice()
+            } else {
+                &[]
+            },
+            references: if self.references {
+                material.references.as_slice()
+            } else {
+                &[]
+            },
+            gesture: if self.gesture { material.gesture } else { None },
+        }
     }
 }
