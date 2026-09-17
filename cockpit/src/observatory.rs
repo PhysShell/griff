@@ -337,8 +337,7 @@ mod tests {
 
     use super::*;
     use griff_core::import::import_score_auto;
-    use griff_experiment::{CellOutcomeV1, CellRefusalV1, Unavailable};
-    use griff_ui_core::observatory::CellOutcomeView;
+    use griff_experiment::Unavailable;
 
     fn demo() -> Score {
         import_score_auto(include_bytes!("../assets/demo.mid")).expect("demo imports")
@@ -417,21 +416,6 @@ mod tests {
             LoadedExperiment::open_json("{", Origin::File("broken.json".to_owned())),
             Err(BundleError::Malformed(_))
         ));
-    }
-
-    #[test]
-    fn a_refused_cell_arranges_as_its_refusal() {
-        let source = demo();
-        let spec = milestone_spec(ask(), &source, false).expect("seeds");
-        let mut bundle = LoadedExperiment::run(&spec, &source, None)
-            .expect("runs")
-            .bundle;
-        bundle.cells[3].outcome = CellOutcomeV1::Refused(CellRefusalV1::EmptySet);
-        let loaded = LoadedExperiment::from_bundle(bundle, Origin::Run).expect("arranges");
-        assert_eq!(
-            loaded.view.cells[3].outcome,
-            CellOutcomeView::Refused(CellRefusal::EmptySet)
-        );
     }
 
     #[test]

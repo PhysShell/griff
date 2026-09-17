@@ -4142,7 +4142,7 @@ mod tests {
     use eframe::egui::epaint::ClippedShape;
     use eframe::egui::Shape;
     use griff_core::classify::BarClass;
-    use griff_experiment::{CellOutcomeV1, CellRefusalV1};
+    use griff_experiment::CellRefusal;
     use griff_ui_core::history::CorpusContribution;
     use griff_ui_core::playback::ticks_per_second;
     use griff_ui_core::scene::CellRole;
@@ -6788,6 +6788,20 @@ mod tests {
         }
     }
 
+    /// A view fixture: the shown view with `cell` refused. The milestone run
+    /// does not refuse, and a bundle edited to refuse is rejected before it
+    /// becomes a view, so how the window treats a refusal is tested on the view
+    /// the window reads — not on a forged bundle.
+    fn refuse_shown_cell(app: &mut CockpitApp, cell: usize) {
+        app.observatory
+            .loaded
+            .as_mut()
+            .expect("an experiment is shown")
+            .view
+            .cells[cell]
+            .outcome = CellOutcomeView::Refused(CellRefusal::EmptySet);
+    }
+
     #[test]
     fn running_an_experiment_shows_its_bundle_and_touches_no_generate_state() {
         let mut app = observatory_app();
@@ -6864,18 +6878,7 @@ mod tests {
     fn a_refused_cell_is_shown_as_a_refusal_and_never_played() {
         let mut app = observatory_app();
         app.run_experiment_panel();
-        let mut bundle = app
-            .observatory
-            .loaded
-            .as_ref()
-            .expect("shown")
-            .bundle
-            .clone();
-        bundle.cells[3].outcome = CellOutcomeV1::Refused(CellRefusalV1::EmptySet);
-        app.observatory.install(
-            observatory::LoadedExperiment::from_bundle(bundle, observatory::Origin::Run)
-                .expect("arranges"),
-        );
+        refuse_shown_cell(&mut app, 3);
         let before = app.score.clone();
         app.show_experiment_cell(3);
         assert_eq!(app.score, before, "no fake score stands in for a refusal");
@@ -6986,18 +6989,7 @@ mod tests {
     fn the_observatory_window_shows_a_refusal_in_place_of_a_score() {
         let mut app = observatory_app();
         app.run_experiment_panel();
-        let mut bundle = app
-            .observatory
-            .loaded
-            .as_ref()
-            .expect("shown")
-            .bundle
-            .clone();
-        bundle.cells[3].outcome = CellOutcomeV1::Refused(CellRefusalV1::EmptySet);
-        app.observatory.install(
-            observatory::LoadedExperiment::from_bundle(bundle, observatory::Origin::Run)
-                .expect("arranges"),
-        );
+        refuse_shown_cell(&mut app, 3);
         let texts = observatory_texts(&mut app);
         assert!(
             texts

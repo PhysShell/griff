@@ -18,13 +18,12 @@ use griff_core::score::{
 };
 use griff_core::slice::TickRange;
 use griff_experiment::{
-    delta, interaction, run_experiment, CellOutcome, CellOutcomeV1, CellRefusal, CellRefusalV1,
-    Comparison, EvaluationContext, ExperimentBundleV1, ExperimentInputs, ExperimentRun,
-    ExperimentSpec, InformationRegime, MetricKind, Unavailable, VariantSpec, METRIC_AGGREGATE,
-    METRIC_CHAIN_COST,
+    delta, interaction, run_experiment, CellOutcome, CellRefusal, Comparison, EvaluationContext,
+    ExperimentBundleV1, ExperimentInputs, ExperimentRun, ExperimentSpec, InformationRegime,
+    MetricKind, Unavailable, VariantSpec, METRIC_AGGREGATE, METRIC_CHAIN_COST,
 };
 
-use super::{CellOutcomeView, EvaluationView, ExperimentView, RegimeName, StageKind};
+use super::{cell_views, CellOutcomeView, EvaluationView, ExperimentView, RegimeName, StageKind};
 
 fn score_of(notes: &[(u32, u32, u8)]) -> Score {
     let master_bars = (0..2_u32)
@@ -362,12 +361,18 @@ fn an_interaction_is_the_experiment_apis_for_evaluations_only() {
 }
 
 // ── a refusal is shown as a refusal ──────────────────────────────────────────
+//
+// No bundle here carries a refusal: this fixture's run does not refuse, and a
+// bundle edited to refuse is not a bundle this run wrote. How a refusal is
+// arranged and compared is the view's own logic, so it is tested on a run
+// and on the view — never by forging a bundle.
 
 #[test]
-fn a_refused_cell_projects_as_its_refusal_with_nothing_to_play() {
-    let mut bundle = bundle();
-    bundle.cells[3].outcome = CellOutcomeV1::Refused(CellRefusalV1::EmptySet);
-    let view = ExperimentView::from_bundle(&bundle).expect("projects");
+fn a_refused_cell_is_arranged_as_its_refusal_with_nothing_to_compare() {
+    let mut refused = run();
+    refused.cells[3].outcome = CellOutcome::Refused(CellRefusal::EmptySet);
+    let mut view = view();
+    view.cells = cell_views(&refused, &view.regimes).expect("placed");
     assert_eq!(
         view.cells[3].outcome,
         CellOutcomeView::Refused(CellRefusal::EmptySet)
