@@ -14,7 +14,7 @@
 use griff_core::event::{FretboardPosition, Pitch, Tuning};
 use griff_core::fretboard::FingeringWeights;
 
-use crate::fingering::v1_unary;
+use crate::fingering::{v1_unary, TechniqueEdge};
 use crate::problems::LabError;
 use crate::ties::Chain;
 
@@ -24,6 +24,109 @@ const INADMISSIBLE: i64 = i64::MAX / 4;
 
 /// A chain state: this note's candidate and the other hand's last candidate.
 type TapState = (usize, Option<usize>);
+
+/// Pitch direction into note `i` — **derived** evidence, not an imported
+/// label: the import gives a legato origin without its direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LegatoDirection {
+    /// Higher pitch than the previous note (a hammer-on candidate).
+    Ascending,
+    /// Lower pitch than the previous note (a pull-off candidate).
+    Descending,
+    /// The same pitch.
+    Unison,
+}
+
+/// The pitch direction from note `i − 1` to note `i`; `None` for note 0 or
+/// out of range.
+#[must_use]
+pub fn derived_direction(pitches: &[Pitch], i: usize) -> Option<LegatoDirection> {
+    let _ = (pitches, i);
+    todo!()
+}
+
+/// Cost of one cross-string legato edge under [`Continuity::Hard`]: far above
+/// any real line cost, so an optimum first minimizes such edges, then the rest
+/// of the objective; small enough that a line's worth of them cannot overflow.
+pub const HARD_VIOLATION: i64 = 1 << 32;
+
+/// How a legato edge binds its two notes to one string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Continuity {
+    /// No continuity term.
+    Off,
+    /// Each cross-string legato edge costs [`HARD_VIOLATION`].
+    Hard,
+    /// Each cross-string legato edge costs `k · position_shift`.
+    Soft {
+        /// Penalty in frets of hand travel.
+        k: i64,
+    },
+}
+
+/// The tap-aware objective plus the stage-2 legato terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TechniqueObjective {
+    /// The `v1` weights.
+    pub weights: FingeringWeights,
+    /// Picking-hand travel weight per fret.
+    pub tap_shift: i64,
+    /// Same-string continuity across legato edges.
+    pub continuity: Continuity,
+    /// The target of a legato edge with a derived descending direction (a
+    /// pull-off candidate) pays no open-string penalty: its open-string term
+    /// becomes `min(−open_string, 0)`, so a bonus is untouched.
+    pub pull_open_waiver: bool,
+}
+
+impl TechniqueObjective {
+    /// Stage 1's tap-aware objective: no legato terms.
+    #[must_use]
+    pub const fn tap_aware(weights: FingeringWeights, tap_shift: i64) -> Self {
+        Self {
+            weights,
+            tap_shift,
+            continuity: Continuity::Off,
+            pull_open_waiver: false,
+        }
+    }
+}
+
+/// [`tap_aware_cost`] plus the legato terms of `objective` over `edges`.
+///
+/// `None` when `pitches`, `tapped` or `edges` do not have one entry per
+/// position.
+#[must_use]
+pub fn technique_cost(
+    line: &[FretboardPosition],
+    pitches: &[Pitch],
+    tapped: &[bool],
+    edges: &[TechniqueEdge],
+    objective: &TechniqueObjective,
+) -> Option<i64> {
+    let _ = (line, pitches, tapped, edges, objective);
+    todo!()
+}
+
+/// [`technique_cost`] as a [`Chain`], so the exact optimum-set DPs apply.
+///
+/// # Errors
+///
+/// [`LabError::EmptyLine`] for no pitches; [`LabError::UnpositionablePitch`]
+/// when a pitch has no candidate at or below `max_fret`;
+/// [`LabError::LabelLength`] when `tapped` or `edges` do not have one entry
+/// per pitch.
+pub fn technique_chain(
+    pitches: &[Pitch],
+    tuning: &Tuning,
+    tapped: &[bool],
+    edges: &[TechniqueEdge],
+    objective: &TechniqueObjective,
+    max_fret: u8,
+) -> Result<Chain, LabError> {
+    let _ = (pitches, tuning, tapped, edges, objective, max_fret);
+    todo!()
+}
 
 /// The `v1` objective with tapped notes attributed to the picking hand:
 ///

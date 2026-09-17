@@ -84,6 +84,10 @@ pub struct CutStats {
     /// Tracks whose tuning was strictly ascending (string 1 = lowest, the GP6
     /// import orientation) and was mirrored to string 1 = highest.
     pub mirrored_tracks: u64,
+    /// Legato origins (a hammer-on, pull-off or legato span) on the last note
+    /// of a kept line: the note they lead to is not in the line, so they
+    /// project onto no [`TechniqueEdge`].
+    pub dangling_legato: u64,
 }
 
 impl CutStats {
@@ -101,6 +105,7 @@ impl CutStats {
             kept_lines,
             kept_notes,
             mirrored_tracks,
+            dangling_legato: _,
         } = *other;
         self.notes_seen = self.notes_seen.saturating_add(notes_seen);
         self.chord_onsets = self.chord_onsets.saturating_add(chord_onsets);
@@ -113,6 +118,37 @@ impl CutStats {
         self.kept_lines = self.kept_lines.saturating_add(kept_lines);
         self.kept_notes = self.kept_notes.saturating_add(kept_notes);
         self.mirrored_tracks = self.mirrored_tracks.saturating_add(mirrored_tracks);
+    }
+}
+
+/// What the tab joins a note to its predecessor with: a technique belongs to
+/// the edge from note `i − 1` to note `i`, not to either note.
+///
+/// These are the imported span kinds. Guitar Pro stores one legato flag on the
+/// note a hammer-on or pull-off starts from, without its direction, and the
+/// import emits every such flag as [`SpanTechnique::HammerOn`]: a `HammerOn`
+/// edge is an observed legato origin, not a known hammer-on. Direction can
+/// only be derived from pitch ([`crate::technique::derived_direction`]).
+///
+/// [`SpanTechnique::HammerOn`]: griff_core::event::SpanTechnique::HammerOn
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum TechniqueEdge {
+    /// No legato span leads into the note (always the case for note 0).
+    #[default]
+    Plain,
+    /// The previous note carries a `HammerOn` span.
+    HammerOn,
+    /// The previous note carries a `PullOff` span.
+    PullOff,
+    /// The previous note carries a `Legato` span.
+    Legato,
+}
+
+impl TechniqueEdge {
+    /// Whether a legato span of any kind joins the two notes.
+    #[must_use]
+    pub const fn is_legato(self) -> bool {
+        todo!()
     }
 }
 
@@ -140,6 +176,9 @@ pub struct TabLine {
     /// Per note, whether the tab marks it tapped (`NoteMark::Tap`) — played by
     /// the picking hand on the fretboard, not fretted by the fretting hand.
     pub tapped: Vec<bool>,
+    /// Per note, the technique edge from the previous note (`edges[0]` is
+    /// always [`TechniqueEdge::Plain`]).
+    pub edges: Vec<TechniqueEdge>,
 }
 
 /// Cuts one track into monophonic tablature lines, per voice.
@@ -1027,6 +1066,7 @@ struct LineBuilder<'a> {
     start_tick: u32,
     anchor: Option<u8>,
     tapped: Vec<bool>,
+    edges: Vec<TechniqueEdge>,
     pitches: Vec<Pitch>,
     human: Vec<FretboardPosition>,
 }
@@ -1040,6 +1080,7 @@ impl<'a> LineBuilder<'a> {
             start_tick: 0,
             anchor: None,
             tapped: Vec::new(),
+            edges: Vec::new(),
             pitches: Vec::new(),
             human: Vec::new(),
         }
@@ -1063,6 +1104,7 @@ impl<'a> LineBuilder<'a> {
         self.pitches.push(pitch);
         self.human.push(position);
         self.tapped.push(context.tapped);
+        self.edges.push(TechniqueEdge::Plain);
     }
 
     /// Ends the current line: kept when long enough, otherwise counted as
@@ -1075,6 +1117,7 @@ impl<'a> LineBuilder<'a> {
         let pitches = std::mem::take(&mut self.pitches);
         let human = std::mem::take(&mut self.human);
         let tapped = std::mem::take(&mut self.tapped);
+        let edges = std::mem::take(&mut self.edges);
         if len < cut.min_notes {
             stats.short_lines = stats.short_lines.saturating_add(1);
             stats.short_line_notes = stats.short_line_notes.saturating_add(count(len));
@@ -1091,6 +1134,7 @@ impl<'a> LineBuilder<'a> {
             human,
             anchor_fret: self.anchor,
             tapped,
+            edges,
         });
     }
 }

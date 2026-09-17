@@ -7,6 +7,11 @@
 //! its chain encoding scores every assignment identically, has the same
 //! optimum and optimal-assignment count, and without taps reproduces the `v1`
 //! chain's optimum and production path.
+//!
+//! Stage 2 (legato continuity): pitch-derived direction; the hard and soft
+//! same-string terms and the pull-off open-string waiver, hand-computed; with
+//! the legato terms off or no legato edge the objective is stage 1's; its
+//! chain encoding agrees with brute force for every term.
 
 #![allow(
     clippy::expect_used,
@@ -19,9 +24,12 @@
 )]
 
 use griff_constraint_lab::{
-    fingering::v1_cost,
+    fingering::{v1_cost, TechniqueEdge},
     problems::LabError,
-    technique::{tap_aware_chain, tap_aware_cost},
+    technique::{
+        derived_direction, tap_aware_chain, tap_aware_cost, technique_chain, technique_cost,
+        Continuity, LegatoDirection, TechniqueObjective, HARD_VIOLATION,
+    },
     ties::{lexicographic_path, optimum_set, Chain, FEATURES},
 };
 use griff_core::{
@@ -241,6 +249,283 @@ fn tap_aware_chain_refuses_bad_input() {
         Err(LabError::UnpositionablePitch {
             index: 1,
             pitch: 30
+        })
+    );
+}
+
+// ── stage 2: legato continuity ────────────────────────────────────────────────
+
+/// Legato (imported `HammerOn`) into note `i` for each set bit `i ≥ 1`.
+fn edge_flags(mask: u32, len: usize) -> Vec<TechniqueEdge> {
+    (0..len)
+        .map(|i| {
+            if i > 0 && mask & (1 << i) != 0 {
+                TechniqueEdge::HammerOn
+            } else {
+                TechniqueEdge::Plain
+            }
+        })
+        .collect()
+}
+
+const fn objective(
+    weights: FingeringWeights,
+    tap_shift: i64,
+    continuity: Continuity,
+    pull_open_waiver: bool,
+) -> TechniqueObjective {
+    TechniqueObjective {
+        weights,
+        tap_shift,
+        continuity,
+        pull_open_waiver,
+    }
+}
+
+/// Every legato term, alone and combined.
+fn legato_objectives(w: FingeringWeights, tap_shift: i64) -> Vec<TechniqueObjective> {
+    vec![
+        objective(w, tap_shift, Continuity::Hard, false),
+        objective(w, tap_shift, Continuity::Soft { k: 3 }, false),
+        objective(w, tap_shift, Continuity::Off, true),
+        objective(w, tap_shift, Continuity::Hard, true),
+        objective(w, tap_shift, Continuity::Soft { k: 1 }, true),
+    ]
+}
+
+#[test]
+fn derived_direction_follows_pitch() {
+    let p = pitches_of(&[55, 57, 57, 52]);
+    assert_eq!(derived_direction(&p, 0), None);
+    assert_eq!(derived_direction(&p, 1), Some(LegatoDirection::Ascending));
+    assert_eq!(derived_direction(&p, 2), Some(LegatoDirection::Unison));
+    assert_eq!(derived_direction(&p, 3), Some(LegatoDirection::Descending));
+    assert_eq!(derived_direction(&p, 4), None);
+}
+
+#[test]
+fn legato_edges_bind_their_notes_to_one_string() {
+    // D string 5 hammered to 7: on the D string, or across to the G string at 2.
+    let w = weights(0, -3, 1, 0);
+    let pitches = pitches_of(&[55, 57]);
+    let tapped = [false, false];
+    let legato = [TechniqueEdge::Plain, TechniqueEdge::HammerOn];
+    let plain = [TechniqueEdge::Plain; 2];
+    let same = [pos(4, 5), pos(4, 7)];
+    let across = [pos(4, 5), pos(3, 2)];
+    let hard = objective(w, 1, Continuity::Hard, false);
+    let soft = objective(w, 1, Continuity::Soft { k: 3 }, false);
+    // Same string: travel 2 and nothing else.
+    assert_eq!(technique_cost(&same, &pitches, &tapped, &legato, &hard), Some(2));
+    assert_eq!(technique_cost(&same, &pitches, &tapped, &legato, &soft), Some(2));
+    // Across: travel 3, plus 3 · position_shift (soft) or one violation (hard).
+    assert_eq!(technique_cost(&across, &pitches, &tapped, &legato, &soft), Some(6));
+    assert_eq!(
+        technique_cost(&across, &pitches, &tapped, &legato, &hard),
+        Some(3 + HARD_VIOLATION)
+    );
+    // A plain edge pays nothing for the string change.
+    assert_eq!(technique_cost(&across, &pitches, &tapped, &plain, &hard), Some(3));
+    // The soft penalty is in frets of hand travel.
+    let w2 = weights(0, 0, 2, 0);
+    let soft2 = objective(w2, 2, Continuity::Soft { k: 3 }, false);
+    assert_eq!(technique_cost(&across, &pitches, &tapped, &legato, &soft2), Some(6 + 6));
+    // Every imported legato kind binds; a tapped origin too.
+    for kind in [TechniqueEdge::PullOff, TechniqueEdge::Legato] {
+        let edges = [TechniqueEdge::Plain, kind];
+        assert_eq!(technique_cost(&across, &pitches, &tapped, &edges, &soft), Some(6));
+    }
+    // Tapped 5 into fretted 7 across strings: no hand travel yet, penalty 3.
+    assert_eq!(
+        technique_cost(&across, &pitches, &[true, false], &legato, &soft),
+        Some(3)
+    );
+}
+
+#[test]
+fn a_pull_off_onto_an_open_string_pays_no_open_string_penalty() {
+    let w = weights(0, -3, 1, 0);
+    let tapped = [false, false];
+    let legato = [TechniqueEdge::Plain, TechniqueEdge::HammerOn];
+    let waiver = objective(w, 1, Continuity::Off, true);
+    let no_waiver = objective(w, 1, Continuity::Off, false);
+    // G string 2 pulled off to the open G: travel 2, open-string penalty 3.
+    let down = pitches_of(&[57, 55]);
+    let line = [pos(3, 2), pos(3, 0)];
+    assert_eq!(technique_cost(&line, &down, &tapped, &legato, &no_waiver), Some(5));
+    assert_eq!(technique_cost(&line, &down, &tapped, &legato, &waiver), Some(2));
+    // Not across a plain edge.
+    let plain = [TechniqueEdge::Plain; 2];
+    assert_eq!(technique_cost(&line, &down, &tapped, &plain, &waiver), Some(5));
+    // Not into an ascending edge: D 2 up to the open G.
+    let up = pitches_of(&[52, 55]);
+    let line_up = [pos(4, 2), pos(3, 0)];
+    assert_eq!(technique_cost(&line_up, &up, &tapped, &legato, &waiver), Some(5));
+    // An open-string bonus is untouched (production `v1` earns 1 per open string).
+    let v1 = FingeringWeights::v1();
+    let cost = |waive| {
+        technique_cost(
+            &line,
+            &down,
+            &tapped,
+            &legato,
+            &objective(v1, 2, Continuity::Off, waive),
+        )
+    };
+    assert_eq!(cost(true), cost(false));
+}
+
+#[test]
+fn without_legato_terms_or_legato_edges_the_objective_is_tap_aware() {
+    let tuning = Tuning::standard_e();
+    let pitches = pitches_of(&[52, 57, 64, 59]);
+    for w in weight_sets() {
+        for line in assignments(&pitches, &tuning) {
+            for tap_mask in [0_u32, 0b0100, 0b1010] {
+                let tapped = flags(tap_mask, 4);
+                let expected = tap_aware_cost(&line, &tapped, &w, 2);
+                for edge_mask in 0..16 {
+                    let edges = edge_flags(edge_mask, 4);
+                    let off = TechniqueObjective::tap_aware(w, 2);
+                    assert_eq!(technique_cost(&line, &pitches, &tapped, &edges, &off), expected);
+                }
+                for obj in legato_objectives(w, 2) {
+                    let plain = [TechniqueEdge::Plain; 4];
+                    assert_eq!(technique_cost(&line, &pitches, &tapped, &plain, &obj), expected);
+                }
+            }
+        }
+    }
+    let line = [pos(5, 7), pos(4, 7), pos(2, 5), pos(2, 0)];
+    let obj = objective(FingeringWeights::v1(), 2, Continuity::Hard, true);
+    let (tapped, edges) = ([false; 4], [TechniqueEdge::Plain; 4]);
+    assert_eq!(technique_cost(&line, &pitches, &tapped, &edges[..3], &obj), None);
+    assert_eq!(technique_cost(&line, &pitches, &tapped[..3], &edges, &obj), None);
+    assert_eq!(technique_cost(&line, &pitches[..3], &tapped, &edges, &obj), None);
+}
+
+#[test]
+fn technique_chain_matches_brute_force_over_assignments() {
+    let tuning = Tuning::standard_e();
+    let lines: [&[u8]; 2] = [&[52, 57, 64, 59], &[57, 55, 60, 55]];
+    for w in weight_sets() {
+        for raw in lines {
+            let pitches = pitches_of(raw);
+            let all = assignments(&pitches, &tuning);
+            for tap_mask in [0_u32, 0b0100, 0b1010] {
+                let tapped = flags(tap_mask, pitches.len());
+                for edge_mask in [0b0010_u32, 0b0110, 0b1110, 0b1000] {
+                    let edges = edge_flags(edge_mask, pitches.len());
+                    for obj in legato_objectives(w, 2) {
+                        let chain = technique_chain(
+                            &pitches,
+                            &tuning,
+                            &tapped,
+                            &edges,
+                            &obj,
+                            STANDARD_MAX_FRET,
+                        )
+                        .unwrap();
+                        let costs: Vec<i64> = all
+                            .iter()
+                            .map(|a| technique_cost(a, &pitches, &tapped, &edges, &obj).unwrap())
+                            .collect();
+                        let optimum = *costs.iter().min().unwrap();
+                        let count = costs.iter().filter(|c| **c == optimum).count() as u64;
+                        let set = optimum_set(&chain, None);
+                        let case = format!("{raw:?} {tapped:?} {edges:?} {obj:?}");
+                        assert_eq!(set.optimum, optimum, "{case}");
+                        assert_eq!(set.count.exact, count, "{case}");
+                        let path = lexicographic_path(&chain, &[0; FEATURES], None);
+                        let positions = chain.positions_of(&path).unwrap();
+                        assert_eq!(
+                            technique_cost(&positions, &pitches, &tapped, &edges, &obj),
+                            Some(optimum),
+                            "{case}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Every admissible state path scores its assignment exactly (one family).
+    let pitches = pitches_of(&[57, 55, 60, 55]);
+    let (tapped, edges) = (flags(0b0100, 4), edge_flags(0b1010, 4));
+    for obj in legato_objectives(weights(0, -3, 1, 0), 1) {
+        let chain =
+            technique_chain(&pitches, &tuning, &tapped, &edges, &obj, STANDARD_MAX_FRET).unwrap();
+        for state in state_paths(&chain) {
+            let cost = chain.cost(&state).unwrap();
+            let assignment = chain.positions_of(&state).unwrap();
+            let direct = technique_cost(&assignment, &pitches, &tapped, &edges, &obj).unwrap();
+            assert!(cost == direct || cost > direct + (1 << 40), "{obj:?}");
+        }
+    }
+}
+
+#[test]
+fn technique_chain_without_legato_edges_is_the_tap_aware_chain() {
+    let tuning = Tuning::standard_e();
+    for w in weight_sets() {
+        for raw in [&[40_u8, 52, 57, 64, 59, 47][..], &[64, 62, 60, 59, 57, 55][..]] {
+            let pitches = pitches_of(raw);
+            for tap_mask in [0_u32, 0b00_0100, 0b10_1001] {
+                let tapped = flags(tap_mask, raw.len());
+                let aware =
+                    tap_aware_chain(&pitches, &tuning, &w, 3, &tapped, STANDARD_MAX_FRET).unwrap();
+                let plain = vec![TechniqueEdge::Plain; raw.len()];
+                for obj in legato_objectives(w, 3) {
+                    let chain =
+                        technique_chain(&pitches, &tuning, &tapped, &plain, &obj, STANDARD_MAX_FRET)
+                            .unwrap();
+                    let (a, b) = (optimum_set(&aware, None), optimum_set(&chain, None));
+                    assert_eq!((a.optimum, a.count.exact), (b.optimum, b.count.exact));
+                    let zero = [0; FEATURES];
+                    assert_eq!(
+                        aware.positions_of(&lexicographic_path(&aware, &zero, None)),
+                        chain.positions_of(&lexicographic_path(&chain, &zero, None))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn technique_chain_refuses_bad_input() {
+    let tuning = Tuning::standard_e();
+    let obj = objective(FingeringWeights::v1(), 2, Continuity::Hard, true);
+    assert_eq!(
+        technique_chain(&[], &tuning, &[], &[], &obj, STANDARD_MAX_FRET),
+        Err(LabError::EmptyLine)
+    );
+    let pitches = pitches_of(&[40, 45]);
+    assert_eq!(
+        technique_chain(
+            &pitches,
+            &tuning,
+            &[false, false],
+            &[TechniqueEdge::Plain],
+            &obj,
+            STANDARD_MAX_FRET
+        ),
+        Err(LabError::LabelLength {
+            notes: 2,
+            labels: 1
+        })
+    );
+    assert_eq!(
+        technique_chain(
+            &pitches,
+            &tuning,
+            &[false],
+            &[TechniqueEdge::Plain; 2],
+            &obj,
+            STANDARD_MAX_FRET
+        ),
+        Err(LabError::LabelLength {
+            notes: 2,
+            labels: 1
         })
     );
 }
