@@ -2954,3 +2954,22 @@ Architectural decisions go to [`adr/`](adr/) instead.
   tuplet import fix #202). The discriminating
   information is contextual, so the next Lab subject (chord voicing) is also
   what makes such anchors available for MIDI-sourced material.
+
+- 2026-09-17 — In the context of the fingering objective failing completely
+  on lines with tapped notes (no human path in the model's optimum set), we
+  decided to **test hand attribution as an oracle first — tap labels from
+  the tab, same weights, exact DPs — before any hidden technique
+  inference**, to achieve a clean attribution of that failure, accepting
+  that the result says nothing yet about MIDI-sourced material. Result
+  (`docs/audit/2026-09-fingering-tap-attribution.md`): attribution brings
+  the tapped slice to parity with length-matched untapped lines on excess
+  per note (2.94 → 1.27 vs 1.26), agreement (39.4% → 44.3% vs 44.9%) and
+  ceiling, but not on exactness (1.3% vs 21.0% of lines with the human path
+  in the optimum set). Under the current objective's decomposition, 75% of
+  the residual cost falls on the fretting-hand travel term; with tapping
+  figures seemingly kept on one string, legato continuity is the hypothesis
+  to test next, as an observed-label oracle before technique inference.
+  (Revised after the import fixes #201 and #202: GP6/7 tapping now reaches
+  the slice (226 lines). Attribution closes most, not all, of the excess gap
+  (3.20 → 1.63 against 1.16, 77%). Exactness stays out of reach, 0.9% against
+  20.0% — see the audit's re-measurements.)
