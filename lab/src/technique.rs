@@ -22,8 +22,14 @@ use crate::ties::Chain;
 /// small enough that saturating sums of a line's worth of them stay ordered.
 const INADMISSIBLE: i64 = i64::MAX / 4;
 
-/// A chain state: this note's candidate and the other hand's last candidate.
-type TapState = (usize, Option<usize>);
+/// A chain state: this note's candidate, the other hand's last candidate, and
+/// the inferred strings chosen for legato origins whose targets are later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TechniqueState {
+    own: usize,
+    other: Option<usize>,
+    active_strings: Vec<u8>,
+}
 
 /// The `v1` objective with tapped notes attributed to the picking hand:
 ///
@@ -95,7 +101,7 @@ pub fn tap_aware_chain(
         pitches,
         tuning,
         tapped,
-        &vec![TechniqueEdge::Plain; pitches.len()],
+        &[],
         &TechniqueObjective::tap_aware(*weights, tap_shift),
         max_fret,
     )
@@ -119,8 +125,18 @@ pub enum LegatoDirection {
 /// out of range.
 #[must_use]
 pub fn derived_direction(pitches: &[Pitch], i: usize) -> Option<LegatoDirection> {
-    let before = pitches.get(i.checked_sub(1)?)?;
-    let here = pitches.get(i)?;
+    direction_between(pitches, i.checked_sub(1)?, i)
+}
+
+/// Pitch direction from `from` to `to`; `None` for an invalid or non-forward
+/// relation.
+#[must_use]
+pub fn direction_between(pitches: &[Pitch], from: usize, to: usize) -> Option<LegatoDirection> {
+    if from >= to {
+        return None;
+    }
+    let before = pitches.get(from)?;
+    let here = pitches.get(to)?;
     Some(match here.0.cmp(&before.0) {
         std::cmp::Ordering::Greater => LegatoDirection::Ascending,
         std::cmp::Ordering::Less => LegatoDirection::Descending,
@@ -177,8 +193,8 @@ impl TechniqueObjective {
 
 /// [`tap_aware_cost`] plus the legato terms of `objective` over `edges`.
 ///
-/// `None` when `pitches`, `tapped` or `edges` do not have one entry per
-/// position.
+/// `None` when `pitches` or `tapped` do not have one entry per position, or an
+/// edge does not name a forward pair inside the line.
 #[must_use]
 pub fn technique_cost(
     line: &[FretboardPosition],
@@ -187,16 +203,24 @@ pub fn technique_cost(
     edges: &[TechniqueEdge],
     objective: &TechniqueObjective,
 ) -> Option<i64> {
-    if pitches.len() != line.len() || edges.len() != line.len() {
+    if pitches.len() != line.len()
+        || tapped.len() != line.len()
+        || edges
+            .iter()
+            .any(|edge| edge.from >= edge.to || edge.to >= line.len())
+    {
         return None;
     }
     let mut total = tap_aware_cost(line, tapped, &objective.weights, objective.tap_shift)?;
-    for (before, (&here, (into, &edge))) in line
-        .iter()
-        .zip(line.iter().zip(edges.iter().enumerate()).skip(1))
-    {
-        let descending = derived_direction(pitches, into) == Some(LegatoDirection::Descending);
-        total = total.saturating_add(legato_edge_cost(objective, edge, descending, *before, here));
+    for edge in edges {
+        let descending =
+            direction_between(pitches, edge.from, edge.to) == Some(LegatoDirection::Descending);
+        total = total.saturating_add(legato_edge_cost(
+            objective,
+            descending,
+            line[edge.from],
+            line[edge.to],
+        ));
     }
     Some(total)
 }
@@ -207,14 +231,10 @@ pub fn technique_cost(
 /// from `here`.
 fn legato_edge_cost(
     objective: &TechniqueObjective,
-    edge: TechniqueEdge,
     descending: bool,
     before: FretboardPosition,
     here: FretboardPosition,
 ) -> i64 {
-    if !edge.is_legato() {
-        return 0;
-    }
     let continuity = if before.string == here.string {
         0
     } else {
@@ -235,20 +255,18 @@ fn legato_edge_cost(
 
 /// [`technique_cost`] as a [`Chain`], so the exact optimum-set DPs apply.
 ///
-/// Per note the chain's states pair the note's candidate with the candidate of
-/// the most recent note played by the *other* hand (or none yet); a transition
-/// is admissible only when that carried candidate agrees with the previous
-/// state, so state paths and position assignments correspond one to one.
-/// Inadmissible transitions carry a cost no optimal path can take. The legato
-/// terms of an edge depend only on its two notes' candidates, so they are
-/// part of the transition cost.
+/// Per note the chain's states carry the note's candidate, the candidate of
+/// the most recent note played by the *other* hand, and the candidate string
+/// of every still-open legato origin. The latter is the minimal frontier state
+/// needed for a relation that may skip intervening voice onsets.
 ///
 /// # Errors
 ///
 /// [`LabError::EmptyLine`] for no pitches; [`LabError::UnpositionablePitch`]
 /// when a pitch has no candidate at or below `max_fret`;
-/// [`LabError::LabelLength`] when `tapped` or `edges` do not have one entry
-/// per pitch.
+/// [`LabError::LabelLength`] when `tapped` does not have one entry per pitch;
+/// [`LabError::InvalidTechniqueEdge`] for an edge outside the line or not
+/// directed forward.
 // The chain builder's inputs plus the technique labels; a parameter struct
 // would only rename them.
 #[allow(clippy::too_many_arguments)]
@@ -263,13 +281,21 @@ pub fn technique_chain(
     if pitches.is_empty() {
         return Err(LabError::EmptyLine);
     }
-    for labels in [tapped.len(), edges.len()] {
-        if labels != pitches.len() {
-            return Err(LabError::LabelLength {
-                notes: pitches.len(),
-                labels,
-            });
-        }
+    if tapped.len() != pitches.len() {
+        return Err(LabError::LabelLength {
+            notes: pitches.len(),
+            labels: tapped.len(),
+        });
+    }
+    if let Some(edge) = edges
+        .iter()
+        .find(|edge| edge.from >= edge.to || edge.to >= pitches.len())
+    {
+        return Err(LabError::InvalidTechniqueEdge {
+            notes: pitches.len(),
+            from: edge.from,
+            to: edge.to,
+        });
     }
     let weights = &objective.weights;
     let tap_shift = objective.tap_shift;
@@ -299,15 +325,57 @@ pub fn technique_chain(
         latest[hand] = Some(i);
     }
 
-    // States: (this note's candidate, the other hand's last candidate).
-    let states: Vec<Vec<TapState>> = (0..n)
+    // Legato frontier after each note: edges already opened but not yet closed.
+    let active: Vec<Vec<usize>> = (0..n)
+        .map(|i| {
+            edges
+                .iter()
+                .enumerate()
+                .filter_map(|(edge_index, edge)| {
+                    (edge.from <= i && i < edge.to).then_some(edge_index)
+                })
+                .collect()
+        })
+        .collect();
+
+    // States: this note's candidate, the other hand's last candidate, and one
+    // inferred string per active legato origin (in `active[i]` order).
+    let states: Vec<Vec<TechniqueState>> = (0..n)
         .map(|i| {
             let others: Vec<Option<usize>> = match other_note[i] {
                 None => vec![None],
                 Some(o) => (0..candidates[o].len()).map(Some).collect(),
             };
             (0..candidates[i].len())
-                .flat_map(|c| others.iter().map(move |&o| (c, o)))
+                .flat_map(|own| {
+                    let domains: Vec<Vec<u8>> = active[i]
+                        .iter()
+                        .map(|&edge_index| {
+                            let edge = edges[edge_index];
+                            if edge.from == i {
+                                vec![candidates[i][own].string]
+                            } else {
+                                let mut strings: Vec<u8> = candidates[edge.from]
+                                    .iter()
+                                    .map(|position| position.string)
+                                    .collect();
+                                strings.sort_unstable();
+                                strings.dedup();
+                                strings
+                            }
+                        })
+                        .collect();
+                    string_products(&domains).into_iter().flat_map({
+                        let others = others.clone();
+                        move |active_strings| {
+                            others.clone().into_iter().map(move |other| TechniqueState {
+                                own,
+                                other,
+                                active_strings: active_strings.clone(),
+                            })
+                        }
+                    })
+                })
                 .collect()
         })
         .collect();
@@ -315,7 +383,7 @@ pub fn technique_chain(
     let positions = states
         .iter()
         .enumerate()
-        .map(|(i, layer)| layer.iter().map(|&(c, _)| candidates[i][c]).collect())
+        .map(|(i, layer)| layer.iter().map(|state| candidates[i][state.own]).collect())
         .collect();
     let unary = states
         .iter()
@@ -323,7 +391,7 @@ pub fn technique_chain(
         .map(|(i, layer)| {
             layer
                 .iter()
-                .map(|&(c, _)| v1_unary(candidates[i][c].fret, weights))
+                .map(|state| v1_unary(candidates[i][state.own].fret, weights))
                 .collect()
         })
         .collect();
@@ -332,28 +400,54 @@ pub fn technique_chain(
             let Some(previous) = i.checked_sub(1) else {
                 return Vec::new();
             };
-            let descending = derived_direction(pitches, i) == Some(LegatoDirection::Descending);
             states[previous]
                 .iter()
-                .map(|&(own_prev, other_prev)| {
+                .map(|previous_state| {
                     states[i]
                         .iter()
-                        .map(|&(own, other)| {
+                        .map(|state| {
                             // The same hand keeps the other hand's carried
-                            // candidate; a hand switch hands over note i − 1.
+                            // candidate; a hand switch hands over note i - 1.
                             let (admissible, prev_same) = if tapped[i] == tapped[previous] {
-                                (other == other_prev, Some((previous, own_prev)))
+                                (
+                                    state.other == previous_state.other,
+                                    Some((previous, previous_state.own)),
+                                )
                             } else {
                                 (
-                                    other == Some(own_prev),
-                                    other_note[previous].zip(other_prev),
+                                    state.other == Some(previous_state.own),
+                                    other_note[previous].zip(previous_state.other),
                                 )
                             };
                             if !admissible {
                                 return INADMISSIBLE;
                             }
-                            let here = candidates[i][own];
-                            let before = candidates[previous][own_prev];
+                            // Every still-open origin must carry the same
+                            // inferred string through this transition.
+                            for (slot, &edge_index) in active[i].iter().enumerate() {
+                                let edge = edges[edge_index];
+                                if edge.from == i {
+                                    if state.active_strings[slot] != candidates[i][state.own].string
+                                    {
+                                        return INADMISSIBLE;
+                                    }
+                                } else {
+                                    let Some(previous_slot) = active[previous]
+                                        .iter()
+                                        .position(|&candidate| candidate == edge_index)
+                                    else {
+                                        return INADMISSIBLE;
+                                    };
+                                    if state.active_strings[slot]
+                                        != previous_state.active_strings[previous_slot]
+                                    {
+                                        return INADMISSIBLE;
+                                    }
+                                }
+                            }
+
+                            let here = candidates[i][state.own];
+                            let before = candidates[previous][previous_state.own];
                             let mut cost = if here.string == before.string {
                                 0
                             } else {
@@ -369,9 +463,27 @@ pub fn technique_chain(
                                     candidates[note][cand].fret.abs_diff(here.fret),
                                 )));
                             }
-                            cost.saturating_add(legato_edge_cost(
-                                objective, edges[i], descending, before, here,
-                            ))
+                            for (edge_index, edge) in edges.iter().enumerate() {
+                                if edge.to != i {
+                                    continue;
+                                }
+                                let Some(previous_slot) = active[previous]
+                                    .iter()
+                                    .position(|&candidate| candidate == edge_index)
+                                else {
+                                    return INADMISSIBLE;
+                                };
+                                let origin = FretboardPosition {
+                                    string: previous_state.active_strings[previous_slot],
+                                    fret: 0,
+                                };
+                                let descending = direction_between(pitches, edge.from, edge.to)
+                                    == Some(LegatoDirection::Descending);
+                                cost = cost.saturating_add(legato_edge_cost(
+                                    objective, descending, origin, here,
+                                ));
+                            }
+                            cost
                         })
                         .collect()
                 })
@@ -379,4 +491,20 @@ pub fn technique_chain(
         })
         .collect();
     Ok(Chain::from_parts(positions, unary, pairwise))
+}
+
+fn string_products(domains: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let mut products = vec![Vec::new()];
+    for domain in domains {
+        let mut next = Vec::new();
+        for prefix in &products {
+            for &value in domain {
+                let mut product = prefix.clone();
+                product.push(value);
+                next.push(product);
+            }
+        }
+        products = next;
+    }
+    products
 }

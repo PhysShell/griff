@@ -24,8 +24,8 @@ use griff_constraint_lab::{
         best_hands, decode_positions, encode_hand_witness, encode_v1_witness, hand_cost,
         hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key, tab_lines, v1_cost,
         v1_problem, with_repeat_consistency, with_string_tiebreak, CutStats, HandError, HandModel,
-        HandModelError, HandWeights, LineCut, Reach, TechniqueEdge, HAND_VARS_PER_NOTE,
-        V1_VARS_PER_NOTE,
+        HandModelError, HandWeights, LineCut, Reach, TechniqueEdge, TechniqueKind,
+        HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
     },
     optir::{OptIrError, Term, WitnessError},
     problems::LabError,
@@ -221,12 +221,10 @@ fn tab_lines_cut_at_every_cause_and_count_it() {
             kept_notes: 16,
             mirrored_tracks: 0,
             dangling_legato: 0,
+            cross_line_legato: 0,
         }
     );
-    assert!(lines
-        .iter()
-        .all(|l| l.edges.len() == l.pitches.len()
-            && l.edges.iter().all(|e| *e == TechniqueEdge::Plain)));
+    assert!(lines.iter().all(|l| l.edges.is_empty()));
 }
 
 #[test]
@@ -367,7 +365,7 @@ fn tab_lines_flag_tapped_notes() {
 }
 
 #[test]
-fn tab_lines_put_legato_on_the_edge_it_starts() {
+fn tab_lines_project_legato_to_the_immediate_same_string_target() {
     // D string: 5 h 7, then 5 (a slide is not legato), 7 p 5, 7 legato 5.
     let s = score(vec![vec![
         with_span(single(0, 55, Some((4, 5))), SpanTechnique::HammerOn),
@@ -379,40 +377,72 @@ fn tab_lines_put_legato_on_the_edge_it_starts() {
         single(6 * Q, 55, Some((4, 5))),
     ]]);
     let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
-    use TechniqueEdge::{HammerOn, Legato, Plain, PullOff};
     assert_eq!(
         lines[0].edges,
-        vec![Plain, HammerOn, Plain, Plain, PullOff, Plain, Legato]
+        vec![
+            TechniqueEdge::new(0, 1, TechniqueKind::HammerOn),
+            TechniqueEdge::new(3, 4, TechniqueKind::PullOff),
+            TechniqueEdge::new(5, 6, TechniqueKind::Legato),
+        ]
     );
     assert_eq!(stats.dangling_legato, 0);
-    assert!(HammerOn.is_legato() && PullOff.is_legato() && Legato.is_legato());
-    assert!(!Plain.is_legato());
+    assert_eq!(stats.cross_line_legato, 0);
 }
 
 #[test]
-fn a_legato_origin_that_ends_a_kept_line_is_dangling() {
-    // The chord after the origin ends the line, so the legato leads nowhere in
-    // it; the short line after the chord is dropped with its own legato.
+fn tab_lines_project_legato_past_intervening_other_strings() {
     let s = score(vec![vec![
-        single(0, 55, Some((4, 5))),
-        single(Q, 57, Some((4, 7))),
-        single(2 * Q, 55, Some((4, 5))),
-        with_span(single(3 * Q, 57, Some((4, 7))), SpanTechnique::HammerOn),
-        group(vec![
-            note(4 * Q, 59, Some((4, 9))),
-            note(4 * Q, 64, Some((1, 0))),
-        ]),
-        with_span(single(5 * Q, 55, Some((4, 5))), SpanTechnique::HammerOn),
-        single(6 * Q, 57, Some((4, 7))),
+        with_span(single(0, 55, Some((4, 5))), SpanTechnique::HammerOn),
+        single(Q, 60, Some((3, 5))),
+        single(2 * Q, 64, Some((2, 5))),
+        single(3 * Q, 57, Some((4, 7))),
+        single(4 * Q, 62, Some((3, 7))),
     ]]);
     let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].edges.iter().all(|e| !e.is_legato()));
-    assert_eq!(stats.dangling_legato, 1);
+    assert_eq!(
+        lines[0].edges,
+        vec![TechniqueEdge::new(0, 3, TechniqueKind::HammerOn)]
+    );
+    assert_eq!(stats.dangling_legato, 0);
+    assert_eq!(stats.cross_line_legato, 0);
+}
+
+#[test]
+fn a_same_string_target_beyond_the_line_is_counted_not_retargeted() {
+    let s = score(vec![vec![
+        single(0, 55, Some((4, 5))),
+        single(Q, 60, Some((3, 5))),
+        single(2 * Q, 64, Some((2, 5))),
+        with_span(single(3 * Q, 57, Some((4, 7))), SpanTechnique::HammerOn),
+        single(10 * Q, 59, Some((4, 9))),
+        single(11 * Q, 62, Some((3, 7))),
+        single(12 * Q, 66, Some((2, 7))),
+        single(13 * Q, 71, Some((1, 7))),
+    ]]);
+    let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|line| line.edges.is_empty()));
+    assert_eq!(stats.dangling_legato, 0);
+    assert_eq!(stats.cross_line_legato, 1);
     let mut total = CutStats::default();
     total.absorb(&stats);
     total.absorb(&stats);
-    assert_eq!(total.dangling_legato, 2);
+    assert_eq!(total.cross_line_legato, 2);
+}
+
+#[test]
+fn a_legato_origin_without_a_later_same_string_note_is_unresolved() {
+    let s = score(vec![vec![
+        with_span(single(0, 55, Some((4, 5))), SpanTechnique::HammerOn),
+        single(Q, 60, Some((3, 5))),
+        single(2 * Q, 64, Some((2, 5))),
+        single(3 * Q, 69, Some((1, 5))),
+    ]]);
+    let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].edges.is_empty());
+    assert_eq!(stats.dangling_legato, 1);
+    assert_eq!(stats.cross_line_legato, 0);
 }
 
 #[test]

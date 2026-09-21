@@ -85,9 +85,12 @@ pub struct CutStats {
     /// import orientation) and was mirrored to string 1 = highest.
     pub mirrored_tracks: u64,
     /// Legato origins (a hammer-on, pull-off or legato span) on the last note
-    /// of a kept line: the note they lead to is not in the line, so they
-    /// project onto no [`TechniqueEdge`].
+    /// of a kept line with no later note on the same imported string anywhere
+    /// in the voice.
     pub dangling_legato: u64,
+    /// Legato origins in a kept line whose same-string target exists in the
+    /// imported voice but falls outside that same kept line.
+    pub cross_line_legato: u64,
 }
 
 impl CutStats {
@@ -106,6 +109,7 @@ impl CutStats {
             kept_notes,
             mirrored_tracks,
             dangling_legato,
+            cross_line_legato,
         } = *other;
         self.notes_seen = self.notes_seen.saturating_add(notes_seen);
         self.chord_onsets = self.chord_onsets.saturating_add(chord_onsets);
@@ -119,11 +123,12 @@ impl CutStats {
         self.kept_notes = self.kept_notes.saturating_add(kept_notes);
         self.mirrored_tracks = self.mirrored_tracks.saturating_add(mirrored_tracks);
         self.dangling_legato = self.dangling_legato.saturating_add(dangling_legato);
+        self.cross_line_legato = self.cross_line_legato.saturating_add(cross_line_legato);
     }
 }
 
-/// What the tab joins a note to its predecessor with: a technique belongs to
-/// the edge from note `i − 1` to note `i`, not to either note.
+/// An imported legato kind. Guitar Pro attaches it to the origin note; the
+/// target is the first later note on the same imported string.
 ///
 /// These are the imported span kinds. Guitar Pro stores one legato flag on the
 /// note a hammer-on or pull-off starts from, without its direction, and the
@@ -132,29 +137,19 @@ impl CutStats {
 /// only be derived from pitch ([`crate::technique::derived_direction`]).
 ///
 /// [`SpanTechnique::HammerOn`]: griff_core::event::SpanTechnique::HammerOn
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum TechniqueEdge {
-    /// No legato span leads into the note (always the case for note 0).
-    #[default]
-    Plain,
-    /// The previous note carries a `HammerOn` span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TechniqueKind {
+    /// The origin note carries a `HammerOn` span.
     HammerOn,
-    /// The previous note carries a `PullOff` span.
+    /// The origin note carries a `PullOff` span.
     PullOff,
-    /// The previous note carries a `Legato` span.
+    /// The origin note carries a `Legato` span.
     Legato,
 }
 
-impl TechniqueEdge {
-    /// Whether a legato span of any kind joins the two notes.
-    #[must_use]
-    pub const fn is_legato(self) -> bool {
-        !matches!(self, Self::Plain)
-    }
-
-    /// The legato edge a note in `group` starts: its group's first hammer-on,
-    /// pull-off or legato span, or [`TechniqueEdge::Plain`].
-    fn out_of(group: &EventGroup) -> Self {
+impl TechniqueKind {
+    /// The legato kind a note in `group` starts, if any.
+    fn out_of(group: &EventGroup) -> Option<Self> {
         group
             .technique_spans
             .iter()
@@ -164,7 +159,25 @@ impl TechniqueEdge {
                 SpanTechnique::Legato => Some(Self::Legato),
                 _ => None,
             })
-            .unwrap_or_default()
+    }
+}
+
+/// One observed legato relation between two notes in the same kept line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TechniqueEdge {
+    /// Origin note index in the line.
+    pub from: usize,
+    /// Target note index in the line.
+    pub to: usize,
+    /// Imported technique kind on the origin note.
+    pub kind: TechniqueKind,
+}
+
+impl TechniqueEdge {
+    /// Builds an edge whose target is strictly later than its origin.
+    #[must_use]
+    pub const fn new(from: usize, to: usize, kind: TechniqueKind) -> Self {
+        Self { from, to, kind }
     }
 }
 
@@ -192,8 +205,9 @@ pub struct TabLine {
     /// Per note, whether the tab marks it tapped (`NoteMark::Tap`) — played by
     /// the picking hand on the fretboard, not fretted by the fretting hand.
     pub tapped: Vec<bool>,
-    /// Per note, the technique edge from the previous note (`edges[0]` is
-    /// always [`TechniqueEdge::Plain`]).
+    /// Legato relations whose origin and same-string target both survive in
+    /// this line. Absence means a plain transition; edges may skip intervening
+    /// notes on other strings.
     pub edges: Vec<TechniqueEdge>,
 }
 
@@ -247,12 +261,12 @@ pub fn tab_lines(
     };
 
     for voice in &track.voices {
-        // Each note with the legato edge it starts (its group's span).
-        let mut notes: Vec<(&AtomNote, TechniqueEdge)> = voice
+        // Each note with the legato origin flag carried by its event group.
+        let mut notes: Vec<(&AtomNote, Option<TechniqueKind>)> = voice
             .event_groups
             .iter()
             .flat_map(|g| {
-                let out = TechniqueEdge::out_of(g);
+                let out = TechniqueKind::out_of(g);
                 g.atoms.iter().filter_map(move |a| match a {
                     AtomEvent::Note(n) => Some((n, out)),
                     AtomEvent::Rest(_) => None,
@@ -261,10 +275,39 @@ pub fn tab_lines(
             .collect();
         notes.sort_by_key(|(n, _)| n.absolute_start.0);
 
+        // Resolve Guitar Pro's origin flag before slicing: its target is the
+        // first strictly later note in this imported voice on the same
+        // original string. Notes at the same onset never target each other.
+        let mut targets = vec![None; notes.len()];
+        let mut next_on_string = [None; 256];
+        let mut end = notes.len();
+        while end > 0 {
+            let onset = notes[end - 1].0.absolute_start.0;
+            let start = notes[..end]
+                .iter()
+                .rposition(|(note, _)| note.absolute_start.0 != onset)
+                .map_or(0, |i| i + 1);
+            for i in start..end {
+                if notes[i].1.is_some() {
+                    targets[i] = notes[i]
+                        .0
+                        .position
+                        .and_then(|p| next_on_string[usize::from(p.position.string)]);
+                }
+            }
+            for (i, (note, _)) in notes[start..end].iter().enumerate() {
+                if let Some(position) = note.position {
+                    next_on_string[usize::from(position.position.string)] = Some(start + i);
+                }
+            }
+            end = start;
+        }
+
         let mut line = LineBuilder::new(track_index, voice.id, &tuning);
         let mut sounding_until: Option<u64> = None;
         // Lowest fretted position at the latest onset seen so far.
         let mut last_fretted: Option<u8> = None;
+        let mut note_index = 0;
         let mut rest = notes.as_slice();
         while let Some((first, _)) = rest.first() {
             let onset = first.absolute_start.0;
@@ -273,6 +316,8 @@ pub fn tab_lines(
                 .position(|(n, _)| n.absolute_start.0 != onset)
                 .unwrap_or(rest.len());
             let (group, tail) = rest.split_at(width);
+            let group_start = note_index;
+            note_index += width;
             let anchor_here = last_fretted;
             if let Some(fret) = group
                 .iter()
@@ -325,9 +370,11 @@ pub fn tab_lines(
                 note.pitch,
                 orient(position),
                 NoteContext {
+                    note_id: group_start,
                     anchor: anchor_here,
                     tapped: note.marks.contains(NoteMark::Tap),
                     legato_out: *legato_out,
+                    legato_target: targets[group_start],
                 },
             );
         }
@@ -1072,12 +1119,23 @@ pub fn with_string_tiebreak(
 /// Per-note context captured while a voice is scanned.
 #[derive(Clone, Copy)]
 struct NoteContext {
+    /// Stable index in the imported voice, assigned before slicing.
+    note_id: usize,
     /// The hand anchor before this note's onset.
     anchor: Option<u8>,
     /// Whether the tab marks the note tapped.
     tapped: bool,
-    /// The legato edge the note starts, towards the next note of its voice.
-    legato_out: TechniqueEdge,
+    /// The imported legato kind this note starts, if any.
+    legato_out: Option<TechniqueKind>,
+    /// Stable imported-voice index of its same-string target, if resolved.
+    legato_target: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingTechnique {
+    from: usize,
+    target: Option<usize>,
+    kind: TechniqueKind,
 }
 
 /// Accumulates one tablature line while a voice is scanned.
@@ -1088,9 +1146,8 @@ struct LineBuilder<'a> {
     start_tick: u32,
     anchor: Option<u8>,
     tapped: Vec<bool>,
-    edges: Vec<TechniqueEdge>,
-    /// The legato edge the last pushed note starts.
-    pending: TechniqueEdge,
+    note_ids: Vec<usize>,
+    origins: Vec<PendingTechnique>,
     pitches: Vec<Pitch>,
     human: Vec<FretboardPosition>,
 }
@@ -1104,8 +1161,8 @@ impl<'a> LineBuilder<'a> {
             start_tick: 0,
             anchor: None,
             tapped: Vec::new(),
-            edges: Vec::new(),
-            pending: TechniqueEdge::Plain,
+            note_ids: Vec::new(),
+            origins: Vec::new(),
             pitches: Vec::new(),
             human: Vec::new(),
         }
@@ -1129,8 +1186,14 @@ impl<'a> LineBuilder<'a> {
         self.pitches.push(pitch);
         self.human.push(position);
         self.tapped.push(context.tapped);
-        self.edges.push(self.pending);
-        self.pending = context.legato_out;
+        self.note_ids.push(context.note_id);
+        if let Some(kind) = context.legato_out {
+            self.origins.push(PendingTechnique {
+                from: context.note_id,
+                target: context.legato_target,
+                kind,
+            });
+        }
     }
 
     /// Ends the current line: kept when long enough, otherwise counted as
@@ -1143,8 +1206,8 @@ impl<'a> LineBuilder<'a> {
         let pitches = std::mem::take(&mut self.pitches);
         let human = std::mem::take(&mut self.human);
         let tapped = std::mem::take(&mut self.tapped);
-        let edges = std::mem::take(&mut self.edges);
-        let dangling = std::mem::take(&mut self.pending).is_legato();
+        let note_ids = std::mem::take(&mut self.note_ids);
+        let origins = std::mem::take(&mut self.origins);
         if len < cut.min_notes {
             stats.short_lines = stats.short_lines.saturating_add(1);
             stats.short_line_notes = stats.short_line_notes.saturating_add(count(len));
@@ -1152,8 +1215,21 @@ impl<'a> LineBuilder<'a> {
         }
         stats.kept_lines = stats.kept_lines.saturating_add(1);
         stats.kept_notes = stats.kept_notes.saturating_add(count(len));
-        if dangling {
-            stats.dangling_legato = stats.dangling_legato.saturating_add(1);
+        let mut edges = Vec::new();
+        for origin in origins {
+            let Some(target) = origin.target else {
+                stats.dangling_legato = stats.dangling_legato.saturating_add(1);
+                continue;
+            };
+            let from = note_ids.iter().position(|&id| id == origin.from);
+            let to = note_ids.iter().position(|&id| id == target);
+            match (from, to) {
+                (Some(from), Some(to)) => edges.push(TechniqueEdge::new(from, to, origin.kind)),
+                (Some(_), None) => {
+                    stats.cross_line_legato = stats.cross_line_legato.saturating_add(1);
+                }
+                _ => {}
+            }
         }
         lines.push(TabLine {
             track: self.track,
