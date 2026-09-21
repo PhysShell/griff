@@ -289,6 +289,37 @@ fn tab_lines_keep_non_monotonic_tunings_as_they_are() {
 }
 
 #[test]
+fn tab_lines_record_the_hand_anchor_before_each_line() {
+    let s = score(vec![vec![
+        // A chord at 0 (frets 12 and 14): the next line starts from fret 12.
+        group(vec![note(0, 57, Some((5, 12))), note(0, 64, Some((4, 14)))]),
+        single(Q, 59, Some((4, 9))),
+        single(2 * Q, 60, Some((4, 10))),
+        single(3 * Q, 62, Some((4, 12))),
+        single(4 * Q, 64, Some((4, 14))),
+        // An open string does not place the hand; the fretted chord note does.
+        group(vec![
+            note(5 * Q, 40, Some((6, 0))),
+            note(5 * Q, 47, Some((5, 2))),
+        ]),
+        single(6 * Q, 45, Some((5, 0))),
+        single(7 * Q, 47, Some((5, 2))),
+        single(8 * Q, 48, Some((5, 3))),
+        single(9 * Q, 50, Some((5, 5))),
+    ]]);
+    let (lines, _) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    let anchors: Vec<Option<u8>> = lines.iter().map(|l| l.anchor_fret).collect();
+    assert_eq!(anchors, vec![Some(12), Some(2)]);
+
+    // Nothing fretted before a voice's first line; an unpositioned note and an
+    // open string are skipped on the way back.
+    let (lines, _) = tab_lines(&cut_fixture(), 0, &LineCut::v1()).unwrap();
+    assert_eq!(lines[0].anchor_fret, None);
+    assert_eq!(lines[1].anchor_fret, Some(2));
+    assert_eq!(lines[3].anchor_fret, None, "voice 1 starts fresh");
+}
+
+#[test]
 fn tab_lines_refuse_a_missing_track() {
     assert_eq!(
         tab_lines(&cut_fixture(), 1, &LineCut::v1()),

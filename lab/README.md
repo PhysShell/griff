@@ -89,6 +89,24 @@ Everything written to `--out` is corpus-derived and stays local; `report`
 archives aggregates only (`report.json`). Results:
 [`../docs/audit/2026-09-fingering-optimality-gap.md`](../docs/audit/2026-09-fingering-optimality-gap.md).
 
+## Optimum sets and the learned tie-break
+
+`src/ties.rs` measures a fingering objective's optimum set exactly with chain
+DPs — how many optimal paths, and the least, most and expected (uniform draw)
+agreement with the tab author among them — and learns a human-blind secondary
+objective that breaks ties lexicographically after the primary cost
+(averaged, loss-augmented, latent-target perceptron). `ties-check` compares
+the DPs with verified CP-SAT records; `tiebreak` reports the ladder
+floor → uniform → production tie-break → learned → ceiling on holdout songs,
+with and without the line's hand anchor.
+
+```sh
+./target/release/fingering_gap ties-check --tabs $T --out $O --v1 v1-fit=0,-3,1,0
+./target/release/fingering_gap tiebreak   --tabs $T --out $O --v1 v1-fit=0,-3,1,0
+```
+
+Results: [`../docs/audit/2026-09-fingering-tie-break.md`](../docs/audit/2026-09-fingering-tie-break.md).
+
 ## Known spike limits (deliberate)
 
 - The reference solver is leaf-checked backtracking with two sound band

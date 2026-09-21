@@ -26,6 +26,18 @@
 //! cargo run --release --bin fingering_gap -- repeat-report --tabs DIR --out DIR [MODELS]
 //! ```
 //!
+//! Optimum-set analysis and a learned secondary tie-break (exact DPs):
+//!
+//! ```text
+//! cargo run --release --bin fingering_gap -- ties-check --tabs DIR --out DIR --v1 NAME=…
+//! cargo run --release --bin fingering_gap -- tiebreak   --tabs DIR --out DIR --v1 NAME=…
+//! ```
+//!
+//! `ties-check` compares the exact DP optimum and agreement ceiling with the
+//! verified CP-SAT records in `OUT/NAME.cpsat.jsonl`; `tiebreak` learns a
+//! secondary objective on train songs (margin chosen on a validation bucket)
+//! and reports the tie-break ladder on holdout songs.
+//!
 //! `MODELS`: `--v1 NAME=fret,open_string,position_shift,string_change` and
 //! `--hand NAME=height,open_string,stretch,shift,shift_distance,string_distance`,
 //! repeatable; default `--v1 v1=1,1,2,1` (the production weights).
@@ -50,6 +62,10 @@ use griff_constraint_lab::ir::VarId;
 use griff_constraint_lab::optir::{
     verify_agreement, verify_record, OptProblem, ProblemRecord, SolveRecord, Verdict,
 };
+use griff_constraint_lab::ties::{
+    lexicographic_path, optimum_set, path_matches, train_secondary, Chain, Example, Features,
+    PerceptronConfig, FEATURES, FEATURE_NAMES,
+};
 use griff_core::event::FretboardPosition;
 use griff_core::fretboard::{infer_positions, FingeringWeights, STANDARD_MAX_FRET};
 use griff_core::gp::import_gp_score;
@@ -65,6 +81,8 @@ struct Line {
     id: String,
     file: usize,
     test: bool,
+    /// Song-level holdout bucket in `0..HOLDOUT_BUCKETS` (0 = test).
+    bucket: u64,
     tab: TabLine,
 }
 
@@ -118,7 +136,8 @@ fn load(tabs: &Path, cut: &LineCut) -> std::io::Result<Corpus> {
         let bytes = fs::read(path)?;
         corpus_hash.extend_from_slice(&fnv1a64(&bytes).to_le_bytes());
         let key = song_key(&name);
-        let test = holdout_bucket(&key, HOLDOUT_BUCKETS) == 0;
+        let bucket = holdout_bucket(&key, HOLDOUT_BUCKETS);
+        let test = bucket == 0;
         names.push(name);
         let Ok(score) = import_gp_score(&bytes) else {
             import_failures += 1;
@@ -138,6 +157,7 @@ fn load(tabs: &Path, cut: &LineCut) -> std::io::Result<Corpus> {
                 ),
                 file,
                 test,
+                bucket,
                 tab,
             }));
         }
@@ -212,6 +232,16 @@ impl Model {
         match self {
             Self::LowestFret => "lowest-fret",
             Self::V1 { name, .. } | Self::Hand { name, .. } => name,
+        }
+    }
+
+    fn description_short(&self) -> String {
+        match self {
+            Self::V1 { name, weights: w } => format!(
+                "{name} (fret {}, open_string {}, position_shift {}, string_change {})",
+                w.fret, w.open_string, w.position_shift, w.string_change
+            ),
+            other => other.name().to_string(),
         }
     }
 
@@ -957,6 +987,376 @@ fn print_oracle(oracle: &BTreeMap<String, OracleEval>) {
     }
 }
 
+// ── optimum sets and the learned tie-break ────────────────────────────────────
+
+fn v1_weights(model: &Model) -> Option<FingeringWeights> {
+    match model {
+        Model::V1 { weights, .. } => Some(*weights),
+        Model::LowestFret | Model::Hand { .. } => None,
+    }
+}
+
+fn chain_of(line: &Line, weights: &FingeringWeights) -> Chain {
+    Chain::v1(
+        &line.tab.pitches,
+        &line.tab.tuning,
+        weights,
+        STANDARD_MAX_FRET,
+    )
+    .expect("tab lines only hold positionable pitches")
+}
+
+/// A chain with or without the line's hand anchor (the tie-break ablation).
+fn feature_chain(line: &Line, weights: &FingeringWeights, anchored: bool) -> Chain {
+    let chain = chain_of(line, weights);
+    if anchored {
+        chain.with_anchor(line.tab.anchor_fret)
+    } else {
+        chain
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct TiesCheck {
+    records: usize,
+    compared: usize,
+    optimum_equal: usize,
+    optimum_differs: usize,
+    ceiling_equal: usize,
+    ceiling_differs: usize,
+    skipped_unverified: usize,
+}
+
+/// The exact DPs against the verified CP-SAT optima and agreement passes.
+fn ties_check(corpus: &Corpus, models: &[Model], out: &Path) -> std::io::Result<()> {
+    let mut checks = BTreeMap::new();
+    for model in models {
+        let Some(weights) = v1_weights(model) else {
+            continue;
+        };
+        let records = read_records(&out.join(format!("{}.cpsat.jsonl", model.name())))?;
+        let rows = par_map(&corpus.lines, |line| {
+            let record = records.get(&line.id)?;
+            let (problem, vpn) = model.problem(&line.tab)?;
+            let Verdict::Proven { optimum } = verify_record(&problem, record) else {
+                return Some(None);
+            };
+            let ceiling = record.agreement.as_ref().and_then(|pass| {
+                verify_agreement(&problem, &human_reference(&line.tab, vpn), optimum, pass).ok()
+            })?;
+            let set = optimum_set(&chain_of(line, &weights), Some(&line.tab.human));
+            let max = set.agreement.map_or(0, |a| a.max) as u64;
+            Some(Some((set.optimum == optimum, max == ceiling)))
+        });
+        let mut check = TiesCheck {
+            records: records.len(),
+            ..TiesCheck::default()
+        };
+        for row in rows.into_iter().flatten() {
+            let Some((optimum_ok, ceiling_ok)) = row else {
+                check.skipped_unverified += 1;
+                continue;
+            };
+            check.compared += 1;
+            if optimum_ok {
+                check.optimum_equal += 1;
+            } else {
+                check.optimum_differs += 1;
+            }
+            if ceiling_ok {
+                check.ceiling_equal += 1;
+            } else {
+                check.ceiling_differs += 1;
+            }
+        }
+        println!(
+            "{}: {} records, {} compared — optimum equal {} / differs {}, ceiling equal {} / differs {}, unverified {}",
+            model.name(),
+            check.records,
+            check.compared,
+            check.optimum_equal,
+            check.optimum_differs,
+            check.ceiling_equal,
+            check.ceiling_differs,
+            check.skipped_unverified
+        );
+        checks.insert(model.name().to_string(), check);
+    }
+    write_json(&out.join("ties-check.json"), &checks)
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct Ladder {
+    lines: usize,
+    notes: u64,
+    human_optimal_lines: usize,
+    unique_optimum_lines: usize,
+    ln_count: Quantiles,
+    floor: f64,
+    uniform: f64,
+    production: f64,
+    learned: Option<f64>,
+    /// Lines where the learned tie-break picks a different path than production.
+    learned_changed_lines: Option<usize>,
+    ceiling: f64,
+}
+
+struct LineTies {
+    notes: u64,
+    human_optimal: bool,
+    unique: bool,
+    ln_count_milli: i64,
+    min: u64,
+    expected: f64,
+    production: u64,
+    max: u64,
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn line_ties(line: &Line, weights: &FingeringWeights) -> LineTies {
+    let chain = chain_of(line, weights);
+    let human = &line.tab.human;
+    let set = optimum_set(&chain, Some(human));
+    let range = set.agreement.clone().expect("human positions per note");
+    let production = lexicographic_path(&chain, &[0; FEATURES], None);
+    LineTies {
+        notes: human.len() as u64,
+        human_optimal: v1_cost(human, weights) == set.optimum,
+        unique: !set.count.saturated && set.count.exact == 1,
+        ln_count_milli: (set.count.ln * 1000.0).round() as i64,
+        min: range.min as u64,
+        expected: range.expected,
+        production: path_matches(&chain, &production, human).unwrap_or(0) as u64,
+        max: range.max as u64,
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn ladder(
+    lines: &[&Line],
+    weights: &FingeringWeights,
+    learned: Option<&Features>,
+    anchored: bool,
+) -> Ladder {
+    let rows = par_map(lines, |line| {
+        let ties = line_ties(line, weights);
+        let learned_matches = learned.map(|w| {
+            let chain = feature_chain(line, weights, anchored);
+            let path = lexicographic_path(&chain, w, None);
+            let production = lexicographic_path(&chain, &[0; FEATURES], None);
+            (
+                path_matches(&chain, &path, &line.tab.human).unwrap_or(0) as u64,
+                path != production,
+            )
+        });
+        (ties, learned_matches)
+    });
+    let notes: u64 = rows.iter().map(|(t, _)| t.notes).sum();
+    let rate = |x: f64| x / notes.max(1) as f64;
+    Ladder {
+        lines: rows.len(),
+        notes,
+        human_optimal_lines: rows.iter().filter(|(t, _)| t.human_optimal).count(),
+        unique_optimum_lines: rows.iter().filter(|(t, _)| t.unique).count(),
+        ln_count: quantiles(rows.iter().map(|(t, _)| t.ln_count_milli).collect()),
+        floor: rate(rows.iter().map(|(t, _)| t.min as f64).sum()),
+        uniform: rate(rows.iter().map(|(t, _)| t.expected).sum()),
+        production: rate(rows.iter().map(|(t, _)| t.production as f64).sum()),
+        learned: learned.map(|_| {
+            rate(
+                rows.iter()
+                    .filter_map(|(_, l)| *l)
+                    .map(|(x, _)| x as f64)
+                    .sum(),
+            )
+        }),
+        learned_changed_lines: learned.map(|_| {
+            rows.iter()
+                .filter(|(_, l)| l.is_some_and(|(_, changed)| changed))
+                .count()
+        }),
+        ceiling: rate(rows.iter().map(|(t, _)| t.max as f64).sum()),
+    }
+}
+
+fn examples_of(lines: &[&Line], weights: &FingeringWeights, anchored: bool) -> Vec<Example> {
+    lines
+        .iter()
+        .map(|line| Example {
+            chain: feature_chain(line, weights, anchored),
+            human: line.tab.human.clone(),
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct MarginTrial {
+    margin: i64,
+    epochs: usize,
+    updates: u64,
+    validation_agreement: f64,
+}
+
+#[derive(Serialize)]
+struct TiebreakVariant {
+    features: &'static str,
+    trials: Vec<MarginTrial>,
+    chosen_margin: i64,
+    final_updates: u64,
+    final_epochs: usize,
+    weights: BTreeMap<&'static str, i64>,
+    train: Ladder,
+    test: Ladder,
+}
+
+#[derive(Serialize)]
+struct TiebreakReport {
+    schema: &'static str,
+    version: u32,
+    primary: String,
+    epochs: usize,
+    variants: Vec<TiebreakVariant>,
+    corpus: CorpusFacts,
+}
+
+const VALIDATION_BUCKET: u64 = 1;
+const TIEBREAK_EPOCHS: usize = 20;
+const MARGINS: [i64; 7] = [0, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000];
+
+#[allow(clippy::cast_precision_loss)]
+fn tiebreak(corpus: Corpus, models: &[Model], out: &Path) -> std::io::Result<()> {
+    let Some(model) = models.iter().find(|m| v1_weights(m).is_some()) else {
+        return Err(std::io::Error::other("tiebreak needs a --v1 primary model"));
+    };
+    let weights = v1_weights(model).expect("checked above");
+    let train: Vec<&Line> = corpus.lines.iter().filter(|l| !l.test).collect();
+    let fit: Vec<&Line> = train
+        .iter()
+        .copied()
+        .filter(|l| l.bucket != VALIDATION_BUCKET)
+        .collect();
+    let validation: Vec<&Line> = train
+        .iter()
+        .copied()
+        .filter(|l| l.bucket == VALIDATION_BUCKET)
+        .collect();
+    let test: Vec<&Line> = corpus.lines.iter().filter(|l| l.test).collect();
+    eprintln!(
+        "primary {}: fit {} lines, validation {} lines, test {} lines",
+        model.name(),
+        fit.len(),
+        validation.len(),
+        test.len()
+    );
+
+    let mut variants = Vec::new();
+    for anchored in [false, true] {
+        let label = if anchored {
+            "local + anchor"
+        } else {
+            "local only"
+        };
+        let fit_examples = examples_of(&fit, &weights, anchored);
+        let mut trials = Vec::new();
+        for margin in MARGINS {
+            let started = Instant::now();
+            let trained = train_secondary(
+                &fit_examples,
+                &PerceptronConfig {
+                    epochs: TIEBREAK_EPOCHS,
+                    margin,
+                },
+            );
+            let score = ladder(&validation, &weights, Some(&trained.weights), anchored)
+                .learned
+                .unwrap_or(0.0);
+            eprintln!(
+                "[{label}] margin {margin}: {} updates, {} epochs, validation agreement {:.2}% ({:.1}s)",
+                trained.updates,
+                trained.epochs,
+                100.0 * score,
+                started.elapsed().as_secs_f64()
+            );
+            trials.push(MarginTrial {
+                margin,
+                epochs: trained.epochs,
+                updates: trained.updates,
+                validation_agreement: score,
+            });
+        }
+        let chosen_margin = trials
+            .iter()
+            .fold(None::<&MarginTrial>, |best, t| match best {
+                Some(b) if b.validation_agreement >= t.validation_agreement => Some(b),
+                _ => Some(t),
+            })
+            .map_or(0, |t| t.margin);
+        let final_trained = train_secondary(
+            &examples_of(&train, &weights, anchored),
+            &PerceptronConfig {
+                epochs: TIEBREAK_EPOCHS,
+                margin: chosen_margin,
+            },
+        );
+        variants.push(TiebreakVariant {
+            features: label,
+            trials,
+            chosen_margin,
+            final_updates: final_trained.updates,
+            final_epochs: final_trained.epochs,
+            weights: FEATURE_NAMES
+                .iter()
+                .copied()
+                .zip(final_trained.weights)
+                .collect(),
+            train: ladder(&train, &weights, Some(&final_trained.weights), anchored),
+            test: ladder(&test, &weights, Some(&final_trained.weights), anchored),
+        });
+    }
+
+    println!("\nprimary {}", model.description_short());
+    println!("\n| features | split | lines | human optimal | unique optimum | ln #optima p50 / p90 | floor | uniform over optima | production tie-break | learned tie-break | lines changed | ceiling | margin |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for v in &variants {
+        for (name, l) in [("train", &v.train), ("test (holdout)", &v.test)] {
+            println!(
+                "| {} | {name} | {} | {:.1}% | {:.1}% | {:.2} / {:.2} | {:.1}% | {:.1}% | {:.1}% | {} | {} | {:.1}% | {} |",
+                v.features,
+                l.lines,
+                100.0 * l.human_optimal_lines as f64 / l.lines.max(1) as f64,
+                100.0 * l.unique_optimum_lines as f64 / l.lines.max(1) as f64,
+                l.ln_count.p50 as f64 / 1000.0,
+                l.ln_count.p90 as f64 / 1000.0,
+                100.0 * l.floor,
+                100.0 * l.uniform,
+                100.0 * l.production,
+                l.learned.map_or("—".into(), |x| format!("{:.1}%", 100.0 * x)),
+                l.learned_changed_lines.map_or("—".into(), |x| x.to_string()),
+                100.0 * l.ceiling,
+                v.chosen_margin
+            );
+        }
+    }
+    for v in &variants {
+        println!(
+            "\n[{}] learned secondary weights (averaged, unnormalized):",
+            v.features
+        );
+        for (name, w) in &v.weights {
+            println!("  {name:>20} {w}");
+        }
+    }
+    let report = TiebreakReport {
+        schema: "griff.constraint-lab-tiebreak",
+        version: 2,
+        primary: model.description_short(),
+        epochs: TIEBREAK_EPOCHS,
+        variants,
+        corpus: corpus.facts,
+    };
+    write_json(&out.join("tiebreak.json"), &report)
+}
+
 // ── repeat consistency ────────────────────────────────────────────────────────
 
 /// Window of a repeated figure, in notes.
@@ -1262,6 +1662,8 @@ fn run() -> Result<(), String> {
         "report" => report(corpus, &args.models, &args.out),
         "repeat-export" => repeat_export(&corpus, &args.models, &args.out),
         "repeat-report" => repeat_report(&corpus, &args.models, &args.out),
+        "ties-check" => ties_check(&corpus, &args.models, &args.out),
+        "tiebreak" => tiebreak(corpus, &args.models, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
