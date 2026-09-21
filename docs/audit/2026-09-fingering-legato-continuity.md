@@ -446,6 +446,44 @@ rests on few songs.
 30 tapped lines, reported, not interpreted. `v1-fit` exactness: B 6.7%,
 C1 16.7%, D1 26.7%, C2(3) 13.3%, D2 13.3%.
 
+### Projection forensic tail (post-fix)
+
+`legato-census` now writes `legato-projection-forensics.jsonl`, sorted by
+normalized onset gap. It contains source and target identity, timing, pitch,
+position, tap state, line context, and the number of intervening voice notes
+for every cross-line relation and every non-adjacent within-line relation.
+The manifest is diagnostic-only and is written under `--out`; licensed corpus
+content is not committed. The census fails closed if its manifest count does
+not equal the importer's cross-line count.
+
+Full-corpus rerun (410 files):
+
+- **46 / 46 cross-line relations** were emitted, from 44 lines and 15 songs.
+  31 target gaps are at most one quarter note; 22 targets are the immediate
+  next voice note, while 24 skip notes on other strings. The origin is the
+  last kept-line note in 26 cases; the other 20 have 1–19 later line notes on
+  other strings.
+- **11 cross-line gaps exceed 8 quarters.** Four are exact repetitions of one
+  11-quarter figure in `Nothing Shameful`; four isolated relations exceed 32
+  quarters (64.375, 75, 123.5, and 182.496875). These are suspicious stale or
+  overextended source flags, but they remain outside the line-local objective,
+  as cross-line relations did before this audit.
+- **110 non-adjacent within-line relations** were emitted, from 25 lines and
+  15 songs. 94 are at most 4 quarters. Fourteen exceed the audit threshold of
+  8 quarters and three exceed 32 quarters; the maximum is 70.67 quarters.
+  The 14-case tail is confined to four songs: `Say Hi` (8),
+  `There's No Dust in the City` (3), `Frozen One` (2), and
+  `Missed Injections` (1).
+- Ten of those 14 long within-line relations occur on tapped lines. Eight are
+  repeated figures in `Say Hi`; the other two are the paired tapped-string
+  relations in `Frozen One`. This is a real transcription/import caveat, but
+  not an explanation of the C1 result: B → C1 remains positive when either
+  song is removed, and under every other leave-one-song-out removal.
+
+No threshold from this audit enters projection or optimization. The long tail
+is retained as a compact regression/forensic corpus rather than converted into
+another objective exception.
+
 ## Reading
 
 1. **Observed legato continuity explains a large, robust part of the
@@ -485,19 +523,30 @@ C1 16.7%, D1 26.7%, C2(3) 13.3%, D2 13.3%.
 - **Import limits.** Legato is imported as an origin only, and D's direction
   is derived from pitch.
 - **Line slicing.** 46 resolved targets lie outside their origin's kept line.
-  They are counted explicitly but cannot enter a line-local objective.
+  They are counted and emitted explicitly but cannot enter a line-local
+  objective. Eleven have gaps longer than the audit-only 8-quarter review
+  threshold.
 - **Weights.** `v1-fit` was fitted on all lines and reused unchanged. `k` and
   the waiver were fixed before the results.
 - **Concentration.** The C1 → D1 gain rests on 3 songs.
 - **Holdout.** The holdout slice (30 lines) is too small to interpret.
 
-## Follow-ups proposed (not done)
+## Stage status and next targets
 
-1. **Hidden technique inference must predict legato edges, not only taps.**
-   Continuity carries half of the exactness effect, so a MIDI-side model
-   without legato labels would lose it.
-2. **Inspect the 46 cross-line relations and the longest within-line spans.**
-   They are the remaining forensic set for distinguishing ordinary voice
-   interleaving from suspicious transcription or import cases.
-3. **Hammer-on / pull-off direction.** D's derived direction argues for the
-   separate core decision on importing or deriving direction for all formats.
+Stage 2 is frozen after the semantic repair, independent remeasurement, and
+the projection forensic tail:
+
+- **C1:** robust corpus evidence for hard continuity when an observed legato
+  relation is available.
+- **D1:** promising conditional evidence, not a canonical objective rule; its
+  gain is concentrated and direction is derived from pitch.
+- **No C3/C4 tuning:** the remaining tail does not justify another ladder of
+  penalties or exceptions.
+
+The next large Constraint Lab target should be **chord voicing**, extending
+the guitar-specific structural work from monophonic paths to hand shapes.
+**Hidden technique inference** remains the next bridge to MIDI: predict taps
+and legato relations from pitches, timing, and context, then score both label
+quality and downstream fingering regret against this supervised oracle.
+Importing or deriving hammer-on / pull-off direction remains a separate core
+decision.
