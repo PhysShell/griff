@@ -1869,8 +1869,194 @@ struct CensusReport {
     dangling_legato: u64,
     /// Resolved same-string targets that fall outside their origin's kept line.
     cross_line_legato: u64,
+    projection_forensics: ProjectionForensicSummary,
     rows: Vec<CensusRow>,
     corpus: CorpusFacts,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct ProjectionForensicSummary {
+    cross_line: u64,
+    non_adjacent_within_line: u64,
+    longest_within_line_quarters: f64,
+}
+
+#[derive(Serialize)]
+struct ProjectionPoint {
+    line_index: Option<usize>,
+    voice_note_id: Option<usize>,
+    onset: u32,
+    pitch: u8,
+    string: u8,
+    fret: u8,
+    tapped: bool,
+    string_orientation: &'static str,
+}
+
+#[derive(Serialize)]
+struct ProjectionForensic {
+    schema: &'static str,
+    version: u32,
+    category: &'static str,
+    id: String,
+    file: String,
+    song: String,
+    family: &'static str,
+    test: bool,
+    track: usize,
+    voice: u8,
+    line_start_tick: u32,
+    origin_line_notes: usize,
+    origin_line_has_tap: bool,
+    notes_after_origin_in_line: usize,
+    ticks_per_quarter: u32,
+    kind: String,
+    skipped_voice_notes: usize,
+    onset_gap_ticks: u32,
+    onset_gap_quarters: f64,
+    from: ProjectionPoint,
+    target: ProjectionPoint,
+}
+
+fn projection_forensics(corpus: &Corpus, out: &Path) -> std::io::Result<ProjectionForensicSummary> {
+    let mut records = Vec::new();
+    for line in &corpus.lines {
+        let tab = &line.tab;
+        let file = corpus.names[line.file].clone();
+        let common = |category: &'static str,
+                      kind: TechniqueKind,
+                      skipped: usize,
+                      from: ProjectionPoint,
+                      target: ProjectionPoint| {
+            let gap = target.onset.saturating_sub(from.onset);
+            let notes_after_origin_in_line = from
+                .line_index
+                .map_or(0, |index| tab.human.len().saturating_sub(index + 1));
+            ProjectionForensic {
+                schema: "griff.constraint-lab-legato-projection-forensic",
+                version: 1,
+                category,
+                id: line.id.clone(),
+                file: file.clone(),
+                song: song_key(&file),
+                family: format_family(&file),
+                test: line.test,
+                track: tab.track,
+                voice: tab.voice,
+                line_start_tick: tab.start_tick,
+                origin_line_notes: tab.human.len(),
+                origin_line_has_tap: tab.tapped.iter().any(|tapped| *tapped),
+                notes_after_origin_in_line,
+                ticks_per_quarter: tab.ticks_per_quarter,
+                kind: format!("{kind:?}"),
+                skipped_voice_notes: skipped,
+                onset_gap_ticks: gap,
+                onset_gap_quarters: f64::from(gap) / f64::from(tab.ticks_per_quarter.max(1)),
+                from,
+                target,
+            }
+        };
+        for edge in tab.edges.iter().filter(|edge| edge.to > edge.from + 1) {
+            let from = tab.human[edge.from];
+            let target = tab.human[edge.to];
+            records.push(common(
+                "within_line_non_adjacent",
+                edge.kind,
+                edge.to - edge.from - 1,
+                ProjectionPoint {
+                    line_index: Some(edge.from),
+                    voice_note_id: None,
+                    onset: tab.onsets[edge.from],
+                    pitch: tab.pitches[edge.from].0,
+                    string: from.string,
+                    fret: from.fret,
+                    tapped: tab.tapped[edge.from],
+                    string_orientation: "griff-normalized",
+                },
+                ProjectionPoint {
+                    line_index: Some(edge.to),
+                    voice_note_id: None,
+                    onset: tab.onsets[edge.to],
+                    pitch: tab.pitches[edge.to].0,
+                    string: target.string,
+                    fret: target.fret,
+                    tapped: tab.tapped[edge.to],
+                    string_orientation: "griff-normalized",
+                },
+            ));
+        }
+        for edge in &tab.cross_line_edges {
+            let from = tab.human[edge.from];
+            records.push(common(
+                "cross_line",
+                edge.kind,
+                edge.target
+                    .note_id
+                    .saturating_sub(edge.origin_note_id)
+                    .saturating_sub(1),
+                ProjectionPoint {
+                    line_index: Some(edge.from),
+                    voice_note_id: Some(edge.origin_note_id),
+                    onset: tab.onsets[edge.from],
+                    pitch: tab.pitches[edge.from].0,
+                    string: from.string,
+                    fret: from.fret,
+                    tapped: tab.tapped[edge.from],
+                    string_orientation: "griff-normalized",
+                },
+                ProjectionPoint {
+                    line_index: None,
+                    voice_note_id: Some(edge.target.note_id),
+                    onset: edge.target.onset,
+                    pitch: edge.target.pitch.0,
+                    string: edge.target.original_position.string,
+                    fret: edge.target.original_position.fret,
+                    tapped: edge.target.tapped,
+                    string_orientation: "imported-original",
+                },
+            ));
+        }
+    }
+    records.sort_by(|a, b| {
+        let a_scaled = u64::from(a.onset_gap_ticks) * u64::from(b.ticks_per_quarter.max(1));
+        let b_scaled = u64::from(b.onset_gap_ticks) * u64::from(a.ticks_per_quarter.max(1));
+        b_scaled
+            .cmp(&a_scaled)
+            .then_with(|| b.skipped_voice_notes.cmp(&a.skipped_voice_notes))
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let summary = ProjectionForensicSummary {
+        cross_line: records
+            .iter()
+            .filter(|record| record.category == "cross_line")
+            .count() as u64,
+        non_adjacent_within_line: records
+            .iter()
+            .filter(|record| record.category == "within_line_non_adjacent")
+            .count() as u64,
+        longest_within_line_quarters: records
+            .iter()
+            .filter(|record| record.category == "within_line_non_adjacent")
+            .map(|record| record.onset_gap_quarters)
+            .fold(0.0, f64::max),
+    };
+    let path = out.join("legato-projection-forensics.jsonl");
+    let mut writer = BufWriter::new(fs::File::create(&path)?);
+    for record in &records {
+        serde_json::to_writer(&mut writer, record).map_err(std::io::Error::other)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+    eprintln!("wrote {}", path.display());
+    println!(
+        "projection forensics: {} cross-line relations; {} non-adjacent within-line spans; longest within-line {:.2} quarters",
+        summary.cross_line,
+        summary.non_adjacent_within_line,
+        summary.longest_within_line_quarters
+    );
+    Ok(summary)
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -1997,11 +2183,19 @@ fn legato_census(corpus: Corpus, out: &Path) -> std::io::Result<()> {
             pct(c.into_tap_legato.same_string, c.into_tap_legato.edges)
         );
     }
+    let projection_forensics = projection_forensics(&corpus, out)?;
+    if projection_forensics.cross_line != cross_line {
+        return Err(std::io::Error::other(format!(
+            "projection forensic manifest contains {} cross-line relations, but cut stats report {cross_line}",
+            projection_forensics.cross_line
+        )));
+    }
     let report = CensusReport {
         schema: "griff.constraint-lab-legato-census",
-        version: 2,
+        version: 3,
         dangling_legato: dangling,
         cross_line_legato: cross_line,
+        projection_forensics,
         rows,
         corpus: corpus.facts,
     };

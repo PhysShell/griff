@@ -181,6 +181,36 @@ impl TechniqueEdge {
     }
 }
 
+/// Imported context for a resolved legato target outside its origin's kept
+/// line. The position keeps the source file's string orientation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TechniqueTarget {
+    /// Stable index in the imported voice, assigned before line slicing.
+    pub note_id: usize,
+    /// Absolute onset tick in the imported score.
+    pub onset: u32,
+    /// Imported pitch.
+    pub pitch: Pitch,
+    /// Imported, unoriented string and fret.
+    pub original_position: FretboardPosition,
+    /// Whether the target carries `NoteMark::Tap`.
+    pub tapped: bool,
+}
+
+/// A resolved legato relation whose target does not survive in the same kept
+/// line as its origin. It is forensic context, not an objective edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CrossLineTechniqueEdge {
+    /// Origin index in the kept line.
+    pub from: usize,
+    /// Stable origin index in the imported voice.
+    pub origin_note_id: usize,
+    /// Resolved target in the imported voice.
+    pub target: TechniqueTarget,
+    /// Imported technique kind on the origin note.
+    pub kind: TechniqueKind,
+}
+
 /// One monophonic tablature line with the tab author's positions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabLine {
@@ -188,12 +218,16 @@ pub struct TabLine {
     pub track: usize,
     /// Voice id within the track.
     pub voice: u8,
+    /// Imported score resolution, used to normalize forensic onset gaps.
+    pub ticks_per_quarter: u32,
     /// Onset tick of the first note.
     pub start_tick: u32,
     /// The track tuning.
     pub tuning: Tuning,
     /// Pitches, in onset order.
     pub pitches: Vec<Pitch>,
+    /// Absolute onset ticks, one per pitch.
+    pub onsets: Vec<u32>,
     /// The tab author's positions — one per pitch, each sounding it.
     pub human: Vec<FretboardPosition>,
     /// Where the fretting hand was just before the line: the fret of the
@@ -209,6 +243,9 @@ pub struct TabLine {
     /// this line. Absence means a plain transition; edges may skip intervening
     /// notes on other strings.
     pub edges: Vec<TechniqueEdge>,
+    /// Resolved relations whose target lies outside this kept line. These are
+    /// retained only for projection auditing and never enter an objective.
+    pub cross_line_edges: Vec<CrossLineTechniqueEdge>,
 }
 
 /// Cuts one track into monophonic tablature lines, per voice.
@@ -279,7 +316,7 @@ pub fn tab_lines(
         // first strictly later note in this imported voice on the same
         // original string. Notes at the same onset never target each other.
         let mut targets = vec![None; notes.len()];
-        let mut next_on_string = [None; 256];
+        let mut next_on_string: [Option<usize>; 256] = [None; 256];
         let mut end = notes.len();
         while end > 0 {
             let onset = notes[end - 1].0.absolute_start.0;
@@ -292,7 +329,17 @@ pub fn tab_lines(
                     targets[i] = notes[i]
                         .0
                         .position
-                        .and_then(|p| next_on_string[usize::from(p.position.string)]);
+                        .and_then(|p| next_on_string[usize::from(p.position.string)])
+                        .and_then(|note_id| {
+                            let target = notes[note_id].0;
+                            target.position.map(|position| TechniqueTarget {
+                                note_id,
+                                onset: target.absolute_start.0,
+                                pitch: target.pitch,
+                                original_position: position.position,
+                                tapped: target.marks.contains(NoteMark::Tap),
+                            })
+                        });
                 }
             }
             for (i, (note, _)) in notes[start..end].iter().enumerate() {
@@ -303,7 +350,12 @@ pub fn tab_lines(
             end = start;
         }
 
-        let mut line = LineBuilder::new(track_index, voice.id, &tuning);
+        let mut line = LineBuilder::new(
+            track_index,
+            voice.id,
+            u32::from(score.ticks_per_quarter),
+            &tuning,
+        );
         let mut sounding_until: Option<u64> = None;
         // Lowest fretted position at the latest onset seen so far.
         let mut last_fretted: Option<u8> = None;
@@ -1128,13 +1180,13 @@ struct NoteContext {
     /// The imported legato kind this note starts, if any.
     legato_out: Option<TechniqueKind>,
     /// Stable imported-voice index of its same-string target, if resolved.
-    legato_target: Option<usize>,
+    legato_target: Option<TechniqueTarget>,
 }
 
 #[derive(Clone, Copy)]
 struct PendingTechnique {
     from: usize,
-    target: Option<usize>,
+    target: Option<TechniqueTarget>,
     kind: TechniqueKind,
 }
 
@@ -1142,10 +1194,12 @@ struct PendingTechnique {
 struct LineBuilder<'a> {
     track: usize,
     voice: u8,
+    ticks_per_quarter: u32,
     tuning: &'a Tuning,
     start_tick: u32,
     anchor: Option<u8>,
     tapped: Vec<bool>,
+    onsets: Vec<u32>,
     note_ids: Vec<usize>,
     origins: Vec<PendingTechnique>,
     pitches: Vec<Pitch>,
@@ -1153,14 +1207,16 @@ struct LineBuilder<'a> {
 }
 
 impl<'a> LineBuilder<'a> {
-    const fn new(track: usize, voice: u8, tuning: &'a Tuning) -> Self {
+    const fn new(track: usize, voice: u8, ticks_per_quarter: u32, tuning: &'a Tuning) -> Self {
         Self {
             track,
             voice,
+            ticks_per_quarter,
             tuning,
             start_tick: 0,
             anchor: None,
             tapped: Vec::new(),
+            onsets: Vec::new(),
             note_ids: Vec::new(),
             origins: Vec::new(),
             pitches: Vec::new(),
@@ -1184,6 +1240,7 @@ impl<'a> LineBuilder<'a> {
             self.anchor = context.anchor;
         }
         self.pitches.push(pitch);
+        self.onsets.push(onset);
         self.human.push(position);
         self.tapped.push(context.tapped);
         self.note_ids.push(context.note_id);
@@ -1206,6 +1263,7 @@ impl<'a> LineBuilder<'a> {
         let pitches = std::mem::take(&mut self.pitches);
         let human = std::mem::take(&mut self.human);
         let tapped = std::mem::take(&mut self.tapped);
+        let onsets = std::mem::take(&mut self.onsets);
         let note_ids = std::mem::take(&mut self.note_ids);
         let origins = std::mem::take(&mut self.origins);
         if len < cut.min_notes {
@@ -1216,17 +1274,24 @@ impl<'a> LineBuilder<'a> {
         stats.kept_lines = stats.kept_lines.saturating_add(1);
         stats.kept_notes = stats.kept_notes.saturating_add(count(len));
         let mut edges = Vec::new();
+        let mut cross_line_edges = Vec::new();
         for origin in origins {
             let Some(target) = origin.target else {
                 stats.dangling_legato = stats.dangling_legato.saturating_add(1);
                 continue;
             };
             let from = note_ids.iter().position(|&id| id == origin.from);
-            let to = note_ids.iter().position(|&id| id == target);
+            let to = note_ids.iter().position(|&id| id == target.note_id);
             match (from, to) {
                 (Some(from), Some(to)) => edges.push(TechniqueEdge::new(from, to, origin.kind)),
-                (Some(_), None) => {
+                (Some(from), None) => {
                     stats.cross_line_legato = stats.cross_line_legato.saturating_add(1);
+                    cross_line_edges.push(CrossLineTechniqueEdge {
+                        from,
+                        origin_note_id: origin.from,
+                        target,
+                        kind: origin.kind,
+                    });
                 }
                 _ => {}
             }
@@ -1234,13 +1299,16 @@ impl<'a> LineBuilder<'a> {
         lines.push(TabLine {
             track: self.track,
             voice: self.voice,
+            ticks_per_quarter: self.ticks_per_quarter,
             start_tick: self.start_tick,
             tuning: self.tuning.clone(),
             pitches,
+            onsets,
             human,
             anchor_fret: self.anchor,
             tapped,
             edges,
+            cross_line_edges,
         });
     }
 }
