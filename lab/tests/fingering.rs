@@ -405,6 +405,8 @@ fn tab_lines_project_legato_past_intervening_other_strings() {
     );
     assert_eq!(stats.dangling_legato, 0);
     assert_eq!(stats.cross_line_legato, 0);
+    assert_eq!(lines[0].onsets, vec![0, Q, 2 * Q, 3 * Q, 4 * Q]);
+    assert!(lines[0].cross_line_edges.is_empty());
 }
 
 #[test]
@@ -424,6 +426,16 @@ fn a_same_string_target_beyond_the_line_is_counted_not_retargeted() {
     assert!(lines.iter().all(|line| line.edges.is_empty()));
     assert_eq!(stats.dangling_legato, 0);
     assert_eq!(stats.cross_line_legato, 1);
+    let external = &lines[0].cross_line_edges;
+    assert_eq!(external.len(), 1);
+    assert_eq!(external[0].from, 3);
+    assert_eq!(external[0].origin_note_id, 3);
+    assert_eq!(external[0].kind, TechniqueKind::HammerOn);
+    assert_eq!(external[0].target.note_id, 4);
+    assert_eq!(external[0].target.onset, 10 * Q);
+    assert_eq!(external[0].target.pitch, Pitch(59));
+    assert_eq!(external[0].target.original_position, pos(4, 9));
+    assert!(!external[0].target.tapped);
     let mut total = CutStats::default();
     total.absorb(&stats);
     total.absorb(&stats);
@@ -441,6 +453,7 @@ fn a_legato_origin_without_a_later_same_string_note_is_unresolved() {
     let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
     assert_eq!(lines.len(), 1);
     assert!(lines[0].edges.is_empty());
+    assert!(lines[0].cross_line_edges.is_empty());
     assert_eq!(stats.dangling_legato, 1);
     assert_eq!(stats.cross_line_legato, 0);
 }
