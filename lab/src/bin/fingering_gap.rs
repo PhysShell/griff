@@ -2459,8 +2459,7 @@ fn legato(corpus: Corpus, out: &Path) -> std::io::Result<()> {
     let mut reports = Vec::new();
     let mut controls = (0, 0);
     let mut dump = BufWriter::new(fs::File::create(out.join("legato-lines.jsonl"))?);
-    let mut violators =
-        BufWriter::new(fs::File::create(out.join("legato-violators.jsonl"))?);
+    let mut violators = BufWriter::new(fs::File::create(out.join("legato-violators.jsonl"))?);
     for (weights_name, weights) in &weight_sets {
         let started = Instant::now();
         let computed = par_map(&refs, |line| legato_line(line, weights));
@@ -2494,9 +2493,7 @@ fn legato(corpus: Corpus, out: &Path) -> std::io::Result<()> {
                 // v1-fit pass, with the actual offending edges rather than
                 // only aggregate counts.
                 let c1 = c.rows[LEGATO_C1_INDEX];
-                if *weights_name == "v1-fit"
-                    && c1.human_violations > c1.optimum_violations
-                {
+                if *weights_name == "v1-fit" && c1.human_violations > c1.optimum_violations {
                     let file = corpus.names.get(line.file);
                     let forensic = serde_json::json!({
                         "schema": "griff.constraint-lab-legato-violator",
