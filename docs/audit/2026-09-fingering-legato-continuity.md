@@ -46,13 +46,18 @@ must be reported against it; deviations are reported as deviations.
 
 ### `TechniqueEdge` projection
 
-- **Edges.** A technique belongs to the edge from note `i − 1` to note `i`,
-  not to a note. `TabLine::edges[i]` records the imported span kind when note
-  `i − 1` carries a `HammerOn`, `PullOff` or `Legato` span; `edges[0]` is
-  always plain. A legato origin on a line's last note has no edge; these are
-  counted as *dangling*.
+- **Edges.** Guitar Pro attaches a legato flag to the origin note. Its target
+  is the first strictly later note in the same imported voice on the same
+  original string. Projection is performed over the whole imported voice,
+  before `TabLine` slicing; simultaneous notes never target each other.
+  `TabLine::edges` stores sparse `(from, to, kind)` relations whose two notes
+  survive in the same line, so an edge may skip onsets on other strings.
+- **Loss accounting.** An origin with no later note on its original string is
+  *unresolved*. A resolved target outside the origin's kept `TabLine` is
+  counted separately as *cross-line* and is not silently rebound to another
+  note.
 - **Derived direction.** Direction is computed from pitch:
-  - higher pitch into note `i`: ascending (hammer candidate);
+  - higher target pitch: ascending (hammer candidate);
   - lower pitch: descending (pull candidate);
   - the same pitch: unison.
 
@@ -70,7 +75,7 @@ corpus and for holdout songs. Populations are all lines and the tap slice.
 | L2 | P(same string \| legato edge), per derived direction | — |
 | L3 | P(target open \| legato edge, descending) | P(target open \| plain edge, descending) |
 | L4 | tap-adjacent edges, reported separately: edges out of a tapped note (P(legato); P(same string \| legato); derived direction) and edges into a tapped note | — |
-| — | counts: legato origins in lines, realized edges, dangling origins | — |
+| — | counts: legato origins in lines, realized edges, unresolved origins, cross-line targets | — |
 
 ### Phase 2 — ablation
 
@@ -174,6 +179,13 @@ Recorded as they happened; none changed a stage, a weight or a metric.
    rule (lines with or without a tapped note), and the rule stands. After
    #202 the tap slice is **226** lines (not 242) and the untapped pool is
    **8,740** lines (not 8,803).
+4. **The original stage-2 edge projection was falsified and repaired.** It
+   bound every origin flag to the immediate next onset in the voice. The
+   forensic manifest added in #206 showed that all 61 apparent cross-string
+   edges in 19 tapped lines had a later note on the origin string. They are
+   therefore projection regressions, not exceptions to guitar physics. The
+   census and ablation below were rerun after projecting to that same-string
+   target; no objective, weight, stage or metric changed.
 
 ## Baselines after #202 (impact sweep, before the census)
 
@@ -240,88 +252,93 @@ reported, not interpreted.
 - **Earlier conclusions.** None of the conclusions of #197, #199 or #200
   changes.
 
-## Phase 1 — legato census (corrected import)
+## Phase 1 — legato census (corrected import and projection)
 
-`fingering_gap legato-census`, on `main` at `4f6c505` merged into this branch.
+`fingering_gap legato-census`, rerun after the same-string projection fix.
 
-- **Imported kinds.** All 29,778 legato edges arrive as `HammerOn` on the
-  whole corpus; `PullOff` and `Legato` edges number 0, and direction is
-  derived.
-- **Dangling origins.** 26 legato origins end a kept line (89 before #202).
+- **Imported kinds.** All 29,758 within-line legato edges arrive as
+  `HammerOn`; `PullOff` and `Legato` number 0, and direction is derived.
+- **Projection accounting.** There are **0 unresolved origins** and **46
+  cross-line targets**. Including those cross-line relations gives 29,804
+  resolved origins, the same total population as before the repair.
+- **Regression result.** All 29,758 within-line edges are same-string. The 61
+  old cross-string edges are gone, and `legato-violators.jsonl` is empty.
 
 **L1 — one string across the edge** (whole corpus). Share of edges whose two
 notes lie on the same string, with the edge count in parentheses:
 
 | family | population | legato edges | plain edges (base rate) |
 |---|---|---|---|
-| GP3–5 | all lines | 99.4% (18,093) | 59.9% (192,551) |
-| GP3–5 | tap slice | 99.1% (5,965) | 51.3% (9,372) |
-| GP6/7 | all lines | 99.8% (11,685) | 56.0% (97,800) |
-| GP6/7 | tap slice | 99.9% (4,046) | 58.4% (5,962) |
-| all | all lines | **99.6%** (29,778) | 58.6% (290,351) |
-| all | tap slice | **99.4%** (10,011) | 54.0% (15,334) |
+| GP3–5 | all lines | 100.0% (18,078) | 59.8% (192,656) |
+| GP3–5 | tap slice | 100.0% (5,953) | 51.0% (9,427) |
+| GP6/7 | all lines | 100.0% (11,680) | 56.0% (97,825) |
+| GP6/7 | tap slice | 100.0% (4,046) | 58.4% (5,968) |
+| all | all lines | **100.0%** (29,758) | 58.5% (290,481) |
+| all | tap slice | **100.0%** (9,999) | 53.8% (15,395) |
 
-Holdout songs: 99.8% of 5,889 legato edges (all lines) and 99.4% of 1,270
+Holdout songs: 100.0% of 5,887 legato edges (all lines) and 100.0% of 1,270
 (tap slice).
 
 **L2 — per derived direction** (whole corpus, all formats):
 
 | population | ascending | descending | unison |
 |---|---|---|---|
-| all lines | 99.4% (12,879) | 99.7% (16,878) | 71.4% (21) |
-| tap slice | 99.3% (3,489) | 99.6% (6,516) | 0.0% (6) |
+| all lines | 100.0% (12,856) | 100.0% (16,860) | 100.0% (42) |
+| tap slice | 100.0% (3,502) | 100.0% (6,491) | 100.0% (6) |
 
 **L3 — open-string target of a descending edge** (whole corpus):
 
 | family | population | legato edges | plain edges (base rate) |
 |---|---|---|---|
-| GP3–5 | all lines | 30.5% (10,315) | 11.5% (61,296) |
-| GP3–5 | tap slice | 19.7% (3,880) | 8.2% (2,841) |
-| GP6/7 | all lines | 33.6% (6,563) | 11.1% (32,545) |
+| GP3–5 | all lines | 30.7% (10,299) | 11.5% (61,341) |
+| GP3–5 | tap slice | 19.8% (3,855) | 8.1% (2,870) |
+| GP6/7 | all lines | 33.6% (6,561) | 11.1% (32,551) |
 | GP6/7 | tap slice | 34.6% (2,636) | 9.6% (1,714) |
-| all | all lines | **31.7%** (16,878) | 11.3% (93,841) |
-| all | tap slice | **25.7%** (6,516) | 8.7% (4,555) |
+| all | all lines | **31.8%** (16,860) | 11.3% (93,892) |
+| all | tap slice | **25.8%** (6,491) | 8.7% (4,584) |
 
 Holdout songs:
 
-- all lines: 14.2% (3,047) against 9.5% (20,377);
-- tap slice: **5.1% (844) against 6.3% (648)**, the opposite direction.
+- all lines: 14.2% (3,037) against 9.5% (20,388);
+- tap slice: **5.1% (836) against 6.2% (656)**, the opposite direction.
 
 **L4 — tap-adjacent edges** (whole corpus; every tapped note lies in the tap
 slice). "Legato" columns count only the legato edges among them.
 
 | family | edges out of a tapped note | legato share | legato: one string | legato: ascending / descending / unison | legato: open target | edges into a tapped note | legato share | legato: one string |
 |---|---|---|---|---|---|---|---|---|
-| GP3–5 | 3,148 | 74.0% | 99.3% | 4.3 / 95.5 / 0.2% | 12.7% | 3,121 | 8.3% | 96.2% |
-| GP6/7 | 2,059 | 75.2% | 100.0% | 1.2 / 98.8 / 0.0% | 17.9% | 2,032 | 8.6% | 98.9% |
-| all | 5,207 | 74.5% | 99.6% | 3.1 / 96.8 / 0.1% | 14.8% | 5,153 | 8.4% | 97.2% |
+| GP3–5 | 3,148 | 73.8% | 100.0% | 4.0 / 95.7 / 0.3% | 12.7% | 3,121 | 9.2% | 100.0% |
+| GP6/7 | 2,059 | 75.2% | 100.0% | 1.2 / 98.8 / 0.0% | 17.9% | 2,032 | 8.6% | 100.0% |
+| all | 5,207 | 74.4% | 100.0% | 2.9 / 97.0 / 0.2% | 14.8% | 5,153 | 9.0% | 100.0% |
 
 Holdout songs: 777 edges out of a tapped note, 65.8% legato; all of those
 stay on one string and descend.
 
 **Reading** (descriptive; the tests are in phase 2):
 
-- **L1: an observed legato origin keeps its target on its string.** This
-  holds in 99.6% of edges on the whole corpus, in both format families (99.4%
-  and 99.8%) and in the tap slice (99.4%), against 58.6% for plain edges. At
-  that level a hard constraint is plausible, so C1 is tested beside C2, as
-  registered.
-- **L2: the law does not depend on the derived direction.** Ascending
-  99.4%, descending 99.7%. The 21 unison edges are too few to read.
+- **L1: an observed legato origin resolves to a later note on its imported
+  string.** This is now a property of the repaired projection, verified for
+  every retained edge rather than an empirical 99.6% tendency. The useful
+  data question becomes how strongly the inferred fingering should preserve
+  the observed imported string.
+- **L2: direction remains derived evidence.** The repair changes which pitch
+  is the target, producing 12,856 ascending, 16,860 descending and 42 unison
+  within-line edges.
 - **L3: a descending legato edge lands on an open string about 2.8 times as
-  often as a descending plain edge.** 31.7% against 11.3%; the lift appears in
-  both families and in the tap slice (25.7% against 8.7%). This is the
+  often as a descending plain edge.** 31.8% against 11.3%; the lift appears in
+  both families and in the tap slice (25.8% against 8.7%). This is the
   interaction D encodes.
-  - The tap-slice holdout shows no lift (5.1% against 6.3%, 844 edges). This
+  - The tap-slice holdout shows no lift (5.1% against 6.2%, 836 edges). This
     is reported, not interpreted, and it is one more reason D must pass the
     leave-one-song-out rule.
 - **L4: tapping figures are legato figures.**
-  - Three quarters of the edges out of a tapped note are legato.
-  - Of those legato edges, 96.8% descend (tap, then pull-off) and 99.6% stay
-    on the string.
+  - Three quarters of the source opportunities out of a tapped note have a
+    projected legato relation.
+  - Of those relations, 97.0% descend (tap, then pull-off); all preserve the
+    imported string by construction and census verification.
   - 14.8% land on an open string.
 
-## Phase 2 — ablation (corrected import)
+## Phase 2 — ablation (corrected import and projection)
 
 `fingering_gap legato`. Primary weights `v1-fit`, whole corpus: 226 tapped
 lines, 25,571 notes, 5,260 of them tapped.
@@ -341,16 +358,15 @@ reweighted to the slice's line lengths; its value is in parentheses.
 |---|---|---|---|---|---|---|---|
 | A tap-blind | 0.0% | 20.0 pt (20.0%) | 3.20 (1.16) | 38.5% (44.9%) | 29.0% | 44.1% | 14.2% |
 | B tap-aware | 0.9% | 19.1 pt (20.0%) | 1.63 (1.16) | 43.1% (44.9%) | 45.3% | 52.3% | 3.1% |
-| **C1 hard continuity** | **11.5%** | **9.3 pt** (20.8%) | 0.69\* (0.97) | 45.7% (44.9%) | 50.7% | 51.4% | 28.8% |
-| C2 soft, k = 1 | 3.1% | 17.2 pt (20.2%) | 1.46 (1.14) | 46.7% (44.9%) | 52.5% | 52.9% | 14.6% |
-| **C2 soft, k = 3** | **8.4%** | **12.0 pt** (20.4%) | 1.25 (1.10) | 47.6% (45.0%) | 51.9% | 53.3% | 28.8% |
-| C2 soft, k = 10 | 10.6% | 10.1 pt (20.7%) | 0.94 (1.04) | 46.5% (45.0%) | 50.5% | 52.0% | 37.6% |
-| **D1 = C1 + waiver** | **15.0%** | **6.0 pt** (21.0%) | 0.52\* (0.94) | 52.1% (46.1%) | 53.5% | 59.7% | 27.9% |
-| **D2 = C2(3) + waiver** | **8.8%** | **11.7 pt** (20.5%) | 1.08 (1.07) | 45.7% (45.0%) | 48.4% | 53.2% | 27.0% |
+| **C1 hard continuity** | **13.3%** | **7.6 pt** (20.8%) | 0.78 (0.98) | 46.3% (45.0%) | 51.6% | 52.0% | 27.9% |
+| C2 soft, k = 1 | 3.1% | 17.2 pt (20.2%) | 1.46 (1.14) | 46.7% (44.9%) | 52.7% | 52.9% | 17.3% |
+| **C2 soft, k = 3** | **8.4%** | **12.0 pt** (20.4%) | 1.24 (1.10) | 47.7% (45.0%) | 52.2% | 53.4% | 29.2% |
+| C2 soft, k = 10 | 12.4% | 8.3 pt (20.7%) | 0.92 (1.04) | 47.0% (45.1%) | 51.2% | 52.4% | 36.7% |
+| **D1 = C1 + waiver** | **16.8%** | **4.2 pt** (21.0%) | 0.62 (0.95) | 52.2% (46.2%) | 53.3% | 60.0% | 27.0% |
+| **D2 = C2(3) + waiver** | **8.8%** | **11.7 pt** (20.5%) | 1.07 (1.07) | 45.6% (45.0%) | 48.4% | 53.2% | 27.4% |
 
-\* Over 207 lines. The other 19 tapped lines have more cross-string legato
-edges in the tab than the hard optimum; they are not exact and have no
-defined excess.
+Every human path is feasible under the hard stage after the projection fix;
+excess is defined over all 226 tapped lines.
 
 Where the optimum put a legato edge across strings (lines):
 
@@ -358,17 +374,17 @@ Where the optimum put a legato edge across strings (lines):
 |---|---|
 | A | 209 of 226 |
 | B | 212 |
-| C2(3) | 163 |
-| C1 | 2 (edges the constraint cannot avoid) |
+| C2(3) | 159 |
+| C1 | 0 |
 
 **Per format family** (exactness, then the gap to the same-format baseline):
 
 | stage | GP3–5 (142 lines) | GP6/7 (84 lines) |
 |---|---|---|
 | B | 1.4%, gap 17.0 pt | 0.0%, gap 19.8 pt |
-| C1 | 12.0%, gap 7.0 pt | 10.7%, gap 10.1 pt |
+| C1 | 14.8%, gap 4.3 pt | 10.7%, gap 10.1 pt |
 | C2(3) | 7.7%, gap 10.9 pt | 9.5%, gap 11.0 pt |
-| D1 | 15.5%, gap 3.7 pt | 14.3%, gap 6.7 pt |
+| D1 | 18.3%, gap 1.0 pt | 14.3%, gap 6.7 pt |
 | D2 | 9.9%, gap 8.8 pt | 7.1%, gap 13.4 pt |
 
 ### Leave one song out (`v1-fit`, whole corpus)
@@ -385,7 +401,7 @@ All tapped lines (226 lines, 58 songs):
 | step | Δ | min / max | share | evidence |
 |---|---|---|---|---|
 | A → B | +0.9 | +0.0 / +1.1 | 100% | no |
-| **B → C1** | +10.6 | +7.3 / +13.3 | 33% | **yes** |
+| **B → C1** | +12.4 | +9.2 / +15.6 | 29% | **yes** |
 | **B → C2(3)** | +7.5 | +5.6 / +9.4 | 35% | **yes** |
 | **C1 → D1** | +3.5 | +1.8 / +4.4 | 50% | **yes** |
 | C2(3) → D2 | +0.4 | −0.9 / +1.4 | 300% | no |
@@ -395,7 +411,7 @@ GP3–5 (142 lines, 36 songs):
 | step | Δ | min / max | share | evidence |
 |---|---|---|---|---|
 | A → B | +1.4 | +0.0 / +1.8 | 100% | no |
-| **B → C1** | +10.6 | +5.2 / +12.6 | 53% | **yes** |
+| **B → C1** | +13.4 | +8.2 / +16.0 | 42% | **yes** |
 | **B → C2(3)** | +6.3 | +2.6 / +7.6 | 67% | **yes** |
 | **C1 → D1** | +3.5 | +1.5 / +4.4 | 60% | **yes** |
 | C2(3) → D2 | +2.1 | +0.0 / +2.6 | 100% | no |
@@ -410,10 +426,10 @@ GP6/7 (84 lines, 27 songs):
 | C1 → D1 | +3.6 | −1.3 / +5.1 | 133% | no: concentrated case evidence |
 | C2(3) → D2 | −2.4 | −3.3 / +0.0 | — | no |
 
-The B → C1 gain spreads over 8 songs; none loses a line, and the largest
-contributes 8 of the 24 lines. The C1 → D1 gain comes from 3 songs, all by
-one band; one other song loses a line. It passes the registered rule on the
-whole slice and in GP3–5 but rests on few songs.
+The B → C1 net gain is now 28 lines; the largest song contributes 8. The
+C1 → D1 gain still comes from 3 songs, all by one band; one other song loses
+a line. It passes the registered rule on the whole slice and in GP3–5 but
+rests on few songs.
 
 ### Production `v1` (secondary)
 
@@ -434,32 +450,31 @@ C1 16.7%, D1 26.7%, C2(3) 13.3%, D2 13.3%.
 
 1. **Observed legato continuity explains a large, robust part of the
    exactness residual.** Hard same-string continuity across observed legato
-   edges halves the gap to comparable untapped lines (19.1 → 9.3 pt, `v1-fit`,
+   edges more than halves the gap to comparable untapped lines (19.1 → 7.6 pt, `v1-fit`,
    whole corpus). It is corpus evidence by the registered rule in both format
    families and under both weight sets. Under B, the optimum put some legato
    edge across strings in 212 of 226 tapped lines. H1 (tapping figures kept on
    one string) was a real blind spot of the objective, not a hunch.
-2. **Hard fits better than soft at this law level (99.6%).** Soft continuity
-   approaches hard as `k` grows (3.1% → 8.4% → 10.6%, against 11.5%). The
+2. **Hard fits better than soft after the semantic repair.** Soft continuity
+   approaches hard as `k` grows (3.1% → 8.4% → 12.4%, against 13.3%). The
    registered `k = 3` closes 37% of the gap, and under production `v1` almost
-   nothing. The hard constraint's cost is 19 tapped lines (8.4%) that it can
-   never reach: their tabs cross strings on 61 legato edges, spread over 8
-   songs.
+   nothing. Unlike the old immediate-onset projection, the repaired edges make
+   every observed human path feasible under hard continuity.
 3. **The pull-off → open-string interaction (derived direction) adds to hard
    continuity, not to soft.**
    - **On top of C1,** it closes another third of the remaining gap
-     (9.3 → 6.0 pt), raising agreement from 45.7% to 52.1% and the ceiling
-     from 51.4% to 59.7%. By the registered rule it is corpus evidence on the
+     (7.6 → 4.2 pt), raising agreement from 46.3% to 52.2% and the ceiling
+     from 52.0% to 60.0%. By the registered rule it is corpus evidence on the
      whole slice and in GP3–5, but its gain comes from 3 songs of one band,
      and in GP6/7 it is concentrated case evidence.
    - **On top of soft continuity,** it adds nothing (+0.4 pt) and lowers
-     agreement (47.6% → 45.7%). A plausible reading, not tested here: under
+     agreement (47.7% → 45.6%). A plausible reading, not tested here: under
      soft continuity a waived open string can be reached by crossing strings,
      which the hard constraint forbids.
 4. **What remains is closeness without exactness.** Under D1 the slice sits
-   6.0 pt below its baseline in exactness (15.0% against 21.0%). Its excess
-   per note is below the baseline's (0.52 against 0.94, over lines with a
-   defined excess), and its agreement is above (52.1% against 46.1%).
+   4.2 pt below its baseline in exactness (16.8% against 21.0%). Its excess
+   per note is below the baseline's (0.62 against 0.95), and its agreement is
+   above (52.2% against 46.2%).
 5. **Tap attribution alone never moved exactness.** A → B changes 2 lines
    from one song and is not corpus evidence, consistent with stage 1.
 
@@ -469,9 +484,10 @@ C1 16.7%, D1 26.7%, C2(3) 13.3%, D2 13.3%.
   MIDI-sourced lines carry neither, so these gains assume the labels.
 - **Import limits.** Legato is imported as an origin only, and D's direction
   is derived from pitch.
+- **Line slicing.** 46 resolved targets lie outside their origin's kept line.
+  They are counted explicitly but cannot enter a line-local objective.
 - **Weights.** `v1-fit` was fitted on all lines and reused unchanged. `k` and
   the waiver were fixed before the results.
-- **Hard constraint.** 19 tapped lines are unreachable under it.
 - **Concentration.** The C1 → D1 gain rests on 3 songs.
 - **Holdout.** The holdout slice (30 lines) is too small to interpret.
 
@@ -480,9 +496,8 @@ C1 16.7%, D1 26.7%, C2(3) 13.3%, D2 13.3%.
 1. **Hidden technique inference must predict legato edges, not only taps.**
    Continuity carries half of the exactness effect, so a MIDI-side model
    without legato labels would lose it.
-2. **Inspect the 19 hard-constraint violators** before choosing between hard
-   continuity with an exception budget and soft continuity with a large `k`.
-   Guitar Pro stores legato "to the next note on this string", which need not
-   be the next onset.
+2. **Inspect the 46 cross-line relations and the longest within-line spans.**
+   They are the remaining forensic set for distinguishing ordinary voice
+   interleaving from suspicious transcription or import cases.
 3. **Hammer-on / pull-off direction.** D's derived direction argues for the
    separate core decision on importing or deriving direction for all formats.
