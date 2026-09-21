@@ -79,15 +79,16 @@ use std::time::Instant;
 use griff_constraint_lab::fingering::{
     best_hands, decode_positions, hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key,
     tab_lines, v1_cost, v1_problem, with_repeat_consistency, with_string_tiebreak, CutStats,
-    HandModel, HandWeights, LineCut, TabLine, TechniqueEdge, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
+    HandModel, HandWeights, LineCut, TabLine, TechniqueEdge, TechniqueKind, HAND_VARS_PER_NOTE,
+    V1_VARS_PER_NOTE,
 };
 use griff_constraint_lab::ir::VarId;
 use griff_constraint_lab::optir::{
     verify_agreement, verify_record, OptProblem, ProblemRecord, SolveRecord, Verdict,
 };
 use griff_constraint_lab::technique::{
-    derived_direction, tap_aware_chain, tap_aware_cost, technique_chain, technique_cost,
-    Continuity, LegatoDirection, TechniqueObjective,
+    derived_direction, direction_between, tap_aware_chain, tap_aware_cost, technique_chain,
+    technique_cost, Continuity, LegatoDirection, TechniqueObjective,
 };
 use griff_constraint_lab::ties::{
     lexicographic_path, optimum_set, path_matches, train_secondary, Chain, Example, Features,
@@ -1792,27 +1793,13 @@ impl LegatoCensus {
             let (before, here) = (tab.human[i - 1], tab.human[i]);
             let same = before.string == here.string;
             let open = here.fret == 0;
-            let edge = tab.edges[i];
             let direction = derived_direction(&tab.pitches, i);
             self.edges += 1;
-            if edge.is_legato() {
-                self.legato.add(same);
-                match edge {
-                    TechniqueEdge::HammerOn => self.hammer_on.add(same),
-                    TechniqueEdge::PullOff => self.pull_off.add(same),
-                    TechniqueEdge::Legato => self.legato_span.add(same),
-                    TechniqueEdge::Plain => {}
-                }
-                match direction {
-                    Some(LegatoDirection::Ascending) => self.ascending.add(same),
-                    Some(LegatoDirection::Descending) => {
-                        self.descending.add(same);
-                        self.descending_legato_open.add(open);
-                    }
-                    Some(LegatoDirection::Unison) => self.unison.add(same),
-                    None => {}
-                }
-            } else {
+            let observed = tab
+                .edges
+                .iter()
+                .any(|edge| edge.from == i - 1 && edge.to == i);
+            if !observed {
                 self.plain.add(same);
                 if direction == Some(LegatoDirection::Descending) {
                     self.descending_plain_open.add(open);
@@ -1820,24 +1807,46 @@ impl LegatoCensus {
             }
             if tab.tapped[i - 1] {
                 self.out_of_tap += 1;
-                if edge.is_legato() {
-                    self.out_of_tap_legato.add(same);
-                    match direction {
-                        Some(LegatoDirection::Ascending) => self.out_of_tap_legato_ascending += 1,
-                        Some(LegatoDirection::Descending) => {
-                            self.out_of_tap_legato_descending += 1;
-                        }
-                        Some(LegatoDirection::Unison) => self.out_of_tap_legato_unison += 1,
-                        None => {}
-                    }
-                    self.out_of_tap_legato_open_target += u64::from(open);
-                }
             }
             if tab.tapped[i] {
                 self.into_tap += 1;
-                if edge.is_legato() {
-                    self.into_tap_legato.add(same);
+            }
+        }
+        for edge in &tab.edges {
+            let before = tab.human[edge.from];
+            let here = tab.human[edge.to];
+            let same = before.string == here.string;
+            let open = here.fret == 0;
+            let direction = direction_between(&tab.pitches, edge.from, edge.to);
+            self.legato.add(same);
+            match edge.kind {
+                TechniqueKind::HammerOn => self.hammer_on.add(same),
+                TechniqueKind::PullOff => self.pull_off.add(same),
+                TechniqueKind::Legato => self.legato_span.add(same),
+            }
+            match direction {
+                Some(LegatoDirection::Ascending) => self.ascending.add(same),
+                Some(LegatoDirection::Descending) => {
+                    self.descending.add(same);
+                    self.descending_legato_open.add(open);
                 }
+                Some(LegatoDirection::Unison) => self.unison.add(same),
+                None => {}
+            }
+            if tab.tapped[edge.from] {
+                self.out_of_tap_legato.add(same);
+                match direction {
+                    Some(LegatoDirection::Ascending) => self.out_of_tap_legato_ascending += 1,
+                    Some(LegatoDirection::Descending) => {
+                        self.out_of_tap_legato_descending += 1;
+                    }
+                    Some(LegatoDirection::Unison) => self.out_of_tap_legato_unison += 1,
+                    None => {}
+                }
+                self.out_of_tap_legato_open_target += u64::from(open);
+            }
+            if tab.tapped[edge.to] {
+                self.into_tap_legato.add(same);
             }
         }
     }
@@ -1855,9 +1864,11 @@ struct CensusRow {
 struct CensusReport {
     schema: &'static str,
     version: u32,
-    /// Legato origins on the last note of a kept line (whole corpus, all
-    /// formats): they project onto no edge.
+    /// Legato origins in kept lines with no later same-string note in the
+    /// imported voice.
     dangling_legato: u64,
+    /// Resolved same-string targets that fall outside their origin's kept line.
+    cross_line_legato: u64,
     rows: Vec<CensusRow>,
     corpus: CorpusFacts,
 }
@@ -1918,7 +1929,9 @@ fn legato_census(corpus: Corpus, out: &Path) -> std::io::Result<()> {
         .collect();
 
     let dangling = corpus.facts.cut_stats.dangling_legato;
-    println!("\nlegato origins ending a kept line (no edge): {dangling}");
+    let cross_line = corpus.facts.cut_stats.cross_line_legato;
+    println!("\nunresolved legato origins (no later same-string voice note): {dangling}");
+    println!("resolved legato targets outside their origin's kept line: {cross_line}");
     println!("\nL1/L2 — P(same string | edge): share (edges). Legato kinds are imported; directions are derived from pitch.\n");
     println!("| split | family | population | legato edges | HammerOn | PullOff | Legato | plain edges (base rate) | ascending legato | descending legato | unison legato |");
     println!("|---|---|---|---|---|---|---|---|---|---|---|");
@@ -1986,8 +1999,9 @@ fn legato_census(corpus: Corpus, out: &Path) -> std::io::Result<()> {
     }
     let report = CensusReport {
         schema: "griff.constraint-lab-legato-census",
-        version: 1,
+        version: 2,
         dangling_legato: dangling,
+        cross_line_legato: cross_line,
         rows,
         corpus: corpus.facts,
     };
@@ -2096,66 +2110,50 @@ struct LegatoLine {
 }
 
 fn cross_string_legato(path: &[FretboardPosition], edges: &[TechniqueEdge]) -> u64 {
-    path.windows(2)
-        .zip(edges.iter().skip(1))
-        .filter(|(pair, edge)| {
-            edge.is_legato() && pair.first().map(|p| p.string) != pair.last().map(|p| p.string)
-        })
+    edges
+        .iter()
+        .filter(|edge| path[edge.from].string != path[edge.to].string)
         .count() as u64
 }
 
-/// Human cross-string legato edges with enough local context to audit whether
-/// the imported origin should bind to the immediate next onset or to a later
-/// note on the origin string. This is diagnostic output only; it does not feed
-/// any objective.
+/// Any human cross-string legato edges left after same-string projection.
+/// This is a fail-closed regression manifest only; it does not feed any
+/// objective and is expected to be empty on the research corpus.
 fn cross_string_legato_forensics(tab: &TabLine) -> Vec<serde_json::Value> {
-    (1..tab.human.len())
-        .filter_map(|i| {
-            let edge = tab.edges[i];
-            let from = tab.human[i - 1];
-            let immediate_to = tab.human[i];
-            if !edge.is_legato() || from.string == immediate_to.string {
+    tab.edges
+        .iter()
+        .filter_map(|edge| {
+            let from = tab.human[edge.from];
+            let target = tab.human[edge.to];
+            if from.string == target.string {
                 return None;
             }
 
-            let direction = match derived_direction(&tab.pitches, i) {
+            let direction = match direction_between(&tab.pitches, edge.from, edge.to) {
                 Some(LegatoDirection::Ascending) => "ascending",
                 Some(LegatoDirection::Descending) => "descending",
                 Some(LegatoDirection::Unison) => "unison",
                 None => "unknown",
             };
-            let next_on_origin_string = ((i + 1)..tab.human.len())
-                .find(|&j| tab.human[j].string == from.string)
-                .map(|j| {
-                    serde_json::json!({
-                        "index": j,
-                        "notes_after_immediate": j - i,
-                        "pitch": tab.pitches[j].0,
-                        "string": tab.human[j].string,
-                        "fret": tab.human[j].fret,
-                        "tapped": tab.tapped[j],
-                    })
-                });
 
             Some(serde_json::json!({
-                "edge_into": i,
-                "kind": format!("{edge:?}"),
+                "kind": format!("{:?}", edge.kind),
                 "derived_direction": direction,
                 "from": {
-                    "index": i - 1,
-                    "pitch": tab.pitches[i - 1].0,
+                    "index": edge.from,
+                    "pitch": tab.pitches[edge.from].0,
                     "string": from.string,
                     "fret": from.fret,
-                    "tapped": tab.tapped[i - 1],
+                    "tapped": tab.tapped[edge.from],
                 },
-                "immediate_to": {
-                    "index": i,
-                    "pitch": tab.pitches[i].0,
-                    "string": immediate_to.string,
-                    "fret": immediate_to.fret,
-                    "tapped": tab.tapped[i],
+                "target": {
+                    "index": edge.to,
+                    "notes_after_origin": edge.to - edge.from,
+                    "pitch": tab.pitches[edge.to].0,
+                    "string": target.string,
+                    "fret": target.fret,
+                    "tapped": tab.tapped[edge.to],
                 },
-                "next_on_origin_string": next_on_origin_string,
             }))
         })
         .collect()
@@ -2217,7 +2215,7 @@ fn legato_line(line: &Line, weights: &FingeringWeights) -> LegatoLine {
         paths.push(path);
     }
     let tapped = tab.tapped.iter().filter(|t| **t).count() as u64;
-    let has_legato = tab.edges.iter().any(|e| e.is_legato());
+    let has_legato = !tab.edges.is_empty();
     LegatoLine {
         notes: tab.human.len() as u64,
         tapped,
@@ -2497,7 +2495,7 @@ fn legato(corpus: Corpus, out: &Path) -> std::io::Result<()> {
                     let file = corpus.names.get(line.file);
                     let forensic = serde_json::json!({
                         "schema": "griff.constraint-lab-legato-violator",
-                        "version": 1,
+                        "version": 2,
                         "id": line.id,
                         "file": file,
                         "song": file.map(|name| song_key(name)),
@@ -2580,7 +2578,7 @@ fn legato(corpus: Corpus, out: &Path) -> std::io::Result<()> {
     let without_legato = corpus
         .lines
         .iter()
-        .filter(|l| l.tab.edges.iter().all(|e| !e.is_legato()))
+        .filter(|l| l.tab.edges.is_empty())
         .count();
     let untapped = corpus
         .lines

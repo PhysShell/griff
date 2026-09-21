@@ -66,6 +66,16 @@ pub enum LabError {
         /// Labels supplied.
         labels: usize,
     },
+    /// A technique relation does not name a forward pair inside its line.
+    #[error("technique edge {from}->{to} is invalid for {notes} notes")]
+    InvalidTechniqueEdge {
+        /// Notes in the line.
+        notes: usize,
+        /// Origin index supplied by the edge.
+        from: usize,
+        /// Target index supplied by the edge.
+        to: usize,
+    },
 }
 
 /// Problem A: assign one fret per line note so consecutive travel stays
