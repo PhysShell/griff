@@ -2026,6 +2026,10 @@ const LEGATO_STAGES: [LegatoStage; 8] = [
     LegatoStage::D2,
 ];
 
+/// Index of C1 in `LEGATO_STAGES`, used only to select the registered hard
+/// stage for the forensic violator manifest.
+const LEGATO_C1_INDEX: usize = 2;
+
 /// The registered steps for the leave-one-song-out check, as indices into
 /// [`LEGATO_STAGES`]: A→B, B→C1, B→C2(3), C1→D1, C2(3)→D2.
 const LEGATO_STEPS: [(usize, usize); 5] = [(0, 1), (1, 2), (1, 4), (2, 6), (4, 7)];
@@ -2098,6 +2102,63 @@ fn cross_string_legato(path: &[FretboardPosition], edges: &[TechniqueEdge]) -> u
             edge.is_legato() && pair.first().map(|p| p.string) != pair.last().map(|p| p.string)
         })
         .count() as u64
+}
+
+/// Human cross-string legato edges with enough local context to audit whether
+/// the imported origin should bind to the immediate next onset or to a later
+/// note on the origin string. This is diagnostic output only; it does not feed
+/// any objective.
+fn cross_string_legato_forensics(tab: &TabLine) -> Vec<serde_json::Value> {
+    (1..tab.human.len())
+        .filter_map(|i| {
+            let edge = tab.edges[i];
+            let from = tab.human[i - 1];
+            let immediate_to = tab.human[i];
+            if !edge.is_legato() || from.string == immediate_to.string {
+                return None;
+            }
+
+            let direction = match derived_direction(&tab.pitches, i) {
+                Some(LegatoDirection::Ascending) => "ascending",
+                Some(LegatoDirection::Descending) => "descending",
+                Some(LegatoDirection::Unison) => "unison",
+                None => "unknown",
+            };
+            let next_on_origin_string = ((i + 1)..tab.human.len())
+                .find(|&j| tab.human[j].string == from.string)
+                .map(|j| {
+                    serde_json::json!({
+                        "index": j,
+                        "notes_after_immediate": j - i,
+                        "pitch": tab.pitches[j].0,
+                        "string": tab.human[j].string,
+                        "fret": tab.human[j].fret,
+                        "tapped": tab.tapped[j],
+                    })
+                });
+
+            Some(serde_json::json!({
+                "edge_into": i,
+                "kind": format!("{edge:?}"),
+                "derived_direction": direction,
+                "from": {
+                    "index": i - 1,
+                    "pitch": tab.pitches[i - 1].0,
+                    "string": from.string,
+                    "fret": from.fret,
+                    "tapped": tab.tapped[i - 1],
+                },
+                "immediate_to": {
+                    "index": i,
+                    "pitch": tab.pitches[i].0,
+                    "string": immediate_to.string,
+                    "fret": immediate_to.fret,
+                    "tapped": tab.tapped[i],
+                },
+                "next_on_origin_string": next_on_origin_string,
+            }))
+        })
+        .collect()
 }
 
 fn legato_line(line: &Line, weights: &FingeringWeights) -> LegatoLine {
@@ -2398,6 +2459,7 @@ fn legato(corpus: Corpus, out: &Path) -> std::io::Result<()> {
     let mut reports = Vec::new();
     let mut controls = (0, 0);
     let mut dump = BufWriter::new(fs::File::create(out.join("legato-lines.jsonl"))?);
+    let mut violators = BufWriter::new(fs::File::create(out.join("legato-violators.jsonl"))?);
     for (weights_name, weights) in &weight_sets {
         let started = Instant::now();
         let computed = par_map(&refs, |line| legato_line(line, weights));
@@ -2425,6 +2487,31 @@ fn legato(corpus: Corpus, out: &Path) -> std::io::Result<()> {
                 });
                 serde_json::to_writer(&mut dump, &record).map_err(std::io::Error::other)?;
                 dump.write_all(b"\n")?;
+
+                // The hard-stage anomaly is independent of the second weight
+                // set for the human path. Emit it once, under the primary
+                // v1-fit pass, with the actual offending edges rather than
+                // only aggregate counts.
+                let c1 = c.rows[LEGATO_C1_INDEX];
+                if *weights_name == "v1-fit" && c1.human_violations > c1.optimum_violations {
+                    let file = corpus.names.get(line.file);
+                    let forensic = serde_json::json!({
+                        "schema": "griff.constraint-lab-legato-violator",
+                        "version": 1,
+                        "id": line.id,
+                        "file": file,
+                        "song": file.map(|name| song_key(name)),
+                        "family": file.map(|name| format_family(name)),
+                        "test": line.test,
+                        "notes": c.notes,
+                        "tapped": c.tapped,
+                        "c1": c1,
+                        "human_cross_string_legato": cross_string_legato_forensics(&line.tab),
+                    });
+                    serde_json::to_writer(&mut violators, &forensic)
+                        .map_err(std::io::Error::other)?;
+                    violators.write_all(b"\n")?;
+                }
             }
         }
 
@@ -2488,6 +2575,7 @@ fn legato(corpus: Corpus, out: &Path) -> std::io::Result<()> {
         });
     }
     dump.flush()?;
+    violators.flush()?;
 
     let without_legato = corpus
         .lines
