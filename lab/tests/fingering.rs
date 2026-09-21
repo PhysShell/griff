@@ -24,20 +24,21 @@ use griff_constraint_lab::{
         best_hands, decode_positions, encode_hand_witness, encode_v1_witness, hand_cost,
         hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key, tab_lines, v1_cost,
         v1_problem, with_repeat_consistency, with_string_tiebreak, CutStats, HandError, HandModel,
-        HandModelError, HandWeights, LineCut, Reach, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
+        HandModelError, HandWeights, LineCut, Reach, TechniqueEdge, HAND_VARS_PER_NOTE,
+        V1_VARS_PER_NOTE,
     },
     optir::{OptIrError, Term, WitnessError},
     problems::LabError,
 };
 use griff_core::{
     event::{
-        FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, Tempo, Ticks, TimeSignature,
-        Tuning, Velocity,
+        FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, SpanTechnique,
+        TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
     },
     fretboard::{infer_positions, FingeringWeights, STANDARD_MAX_FRET},
     score::{
         AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
-        Score, Track, Voice,
+        Score, TechniqueSpan, Track, Voice,
     },
     slice::TickRange,
 };
@@ -122,6 +123,21 @@ fn tapped_single(onset: u32, p: u8, position: (u8, u8)) -> EventGroup {
     group(vec![AtomEvent::Note(n)])
 }
 
+/// `g` (a single note) carrying a `technique` span over its note.
+fn with_span(mut g: EventGroup, technique: SpanTechnique) -> EventGroup {
+    let AtomEvent::Note(n) = &g.atoms[0] else {
+        unreachable!("a single note")
+    };
+    let tick_range = TickRange::new(n.absolute_start, Ticks(n.absolute_start.0 + n.duration.0))
+        .expect("ordered");
+    g.technique_spans.push(TechniqueSpan {
+        technique,
+        tick_range,
+        evidence: TechniqueEvidence::explicit(),
+    });
+    g
+}
+
 // ── tablature lines ───────────────────────────────────────────────────────────
 
 /// Voice 0 exercises every cut cause once; voice 1 is one clean line sharing
@@ -204,8 +220,13 @@ fn tab_lines_cut_at_every_cause_and_count_it() {
             kept_lines: 4,
             kept_notes: 16,
             mirrored_tracks: 0,
+            dangling_legato: 0,
         }
     );
+    assert!(lines
+        .iter()
+        .all(|l| l.edges.len() == l.pitches.len()
+            && l.edges.iter().all(|e| *e == TechniqueEdge::Plain)));
 }
 
 #[test]
@@ -343,6 +364,55 @@ fn tab_lines_flag_tapped_notes() {
     assert!(plain
         .iter()
         .all(|l| l.tapped.len() == l.pitches.len() && l.tapped.iter().all(|t| !t)));
+}
+
+#[test]
+fn tab_lines_put_legato_on_the_edge_it_starts() {
+    // D string: 5 h 7, then 5 (a slide is not legato), 7 p 5, 7 legato 5.
+    let s = score(vec![vec![
+        with_span(single(0, 55, Some((4, 5))), SpanTechnique::HammerOn),
+        single(Q, 57, Some((4, 7))),
+        with_span(single(2 * Q, 55, Some((4, 5))), SpanTechnique::Slide),
+        with_span(single(3 * Q, 57, Some((4, 7))), SpanTechnique::PullOff),
+        single(4 * Q, 55, Some((4, 5))),
+        with_span(single(5 * Q, 57, Some((4, 7))), SpanTechnique::Legato),
+        single(6 * Q, 55, Some((4, 5))),
+    ]]);
+    let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    use TechniqueEdge::{HammerOn, Legato, Plain, PullOff};
+    assert_eq!(
+        lines[0].edges,
+        vec![Plain, HammerOn, Plain, Plain, PullOff, Plain, Legato]
+    );
+    assert_eq!(stats.dangling_legato, 0);
+    assert!(HammerOn.is_legato() && PullOff.is_legato() && Legato.is_legato());
+    assert!(!Plain.is_legato());
+}
+
+#[test]
+fn a_legato_origin_that_ends_a_kept_line_is_dangling() {
+    // The chord after the origin ends the line, so the legato leads nowhere in
+    // it; the short line after the chord is dropped with its own legato.
+    let s = score(vec![vec![
+        single(0, 55, Some((4, 5))),
+        single(Q, 57, Some((4, 7))),
+        single(2 * Q, 55, Some((4, 5))),
+        with_span(single(3 * Q, 57, Some((4, 7))), SpanTechnique::HammerOn),
+        group(vec![
+            note(4 * Q, 59, Some((4, 9))),
+            note(4 * Q, 64, Some((1, 0))),
+        ]),
+        with_span(single(5 * Q, 55, Some((4, 5))), SpanTechnique::HammerOn),
+        single(6 * Q, 57, Some((4, 7))),
+    ]]);
+    let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].edges.iter().all(|e| !e.is_legato()));
+    assert_eq!(stats.dangling_legato, 1);
+    let mut total = CutStats::default();
+    total.absorb(&stats);
+    total.absorb(&stats);
+    assert_eq!(total.dangling_legato, 2);
 }
 
 #[test]

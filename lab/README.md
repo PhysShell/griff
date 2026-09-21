@@ -118,6 +118,15 @@ reweighted to the same line lengths.
 
 Results: [`../docs/audit/2026-09-fingering-tap-attribution.md`](../docs/audit/2026-09-fingering-tap-attribution.md).
 
+Stage 2 carries legato spans onto the edges between notes
+(`TabLine::edges`, `TechniqueEdge`; direction only derived from pitch) and adds
+hard or soft same-string continuity across them, plus a pull-off open-string
+waiver (`technique_chain`, `TechniqueObjective`). `fingering_gap legato-census`
+measures the laws first; `fingering_gap legato` runs the registered ablation
+with per-stage baselines and a leave-one-song-out check.
+
+Results: [`../docs/audit/2026-09-fingering-legato-continuity.md`](../docs/audit/2026-09-fingering-legato-continuity.md).
+
 ## Known spike limits (deliberate)
 
 - The reference solver is leaf-checked backtracking with two sound band
