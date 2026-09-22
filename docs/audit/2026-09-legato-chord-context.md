@@ -93,3 +93,155 @@ This is a Lab-only exact oracle. It changes no production path, importer,
 representation, boundary state, learned tie-break, or corpus. The eight
 kept-line relations remain outside this experiment.
 
+## Corpus result
+
+The registered runner was executed over the unchanged 410-file corpus
+(fingerprint `9e53e55a19cddf29`; 3 import failures, 1,149 guitar tracks).
+Generated manifests remain under the disposable `--out` directory.
+
+### B0 reproduction
+
+The runner refuses to emit a context summary unless every frozen #209 census
+value matches. The rerun passed:
+
+```text
+cases                         38
+legal target-string conditions 176
+feasible conditions            174
+B0 rank 1 / 2 / 3           11 / 24 / 3
+free / costly / infeasible  11 / 27 / 0
+```
+
+All 38 cases have a preceding fretting-hand anchor under the preregistered
+tap-aware extraction. No missing context was replaced by zero.
+
+### Observed-string ranks
+
+| view | rank distribution | rank 1 | improved / same / worse | median rank delta |
+|---|---|---:|---:|---:|
+| B0 | 11 / 24 / 3 at ranks 1 / 2 / 3 | 11 | — | — |
+| O | 36 at rank 1; 2 at rank 3 | 36 | 26 / 11 / 1 | +1 |
+| A | 30 / 3 / 3 / 2 at ranks 1 / 2 / 3 / 4 | 30 | 22 / 13 / 3 | +1 |
+| O→A | 36 at rank 1; 1 at rank 3; 1 at rank 4 | 36 | 26 / 11 / 1 | +1 |
+| A→O | 30 / 3 / 2 / 3 at ranks 1 / 2 / 3 / 4 | 30 | 22 / 13 / 3 | +1 |
+
+The symmetric lexicographic views do not require a fitted coefficient. O→A
+has the same aggregate rank-1 and change counts as O; A→O has the same counts
+as A, although individual lower-rank cases can move within those totals.
+
+Every observed target string has at least one globally nondominated assignment
+on `(B0, O, A)`: 38/38 Pareto members. This is supportive but weakly
+discriminating—trade-offs allow many conditions onto a frontier—so the dense
+rank and song-blocked results carry the interpretation.
+
+### The 27 previously costly cases
+
+| view | rank 1 | improved / same / worse |
+|---|---:|---:|
+| O | 26 / 27 | 26 / 1 / 0 |
+| A | 21 / 27 | 22 / 4 / 1 |
+| O→A | 26 / 27 | 26 / 1 / 0 |
+| A→O | 21 / 27 | 22 / 4 / 1 |
+
+This is the population on which preceding context had to do work rather than
+merely retain a B0 winner. Both registered primitive views show a signal.
+
+### Song distribution
+
+The table reports `B0 rank-1 → O rank-1 / A rank-1` and, in parentheses,
+`improved / worsened` for O and A.
+
+| song key | cases | result |
+|---|---:|---|
+| A Lot Like Birds — Connector | 5 | `5 → 5 / 5` (`0/0`, `0/0`) |
+| Dance Gavin Dance — Betrayed by the Game | 6 | `0 → 6 / 6` (`6/0`, `6/0`) |
+| Dance Gavin Dance — Blood Wolf | 2 | `0 → 2 / 2` (`2/0`, `2/0`) |
+| Dance Gavin Dance — Blue Dream | 1 | `1 → 0 / 0` (`0/1`, `0/1`) |
+| Dance Gavin Dance — Cream of the Crop | 12 | `0 → 12 / 12` (`12/0`, `12/0`) |
+| Dance Gavin Dance — Frozen One | 2 | `0 → 2 / 0` (`2/0`, `1/0`) |
+| Dance Gavin Dance — Its Safe To Say You Dig The Backseat | 1 | `0 → 0 / 0` (`0/0`, `0/0`) |
+| Dance Gavin Dance — Polka Dot Dobbins | 4 | `4 → 4 / 4` (`0/0`, `0/0`) |
+| Underoath — Reinventing Your Exit | 1 | `0 → 1 / 0` (`1/0`, `0/0`) |
+| Wolf & Bear — Street Rat | 2 | `0 → 2 / 1` (`2/0`, `1/0`) |
+| Wolf & Bear — There's No Dust in the City | 2 | `1 → 2 / 0` (`1/0`, `0/2`) |
+
+O improves cases in seven song keys and A in five, so the result is not
+confined to one repeated phrase family. Concentration remains material:
+`Cream of the Crop` contributes 12/26 O improvements and 12/22 A improvements.
+It does not create the sign by itself.
+
+### Eleven-way leave-one-song-out
+
+All 44 registered fold/view records are emitted. Their ranges are:
+
+| view | rank-1 gain, min … max | min `(improved − worsened)` | fold medians |
+|---|---:|---:|---|
+| O | +13 … +26 | +13 | +1 in every fold |
+| O→A | +13 … +26 | +13 | +1 in every fold |
+| A | +7 … +20 | +7 | 0 or +1 |
+| A→O | +7 … +20 | +7 | 0 or +1 |
+
+In particular, omitting the largest song leaves rank-1 gains of +13 for O and
++7 for A. No omission reverses either rank-1 gain or the change-count sign.
+
+### Imported realization
+
+The imported target fret has zero O excess in 38/38 cases. This is mechanical,
+not independent validation: within a fixed target string and tuning, the
+target pitch fixes its fret, and the import supplies both the label and the
+realization. Anchor excess is zero in 27/38 cases (median and p90 zero, maximum
+22). The full imported assignment is globally Pareto-nondominated in 18/38
+cases. Human measurements remain descriptive and were not used by any solve.
+
+## Registered forensic cases
+
+| case | B0 delta/rank | O | A | O→A | A→O | observed Pareto |
+|---|---:|---:|---:|---:|---:|---|
+| `Its Safe To Say…`, tick 142080 | 19 / 3 | 3 | 3 | 3 | 3 | yes |
+| `Frozen One`, tick 288000 | 11 / 3 | 1 | 3 | 1 | 3 | yes |
+| `Frozen One`, tick 391680 | 10 / 3 | 1 | 2 | 1 | 2 | yes |
+| `Blood Wolf`, tick 15480 | 14 / 2 | 1 | 1 | 1 | 1 | yes |
+| `Blood Wolf`, tick 134520 | 14 / 2 | 1 | 1 | 1 | 1 | yes |
+| `Street Rat`, tick 286080 | 5 / 2 | 1 | 1 | 1 | 1 | yes |
+| `Street Rat`, tick 298080 | 5 / 2 | 1 | 2 | 1 | 2 | yes |
+
+The maximum-delta `Its Safe To Say…` case is a useful falsifier: neither
+registered context primitive improves it. The two `Frozen One` cases separate
+the primitives cleanly—origin proximity explains both, anchor proximity does
+not fully do so. Both repeated `Blood Wolf` cases improve under both views. The
+two assignment-infeasible *alternative strings* in the first `Street Rat`
+chord remain present in the complete control map; the observed condition is
+feasible and context-favoured.
+
+## Verdict against the preregistered rule
+
+The result qualifies as **corpus-level candidate evidence** that #209 was
+context-starved:
+
+1. O improves 26 and worsens 1; A improves 22 and worsens 3.
+2. Removing the largest song leaves positive rank-1 gains and positive net
+   change counts.
+3. Every one of the eleven leave-one-song-out folds retains a positive sign.
+4. Improvements occur across seven song keys for O and five for A, rather than
+   one repeated phrase family.
+
+The stronger statement is supplied by A: it sees only the previously available
+fretting-hand anchor and the chord assignment, not the observed string label,
+yet moves rank 1 from 11/38 to 30/38. O is even stronger at 36/38, as expected
+for a metric that tests whether the imported same-string relation corresponds
+to a small physical fret continuation. Neither uses a reward for string
+equality, and no weights were fitted.
+
+This does **not** select a production architecture or scalar objective. O is
+not independent of the relation's imported provenance, the sample remains only
+11 song keys, Pareto membership is insufficiently selective, and A still
+worsens three cases. The next falsifiable step, if pursued, should be a new
+preregistered chord-aware representation experiment that preserves these
+primitive dimensions without combining them into fitted weights. The eight
+kept-line targets and boundary-state replay remain separate.
+
+## Invariance
+
+The final corpus rerun retains 29,758 within-line and 46 resolved cross-line
+relations. `v1-fit` Stage 2 remains B/C1/D1 = `0.9 / 13.3 / 16.8%`, with gaps
+`19.1 / 7.6 / 4.2` percentage points. No production or Stage 2 behavior changed.
