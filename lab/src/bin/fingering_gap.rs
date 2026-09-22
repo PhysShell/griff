@@ -61,6 +61,12 @@
 //! cargo run --release --bin fingering_gap -- legato --tabs DIR --out DIR
 //! ```
 //!
+//! Chord-target feasibility oracle (diagnostic-only follow-up):
+//!
+//! ```text
+//! cargo run --release --bin fingering_gap -- legato-chords --tabs DIR --out DIR
+//! ```
+//!
 //! `MODELS`: `--v1 NAME=fret,open_string,position_shift,string_change` and
 //! `--hand NAME=height,open_string,stretch,shift,shift_distance,string_distance`,
 //! repeatable; default `--v1 v1=1,1,2,1` (the production weights).
@@ -76,12 +82,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use griff_constraint_lab::chord::{
+    analyze_chord, ChordAnalysis, ChordAtom, ChordCostPolicy, ChordOptimum, HumanChordAssessment,
+    TargetStringConstraint, TargetStringResult,
+};
 use griff_constraint_lab::fingering::{
     best_hands, decode_positions, hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key,
     tab_lines, v1_cost, v1_problem, with_repeat_consistency, with_string_tiebreak,
-    within_line_span, CrossLineBoundary, CutStats, HandModel, HandWeights, LineBoundary,
-    LineBoundaryCause, LineCut, TabLine, TargetDisposition, TechniqueEdge, TechniqueKind,
-    TechniqueSpanStats, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
+    within_line_span, CrossLineBoundary, CutStats, HandModel, HandWeights, ImportedChordAtom,
+    LineBoundary, LineBoundaryCause, LineCut, TabLine, TargetDisposition, TechniqueEdge,
+    TechniqueKind, TechniqueSpanStats, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
 };
 use griff_constraint_lab::forensics::{distribution, top_n_longest, Distribution, ExactRatio};
 use griff_constraint_lab::ir::VarId;
@@ -3321,6 +3331,525 @@ fn write_json(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── legato into chord targets ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct PositionRecord {
+    string: u8,
+    fret: u8,
+}
+
+impl From<FretboardPosition> for PositionRecord {
+    fn from(position: FretboardPosition) -> Self {
+        Self {
+            string: position.string,
+            fret: position.fret,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ChordAtomRecord {
+    voice_note_id: usize,
+    duration: u32,
+    pitch: u8,
+    imported_position: Option<PositionRecord>,
+    tapped: bool,
+    legato_target: bool,
+}
+
+#[derive(Serialize)]
+struct ChordTargetRecord {
+    schema: &'static str,
+    version: u32,
+    id: String,
+    file: String,
+    song: String,
+    family: &'static str,
+    test: bool,
+    track: usize,
+    voice: u8,
+    origin_line_start_tick: u32,
+    origin_note_id: usize,
+    target_note_id: usize,
+    chord_onset_tick: u32,
+    ticks_per_quarter: u32,
+    original_tuning: Vec<u8>,
+    technique_kind: String,
+    derived_direction: &'static str,
+    boundary_class: &'static str,
+    origin: ProjectionPoint,
+    chord: Vec<ChordAtomRecord>,
+}
+
+#[derive(Serialize)]
+struct ChordOptimumRecord {
+    optimum: i64,
+    optimum_count: u64,
+    admissible_count: u64,
+    chosen: Vec<PositionRecord>,
+}
+
+impl From<&ChordOptimum> for ChordOptimumRecord {
+    fn from(optimum: &ChordOptimum) -> Self {
+        Self {
+            optimum: optimum.optimum,
+            optimum_count: optimum.optimum_count,
+            admissible_count: optimum.admissible_count,
+            chosen: optimum.chosen.iter().copied().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TargetStringRecord {
+    string: u8,
+    result: Option<ChordOptimumRecord>,
+}
+
+impl From<&TargetStringResult> for TargetStringRecord {
+    fn from(condition: &TargetStringResult) -> Self {
+        Self {
+            string: condition.string,
+            result: condition.result.as_ref().map(Into::into),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct HumanChordRecord {
+    feasible: bool,
+    satisfies_observed_constraint: bool,
+    cost: Option<i64>,
+    in_unconstrained_optimum: bool,
+    in_observed_optimum: bool,
+    excess_unconstrained: Option<i64>,
+    excess_observed: Option<i64>,
+}
+
+impl From<&HumanChordAssessment> for HumanChordRecord {
+    fn from(human: &HumanChordAssessment) -> Self {
+        Self {
+            feasible: human.feasible,
+            satisfies_observed_constraint: human.satisfies_observed_constraint,
+            cost: human.cost,
+            in_unconstrained_optimum: human.in_unconstrained_optimum,
+            in_observed_optimum: human.in_observed_optimum,
+            excess_unconstrained: human.excess_unconstrained,
+            excess_observed: human.excess_observed,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ChordFeasibilityRecord {
+    schema: &'static str,
+    version: u32,
+    id: String,
+    file: String,
+    song: String,
+    family: &'static str,
+    track: usize,
+    voice: u8,
+    origin_note_id: usize,
+    target_note_id: usize,
+    chord_onset_tick: u32,
+    boundary_class: &'static str,
+    derived_direction: &'static str,
+    origin_tapped: bool,
+    chord_size: usize,
+    observed_string: u8,
+    outcome: &'static str,
+    unconstrained: ChordOptimumRecord,
+    observed: Option<ChordOptimumRecord>,
+    delta_cost: Option<i64>,
+    unconstrained_optimum_survivors: u64,
+    unconstrained_optimum_set_reduction: u64,
+    admissible_count_reduction: Option<u64>,
+    target_strings: Vec<TargetStringRecord>,
+    observed_dense_rank: Option<usize>,
+    observed_cost_tie_size: Option<usize>,
+    human: Option<HumanChordRecord>,
+}
+
+#[derive(Default, Serialize)]
+struct OutcomeCounts {
+    total: usize,
+    free: usize,
+    costly: usize,
+    infeasible: usize,
+}
+
+impl OutcomeCounts {
+    fn add(&mut self, outcome: &str) {
+        self.total += 1;
+        match outcome {
+            "feasible_free" => self.free += 1,
+            "feasible_costly" => self.costly += 1,
+            "infeasible" => self.infeasible += 1,
+            _ => {}
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ChordStratum {
+    dimension: &'static str,
+    value: String,
+    counts: OutcomeCounts,
+}
+
+#[derive(Default, Serialize)]
+struct ChordControlSummary {
+    observed_rank_one: usize,
+    observed_unique_cheapest: usize,
+    legal_target_string_conditions: usize,
+    feasible_target_string_conditions: usize,
+}
+
+#[derive(Default, Serialize)]
+struct ChordHumanSummary {
+    complete: usize,
+    feasible: usize,
+    satisfies_observed_constraint: usize,
+    in_unconstrained_optimum: usize,
+    in_observed_optimum: usize,
+    excess_unconstrained: Option<Distribution<i64>>,
+    excess_observed: Option<Distribution<i64>>,
+}
+
+#[derive(Serialize)]
+struct ChordSummary {
+    schema: &'static str,
+    version: u32,
+    model: &'static str,
+    max_fret: u8,
+    population: usize,
+    outcomes: OutcomeCounts,
+    delta_cost: Option<Distribution<i64>>,
+    unconstrained_optimum_survivors: Option<Distribution<u64>>,
+    unconstrained_optimum_set_reduction: Option<Distribution<u64>>,
+    admissible_count_reduction: Option<Distribution<u64>>,
+    observed_dense_rank: Option<Distribution<u64>>,
+    observed_cost_tie_size: Option<Distribution<u64>>,
+    control: ChordControlSummary,
+    human: ChordHumanSummary,
+    strata: Vec<ChordStratum>,
+    corpus: CorpusFacts,
+}
+
+fn chord_boundary_class(
+    edge: &griff_constraint_lab::fingering::CrossLineTechniqueEdge,
+) -> &'static str {
+    let causes = edge
+        .boundary
+        .boundaries
+        .iter()
+        .flat_map(|boundary| boundary.causes.iter());
+    let mut rest = false;
+    let mut chord = false;
+    for cause in causes {
+        rest |= *cause == LineBoundaryCause::RestCut;
+        chord |= *cause == LineBoundaryCause::ChordOnset;
+    }
+    match (rest, chord) {
+        (true, true) => "rest_plus_chord",
+        (false, true) => "chord_only",
+        (true, false) => "rest_only",
+        (false, false) => "other",
+    }
+}
+
+fn imported_chord_atom(atom: ImportedChordAtom) -> ChordAtom {
+    ChordAtom {
+        note_id: atom.note_id,
+        pitch: atom.pitch,
+        imported_position: atom.original_position,
+        tapped: atom.tapped,
+    }
+}
+
+fn chord_outcome(analysis: &ChordAnalysis) -> &'static str {
+    match &analysis.observed {
+        None => "infeasible",
+        Some(observed) if observed.optimum == analysis.unconstrained.optimum => "feasible_free",
+        Some(_) => "feasible_costly",
+    }
+}
+
+fn legato_chords(corpus: Corpus, out: &Path) -> std::io::Result<()> {
+    let policy = ChordCostPolicy::v1_unary();
+    let targets_path = out.join("legato-chord-targets.jsonl");
+    let feasibility_path = out.join("legato-chord-feasibility.jsonl");
+    let mut targets_writer = BufWriter::new(fs::File::create(&targets_path)?);
+    let mut feasibility_writer = BufWriter::new(fs::File::create(&feasibility_path)?);
+    let mut records = Vec::new();
+
+    for line in &corpus.lines {
+        for edge in &line.tab.cross_line_edges {
+            if edge.boundary.target_disposition != TargetDisposition::Excluded
+                || edge.target_chord.len() < 2
+                || !edge
+                    .target_chord
+                    .iter()
+                    .any(|atom| atom.note_id == edge.target.note_id)
+            {
+                continue;
+            }
+            let file = corpus.names[line.file].clone();
+            let boundary_class = chord_boundary_class(edge);
+            let direction = match edge.span.pitch_interval_semitones.cmp(&0) {
+                std::cmp::Ordering::Greater => "ascending",
+                std::cmp::Ordering::Less => "descending",
+                std::cmp::Ordering::Equal => "unison",
+            };
+            let origin = projection_point(&line.tab, edge.from);
+            let chord: Vec<ChordAtomRecord> = edge
+                .target_chord
+                .iter()
+                .map(|atom| ChordAtomRecord {
+                    voice_note_id: atom.note_id,
+                    duration: atom.duration,
+                    pitch: atom.pitch.0,
+                    imported_position: atom.original_position.map(Into::into),
+                    tapped: atom.tapped,
+                    legato_target: atom.note_id == edge.target.note_id,
+                })
+                .collect();
+            let target_record = ChordTargetRecord {
+                schema: "griff.constraint-lab-legato-chord-target",
+                version: 1,
+                id: line.id.clone(),
+                file: file.clone(),
+                song: song_key(&file),
+                family: format_family(&file),
+                test: line.test,
+                track: line.tab.track,
+                voice: line.tab.voice,
+                origin_line_start_tick: line.tab.start_tick,
+                origin_note_id: edge.origin_note_id,
+                target_note_id: edge.target.note_id,
+                chord_onset_tick: edge.target.onset,
+                ticks_per_quarter: line.tab.ticks_per_quarter,
+                original_tuning: line
+                    .tab
+                    .original_tuning
+                    .open_strings()
+                    .iter()
+                    .map(|pitch| pitch.0)
+                    .collect(),
+                technique_kind: format!("{:?}", edge.kind),
+                derived_direction: direction,
+                boundary_class,
+                origin,
+                chord,
+            };
+            serde_json::to_writer(&mut targets_writer, &target_record)
+                .map_err(std::io::Error::other)?;
+            targets_writer.write_all(b"\n")?;
+
+            let atoms: Vec<ChordAtom> = edge
+                .target_chord
+                .iter()
+                .copied()
+                .map(imported_chord_atom)
+                .collect();
+            let analysis = analyze_chord(
+                &atoms,
+                &line.tab.original_tuning,
+                STANDARD_MAX_FRET,
+                TargetStringConstraint {
+                    atom_id: edge.target.note_id,
+                    string: edge.target.original_position.string,
+                },
+                &policy,
+            )
+            .map_err(std::io::Error::other)?;
+            let outcome = chord_outcome(&analysis);
+            let delta_cost = analysis
+                .observed
+                .as_ref()
+                .map(|observed| observed.optimum - analysis.unconstrained.optimum);
+            // C's optimum count is not comparable with U's when C has a higher
+            // optimum. Count only members of U's original optimum set that
+            // survive the observed-string restriction.
+            let unconstrained_optimum_survivors = analysis
+                .observed
+                .as_ref()
+                .filter(|observed| observed.optimum == analysis.unconstrained.optimum)
+                .map_or(0, |observed| observed.optimum_count);
+            let unconstrained_optimum_set_reduction = analysis
+                .unconstrained
+                .optimum_count
+                .saturating_sub(unconstrained_optimum_survivors);
+            let admissible_count_reduction = analysis.observed.as_ref().map(|observed| {
+                analysis
+                    .unconstrained
+                    .admissible_count
+                    .saturating_sub(observed.admissible_count)
+            });
+            records.push(ChordFeasibilityRecord {
+                schema: "griff.constraint-lab-legato-chord-feasibility",
+                version: 1,
+                id: line.id.clone(),
+                file: file.clone(),
+                song: song_key(&file),
+                family: format_family(&file),
+                track: line.tab.track,
+                voice: line.tab.voice,
+                origin_note_id: edge.origin_note_id,
+                target_note_id: edge.target.note_id,
+                chord_onset_tick: edge.target.onset,
+                boundary_class,
+                derived_direction: direction,
+                origin_tapped: line.tab.tapped[edge.from],
+                chord_size: atoms.len(),
+                observed_string: edge.target.original_position.string,
+                outcome,
+                unconstrained: (&analysis.unconstrained).into(),
+                observed: analysis.observed.as_ref().map(Into::into),
+                delta_cost,
+                unconstrained_optimum_survivors,
+                unconstrained_optimum_set_reduction,
+                admissible_count_reduction,
+                target_strings: analysis.target_strings.iter().map(Into::into).collect(),
+                observed_dense_rank: analysis.observed_dense_rank,
+                observed_cost_tie_size: analysis.observed_best_tie_size,
+                human: analysis.human.as_ref().map(Into::into),
+            });
+        }
+    }
+    targets_writer.flush()?;
+    records.sort_by(|a, b| {
+        (
+            &a.file,
+            a.track,
+            a.voice,
+            a.chord_onset_tick,
+            a.target_note_id,
+        )
+            .cmp(&(
+                &b.file,
+                b.track,
+                b.voice,
+                b.chord_onset_tick,
+                b.target_note_id,
+            ))
+    });
+    for record in &records {
+        serde_json::to_writer(&mut feasibility_writer, record).map_err(std::io::Error::other)?;
+        feasibility_writer.write_all(b"\n")?;
+    }
+    feasibility_writer.flush()?;
+    eprintln!("wrote {}", targets_path.display());
+    eprintln!("wrote {}", feasibility_path.display());
+
+    let mut outcomes = OutcomeCounts::default();
+    let mut control = ChordControlSummary::default();
+    let mut human = ChordHumanSummary::default();
+    let mut delta_costs = Vec::new();
+    let mut optimum_survivors = Vec::new();
+    let mut optimum_set_reductions = Vec::new();
+    let mut admissible_count_reductions = Vec::new();
+    let mut ranks = Vec::new();
+    let mut tie_sizes = Vec::new();
+    let mut human_excess_u = Vec::new();
+    let mut human_excess_c = Vec::new();
+    let mut strata: BTreeMap<(&'static str, String), OutcomeCounts> = BTreeMap::new();
+    for record in &records {
+        outcomes.add(record.outcome);
+        if let Some(delta) = record.delta_cost {
+            delta_costs.push(delta);
+        }
+        optimum_survivors.push(record.unconstrained_optimum_survivors);
+        optimum_set_reductions.push(record.unconstrained_optimum_set_reduction);
+        if let Some(reduction) = record.admissible_count_reduction {
+            admissible_count_reductions.push(reduction);
+        }
+        if let Some(rank) = record.observed_dense_rank {
+            ranks.push(rank as u64);
+            control.observed_rank_one += usize::from(rank == 1);
+        }
+        if let Some(tie_size) = record.observed_cost_tie_size {
+            tie_sizes.push(tie_size as u64);
+        }
+        control.observed_unique_cheapest += usize::from(
+            record.observed_dense_rank == Some(1) && record.observed_cost_tie_size == Some(1),
+        );
+        control.legal_target_string_conditions += record.target_strings.len();
+        control.feasible_target_string_conditions += record
+            .target_strings
+            .iter()
+            .filter(|condition| condition.result.is_some())
+            .count();
+        if let Some(observed) = &record.human {
+            human.complete += 1;
+            human.feasible += usize::from(observed.feasible);
+            human.satisfies_observed_constraint +=
+                usize::from(observed.satisfies_observed_constraint);
+            human.in_unconstrained_optimum += usize::from(observed.in_unconstrained_optimum);
+            human.in_observed_optimum += usize::from(observed.in_observed_optimum);
+            if let Some(excess) = observed.excess_unconstrained {
+                human_excess_u.push(excess);
+            }
+            if let Some(excess) = observed.excess_observed {
+                human_excess_c.push(excess);
+            }
+        }
+        for key in [
+            ("boundary", record.boundary_class.to_owned()),
+            ("direction", record.derived_direction.to_owned()),
+            ("origin_tapped", record.origin_tapped.to_string()),
+            ("chord_size", record.chord_size.to_string()),
+            ("family", record.family.to_owned()),
+        ] {
+            strata.entry(key).or_default().add(record.outcome);
+        }
+    }
+    human.excess_unconstrained = distribution(&human_excess_u);
+    human.excess_observed = distribution(&human_excess_c);
+    let summary = ChordSummary {
+        schema: "griff.constraint-lab-legato-chord-summary",
+        version: 1,
+        model: "distinct_strings_plus_v1_unary",
+        max_fret: STANDARD_MAX_FRET,
+        population: records.len(),
+        outcomes,
+        delta_cost: distribution(&delta_costs),
+        unconstrained_optimum_survivors: distribution(&optimum_survivors),
+        unconstrained_optimum_set_reduction: distribution(&optimum_set_reductions),
+        admissible_count_reduction: distribution(&admissible_count_reductions),
+        observed_dense_rank: distribution(&ranks),
+        observed_cost_tie_size: distribution(&tie_sizes),
+        control,
+        human,
+        strata: strata
+            .into_iter()
+            .map(|((dimension, value), counts)| ChordStratum {
+                dimension,
+                value,
+                counts,
+            })
+            .collect(),
+        corpus: corpus.facts,
+    };
+    if summary.population != 38 {
+        return Err(std::io::Error::other(format!(
+            "expected the preregistered 38 chord-target relations, got {}",
+            summary.population
+        )));
+    }
+    write_json(&out.join("legato-chord-summary.json"), &summary)?;
+    println!(
+        "legato chord targets: {} total; {} free, {} costly, {} infeasible",
+        summary.population,
+        summary.outcomes.free,
+        summary.outcomes.costly,
+        summary.outcomes.infeasible
+    );
+    Ok(())
+}
+
 // ── entry ─────────────────────────────────────────────────────────────────────
 
 struct Args {
@@ -3381,6 +3910,7 @@ fn run() -> Result<(), String> {
         "taps" => taps(corpus, &args.out),
         "legato-census" => legato_census(corpus, &args.out),
         "legato" => legato(corpus, &args.out),
+        "legato-chords" => legato_chords(corpus, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())

@@ -60,7 +60,10 @@ fn observed_target_string_can_be_feasible_and_free() {
         &ChordCostPolicy::v1_unary(),
     )
     .unwrap();
-    assert_eq!(result.observed.as_ref().unwrap().optimum, result.unconstrained.optimum);
+    assert_eq!(
+        result.observed.as_ref().unwrap().optimum,
+        result.unconstrained.optimum
+    );
     assert_eq!(result.observed_dense_rank, Some(1));
 }
 
@@ -158,7 +161,11 @@ fn control_map_covers_the_complete_legal_target_string_domain() {
         .map(|candidate| candidate.string)
         .collect();
     assert_eq!(
-        result.target_strings.iter().map(|entry| entry.string).collect::<Vec<_>>(),
+        result
+            .target_strings
+            .iter()
+            .map(|entry| entry.string)
+            .collect::<Vec<_>>(),
         expected
     );
 }
@@ -200,7 +207,14 @@ fn optimum_and_ties_are_deterministic_and_match_small_brute_force() {
 
 #[test]
 fn low_first_imported_tuning_keeps_its_original_string_identity() {
-    let tuning = Tuning::new(vec![Pitch(40), Pitch(45), Pitch(50), Pitch(55), Pitch(59), Pitch(64)]);
+    let tuning = Tuning::new(vec![
+        Pitch(40),
+        Pitch(45),
+        Pitch(50),
+        Pitch(55),
+        Pitch(59),
+        Pitch(64),
+    ]);
     let atoms = [atom(10, 40, Some(pos(1, 0))), atom(11, 45, Some(pos(2, 0)))];
     let result = analyze_chord(
         &atoms,

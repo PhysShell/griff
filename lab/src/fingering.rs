@@ -291,6 +291,22 @@ pub struct CrossLineBoundary {
     pub target_in_next_kept_line: bool,
 }
 
+/// One atom of the imported onset containing a cross-line target. Stable ids
+/// are assigned before slicing; positions retain the imported string order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImportedChordAtom {
+    /// Stable imported-voice note id.
+    pub note_id: usize,
+    /// Imported duration in ticks.
+    pub duration: u32,
+    /// Imported pitch.
+    pub pitch: Pitch,
+    /// Imported explicit position, when present.
+    pub original_position: Option<FretboardPosition>,
+    /// Whether the atom is marked tapped.
+    pub tapped: bool,
+}
+
 /// A resolved legato relation whose target does not survive in the same kept
 /// line as its origin. It is forensic context, not an objective edge.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -307,6 +323,9 @@ pub struct CrossLineTechniqueEdge {
     pub span: TechniqueSpanStats,
     /// Why the target does not belong to the origin line.
     pub boundary: CrossLineBoundary,
+    /// Every note atom at the target onset when it is a chord, ordered by
+    /// stable imported id. Empty for non-chord targets.
+    pub target_chord: Vec<ImportedChordAtom>,
 }
 
 /// One monophonic tablature line with the tab author's positions.
@@ -322,6 +341,8 @@ pub struct TabLine {
     pub start_tick: u32,
     /// The track tuning.
     pub tuning: Tuning,
+    /// Imported tuning before possible low-first orientation normalization.
+    pub original_tuning: Tuning,
     /// Pitches, in onset order.
     pub pitches: Vec<Pitch>,
     /// Stable imported-voice note ids, one per pitch.
@@ -516,6 +537,7 @@ pub fn tab_lines(
             voice.id,
             u32::from(score.ticks_per_quarter),
             &tuning,
+            &track.tuning,
         );
         let mut sounding_until: Option<u64> = None;
         let voice_line_start = lines.len();
@@ -637,7 +659,7 @@ pub fn tab_lines(
         finalize_cross_line_boundaries(
             &mut lines,
             voice_line_start,
-            notes.len(),
+            &notes,
             &fragments,
             &boundaries,
         );
@@ -1427,6 +1449,7 @@ struct LineBuilder<'a> {
     voice: u8,
     ticks_per_quarter: u32,
     tuning: &'a Tuning,
+    original_tuning: &'a Tuning,
     start_tick: u32,
     anchor: Option<u8>,
     tapped: Vec<bool>,
@@ -1440,12 +1463,19 @@ struct LineBuilder<'a> {
 }
 
 impl<'a> LineBuilder<'a> {
-    const fn new(track: usize, voice: u8, ticks_per_quarter: u32, tuning: &'a Tuning) -> Self {
+    const fn new(
+        track: usize,
+        voice: u8,
+        ticks_per_quarter: u32,
+        tuning: &'a Tuning,
+        original_tuning: &'a Tuning,
+    ) -> Self {
         Self {
             track,
             voice,
             ticks_per_quarter,
             tuning,
+            original_tuning,
             start_tick: 0,
             anchor: None,
             tapped: Vec::new(),
@@ -1551,6 +1581,7 @@ impl<'a> LineBuilder<'a> {
                             target_line_start_tick: None,
                             target_in_next_kept_line: false,
                         },
+                        target_chord: Vec::new(),
                     });
                 }
                 _ => {}
@@ -1562,6 +1593,7 @@ impl<'a> LineBuilder<'a> {
             ticks_per_quarter: self.ticks_per_quarter,
             start_tick: self.start_tick,
             tuning: self.tuning.clone(),
+            original_tuning: self.original_tuning.clone(),
             pitches,
             note_ids,
             onsets,
@@ -1653,10 +1685,11 @@ fn record_boundary(
 fn finalize_cross_line_boundaries(
     lines: &mut [TabLine],
     voice_line_start: usize,
-    note_count: usize,
+    notes: &[(&AtomNote, Option<TechniqueKind>)],
     fragments: &[LineFragment],
     boundaries: &[LineBoundary],
 ) {
+    let note_count = notes.len();
     let mut note_fragment = vec![None; note_count];
     for (fragment_index, fragment) in fragments.iter().enumerate() {
         for &note_id in &fragment.note_ids {
@@ -1734,6 +1767,22 @@ fn finalize_cross_line_boundaries(
                 target_line_start_tick,
                 target_in_next_kept_line,
             };
+            let target_onset = edge.target.onset;
+            let target_chord: Vec<ImportedChordAtom> = notes
+                .iter()
+                .enumerate()
+                .filter(|(_, (note, _))| note.absolute_start.0 == target_onset)
+                .map(|(note_id, (note, _))| ImportedChordAtom {
+                    note_id,
+                    duration: note.duration.0,
+                    pitch: note.pitch,
+                    original_position: note.position.map(|position| position.position),
+                    tapped: note.marks.contains(NoteMark::Tap),
+                })
+                .collect();
+            if target_chord.len() > 1 {
+                edge.target_chord = target_chord;
+            }
         }
     }
 }
