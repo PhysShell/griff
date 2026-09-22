@@ -501,6 +501,14 @@ fn a_same_string_target_at_a_chord_boundary_is_classified_as_excluded() {
     );
     assert_eq!(edge.boundary.target_line_start_tick, None);
     assert!(!edge.boundary.target_in_next_kept_line);
+    assert_eq!(edge.target_chord.len(), 2);
+    assert_eq!(edge.target_chord[0].note_id, 4);
+    assert_eq!(edge.target_chord[0].pitch, Pitch(59));
+    assert_eq!(edge.target_chord[0].original_position, Some(pos(4, 9)));
+    assert_eq!(edge.target_chord[1].note_id, 5);
+    assert_eq!(edge.target_chord[1].pitch, Pitch(67));
+    assert_eq!(edge.target_chord[1].original_position, Some(pos(2, 8)));
+    assert_eq!(lines[0].original_tuning, s.tracks[0].tuning);
 }
 
 #[test]

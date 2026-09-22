@@ -17,6 +17,7 @@
 //! in-repo reference solver → archived manifests. Research tooling only:
 //! nothing here is a production dependency, and no production path calls it.
 
+pub mod chord;
 pub mod emit;
 pub mod fingering;
 pub mod forensics;
