@@ -23,9 +23,9 @@ use griff_constraint_lab::{
     fingering::{
         best_hands, decode_positions, encode_hand_witness, encode_v1_witness, hand_cost,
         hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key, tab_lines, v1_cost,
-        v1_problem, with_repeat_consistency, with_string_tiebreak, CutStats, HandError, HandModel,
-        HandModelError, HandWeights, LineCut, Reach, TechniqueEdge, TechniqueKind,
-        HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
+        v1_problem, with_repeat_consistency, with_string_tiebreak, within_line_span, CutStats,
+        HandError, HandModel, HandModelError, HandWeights, LineBoundaryCause, LineCut, Reach,
+        TargetDisposition, TechniqueEdge, TechniqueKind, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
     },
     optir::{OptIrError, Term, WitnessError},
     problems::LabError,
@@ -54,9 +54,13 @@ fn pos(string: u8, fret: u8) -> FretboardPosition {
 }
 
 fn note(onset: u32, p: u8, position: Option<(u8, u8)>) -> AtomEvent {
+    note_for(onset, Q, p, position)
+}
+
+fn note_for(onset: u32, duration: u32, p: u8, position: Option<(u8, u8)>) -> AtomEvent {
     AtomEvent::Note(AtomNote {
         absolute_start: Ticks(onset),
-        duration: Ticks(Q),
+        duration: Ticks(duration),
         pitch: pitch(p),
         velocity: Velocity::new(90).expect("velocity"),
         marks: NoteMarks::empty(),
@@ -405,6 +409,8 @@ fn tab_lines_project_legato_past_intervening_other_strings() {
     );
     assert_eq!(stats.dangling_legato, 0);
     assert_eq!(stats.cross_line_legato, 0);
+    assert_eq!(lines[0].onsets, vec![0, Q, 2 * Q, 3 * Q, 4 * Q]);
+    assert!(lines[0].cross_line_edges.is_empty());
 }
 
 #[test]
@@ -424,10 +430,116 @@ fn a_same_string_target_beyond_the_line_is_counted_not_retargeted() {
     assert!(lines.iter().all(|line| line.edges.is_empty()));
     assert_eq!(stats.dangling_legato, 0);
     assert_eq!(stats.cross_line_legato, 1);
+    let external = &lines[0].cross_line_edges;
+    assert_eq!(external.len(), 1);
+    assert_eq!(external[0].from, 3);
+    assert_eq!(external[0].origin_note_id, 3);
+    assert_eq!(external[0].kind, TechniqueKind::HammerOn);
+    assert_eq!(external[0].target.note_id, 4);
+    assert_eq!(external[0].target.onset, 10 * Q);
+    assert_eq!(external[0].target.duration, Q);
+    assert_eq!(external[0].target.pitch, Pitch(59));
+    assert_eq!(external[0].target.original_position, pos(4, 9));
+    assert!(!external[0].target.tapped);
+    assert_eq!(external[0].span.note_distance, 1);
+    assert_eq!(external[0].span.intervening_onsets, 0);
+    assert_eq!(external[0].span.intervening_note_atoms, 0);
+    assert_eq!(external[0].span.delta_ticks, 7 * Q);
+    assert_eq!(external[0].span.delta_quarters.numerator, 7);
+    assert_eq!(external[0].span.delta_quarters.denominator, 1);
+    assert_eq!(external[0].boundary.line_boundaries_crossed, 1);
+    assert_eq!(external[0].boundary.boundaries.len(), 1);
+    assert_eq!(
+        external[0].boundary.boundaries[0].causes,
+        vec![LineBoundaryCause::RestCut]
+    );
+    assert_eq!(external[0].boundary.boundaries[0].before_note_id, 4);
+    assert_eq!(
+        external[0].boundary.target_disposition,
+        TargetDisposition::KeptLine
+    );
+    assert_eq!(external[0].boundary.target_line_start_tick, Some(10 * Q));
+    assert!(external[0].boundary.target_in_next_kept_line);
+    assert_eq!(external[0].boundary.intervening_dropped_fragments, 0);
     let mut total = CutStats::default();
     total.absorb(&stats);
     total.absorb(&stats);
     assert_eq!(total.cross_line_legato, 2);
+}
+
+#[test]
+fn a_same_string_target_at_a_chord_boundary_is_classified_as_excluded() {
+    let s = score(vec![vec![
+        single(0, 55, Some((4, 5))),
+        single(Q, 60, Some((3, 5))),
+        single(2 * Q, 64, Some((2, 5))),
+        with_span(single(3 * Q, 57, Some((4, 7))), SpanTechnique::HammerOn),
+        group(vec![
+            note(4 * Q, 59, Some((4, 9))),
+            note(4 * Q, 67, Some((2, 8))),
+        ]),
+        single(5 * Q, 60, Some((3, 5))),
+        single(6 * Q, 62, Some((3, 7))),
+        single(7 * Q, 64, Some((3, 9))),
+        single(8 * Q, 65, Some((3, 10))),
+    ]]);
+    let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(stats.cross_line_legato, 1);
+    let edge = &lines[0].cross_line_edges[0];
+    assert_eq!(edge.target.note_id, 4);
+    assert_eq!(edge.boundary.line_boundaries_crossed, 1);
+    assert_eq!(
+        edge.boundary.boundaries[0].causes,
+        vec![LineBoundaryCause::ChordOnset]
+    );
+    assert_eq!(edge.boundary.boundaries[0].before_note_id, 4);
+    assert_eq!(edge.boundary.boundaries[0].excluded_note_ids_end, 6);
+    assert_eq!(
+        edge.boundary.target_disposition,
+        TargetDisposition::Excluded
+    );
+    assert_eq!(edge.boundary.target_line_start_tick, None);
+    assert!(!edge.boundary.target_in_next_kept_line);
+}
+
+#[test]
+fn a_long_sparse_within_line_edge_has_exact_span_counts() {
+    let s = score(vec![vec![
+        with_span(single(0, 55, Some((4, 5))), SpanTechnique::HammerOn),
+        single(2 * Q, 60, Some((3, 5))),
+        single(4 * Q, 64, Some((2, 5))),
+        single(6 * Q, 69, Some((1, 5))),
+        single(8 * Q, 62, Some((3, 7))),
+        single(10 * Q, 66, Some((2, 7))),
+        single(12 * Q, 57, Some((4, 7))),
+    ]]);
+    let cut = LineCut {
+        min_notes: 4,
+        max_rest_quarters: 0,
+        max_fret: STANDARD_MAX_FRET,
+    };
+    let (lines, stats) = tab_lines(&s, 0, &cut).unwrap();
+    assert_eq!(stats.cross_line_legato, 0);
+    let edge = lines[0].edges[0];
+    assert_eq!(edge, TechniqueEdge::new(0, 6, TechniqueKind::HammerOn));
+    let span = within_line_span(&lines[0], edge).expect("valid retained edge");
+    assert_eq!(span.note_distance, 6);
+    assert_eq!(span.intervening_onsets, 5);
+    assert_eq!(span.intervening_note_atoms, 5);
+    assert_eq!(span.intervening_origin_string_notes, 0);
+    assert_eq!(span.intervening_other_string_notes, 5);
+    assert_eq!(span.delta_ticks, 12 * Q);
+    assert_eq!(
+        (
+            span.delta_quarters.numerator,
+            span.delta_quarters.denominator
+        ),
+        (12, 1)
+    );
+    assert_eq!(span.pitch_interval_semitones, 2);
+    assert_eq!(span.fret_distance, 2);
+    assert!(!span.target_open);
 }
 
 #[test]
@@ -441,6 +553,7 @@ fn a_legato_origin_without_a_later_same_string_note_is_unresolved() {
     let (lines, stats) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
     assert_eq!(lines.len(), 1);
     assert!(lines[0].edges.is_empty());
+    assert!(lines[0].cross_line_edges.is_empty());
     assert_eq!(stats.dangling_legato, 1);
     assert_eq!(stats.cross_line_legato, 0);
 }

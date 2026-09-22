@@ -446,6 +446,69 @@ rests on few songs.
 30 tapped lines, reported, not interpreted. `v1-fit` exactness: B 6.7%,
 C1 16.7%, D1 26.7%, C2(3) 13.3%, D2 13.3%.
 
+### Projection forensic tail (post-fix)
+
+`legato-census` now writes three diagnostic-only artifacts under `--out`:
+`legato-cross-line.jsonl` (all relations whose resolved target is outside the
+origin line), `legato-longest-within-line.jsonl` (the deterministic top 50 by
+exact quarter-note gap), and `legato-span-census.json` (nearest-rank
+distributions overall and by kind, derived direction, origin/target tap state,
+and open target). Ratios are reduced integers rather than floats. Licensed
+corpus records are not committed. The census fails closed if the cross-line
+manifest count differs from the importer's count.
+
+Full-corpus rerun (410 files) answers the boundary question more narrowly than
+the old gap-only manifest could:
+
+- **46 / 46 cross-line relations** were emitted, from 44 origin lines and 15
+  songs. The first boundary includes `chord_onset` in 45 cases and `rest_cut`
+  in 5 (causes can coincide): 41 are chord-only, 4 rest-plus-chord, and only 1
+  is a pure rest cut. Across every crossed boundary location, the counts are
+  333 chord and 7 rest; none is caused by unpositioned input, maximum fret, or
+  pitch mismatch.
+- **38 targets are themselves excluded chord-onset atoms.** They do not belong
+  to any monophonic `TabLine`; this, rather than an ordinary handoff to the
+  next line, explains most of the 46. The other 8 targets are in kept lines:
+  6 in the immediately next kept line and 2 much farther away. Those two span
+  64.375 quarters / 16 boundary locations / 15 intervening kept fragments
+  (`Blue Dream`) and 182.496875 quarters / 27 locations / 3 kept plus 2 dropped
+  fragments (`Have A Great Life`). No target is in a dropped short fragment.
+- Most cross-line gaps are nevertheless local in time: 30/46 are at most 1/2
+  quarter and 31/46 at most one quarter. The exact quarter-gap distribution is
+  min 1/8, median 1/2, p90 27.5, p95 75, p99/max 182.496875. Thirty-six cases
+  cross one boundary; boundary-count median is 1, p90 16, p95 38, p99/max 155.
+- The **29,758 retained within-line relations** are overwhelmingly ordinary:
+  note-distance min/median/p90/p95/p99 is 1 (max 169), intervening-onset and
+  note-atom min/median/p90/p95/p99 is 0 (max 168), and exact quarter-gap is
+  min 1/8, median 1/4, p90/p95/p99 1/2, max 212/3. Only 110 relations (0.37%)
+  are non-adjacent.
+- The top 50 starts at 2.25 quarters and covers 10 songs. Fourteen relations
+  exceed 8 quarters and three exceed 32. The extremes are 70.667 and 57.5
+  quarters in `Say Hi`, 39 in `Missed Injections`, 26.5 in `There's No Dust
+  in the City`, and a repeated 23.5-quarter pair in `Frozen One`. Sixteen
+  repeated 2.5-quarter figures in `Son of Robot` and six repeated
+  10.167-quarter figures in `Say Hi` show that a long relation can be a stable
+  phrase pattern, while the isolated extreme spans are consistent with stale
+  or overextended source flags. That last classification is heuristic, not a
+  correction rule or ground truth.
+
+The evidence therefore separates two architectural questions. Some imported
+technique relations do survive an optimization-line boundary, but only 8 of
+the 46 have targets representable in another kept line, and only 6 reach the
+next one. The dominant 38 are instead chord targets missing from the
+monophonic representation. Together with #199's `anchor_fret` result this is
+convergent, hypothesis-generating evidence that both hand position and some
+technique context can outlive a line. It does **not** establish that production
+must carry technique boundary state.
+
+A falsifiable next experiment should keep the strata separate: first expose
+the 38 chord targets to evaluation without joining lines or changing the
+objective, then replay only the 8 kept-target relations with an exact observed
+origin-string boundary state and compare against independent-line inference.
+If neither changes feasibility or the registered metrics on its predeclared
+cases, the boundary-state hypothesis is rejected. No threshold or category
+from this audit enters projection or optimization.
+
 ## Reading
 
 1. **Observed legato continuity explains a large, robust part of the
@@ -484,20 +547,33 @@ C1 16.7%, D1 26.7%, C2(3) 13.3%, D2 13.3%.
   MIDI-sourced lines carry neither, so these gains assume the labels.
 - **Import limits.** Legato is imported as an origin only, and D's direction
   is derived from pitch.
-- **Line slicing.** 46 resolved targets lie outside their origin's kept line.
-  They are counted explicitly but cannot enter a line-local objective.
+- **Line slicing.** 46 resolved targets lie outside their origin's kept line:
+  38 are excluded chord atoms and only 8 are in another kept line. They are
+  counted and emitted explicitly but cannot enter a line-local objective.
 - **Weights.** `v1-fit` was fitted on all lines and reused unchanged. `k` and
   the waiver were fixed before the results.
 - **Concentration.** The C1 → D1 gain rests on 3 songs.
 - **Holdout.** The holdout slice (30 lines) is too small to interpret.
 
-## Follow-ups proposed (not done)
+## Stage status and next targets
 
-1. **Hidden technique inference must predict legato edges, not only taps.**
-   Continuity carries half of the exactness effect, so a MIDI-side model
-   without legato labels would lose it.
-2. **Inspect the 46 cross-line relations and the longest within-line spans.**
-   They are the remaining forensic set for distinguishing ordinary voice
-   interleaving from suspicious transcription or import cases.
-3. **Hammer-on / pull-off direction.** D's derived direction argues for the
-   separate core decision on importing or deriving direction for all formats.
+Stage 2 is frozen after the semantic repair, independent remeasurement, and
+the projection forensic tail:
+
+- **C1:** robust corpus evidence for hard continuity when an observed legato
+  relation is available.
+- **D1:** promising conditional evidence, not a canonical objective rule; its
+  gain is concentrated and direction is derived from pitch.
+- **No C3/C4 tuning:** the remaining tail does not justify another ladder of
+  penalties or exceptions.
+
+Before changing production, the next boundary experiment should test the two
+predeclared strata above independently: chord-target visibility (38 cases) and
+observed state replay between kept lines (8 cases). The next large Constraint
+Lab target remains **chord voicing**, extending the guitar-specific structural
+work from monophonic paths to hand shapes. **Hidden technique inference**
+remains the next bridge to MIDI: predict taps and legato relations from pitches,
+timing, and context, then score both label quality and downstream fingering
+regret against this supervised oracle.
+Importing or deriving hammer-on / pull-off direction remains a separate core
+decision.

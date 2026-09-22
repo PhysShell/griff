@@ -19,6 +19,7 @@
 
 pub mod emit;
 pub mod fingering;
+pub mod forensics;
 pub mod ir;
 pub mod manifest;
 pub mod optir;

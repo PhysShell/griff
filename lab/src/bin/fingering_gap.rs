@@ -78,10 +78,12 @@ use std::time::Instant;
 
 use griff_constraint_lab::fingering::{
     best_hands, decode_positions, hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key,
-    tab_lines, v1_cost, v1_problem, with_repeat_consistency, with_string_tiebreak, CutStats,
-    HandModel, HandWeights, LineCut, TabLine, TechniqueEdge, TechniqueKind, HAND_VARS_PER_NOTE,
-    V1_VARS_PER_NOTE,
+    tab_lines, v1_cost, v1_problem, with_repeat_consistency, with_string_tiebreak,
+    within_line_span, CrossLineBoundary, CutStats, HandModel, HandWeights, LineBoundary,
+    LineBoundaryCause, LineCut, TabLine, TargetDisposition, TechniqueEdge, TechniqueKind,
+    TechniqueSpanStats, HAND_VARS_PER_NOTE, V1_VARS_PER_NOTE,
 };
+use griff_constraint_lab::forensics::{distribution, top_n_longest, Distribution, ExactRatio};
 use griff_constraint_lab::ir::VarId;
 use griff_constraint_lab::optir::{
     verify_agreement, verify_record, OptProblem, ProblemRecord, SolveRecord, Verdict,
@@ -1869,8 +1871,391 @@ struct CensusReport {
     dangling_legato: u64,
     /// Resolved same-string targets that fall outside their origin's kept line.
     cross_line_legato: u64,
+    projection_forensics: ProjectionForensicSummary,
     rows: Vec<CensusRow>,
     corpus: CorpusFacts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProjectionForensicSummary {
+    cross_line: u64,
+    within_line_edges: u64,
+    non_adjacent_within_line: u64,
+    top_longest_written: u64,
+    targets_in_next_kept_line: u64,
+    boundary_causes: BTreeMap<&'static str, u64>,
+    first_boundary_causes: BTreeMap<&'static str, u64>,
+    target_exclusion_causes: BTreeMap<&'static str, u64>,
+    target_dispositions: BTreeMap<&'static str, u64>,
+    boundaries_crossed: Distribution<u64>,
+    cross_line_delta_quarters: Distribution<ExactRatio>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProjectionPoint {
+    line_index: Option<usize>,
+    voice_note_id: usize,
+    onset: u32,
+    duration: u32,
+    pitch: u8,
+    string: u8,
+    fret: u8,
+    tapped: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CrossLineForensic {
+    schema: &'static str,
+    version: u32,
+    id: String,
+    file: String,
+    song: String,
+    family: &'static str,
+    test: bool,
+    track: usize,
+    voice: u8,
+    line_start_tick: u32,
+    ticks_per_quarter: u32,
+    kind: String,
+    origin: ProjectionPoint,
+    target: ProjectionPoint,
+    span: TechniqueSpanStats,
+    first_boundary: Option<LineBoundary>,
+    boundary: CrossLineBoundary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WithinLineForensic {
+    schema: &'static str,
+    version: u32,
+    id: String,
+    file: String,
+    song: String,
+    family: &'static str,
+    test: bool,
+    track: usize,
+    voice: u8,
+    line_start_tick: u32,
+    ticks_per_quarter: u32,
+    kind: String,
+    derived_direction: &'static str,
+    origin: ProjectionPoint,
+    target: ProjectionPoint,
+    span: TechniqueSpanStats,
+}
+
+#[derive(Serialize)]
+struct SpanMetrics {
+    note_distance: Distribution<u64>,
+    intervening_onsets: Distribution<u64>,
+    intervening_note_atoms: Distribution<u64>,
+    delta_ticks: Distribution<u64>,
+    delta_quarters: Distribution<ExactRatio>,
+}
+
+#[derive(Serialize)]
+struct SpanGroup {
+    dimension: &'static str,
+    value: String,
+    metrics: SpanMetrics,
+}
+
+#[derive(Serialize)]
+struct SpanCensus {
+    schema: &'static str,
+    version: u32,
+    quantile_method: &'static str,
+    top_n: usize,
+    overall: SpanMetrics,
+    groups: Vec<SpanGroup>,
+}
+
+fn projection_point(tab: &TabLine, index: usize) -> ProjectionPoint {
+    let position = tab.original_positions[index];
+    ProjectionPoint {
+        line_index: Some(index),
+        voice_note_id: tab.note_ids[index],
+        onset: tab.onsets[index],
+        duration: tab.durations[index],
+        pitch: tab.pitches[index].0,
+        string: position.string,
+        fret: position.fret,
+        tapped: tab.tapped[index],
+    }
+}
+
+fn direction_name(direction: Option<LegatoDirection>) -> &'static str {
+    match direction {
+        Some(LegatoDirection::Ascending) => "ascending",
+        Some(LegatoDirection::Descending) => "descending",
+        Some(LegatoDirection::Unison) => "unison",
+        None => "unknown",
+    }
+}
+
+const fn boundary_cause_name(cause: LineBoundaryCause) -> &'static str {
+    match cause {
+        LineBoundaryCause::RestCut => "rest_cut",
+        LineBoundaryCause::ChordOnset => "chord_onset",
+        LineBoundaryCause::Unpositioned => "unpositioned",
+        LineBoundaryCause::BeyondMaxFret => "beyond_max_fret",
+        LineBoundaryCause::PitchMismatch => "pitch_mismatch",
+    }
+}
+
+const fn disposition_name(disposition: TargetDisposition) -> &'static str {
+    match disposition {
+        TargetDisposition::KeptLine => "kept_line",
+        TargetDisposition::DroppedShortLine => "dropped_short_line",
+        TargetDisposition::Excluded => "excluded",
+    }
+}
+
+fn span_metrics<'a>(spans: impl Iterator<Item = &'a TechniqueSpanStats>) -> SpanMetrics {
+    let spans: Vec<&TechniqueSpanStats> = spans.collect();
+    let summarize = |select: fn(&TechniqueSpanStats) -> u64| {
+        distribution(&spans.iter().map(|span| select(span)).collect::<Vec<_>>())
+            .expect("span census group is non-empty")
+    };
+    SpanMetrics {
+        note_distance: summarize(|span| span.note_distance as u64),
+        intervening_onsets: summarize(|span| span.intervening_onsets as u64),
+        intervening_note_atoms: summarize(|span| span.intervening_note_atoms as u64),
+        delta_ticks: summarize(|span| u64::from(span.delta_ticks)),
+        delta_quarters: distribution(
+            &spans
+                .iter()
+                .map(|span| span.delta_quarters)
+                .collect::<Vec<_>>(),
+        )
+        .expect("span census group is non-empty"),
+    }
+}
+
+fn span_groups(records: &[WithinLineForensic]) -> Vec<SpanGroup> {
+    let mut grouped: BTreeMap<(&'static str, String), Vec<&TechniqueSpanStats>> = BTreeMap::new();
+    for record in records {
+        for key in [
+            ("technique_kind", record.kind.clone()),
+            ("derived_direction", record.derived_direction.to_owned()),
+            ("origin_tapped", record.origin.tapped.to_string()),
+            ("target_tapped", record.target.tapped.to_string()),
+            ("target_open", record.span.target_open.to_string()),
+        ] {
+            grouped.entry(key).or_default().push(&record.span);
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|((dimension, value), spans)| SpanGroup {
+            dimension,
+            value,
+            metrics: span_metrics(spans.into_iter()),
+        })
+        .collect()
+}
+
+fn projection_forensics(corpus: &Corpus, out: &Path) -> std::io::Result<ProjectionForensicSummary> {
+    const TOP_N: usize = 50;
+    let mut cross_line = Vec::new();
+    let mut within_line = Vec::new();
+    for line in &corpus.lines {
+        let tab = &line.tab;
+        let file = corpus.names[line.file].clone();
+        for &edge in &tab.edges {
+            let Some(span) = within_line_span(tab, edge) else {
+                continue;
+            };
+            within_line.push(WithinLineForensic {
+                schema: "griff.constraint-lab-legato-within-line",
+                version: 1,
+                id: line.id.clone(),
+                file: file.clone(),
+                song: song_key(&file),
+                family: format_family(&file),
+                test: line.test,
+                track: tab.track,
+                voice: tab.voice,
+                line_start_tick: tab.start_tick,
+                ticks_per_quarter: tab.ticks_per_quarter,
+                kind: format!("{:?}", edge.kind),
+                derived_direction: direction_name(direction_between(
+                    &tab.pitches,
+                    edge.from,
+                    edge.to,
+                )),
+                origin: projection_point(tab, edge.from),
+                target: projection_point(tab, edge.to),
+                span,
+            });
+        }
+        for edge in &tab.cross_line_edges {
+            let target = ProjectionPoint {
+                line_index: None,
+                voice_note_id: edge.target.note_id,
+                onset: edge.target.onset,
+                duration: edge.target.duration,
+                pitch: edge.target.pitch.0,
+                string: edge.target.original_position.string,
+                fret: edge.target.original_position.fret,
+                tapped: edge.target.tapped,
+            };
+            cross_line.push(CrossLineForensic {
+                schema: "griff.constraint-lab-legato-cross-line",
+                version: 1,
+                id: line.id.clone(),
+                file: file.clone(),
+                song: song_key(&file),
+                family: format_family(&file),
+                test: line.test,
+                track: tab.track,
+                voice: tab.voice,
+                line_start_tick: tab.start_tick,
+                ticks_per_quarter: tab.ticks_per_quarter,
+                kind: format!("{:?}", edge.kind),
+                origin: projection_point(tab, edge.from),
+                target,
+                span: edge.span,
+                first_boundary: edge.boundary.boundaries.first().cloned(),
+                boundary: edge.boundary.clone(),
+            });
+        }
+    }
+    cross_line.sort_by(|a, b| {
+        (
+            &a.file,
+            a.track,
+            a.voice,
+            a.origin.onset,
+            a.origin.voice_note_id,
+        )
+            .cmp(&(
+                &b.file,
+                b.track,
+                b.voice,
+                b.origin.onset,
+                b.origin.voice_note_id,
+            ))
+    });
+    let top = top_n_longest(
+        within_line.clone(),
+        TOP_N,
+        |record| record.span.delta_quarters,
+        |record| {
+            (
+                record.file.clone(),
+                record.track,
+                record.voice,
+                record.origin.onset,
+                record.origin.voice_note_id,
+            )
+        },
+    );
+    let census = SpanCensus {
+        schema: "griff.constraint-lab-legato-span-census",
+        version: 1,
+        quantile_method: "nearest_rank",
+        top_n: TOP_N,
+        overall: span_metrics(within_line.iter().map(|record| &record.span)),
+        groups: span_groups(&within_line),
+    };
+
+    let cross_path = out.join("legato-cross-line.jsonl");
+    let mut writer = BufWriter::new(fs::File::create(&cross_path)?);
+    for record in &cross_line {
+        serde_json::to_writer(&mut writer, record).map_err(std::io::Error::other)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+    eprintln!("wrote {}", cross_path.display());
+    let longest_path = out.join("legato-longest-within-line.jsonl");
+    let mut writer = BufWriter::new(fs::File::create(&longest_path)?);
+    for record in &top {
+        serde_json::to_writer(&mut writer, record).map_err(std::io::Error::other)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+    eprintln!("wrote {}", longest_path.display());
+    write_json(&out.join("legato-span-census.json"), &census)?;
+
+    let mut boundary_causes = BTreeMap::new();
+    let mut first_boundary_causes = BTreeMap::new();
+    let mut target_exclusion_causes = BTreeMap::new();
+    let mut target_dispositions = BTreeMap::new();
+    for record in &cross_line {
+        for boundary in &record.boundary.boundaries {
+            for &cause in &boundary.causes {
+                *boundary_causes
+                    .entry(boundary_cause_name(cause))
+                    .or_default() += 1;
+            }
+        }
+        if let Some(first) = record.boundary.boundaries.first() {
+            for &cause in &first.causes {
+                *first_boundary_causes
+                    .entry(boundary_cause_name(cause))
+                    .or_default() += 1;
+            }
+        }
+        if record.boundary.target_disposition == TargetDisposition::Excluded {
+            if let Some(target_boundary) = record.boundary.boundaries.iter().find(|boundary| {
+                boundary.before_note_id <= record.target.voice_note_id
+                    && record.target.voice_note_id < boundary.excluded_note_ids_end
+            }) {
+                for &cause in target_boundary
+                    .causes
+                    .iter()
+                    .filter(|cause| **cause != LineBoundaryCause::RestCut)
+                {
+                    *target_exclusion_causes
+                        .entry(boundary_cause_name(cause))
+                        .or_default() += 1;
+                }
+            }
+        }
+        *target_dispositions
+            .entry(disposition_name(record.boundary.target_disposition))
+            .or_default() += 1;
+    }
+    let summary = ProjectionForensicSummary {
+        cross_line: cross_line.len() as u64,
+        within_line_edges: within_line.len() as u64,
+        non_adjacent_within_line: within_line
+            .iter()
+            .filter(|record| record.span.note_distance > 1)
+            .count() as u64,
+        top_longest_written: top.len() as u64,
+        targets_in_next_kept_line: cross_line
+            .iter()
+            .filter(|record| record.boundary.target_in_next_kept_line)
+            .count() as u64,
+        boundary_causes,
+        first_boundary_causes,
+        target_exclusion_causes,
+        target_dispositions,
+        boundaries_crossed: distribution(
+            &cross_line
+                .iter()
+                .map(|record| record.boundary.line_boundaries_crossed as u64)
+                .collect::<Vec<_>>(),
+        )
+        .expect("cross-line census is non-empty"),
+        cross_line_delta_quarters: distribution(
+            &cross_line
+                .iter()
+                .map(|record| record.span.delta_quarters)
+                .collect::<Vec<_>>(),
+        )
+        .expect("cross-line census is non-empty"),
+    };
+    println!(
+        "projection forensics: {} cross-line relations; {} within-line edges; {} targets in the next kept line; top {} longest written",
+        summary.cross_line,
+        summary.within_line_edges,
+        summary.targets_in_next_kept_line,
+        summary.top_longest_written,
+    );
+    Ok(summary)
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -1997,11 +2382,19 @@ fn legato_census(corpus: Corpus, out: &Path) -> std::io::Result<()> {
             pct(c.into_tap_legato.same_string, c.into_tap_legato.edges)
         );
     }
+    let projection_forensics = projection_forensics(&corpus, out)?;
+    if projection_forensics.cross_line != cross_line {
+        return Err(std::io::Error::other(format!(
+            "projection forensic manifest contains {} cross-line relations, but cut stats report {cross_line}",
+            projection_forensics.cross_line
+        )));
+    }
     let report = CensusReport {
         schema: "griff.constraint-lab-legato-census",
-        version: 2,
+        version: 3,
         dangling_legato: dangling,
         cross_line_legato: cross_line,
+        projection_forensics,
         rows,
         corpus: corpus.facts,
     };
