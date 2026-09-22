@@ -35,18 +35,39 @@ struct Case {
 #[test]
 fn longest_records_use_identity_order_to_break_ties() {
     let cases = vec![
-        Case { gap: 7, identity: ("b", 0, 0, 1, 1) },
-        Case { gap: 9, identity: ("z", 0, 0, 1, 1) },
-        Case { gap: 7, identity: ("a", 2, 0, 3, 4) },
-        Case { gap: 7, identity: ("a", 1, 0, 3, 4) },
+        Case {
+            gap: 7,
+            identity: ("b", 0, 0, 1, 1),
+        },
+        Case {
+            gap: 9,
+            identity: ("z", 0, 0, 1, 1),
+        },
+        Case {
+            gap: 7,
+            identity: ("a", 2, 0, 3, 4),
+        },
+        Case {
+            gap: 7,
+            identity: ("a", 1, 0, 3, 4),
+        },
     ];
     let top = top_n_longest(cases, 3, |case| case.gap, |case| case.identity);
     assert_eq!(
         top,
         vec![
-            Case { gap: 9, identity: ("z", 0, 0, 1, 1) },
-            Case { gap: 7, identity: ("a", 1, 0, 3, 4) },
-            Case { gap: 7, identity: ("a", 2, 0, 3, 4) },
+            Case {
+                gap: 9,
+                identity: ("z", 0, 0, 1, 1)
+            },
+            Case {
+                gap: 7,
+                identity: ("a", 1, 0, 3, 4)
+            },
+            Case {
+                gap: 7,
+                identity: ("a", 2, 0, 3, 4)
+            },
         ]
     );
 }

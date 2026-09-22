@@ -23,6 +23,7 @@ use griff_core::score::{AtomEvent, AtomNote, EventGroup, Score};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::forensics::ExactRatio;
 use crate::ir::{fnv1a64, IntVar, VarId};
 use crate::optir::{Hard, OptIrError, OptProblem, Term};
 use crate::problems::LabError;
@@ -189,6 +190,8 @@ pub struct TechniqueTarget {
     pub note_id: usize,
     /// Absolute onset tick in the imported score.
     pub onset: u32,
+    /// Imported note duration in ticks.
+    pub duration: u32,
     /// Imported pitch.
     pub pitch: Pitch,
     /// Imported, unoriented string and fret.
@@ -197,9 +200,100 @@ pub struct TechniqueTarget {
     pub tapped: bool,
 }
 
+/// Exact descriptive measurements between a legato origin and its resolved
+/// same-string target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub struct TechniqueSpanStats {
+    /// Target atom id minus origin atom id.
+    pub note_distance: usize,
+    /// Distinct voice onsets strictly between origin and target onsets.
+    pub intervening_onsets: usize,
+    /// Imported note atoms strictly between the two stable note ids.
+    pub intervening_note_atoms: usize,
+    /// Positioned notes on the origin string at strictly intervening onsets.
+    pub intervening_origin_string_notes: usize,
+    /// Positioned notes on other strings at strictly intervening onsets.
+    pub intervening_other_string_notes: usize,
+    /// Unpositioned notes at strictly intervening onsets.
+    pub intervening_unpositioned_notes: usize,
+    /// Target onset minus origin onset, in ticks.
+    pub delta_ticks: u32,
+    /// Exact reduced `delta_ticks / ticks_per_quarter`.
+    pub delta_quarters: ExactRatio,
+    /// Signed target-minus-origin pitch interval in semitones.
+    pub pitch_interval_semitones: i16,
+    /// Absolute fret distance in the imported positions.
+    pub fret_distance: u8,
+    /// Whether the imported target is an open string.
+    pub target_open: bool,
+}
+
+/// A real reason the slicing control flow ended or separated a fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineBoundaryCause {
+    /// Silence reached the configured rest threshold.
+    RestCut,
+    /// More than one note atom shared the onset.
+    ChordOnset,
+    /// The single note had no imported position.
+    Unpositioned,
+    /// The imported fret exceeded the configured maximum.
+    BeyondMaxFret,
+    /// The imported position did not sound the imported pitch.
+    PitchMismatch,
+}
+
+/// One boundary location; more than one real cause may apply at the same
+/// onset (for example, a long rest followed by a chord).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct LineBoundary {
+    /// First stable voice-note id at or after the boundary.
+    pub before_note_id: usize,
+    /// End of the atom-id range excluded at this onset. Equal to
+    /// `before_note_id` for a pure rest cut, which excludes no note atom.
+    pub excluded_note_ids_end: usize,
+    /// Absolute onset at the boundary.
+    pub onset: u32,
+    /// Causes in slicing-control-flow order.
+    pub causes: Vec<LineBoundaryCause>,
+}
+
+/// Where the resolved target went under the unchanged line cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetDisposition {
+    /// The target belongs to a retained line.
+    KeptLine,
+    /// The target belonged to a valid fragment dropped for being too short.
+    DroppedShortLine,
+    /// The target onset itself was excluded by a typed boundary cause.
+    Excluded,
+}
+
+/// Diagnostic boundary context for a cross-line relation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct CrossLineBoundary {
+    /// Ordered unique boundary locations crossed by the relation.
+    pub boundaries: Vec<LineBoundary>,
+    /// `boundaries.len()`, stored explicitly in the artifact contract.
+    pub line_boundaries_crossed: usize,
+    /// Retained fragments strictly between origin and target fragments.
+    pub intervening_kept_fragments: usize,
+    /// Dropped short fragments strictly between origin and target, including a
+    /// dropped target fragment when applicable.
+    pub intervening_dropped_fragments: usize,
+    /// Target disposition under the unchanged cut.
+    pub target_disposition: TargetDisposition,
+    /// Start tick of the target's retained line, when it has one.
+    pub target_line_start_tick: Option<u32>,
+    /// Whether the target is in the next retained line of the same voice.
+    pub target_in_next_kept_line: bool,
+}
+
 /// A resolved legato relation whose target does not survive in the same kept
 /// line as its origin. It is forensic context, not an objective edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrossLineTechniqueEdge {
     /// Origin index in the kept line.
     pub from: usize,
@@ -209,6 +303,10 @@ pub struct CrossLineTechniqueEdge {
     pub target: TechniqueTarget,
     /// Imported technique kind on the origin note.
     pub kind: TechniqueKind,
+    /// Exact temporal/note context across the imported voice.
+    pub span: TechniqueSpanStats,
+    /// Why the target does not belong to the origin line.
+    pub boundary: CrossLineBoundary,
 }
 
 /// One monophonic tablature line with the tab author's positions.
@@ -226,8 +324,14 @@ pub struct TabLine {
     pub tuning: Tuning,
     /// Pitches, in onset order.
     pub pitches: Vec<Pitch>,
+    /// Stable imported-voice note ids, one per pitch.
+    pub note_ids: Vec<usize>,
     /// Absolute onset ticks, one per pitch.
     pub onsets: Vec<u32>,
+    /// Imported duration ticks, one per pitch.
+    pub durations: Vec<u32>,
+    /// Imported positions before any string-orientation normalization.
+    pub original_positions: Vec<FretboardPosition>,
     /// The tab author's positions — one per pitch, each sounding it.
     pub human: Vec<FretboardPosition>,
     /// Where the fretting hand was just before the line: the fret of the
@@ -246,6 +350,49 @@ pub struct TabLine {
     /// Resolved relations whose target lies outside this kept line. These are
     /// retained only for projection auditing and never enter an objective.
     pub cross_line_edges: Vec<CrossLineTechniqueEdge>,
+}
+
+/// Computes exact diagnostic span measurements for a retained relation.
+/// Returns `None` when the edge or parallel line metadata is invalid.
+#[must_use]
+pub fn within_line_span(tab: &TabLine, edge: TechniqueEdge) -> Option<TechniqueSpanStats> {
+    if edge.from >= edge.to || edge.to >= tab.pitches.len() {
+        return None;
+    }
+    let origin_onset = *tab.onsets.get(edge.from)?;
+    let target_onset = *tab.onsets.get(edge.to)?;
+    let origin_id = *tab.note_ids.get(edge.from)?;
+    let target_id = *tab.note_ids.get(edge.to)?;
+    let origin = *tab.original_positions.get(edge.from)?;
+    let target = *tab.original_positions.get(edge.to)?;
+    let between = edge.from + 1..edge.to;
+    let intervening_onsets = distinct_count(&tab.onsets[between.clone()]);
+    let mut origin_string = 0;
+    let mut other_strings = 0;
+    for position in &tab.original_positions[between] {
+        if position.string == origin.string {
+            origin_string += 1;
+        } else {
+            other_strings += 1;
+        }
+    }
+    Some(TechniqueSpanStats {
+        note_distance: target_id.checked_sub(origin_id)?,
+        intervening_onsets,
+        intervening_note_atoms: target_id.checked_sub(origin_id)?.saturating_sub(1),
+        intervening_origin_string_notes: origin_string,
+        intervening_other_string_notes: other_strings,
+        intervening_unpositioned_notes: 0,
+        delta_ticks: target_onset.checked_sub(origin_onset)?,
+        delta_quarters: ExactRatio::new(
+            u64::from(target_onset.checked_sub(origin_onset)?),
+            u64::from(tab.ticks_per_quarter),
+        ),
+        pitch_interval_semitones: i16::from(tab.pitches[edge.to].0)
+            - i16::from(tab.pitches[edge.from].0),
+        fret_distance: origin.fret.abs_diff(target.fret),
+        target_open: target.fret == 0,
+    })
 }
 
 /// Cuts one track into monophonic tablature lines, per voice.
@@ -332,12 +479,26 @@ pub fn tab_lines(
                         .and_then(|p| next_on_string[usize::from(p.position.string)])
                         .and_then(|note_id| {
                             let target = notes[note_id].0;
-                            target.position.map(|position| TechniqueTarget {
-                                note_id,
-                                onset: target.absolute_start.0,
-                                pitch: target.pitch,
-                                original_position: position.position,
-                                tapped: target.marks.contains(NoteMark::Tap),
+                            target.position.and_then(|position| {
+                                imported_span(
+                                    &notes,
+                                    i,
+                                    note_id,
+                                    u32::from(score.ticks_per_quarter),
+                                )
+                                .map(|span| {
+                                    ResolvedTechniqueTarget {
+                                        target: TechniqueTarget {
+                                            note_id,
+                                            onset: target.absolute_start.0,
+                                            duration: target.duration.0,
+                                            pitch: target.pitch,
+                                            original_position: position.position,
+                                            tapped: target.marks.contains(NoteMark::Tap),
+                                        },
+                                        span,
+                                    }
+                                })
                             })
                         });
                 }
@@ -357,6 +518,9 @@ pub fn tab_lines(
             &tuning,
         );
         let mut sounding_until: Option<u64> = None;
+        let voice_line_start = lines.len();
+        let mut fragments = Vec::new();
+        let mut boundaries = Vec::new();
         // Lowest fretted position at the latest onset seen so far.
         let mut last_fretted: Option<u8> = None;
         let mut note_index = 0;
@@ -394,33 +558,72 @@ pub fn tab_lines(
             sounding_until = Some(sounding_until.map_or(group_end, |end| end.max(group_end)));
             if rest_cut && !line.is_empty() {
                 stats.rest_cuts = stats.rest_cuts.saturating_add(1);
-                line.flush(cut, &mut lines, &mut stats);
+                record_boundary(
+                    &mut boundaries,
+                    group_start,
+                    group_start,
+                    onset,
+                    LineBoundaryCause::RestCut,
+                );
+                line.flush(cut, &mut lines, &mut stats, &mut fragments);
             }
 
             let [(note, legato_out)] = group else {
                 stats.chord_onsets = stats.chord_onsets.saturating_add(1);
-                line.flush(cut, &mut lines, &mut stats);
+                record_boundary(
+                    &mut boundaries,
+                    group_start,
+                    group_start.saturating_add(width),
+                    onset,
+                    LineBoundaryCause::ChordOnset,
+                );
+                line.flush(cut, &mut lines, &mut stats, &mut fragments);
                 continue;
             };
             let Some(position) = note.position.map(|p| p.position) else {
                 stats.unpositioned = stats.unpositioned.saturating_add(1);
-                line.flush(cut, &mut lines, &mut stats);
+                record_boundary(
+                    &mut boundaries,
+                    group_start,
+                    group_start.saturating_add(width),
+                    onset,
+                    LineBoundaryCause::Unpositioned,
+                );
+                line.flush(cut, &mut lines, &mut stats, &mut fragments);
                 continue;
             };
             if position.fret > cut.max_fret {
                 stats.beyond_max_fret = stats.beyond_max_fret.saturating_add(1);
-                line.flush(cut, &mut lines, &mut stats);
+                record_boundary(
+                    &mut boundaries,
+                    group_start,
+                    group_start.saturating_add(width),
+                    onset,
+                    LineBoundaryCause::BeyondMaxFret,
+                );
+                line.flush(cut, &mut lines, &mut stats, &mut fragments);
                 continue;
             }
             if track.tuning.pitch_at(position) != Some(note.pitch) {
                 stats.pitch_mismatch = stats.pitch_mismatch.saturating_add(1);
-                line.flush(cut, &mut lines, &mut stats);
+                record_boundary(
+                    &mut boundaries,
+                    group_start,
+                    group_start.saturating_add(width),
+                    onset,
+                    LineBoundaryCause::PitchMismatch,
+                );
+                line.flush(cut, &mut lines, &mut stats, &mut fragments);
                 continue;
             }
             line.push(
-                onset,
-                note.pitch,
-                orient(position),
+                LineNote {
+                    onset,
+                    duration: note.duration.0,
+                    pitch: note.pitch,
+                    original_position: position,
+                    position: orient(position),
+                },
                 NoteContext {
                     note_id: group_start,
                     anchor: anchor_here,
@@ -430,7 +633,14 @@ pub fn tab_lines(
                 },
             );
         }
-        line.flush(cut, &mut lines, &mut stats);
+        line.flush(cut, &mut lines, &mut stats, &mut fragments);
+        finalize_cross_line_boundaries(
+            &mut lines,
+            voice_line_start,
+            notes.len(),
+            &fragments,
+            &boundaries,
+        );
     }
     Ok((lines, stats))
 }
@@ -1180,14 +1390,35 @@ struct NoteContext {
     /// The imported legato kind this note starts, if any.
     legato_out: Option<TechniqueKind>,
     /// Stable imported-voice index of its same-string target, if resolved.
-    legato_target: Option<TechniqueTarget>,
+    legato_target: Option<ResolvedTechniqueTarget>,
+}
+
+#[derive(Clone, Copy)]
+struct LineNote {
+    onset: u32,
+    duration: u32,
+    pitch: Pitch,
+    original_position: FretboardPosition,
+    position: FretboardPosition,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedTechniqueTarget {
+    target: TechniqueTarget,
+    span: TechniqueSpanStats,
 }
 
 #[derive(Clone, Copy)]
 struct PendingTechnique {
     from: usize,
-    target: Option<TechniqueTarget>,
+    target: Option<ResolvedTechniqueTarget>,
     kind: TechniqueKind,
+}
+
+struct LineFragment {
+    note_ids: Vec<usize>,
+    start_tick: u32,
+    kept_line_index: Option<usize>,
 }
 
 /// Accumulates one tablature line while a voice is scanned.
@@ -1200,6 +1431,8 @@ struct LineBuilder<'a> {
     anchor: Option<u8>,
     tapped: Vec<bool>,
     onsets: Vec<u32>,
+    durations: Vec<u32>,
+    original_positions: Vec<FretboardPosition>,
     note_ids: Vec<usize>,
     origins: Vec<PendingTechnique>,
     pitches: Vec<Pitch>,
@@ -1217,6 +1450,8 @@ impl<'a> LineBuilder<'a> {
             anchor: None,
             tapped: Vec::new(),
             onsets: Vec::new(),
+            durations: Vec::new(),
+            original_positions: Vec::new(),
             note_ids: Vec::new(),
             origins: Vec::new(),
             pitches: Vec::new(),
@@ -1228,20 +1463,16 @@ impl<'a> LineBuilder<'a> {
         self.pitches.is_empty()
     }
 
-    fn push(
-        &mut self,
-        onset: u32,
-        pitch: Pitch,
-        position: FretboardPosition,
-        context: NoteContext,
-    ) {
+    fn push(&mut self, note: LineNote, context: NoteContext) {
         if self.pitches.is_empty() {
-            self.start_tick = onset;
+            self.start_tick = note.onset;
             self.anchor = context.anchor;
         }
-        self.pitches.push(pitch);
-        self.onsets.push(onset);
-        self.human.push(position);
+        self.pitches.push(note.pitch);
+        self.onsets.push(note.onset);
+        self.durations.push(note.duration);
+        self.original_positions.push(note.original_position);
+        self.human.push(note.position);
         self.tapped.push(context.tapped);
         self.note_ids.push(context.note_id);
         if let Some(kind) = context.legato_out {
@@ -1255,7 +1486,13 @@ impl<'a> LineBuilder<'a> {
 
     /// Ends the current line: kept when long enough, otherwise counted as
     /// dropped. An empty line is a no-op.
-    fn flush(&mut self, cut: &LineCut, lines: &mut Vec<TabLine>, stats: &mut CutStats) {
+    fn flush(
+        &mut self,
+        cut: &LineCut,
+        lines: &mut Vec<TabLine>,
+        stats: &mut CutStats,
+        fragments: &mut Vec<LineFragment>,
+    ) {
         let len = self.pitches.len();
         if len == 0 {
             return;
@@ -1264,15 +1501,28 @@ impl<'a> LineBuilder<'a> {
         let human = std::mem::take(&mut self.human);
         let tapped = std::mem::take(&mut self.tapped);
         let onsets = std::mem::take(&mut self.onsets);
+        let durations = std::mem::take(&mut self.durations);
+        let original_positions = std::mem::take(&mut self.original_positions);
         let note_ids = std::mem::take(&mut self.note_ids);
         let origins = std::mem::take(&mut self.origins);
         if len < cut.min_notes {
             stats.short_lines = stats.short_lines.saturating_add(1);
             stats.short_line_notes = stats.short_line_notes.saturating_add(count(len));
+            fragments.push(LineFragment {
+                note_ids,
+                start_tick: self.start_tick,
+                kept_line_index: None,
+            });
             return;
         }
         stats.kept_lines = stats.kept_lines.saturating_add(1);
         stats.kept_notes = stats.kept_notes.saturating_add(count(len));
+        let kept_line_index = lines.len();
+        fragments.push(LineFragment {
+            note_ids: note_ids.clone(),
+            start_tick: self.start_tick,
+            kept_line_index: Some(kept_line_index),
+        });
         let mut edges = Vec::new();
         let mut cross_line_edges = Vec::new();
         for origin in origins {
@@ -1281,7 +1531,7 @@ impl<'a> LineBuilder<'a> {
                 continue;
             };
             let from = note_ids.iter().position(|&id| id == origin.from);
-            let to = note_ids.iter().position(|&id| id == target.note_id);
+            let to = note_ids.iter().position(|&id| id == target.target.note_id);
             match (from, to) {
                 (Some(from), Some(to)) => edges.push(TechniqueEdge::new(from, to, origin.kind)),
                 (Some(from), None) => {
@@ -1289,8 +1539,18 @@ impl<'a> LineBuilder<'a> {
                     cross_line_edges.push(CrossLineTechniqueEdge {
                         from,
                         origin_note_id: origin.from,
-                        target,
+                        target: target.target,
                         kind: origin.kind,
+                        span: target.span,
+                        boundary: CrossLineBoundary {
+                            boundaries: Vec::new(),
+                            line_boundaries_crossed: 0,
+                            intervening_kept_fragments: 0,
+                            intervening_dropped_fragments: 0,
+                            target_disposition: TargetDisposition::Excluded,
+                            target_line_start_tick: None,
+                            target_in_next_kept_line: false,
+                        },
                     });
                 }
                 _ => {}
@@ -1303,7 +1563,10 @@ impl<'a> LineBuilder<'a> {
             start_tick: self.start_tick,
             tuning: self.tuning.clone(),
             pitches,
+            note_ids,
             onsets,
+            durations,
+            original_positions,
             human,
             anchor_fret: self.anchor,
             tapped,
@@ -1311,6 +1574,176 @@ impl<'a> LineBuilder<'a> {
             cross_line_edges,
         });
     }
+}
+
+fn imported_span(
+    notes: &[(&AtomNote, Option<TechniqueKind>)],
+    origin_id: usize,
+    target_id: usize,
+    ticks_per_quarter: u32,
+) -> Option<TechniqueSpanStats> {
+    let origin = notes.get(origin_id)?.0;
+    let target = notes.get(target_id)?.0;
+    let origin_position = origin.position?.position;
+    let target_position = target.position?.position;
+    let mut last_onset = None;
+    let mut intervening_onsets = 0;
+    let mut origin_string = 0;
+    let mut other_strings = 0;
+    let mut unpositioned = 0;
+    for (note, _) in notes.get(origin_id + 1..target_id)? {
+        let onset = note.absolute_start.0;
+        if onset <= origin.absolute_start.0 || onset >= target.absolute_start.0 {
+            continue;
+        }
+        if last_onset != Some(onset) {
+            intervening_onsets += 1;
+            last_onset = Some(onset);
+        }
+        match note.position.map(|position| position.position) {
+            Some(position) if position.string == origin_position.string => origin_string += 1,
+            Some(_) => other_strings += 1,
+            None => unpositioned += 1,
+        }
+    }
+    let delta_ticks = target
+        .absolute_start
+        .0
+        .checked_sub(origin.absolute_start.0)?;
+    Some(TechniqueSpanStats {
+        note_distance: target_id.checked_sub(origin_id)?,
+        intervening_onsets,
+        intervening_note_atoms: target_id.checked_sub(origin_id)?.saturating_sub(1),
+        intervening_origin_string_notes: origin_string,
+        intervening_other_string_notes: other_strings,
+        intervening_unpositioned_notes: unpositioned,
+        delta_ticks,
+        delta_quarters: ExactRatio::new(u64::from(delta_ticks), u64::from(ticks_per_quarter)),
+        pitch_interval_semitones: i16::from(target.pitch.0) - i16::from(origin.pitch.0),
+        fret_distance: origin_position.fret.abs_diff(target_position.fret),
+        target_open: target_position.fret == 0,
+    })
+}
+
+fn record_boundary(
+    boundaries: &mut Vec<LineBoundary>,
+    before_note_id: usize,
+    excluded_note_ids_end: usize,
+    onset: u32,
+    cause: LineBoundaryCause,
+) {
+    if let Some(boundary) = boundaries
+        .last_mut()
+        .filter(|boundary| boundary.before_note_id == before_note_id)
+    {
+        boundary.excluded_note_ids_end = boundary.excluded_note_ids_end.max(excluded_note_ids_end);
+        if !boundary.causes.contains(&cause) {
+            boundary.causes.push(cause);
+        }
+    } else {
+        boundaries.push(LineBoundary {
+            before_note_id,
+            excluded_note_ids_end,
+            onset,
+            causes: vec![cause],
+        });
+    }
+}
+
+fn finalize_cross_line_boundaries(
+    lines: &mut [TabLine],
+    voice_line_start: usize,
+    note_count: usize,
+    fragments: &[LineFragment],
+    boundaries: &[LineBoundary],
+) {
+    let mut note_fragment = vec![None; note_count];
+    for (fragment_index, fragment) in fragments.iter().enumerate() {
+        for &note_id in &fragment.note_ids {
+            if let Some(slot) = note_fragment.get_mut(note_id) {
+                *slot = Some(fragment_index);
+            }
+        }
+    }
+    for line in lines.iter_mut().skip(voice_line_start) {
+        for edge in &mut line.cross_line_edges {
+            let Some(origin_fragment) = note_fragment.get(edge.origin_note_id).copied().flatten()
+            else {
+                continue;
+            };
+            let target_fragment = note_fragment.get(edge.target.note_id).copied().flatten();
+            let target_disposition = target_fragment.map_or(TargetDisposition::Excluded, |index| {
+                if fragments[index].kept_line_index.is_some() {
+                    TargetDisposition::KeptLine
+                } else {
+                    TargetDisposition::DroppedShortLine
+                }
+            });
+            let target_line_start_tick = target_fragment.and_then(|index| {
+                fragments[index]
+                    .kept_line_index
+                    .map(|_| fragments[index].start_tick)
+            });
+            let next_kept_fragment = fragments
+                .iter()
+                .enumerate()
+                .skip(origin_fragment + 1)
+                .find_map(|(index, fragment)| fragment.kept_line_index.map(|_| index));
+            let target_in_next_kept_line = target_fragment.is_some_and(|target_index| {
+                fragments[target_index].kept_line_index.is_some()
+                    && next_kept_fragment == Some(target_index)
+            });
+
+            let mut intervening_kept = 0;
+            let mut intervening_dropped = 0;
+            for (index, fragment) in fragments.iter().enumerate().skip(origin_fragment + 1) {
+                let before_target = fragment
+                    .note_ids
+                    .first()
+                    .is_some_and(|first| *first < edge.target.note_id);
+                let is_target = target_fragment == Some(index);
+                if !before_target && !is_target {
+                    break;
+                }
+                if is_target {
+                    if fragment.kept_line_index.is_none() {
+                        intervening_dropped += 1;
+                    }
+                    break;
+                }
+                if fragment.kept_line_index.is_some() {
+                    intervening_kept += 1;
+                } else {
+                    intervening_dropped += 1;
+                }
+            }
+            let crossed: Vec<LineBoundary> = boundaries
+                .iter()
+                .filter(|boundary| {
+                    edge.origin_note_id < boundary.before_note_id
+                        && boundary.before_note_id <= edge.target.note_id
+                })
+                .cloned()
+                .collect();
+            edge.boundary = CrossLineBoundary {
+                line_boundaries_crossed: crossed.len(),
+                boundaries: crossed,
+                intervening_kept_fragments: intervening_kept,
+                intervening_dropped_fragments: intervening_dropped,
+                target_disposition,
+                target_line_start_tick,
+                target_in_next_kept_line,
+            };
+        }
+    }
+}
+
+fn distinct_count<T: PartialEq>(values: &[T]) -> usize {
+    values
+        .windows(2)
+        .filter(|pair| pair[0] != pair[1])
+        .count()
+        .saturating_add(usize::from(!values.is_empty()))
 }
 
 fn count(n: usize) -> u64 {

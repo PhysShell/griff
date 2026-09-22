@@ -454,7 +454,10 @@ fn a_same_string_target_beyond_the_line_is_counted_not_retargeted() {
         vec![LineBoundaryCause::RestCut]
     );
     assert_eq!(external[0].boundary.boundaries[0].before_note_id, 4);
-    assert_eq!(external[0].boundary.target_disposition, TargetDisposition::KeptLine);
+    assert_eq!(
+        external[0].boundary.target_disposition,
+        TargetDisposition::KeptLine
+    );
     assert_eq!(external[0].boundary.target_line_start_tick, Some(10 * Q));
     assert!(external[0].boundary.target_in_next_kept_line);
     assert_eq!(external[0].boundary.intervening_dropped_fragments, 0);
@@ -490,7 +493,12 @@ fn a_same_string_target_at_a_chord_boundary_is_classified_as_excluded() {
         edge.boundary.boundaries[0].causes,
         vec![LineBoundaryCause::ChordOnset]
     );
-    assert_eq!(edge.boundary.target_disposition, TargetDisposition::Excluded);
+    assert_eq!(edge.boundary.boundaries[0].before_note_id, 4);
+    assert_eq!(edge.boundary.boundaries[0].excluded_note_ids_end, 6);
+    assert_eq!(
+        edge.boundary.target_disposition,
+        TargetDisposition::Excluded
+    );
     assert_eq!(edge.boundary.target_line_start_tick, None);
     assert!(!edge.boundary.target_in_next_kept_line);
 }
@@ -522,7 +530,13 @@ fn a_long_sparse_within_line_edge_has_exact_span_counts() {
     assert_eq!(span.intervening_origin_string_notes, 0);
     assert_eq!(span.intervening_other_string_notes, 5);
     assert_eq!(span.delta_ticks, 12 * Q);
-    assert_eq!((span.delta_quarters.numerator, span.delta_quarters.denominator), (12, 1));
+    assert_eq!(
+        (
+            span.delta_quarters.numerator,
+            span.delta_quarters.denominator
+        ),
+        (12, 1)
+    );
     assert_eq!(span.pitch_interval_semitones, 2);
     assert_eq!(span.fret_distance, 2);
     assert!(!span.target_open);
