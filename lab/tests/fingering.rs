@@ -508,7 +508,30 @@ fn a_same_string_target_at_a_chord_boundary_is_classified_as_excluded() {
     assert_eq!(edge.target_chord[1].note_id, 5);
     assert_eq!(edge.target_chord[1].pitch, Pitch(67));
     assert_eq!(edge.target_chord[1].original_position, Some(pos(2, 8)));
+    assert_eq!(edge.target_anchor_fret, Some(7));
     assert_eq!(lines[0].original_tuning, s.tracks[0].tuning);
+}
+
+#[test]
+fn chord_target_anchor_is_latest_untapped_fretting_hand_context() {
+    let s = score(vec![vec![
+        single(0, 55, Some((4, 5))),
+        single(Q, 60, Some((3, 5))),
+        with_span(single(2 * Q, 57, Some((4, 7))), SpanTechnique::HammerOn),
+        tapped_single(3 * Q, 69, (1, 5)),
+        group(vec![
+            note(4 * Q, 59, Some((4, 9))),
+            note(4 * Q, 67, Some((2, 8))),
+        ]),
+        single(5 * Q, 60, Some((3, 5))),
+        single(6 * Q, 62, Some((3, 7))),
+        single(7 * Q, 64, Some((3, 9))),
+        single(8 * Q, 65, Some((3, 10))),
+    ]]);
+    let (lines, _) = tab_lines(&s, 0, &LineCut::v1()).unwrap();
+    let edge = &lines[0].cross_line_edges[0];
+    assert_eq!(edge.target_anchor_fret, Some(7));
+    assert_eq!(lines[0].original_positions[edge.from].fret, 7);
 }
 
 #[test]
