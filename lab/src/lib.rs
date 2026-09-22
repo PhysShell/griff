@@ -18,6 +18,7 @@
 //! nothing here is a production dependency, and no production path calls it.
 
 pub mod chord;
+pub mod chord_context;
 pub mod emit;
 pub mod fingering;
 pub mod forensics;

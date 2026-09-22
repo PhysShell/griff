@@ -326,6 +326,9 @@ pub struct CrossLineTechniqueEdge {
     /// Every note atom at the target onset when it is a chord, ordered by
     /// stable imported id. Empty for non-chord targets.
     pub target_chord: Vec<ImportedChordAtom>,
+    /// Latest fretting-hand anchor strictly before the target onset. Tapped
+    /// and open notes do not move/establish the anchor; `None` is retained.
+    pub target_anchor_fret: Option<u8>,
 }
 
 /// One monophonic tablature line with the tab author's positions.
@@ -1582,6 +1585,7 @@ impl<'a> LineBuilder<'a> {
                             target_in_next_kept_line: false,
                         },
                         target_chord: Vec::new(),
+                        target_anchor_fret: None,
                     });
                 }
                 _ => {}
@@ -1783,8 +1787,34 @@ fn finalize_cross_line_boundaries(
             if target_chord.len() > 1 {
                 edge.target_chord = target_chord;
             }
+            edge.target_anchor_fret = latest_fretting_anchor_before(notes, target_onset);
         }
     }
+}
+
+fn latest_fretting_anchor_before(
+    notes: &[(&AtomNote, Option<TechniqueKind>)],
+    before_onset: u32,
+) -> Option<u8> {
+    let latest_onset = notes
+        .iter()
+        .filter(|(note, _)| {
+            note.absolute_start.0 < before_onset
+                && !note.marks.contains(NoteMark::Tap)
+                && note
+                    .position
+                    .is_some_and(|position| position.position.fret > 0)
+        })
+        .map(|(note, _)| note.absolute_start.0)
+        .max()?;
+    notes
+        .iter()
+        .filter(|(note, _)| {
+            note.absolute_start.0 == latest_onset && !note.marks.contains(NoteMark::Tap)
+        })
+        .filter_map(|(note, _)| note.position.map(|position| position.position.fret))
+        .filter(|fret| *fret > 0)
+        .min()
 }
 
 fn distinct_count<T: PartialEq>(values: &[T]) -> usize {

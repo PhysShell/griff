@@ -67,6 +67,12 @@
 //! cargo run --release --bin fingering_gap -- legato-chords --tabs DIR --out DIR
 //! ```
 //!
+//! Preceding-context follow-up (B0/O/A/lexicographic/Pareto):
+//!
+//! ```text
+//! cargo run --release --bin fingering_gap -- legato-chord-context --tabs DIR --out DIR
+//! ```
+//!
 //! `MODELS`: `--v1 NAME=fret,open_string,position_shift,string_change` and
 //! `--hand NAME=height,open_string,stretch,shift,shift_distance,string_distance`,
 //! repeatable; default `--v1 v1=1,1,2,1` (the production weights).
@@ -85,6 +91,10 @@ use std::time::Instant;
 use griff_constraint_lab::chord::{
     analyze_chord, ChordAnalysis, ChordAtom, ChordCostPolicy, ChordOptimum, HumanChordAssessment,
     TargetStringConstraint, TargetStringResult,
+};
+use griff_constraint_lab::chord_context::{
+    analyze_chord_context, ChordContext, ChordContextAnalysis, ContextClassification,
+    ContextStringResult, ExactLexMinimum, ExactMinimum, HumanContextAssessment, RankChange,
 };
 use griff_constraint_lab::fingering::{
     best_hands, decode_positions, hand_problem, holdout_bucket, repeat_pairs, solve_hand, song_key,
@@ -3851,6 +3861,623 @@ fn legato_chords(corpus: Corpus, out: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── chord-target preceding context ───────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ContextMinimumRecord {
+    optimum: i64,
+    optimum_count: u64,
+    chosen: Vec<PositionRecord>,
+}
+
+impl From<&ExactMinimum> for ContextMinimumRecord {
+    fn from(metric: &ExactMinimum) -> Self {
+        Self {
+            optimum: metric.optimum,
+            optimum_count: metric.optimum_count,
+            chosen: metric.chosen.iter().copied().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ContextLexRecord {
+    first: i64,
+    second: i64,
+    optimum_count: u64,
+    chosen: Vec<PositionRecord>,
+}
+
+impl From<&ExactLexMinimum> for ContextLexRecord {
+    fn from(metric: &ExactLexMinimum) -> Self {
+        Self {
+            first: metric.first,
+            second: metric.second,
+            optimum_count: metric.optimum_count,
+            chosen: metric.chosen.iter().copied().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ContextStringRecord {
+    string: u8,
+    base: Option<ContextMinimumRecord>,
+    origin: Option<ContextMinimumRecord>,
+    anchor: Option<ContextMinimumRecord>,
+    origin_anchor: Option<ContextLexRecord>,
+    anchor_origin: Option<ContextLexRecord>,
+    pareto_member: Option<bool>,
+    pareto_count: Option<u64>,
+    pareto_chosen: Option<Vec<PositionRecord>>,
+}
+
+impl From<&ContextStringResult> for ContextStringRecord {
+    fn from(condition: &ContextStringResult) -> Self {
+        Self {
+            string: condition.string,
+            base: condition.base.as_ref().map(Into::into),
+            origin: condition.origin.as_ref().map(Into::into),
+            anchor: condition.anchor.as_ref().map(Into::into),
+            origin_anchor: condition.origin_anchor.as_ref().map(Into::into),
+            anchor_origin: condition.anchor_origin.as_ref().map(Into::into),
+            pareto_member: condition.pareto_member,
+            pareto_count: condition.pareto_count,
+            pareto_chosen: condition
+                .pareto_chosen
+                .as_ref()
+                .map(|positions| positions.iter().copied().map(Into::into).collect()),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct RankChangeRecord {
+    rank_delta: Option<i64>,
+    classification: &'static str,
+}
+
+impl From<RankChange> for RankChangeRecord {
+    fn from(change: RankChange) -> Self {
+        let classification = match change.classification {
+            ContextClassification::Improved => "improved",
+            ContextClassification::Unchanged => "unchanged",
+            ContextClassification::Worsened => "worsened",
+            ContextClassification::Unavailable => "unavailable",
+        };
+        Self {
+            rank_delta: change.rank_delta,
+            classification,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ContextHumanRecord {
+    positions: Vec<PositionRecord>,
+    base: Option<i64>,
+    origin: Option<i64>,
+    anchor: Option<i64>,
+    origin_excess: Option<i64>,
+    anchor_excess: Option<i64>,
+    pareto_member: Option<bool>,
+}
+
+impl From<&HumanContextAssessment> for ContextHumanRecord {
+    fn from(human: &HumanContextAssessment) -> Self {
+        Self {
+            positions: human.positions.iter().copied().map(Into::into).collect(),
+            base: human.base,
+            origin: human.origin,
+            anchor: human.anchor,
+            origin_excess: human.origin_excess,
+            anchor_excess: human.anchor_excess,
+            pareto_member: human.pareto_member,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ContextCaseRecord {
+    schema: &'static str,
+    version: u32,
+    id: String,
+    file: String,
+    song: String,
+    family: &'static str,
+    test: bool,
+    track: usize,
+    voice: u8,
+    origin_line_start_tick: u32,
+    origin_note_id: usize,
+    origin_onset_tick: u32,
+    origin_pitch: u8,
+    origin_position: PositionRecord,
+    origin_tapped: bool,
+    anchor_fret: Option<u8>,
+    target_note_id: usize,
+    target_pitch: u8,
+    chord_onset_tick: u32,
+    observed_string: u8,
+    chord: Vec<ChordAtomRecord>,
+    baseline_outcome: &'static str,
+    baseline_delta_cost: Option<i64>,
+    base_rank: Option<usize>,
+    origin_rank: Option<usize>,
+    anchor_rank: Option<usize>,
+    origin_anchor_rank: Option<usize>,
+    anchor_origin_rank: Option<usize>,
+    pareto_member: Option<bool>,
+    origin_change: RankChangeRecord,
+    anchor_change: RankChangeRecord,
+    origin_anchor_change: RankChangeRecord,
+    anchor_origin_change: RankChangeRecord,
+    target_strings: Vec<ContextStringRecord>,
+    human: Option<ContextHumanRecord>,
+}
+
+#[derive(Clone, Copy)]
+enum ContextView {
+    Origin,
+    Anchor,
+    OriginAnchor,
+    AnchorOrigin,
+}
+
+impl ContextView {
+    const ALL: [Self; 4] = [
+        Self::Origin,
+        Self::Anchor,
+        Self::OriginAnchor,
+        Self::AnchorOrigin,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Origin => "O",
+            Self::Anchor => "A",
+            Self::OriginAnchor => "O_to_A",
+            Self::AnchorOrigin => "A_to_O",
+        }
+    }
+
+    fn rank(self, record: &ContextCaseRecord) -> Option<usize> {
+        match self {
+            Self::Origin => record.origin_rank,
+            Self::Anchor => record.anchor_rank,
+            Self::OriginAnchor => record.origin_anchor_rank,
+            Self::AnchorOrigin => record.anchor_origin_rank,
+        }
+    }
+
+    fn change(self, record: &ContextCaseRecord) -> &RankChangeRecord {
+        match self {
+            Self::Origin => &record.origin_change,
+            Self::Anchor => &record.anchor_change,
+            Self::OriginAnchor => &record.origin_anchor_change,
+            Self::AnchorOrigin => &record.anchor_origin_change,
+        }
+    }
+}
+
+#[derive(Default, Serialize)]
+struct ChangeCounts {
+    improved: usize,
+    unchanged: usize,
+    worsened: usize,
+    unavailable: usize,
+}
+
+impl ChangeCounts {
+    fn add(&mut self, classification: &str) {
+        match classification {
+            "improved" => self.improved += 1,
+            "unchanged" => self.unchanged += 1,
+            "worsened" => self.worsened += 1,
+            _ => self.unavailable += 1,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ViewAggregate {
+    view: &'static str,
+    available: usize,
+    rank_one: usize,
+    rank_counts: BTreeMap<usize, usize>,
+    changes: ChangeCounts,
+    rank_delta: Option<Distribution<i64>>,
+}
+
+fn aggregate_view<'a>(
+    records: impl Iterator<Item = &'a ContextCaseRecord>,
+    view: ContextView,
+) -> ViewAggregate {
+    let mut available = 0;
+    let mut rank_one = 0;
+    let mut rank_counts = BTreeMap::new();
+    let mut changes = ChangeCounts::default();
+    let mut deltas = Vec::new();
+    for record in records {
+        if let Some(rank) = view.rank(record) {
+            available += 1;
+            rank_one += usize::from(rank == 1);
+            *rank_counts.entry(rank).or_insert(0) += 1;
+        }
+        let change = view.change(record);
+        changes.add(change.classification);
+        if let Some(delta) = change.rank_delta {
+            deltas.push(delta);
+        }
+    }
+    ViewAggregate {
+        view: view.name(),
+        available,
+        rank_one,
+        rank_counts,
+        changes,
+        rank_delta: distribution(&deltas),
+    }
+}
+
+#[derive(Serialize)]
+struct SongViewSummary {
+    view: &'static str,
+    base_rank_one: usize,
+    context: ViewAggregate,
+}
+
+#[derive(Serialize)]
+struct SongContextSummary {
+    song: String,
+    cases: usize,
+    views: Vec<SongViewSummary>,
+}
+
+#[derive(Serialize)]
+struct LooContextSummary {
+    omitted_song: String,
+    remaining_cases: usize,
+    view: &'static str,
+    base_rank_one: usize,
+    context_rank_one: usize,
+    rank_one_gain: i64,
+    improved: usize,
+    unchanged: usize,
+    worsened: usize,
+    median_rank_delta: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ContextHumanSummary {
+    complete: usize,
+    pareto_member: usize,
+    origin_excess: Option<Distribution<i64>>,
+    anchor_excess: Option<Distribution<i64>>,
+}
+
+#[derive(Serialize)]
+struct ContextSummary {
+    schema: &'static str,
+    version: u32,
+    population: usize,
+    baseline_legal_conditions: usize,
+    baseline_feasible_conditions: usize,
+    baseline_rank_counts: BTreeMap<usize, usize>,
+    baseline_outcomes: OutcomeCounts,
+    anchors_present: usize,
+    observed_pareto_members: usize,
+    views: Vec<ViewAggregate>,
+    costly_views: Vec<ViewAggregate>,
+    human: ContextHumanSummary,
+    songs: usize,
+    corpus: CorpusFacts,
+}
+
+fn context_case(
+    corpus: &Corpus,
+    line: &Line,
+    edge: &griff_constraint_lab::fingering::CrossLineTechniqueEdge,
+    policy: &ChordCostPolicy,
+) -> Result<ContextCaseRecord, std::io::Error> {
+    let file = corpus.names[line.file].clone();
+    let atoms: Vec<ChordAtom> = edge
+        .target_chord
+        .iter()
+        .copied()
+        .map(imported_chord_atom)
+        .collect();
+    let origin_position = line.tab.original_positions[edge.from];
+    let analysis: ChordContextAnalysis = analyze_chord_context(
+        &atoms,
+        &line.tab.original_tuning,
+        STANDARD_MAX_FRET,
+        edge.target.note_id,
+        edge.target.original_position.string,
+        ChordContext {
+            origin_fret: origin_position.fret,
+            anchor_fret: edge.target_anchor_fret,
+        },
+        policy,
+    )
+    .map_err(std::io::Error::other)?;
+    let outcome = chord_outcome(&analysis.baseline);
+    let delta_cost = analysis
+        .baseline
+        .observed
+        .as_ref()
+        .map(|observed| observed.optimum - analysis.baseline.unconstrained.optimum);
+    for (baseline, context) in analysis
+        .baseline
+        .target_strings
+        .iter()
+        .zip(&analysis.target_strings)
+    {
+        let context_base = context
+            .base
+            .as_ref()
+            .map(|metric| (metric.optimum, metric.optimum_count));
+        let baseline_base = baseline
+            .result
+            .as_ref()
+            .map(|metric| (metric.optimum, metric.optimum_count));
+        if baseline.string != context.string || baseline_base != context_base {
+            return Err(std::io::Error::other(format!(
+                "B0 drift in {} target {} string {}",
+                line.id, edge.target.note_id, baseline.string
+            )));
+        }
+    }
+    let chord = edge
+        .target_chord
+        .iter()
+        .map(|atom| ChordAtomRecord {
+            voice_note_id: atom.note_id,
+            duration: atom.duration,
+            pitch: atom.pitch.0,
+            imported_position: atom.original_position.map(Into::into),
+            tapped: atom.tapped,
+            legato_target: atom.note_id == edge.target.note_id,
+        })
+        .collect();
+    Ok(ContextCaseRecord {
+        schema: "griff.constraint-lab-legato-chord-context",
+        version: 1,
+        id: line.id.clone(),
+        file: file.clone(),
+        song: song_key(&file),
+        family: format_family(&file),
+        test: line.test,
+        track: line.tab.track,
+        voice: line.tab.voice,
+        origin_line_start_tick: line.tab.start_tick,
+        origin_note_id: edge.origin_note_id,
+        origin_onset_tick: line.tab.onsets[edge.from],
+        origin_pitch: line.tab.pitches[edge.from].0,
+        origin_position: origin_position.into(),
+        origin_tapped: line.tab.tapped[edge.from],
+        anchor_fret: edge.target_anchor_fret,
+        target_note_id: edge.target.note_id,
+        target_pitch: edge.target.pitch.0,
+        chord_onset_tick: edge.target.onset,
+        observed_string: edge.target.original_position.string,
+        chord,
+        baseline_outcome: outcome,
+        baseline_delta_cost: delta_cost,
+        base_rank: analysis.observed.base_rank,
+        origin_rank: analysis.observed.origin_rank,
+        anchor_rank: analysis.observed.anchor_rank,
+        origin_anchor_rank: analysis.observed.origin_anchor_rank,
+        anchor_origin_rank: analysis.observed.anchor_origin_rank,
+        pareto_member: analysis.observed.pareto_member,
+        origin_change: analysis.observed.origin_change.into(),
+        anchor_change: analysis.observed.anchor_change.into(),
+        origin_anchor_change: analysis.observed.origin_anchor_change.into(),
+        anchor_origin_change: analysis.observed.anchor_origin_change.into(),
+        target_strings: analysis.target_strings.iter().map(Into::into).collect(),
+        human: analysis.human.as_ref().map(Into::into),
+    })
+}
+
+fn median_i64(values: impl Iterator<Item = i64>) -> Option<i64> {
+    let mut values: Vec<i64> = values.collect();
+    values.sort_unstable();
+    values.get(values.len().checked_sub(1)? / 2).copied()
+}
+
+fn legato_chord_context(corpus: Corpus, out: &Path) -> std::io::Result<()> {
+    let policy = ChordCostPolicy::v1_unary();
+    let mut records = Vec::new();
+    for line in &corpus.lines {
+        for edge in &line.tab.cross_line_edges {
+            if edge.boundary.target_disposition == TargetDisposition::Excluded
+                && edge.target_chord.len() > 1
+                && edge
+                    .target_chord
+                    .iter()
+                    .any(|atom| atom.note_id == edge.target.note_id)
+            {
+                records.push(context_case(&corpus, line, edge, &policy)?);
+            }
+        }
+    }
+    records.sort_by(|a, b| {
+        (
+            &a.file,
+            a.track,
+            a.voice,
+            a.chord_onset_tick,
+            a.target_note_id,
+        )
+            .cmp(&(
+                &b.file,
+                b.track,
+                b.voice,
+                b.chord_onset_tick,
+                b.target_note_id,
+            ))
+    });
+
+    let context_path = out.join("legato-chord-context.jsonl");
+    let mut writer = BufWriter::new(fs::File::create(&context_path)?);
+    for record in &records {
+        serde_json::to_writer(&mut writer, record).map_err(std::io::Error::other)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+
+    let mut baseline_rank_counts = BTreeMap::new();
+    let mut baseline_outcomes = OutcomeCounts::default();
+    let mut legal = 0;
+    let mut feasible = 0;
+    let mut anchors_present = 0;
+    let mut pareto = 0;
+    let mut human_complete = 0;
+    let mut human_pareto = 0;
+    let mut human_origin_excess = Vec::new();
+    let mut human_anchor_excess = Vec::new();
+    let mut songs: BTreeMap<String, Vec<&ContextCaseRecord>> = BTreeMap::new();
+    for record in &records {
+        if let Some(rank) = record.base_rank {
+            *baseline_rank_counts.entry(rank).or_insert(0) += 1;
+        }
+        baseline_outcomes.add(record.baseline_outcome);
+        legal += record.target_strings.len();
+        feasible += record
+            .target_strings
+            .iter()
+            .filter(|condition| condition.base.is_some())
+            .count();
+        anchors_present += usize::from(record.anchor_fret.is_some());
+        pareto += usize::from(record.pareto_member == Some(true));
+        if let Some(human) = &record.human {
+            human_complete += 1;
+            human_pareto += usize::from(human.pareto_member == Some(true));
+            if let Some(excess) = human.origin_excess {
+                human_origin_excess.push(excess);
+            }
+            if let Some(excess) = human.anchor_excess {
+                human_anchor_excess.push(excess);
+            }
+        }
+        songs.entry(record.song.clone()).or_default().push(record);
+    }
+    if records.len() != 38
+        || legal != 176
+        || feasible != 174
+        || baseline_rank_counts.get(&1) != Some(&11)
+        || baseline_rank_counts.get(&2) != Some(&24)
+        || baseline_rank_counts.get(&3) != Some(&3)
+        || baseline_outcomes.free != 11
+        || baseline_outcomes.costly != 27
+        || baseline_outcomes.infeasible != 0
+    {
+        return Err(std::io::Error::other(format!(
+            "#209 B0 drift: cases={}, legal={}, feasible={}, ranks={baseline_rank_counts:?}, outcomes={}/{}/{}",
+            records.len(), legal, feasible, baseline_outcomes.free, baseline_outcomes.costly, baseline_outcomes.infeasible
+        )));
+    }
+
+    let views: Vec<ViewAggregate> = ContextView::ALL
+        .into_iter()
+        .map(|view| aggregate_view(records.iter(), view))
+        .collect();
+    let costly_views: Vec<ViewAggregate> = ContextView::ALL
+        .into_iter()
+        .map(|view| {
+            aggregate_view(
+                records
+                    .iter()
+                    .filter(|record| record.baseline_outcome == "feasible_costly"),
+                view,
+            )
+        })
+        .collect();
+    let summary = ContextSummary {
+        schema: "griff.constraint-lab-legato-chord-context-summary",
+        version: 1,
+        population: records.len(),
+        baseline_legal_conditions: legal,
+        baseline_feasible_conditions: feasible,
+        baseline_rank_counts,
+        baseline_outcomes,
+        anchors_present,
+        observed_pareto_members: pareto,
+        views,
+        costly_views,
+        human: ContextHumanSummary {
+            complete: human_complete,
+            pareto_member: human_pareto,
+            origin_excess: distribution(&human_origin_excess),
+            anchor_excess: distribution(&human_anchor_excess),
+        },
+        songs: songs.len(),
+        corpus: corpus.facts,
+    };
+    write_json(&out.join("legato-chord-context-summary.json"), &summary)?;
+
+    let song_summary: Vec<SongContextSummary> = songs
+        .iter()
+        .map(|(song, cases)| SongContextSummary {
+            song: song.clone(),
+            cases: cases.len(),
+            views: ContextView::ALL
+                .into_iter()
+                .map(|view| SongViewSummary {
+                    view: view.name(),
+                    base_rank_one: cases
+                        .iter()
+                        .filter(|record| record.base_rank == Some(1))
+                        .count(),
+                    context: aggregate_view(cases.iter().copied(), view),
+                })
+                .collect(),
+        })
+        .collect();
+    write_json(
+        &out.join("legato-chord-context-song-summary.json"),
+        &song_summary,
+    )?;
+
+    let mut loo = Vec::new();
+    for omitted_song in songs.keys() {
+        let kept: Vec<&ContextCaseRecord> = records
+            .iter()
+            .filter(|record| &record.song != omitted_song)
+            .collect();
+        for view in ContextView::ALL {
+            let aggregate = aggregate_view(kept.iter().copied(), view);
+            let base_rank_one = kept
+                .iter()
+                .filter(|record| record.base_rank == Some(1))
+                .count();
+            loo.push(LooContextSummary {
+                omitted_song: omitted_song.clone(),
+                remaining_cases: kept.len(),
+                view: view.name(),
+                base_rank_one,
+                context_rank_one: aggregate.rank_one,
+                rank_one_gain: i64::try_from(aggregate.rank_one).unwrap_or(i64::MAX)
+                    - i64::try_from(base_rank_one).unwrap_or(i64::MAX),
+                improved: aggregate.changes.improved,
+                unchanged: aggregate.changes.unchanged,
+                worsened: aggregate.changes.worsened,
+                median_rank_delta: median_i64(
+                    kept.iter()
+                        .filter_map(|record| view.change(record).rank_delta),
+                ),
+            });
+        }
+    }
+    write_json(&out.join("legato-chord-context-loo.json"), &loo)?;
+    eprintln!("wrote {}", context_path.display());
+    println!(
+        "legato chord context: {} cases, {} anchors, {} observed Pareto members",
+        summary.population, summary.anchors_present, summary.observed_pareto_members
+    );
+    Ok(())
+}
+
 // ── entry ─────────────────────────────────────────────────────────────────────
 
 struct Args {
@@ -3912,6 +4539,7 @@ fn run() -> Result<(), String> {
         "legato-census" => legato_census(corpus, &args.out),
         "legato" => legato(corpus, &args.out),
         "legato-chords" => legato_chords(corpus, &args.out),
+        "legato-chord-context" => legato_chord_context(corpus, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
