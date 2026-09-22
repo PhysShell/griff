@@ -80,6 +80,7 @@ pub struct TargetStringResult {
 }
 
 /// Assessment of the complete imported realization, when every atom has one.
+#[allow(clippy::struct_excessive_bools)] // independent measured predicates, not states
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HumanChordAssessment {
     /// Pitch/range/string-exclusivity feasibility under the registered model.
@@ -282,6 +283,7 @@ fn validate(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // one transparent diagnostic pipeline stage
 fn assess_human(
     atoms: &[ChordAtom],
     tuning: &Tuning,

@@ -3416,6 +3416,7 @@ impl From<&TargetStringResult> for TargetStringRecord {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent exported measurements
 #[derive(Serialize)]
 struct HumanChordRecord {
     feasible: bool,
