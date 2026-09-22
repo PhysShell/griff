@@ -52,7 +52,7 @@ impl ChordCostPolicy {
         }
     }
 
-    fn position_cost(self, position: FretboardPosition) -> i64 {
+    pub(crate) fn position_cost(self, position: FretboardPosition) -> i64 {
         v1_unary(position.fret, &self.weights)
     }
 }

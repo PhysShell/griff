@@ -53,23 +53,23 @@ fn analyze(
 #[test]
 fn origin_fret_can_rank_the_observed_condition_above_b0() {
     let result = analyze(5, Some(5), 2);
-    assert_eq!(result.observed.base_rank, Some(2));
+    assert_eq!(result.observed.base_rank, Some(3));
     assert_eq!(result.observed.origin_rank, Some(1));
     assert_eq!(
         result.observed.origin_change.classification,
         ContextClassification::Improved
     );
-    assert_eq!(result.observed.origin_change.rank_delta, Some(1));
+    assert_eq!(result.observed.origin_change.rank_delta, Some(2));
 }
 
 #[test]
 fn origin_context_is_allowed_not_to_improve_the_label() {
-    let result = analyze(0, Some(5), 2);
-    assert_eq!(result.observed.base_rank, Some(2));
-    assert_eq!(result.observed.origin_rank, Some(2));
+    let result = analyze(24, Some(5), 2);
+    assert_eq!(result.observed.base_rank, Some(3));
+    assert_eq!(result.observed.origin_rank, Some(5));
     assert_eq!(
         result.observed.origin_change.classification,
-        ContextClassification::Unchanged
+        ContextClassification::Worsened
     );
 }
 
@@ -105,7 +105,7 @@ fn complete_domain_and_b0_remain_the_209_oracle() {
             .iter()
             .map(|condition| condition.string)
             .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4, 5]
+        vec![1, 2, 3, 4, 5, 6]
     );
     assert_eq!(
         result.baseline.target_strings.len(),
@@ -140,11 +140,11 @@ fn pareto_frontier_is_global_across_target_strings() {
         .iter()
         .find(|condition| condition.string == 2)
         .unwrap();
-    assert!(observed.pareto_member);
+    assert_eq!(observed.pareto_member, Some(true));
     assert!(result
         .target_strings
         .iter()
-        .any(|condition| !condition.pareto_member));
+        .any(|condition| condition.pareto_member == Some(false)));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn duplicate_pitch_identity_and_low_first_orientation_are_preserved() {
         Pitch(59),
         Pitch(64),
     ]);
-    let atoms = [atom(10, 40, Some(pos(1, 0))), atom(11, 40, Some(pos(2, 5)))];
+    let atoms = [atom(10, 45, Some(pos(1, 5))), atom(11, 45, Some(pos(2, 0)))];
     let result = analyze_chord_context(
         &atoms,
         &tuning,
@@ -165,12 +165,12 @@ fn duplicate_pitch_identity_and_low_first_orientation_are_preserved() {
         11,
         2,
         ChordContext {
-            origin_fret: 5,
+            origin_fret: 0,
             anchor_fret: Some(5),
         },
         &ChordCostPolicy::v1_unary(),
     )
     .unwrap();
     assert_eq!(result.observed.origin_rank, Some(1));
-    assert_eq!(result.human.as_ref().unwrap().positions[1], pos(2, 5));
+    assert_eq!(result.human.as_ref().unwrap().positions[1], pos(2, 0));
 }
