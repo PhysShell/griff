@@ -1,6 +1,6 @@
 # Legato into chord targets — preregistered feasibility oracle
 
-Date: 2026-09-22  
+Date: 2026-09-22
 Status: preregistered before the corpus outcome
 
 ## Question and population
