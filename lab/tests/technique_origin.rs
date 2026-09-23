@@ -6,7 +6,7 @@ use griff_constraint_lab::{
         BlindOriginProblem, HandEstimate, IntentAwareOriginProblem, ObservedOriginRealization,
         OriginIdentity, OriginStringEstimate, TechniqueIntent,
     },
-    ties::Chain,
+    ties::{lexicographic_path, Chain, Features, FEATURES},
 };
 use griff_core::{
     event::{FretboardPosition, Pitch, Tuning},
@@ -19,6 +19,54 @@ fn weights() -> FingeringWeights {
         open_string: -3,
         position_shift: 1,
         string_change: 0,
+    }
+}
+
+#[test]
+fn restricted_full_chain_dp_not_canonical_ambiguous_representative() {
+    let chain = Chain::v1(
+        &[Pitch(59), Pitch(64), Pitch(59)],
+        &Tuning::standard_e(),
+        &FingeringWeights {
+            fret: 0,
+            open_string: 0,
+            position_shift: 1,
+            string_change: 0,
+        },
+        24,
+    )
+    .unwrap();
+    let profile = conditioned_profile(&chain, 1);
+    let allowed: Vec<_> = profile
+        .entries()
+        .iter()
+        .filter(|entry| entry.delta() == 0)
+        .map(|entry| entry.string())
+        .collect();
+    let restricted = chain.restrict_note_strings(1, &allowed).unwrap();
+    let weights: Features = [0; FEATURES];
+    let path = lexicographic_path(&restricted, &weights, None);
+    let selected = restricted.positions_of(&path).unwrap()[1].string;
+    assert!(allowed.len() > 1);
+    assert_ne!(selected, allowed[0]);
+}
+
+#[test]
+fn reported_restricted_string_matches_actual_dp() {
+    let chain = Chain::v1(
+        &[Pitch(59), Pitch(64), Pitch(67), Pitch(59)],
+        &Tuning::standard_e(),
+        &weights(),
+        24,
+    )
+    .unwrap();
+    for allowed in [vec![1, 2], vec![2, 3, 4], vec![1, 3, 5]] {
+        let Some(restricted) = chain.clone().restrict_note_strings(1, &allowed) else {
+            continue;
+        };
+        let path = lexicographic_path(&restricted, &[0; FEATURES], None);
+        let selected = restricted.positions_of(&path).unwrap()[1].string;
+        assert!(allowed.contains(&selected));
     }
 }
 
