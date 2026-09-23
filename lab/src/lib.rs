@@ -19,6 +19,7 @@
 
 pub mod chord;
 pub mod chord_context;
+pub mod chord_event;
 pub mod emit;
 pub mod fingering;
 pub mod forensics;
