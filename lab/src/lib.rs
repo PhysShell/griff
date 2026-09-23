@@ -30,4 +30,5 @@ pub mod optir;
 pub mod problems;
 pub mod solve;
 pub mod technique;
+pub mod technique_origin;
 pub mod ties;

@@ -3,8 +3,8 @@
 use griff_constraint_lab::{
     technique_origin::{
         conditioned_profile, estimate_primary, estimate_with_hand, technique_feasible_strings,
-        BlindOriginProblem, HandEstimate, IntentAwareOriginProblem, OriginIdentity,
-        OriginStringEstimate, ObservedOriginRealization, TechniqueIntent,
+        BlindOriginProblem, HandEstimate, IntentAwareOriginProblem, ObservedOriginRealization,
+        OriginIdentity, OriginStringEstimate, TechniqueIntent,
     },
     ties::Chain,
 };
@@ -28,7 +28,7 @@ fn identity() -> OriginIdentity {
 
 #[test]
 fn estimator_inputs_are_structurally_separate_from_labels() {
-    let blind = BlindOriginProblem::new(identity(), Tuning::standard(), 24, Pitch(64));
+    let blind = BlindOriginProblem::new(identity(), &Tuning::standard_e(), 24, Pitch(64));
     let label = ObservedOriginRealization::new(FretboardPosition { string: 1, fret: 5 });
     let blind_json = serde_json::to_value(&blind).unwrap();
     assert!(blind_json.get("origin_string").is_none());
@@ -41,7 +41,7 @@ fn estimator_inputs_are_structurally_separate_from_labels() {
 fn intent_exposes_target_score_identity_but_not_realization() {
     let intent = TechniqueIntent::new(23, Pitch(67), 960);
     let problem = IntentAwareOriginProblem::new(
-        BlindOriginProblem::new(identity(), Tuning::standard(), 24, Pitch(64)),
+        BlindOriginProblem::new(identity(), &Tuning::standard_e(), 24, Pitch(64)),
         intent,
     );
     let json = serde_json::to_value(&problem).unwrap();
@@ -55,17 +55,14 @@ fn intent_exposes_target_score_identity_but_not_realization() {
 fn conditioned_profile_matches_brute_force_costs() {
     let chain = Chain::v1(
         &[Pitch(64), Pitch(67), Pitch(69)],
-        &Tuning::standard(),
+        &Tuning::standard_e(),
         &weights(),
         24,
     )
     .unwrap();
     let profile = conditioned_profile(&chain, 1);
     for entry in profile.entries() {
-        let conditioned = chain
-            .clone()
-            .condition_string(1, entry.string())
-            .unwrap();
+        let conditioned = chain.clone().condition_string(1, entry.string()).unwrap();
         let mut best = i64::MAX;
         for a in 0..conditioned.candidates(0).len() {
             for b in 0..conditioned.candidates(1).len() {
@@ -82,7 +79,7 @@ fn conditioned_profile_matches_brute_force_costs() {
 fn dense_rank_and_positive_delta_are_explicit() {
     let chain = Chain::v1(
         &[Pitch(64), Pitch(76)],
-        &Tuning::standard(),
+        &Tuning::standard_e(),
         &FingeringWeights {
             fret: 1,
             open_string: 0,
@@ -101,7 +98,7 @@ fn dense_rank_and_positive_delta_are_explicit() {
 fn equivalent_primary_strings_remain_ambiguous() {
     let chain = Chain::v1(
         &[Pitch(64)],
-        &Tuning::standard(),
+        &Tuning::standard_e(),
         &FingeringWeights {
             fret: 0,
             open_string: 0,
@@ -118,22 +115,16 @@ fn equivalent_primary_strings_remain_ambiguous() {
 
 #[test]
 fn unique_primary_string_is_known() {
-    let chain = Chain::v1(
-        &[Pitch(40)],
-        &Tuning::standard(),
-        &weights(),
-        24,
-    )
-    .unwrap();
+    let chain = Chain::v1(&[Pitch(40)], &Tuning::standard_e(), &weights(), 24).unwrap();
     assert_eq!(
         estimate_primary(&conditioned_profile(&chain, 0), None),
-        OriginStringEstimate::Known { string: 0 }
+        OriginStringEstimate::Known { string: 6 }
     );
 }
 
 #[test]
 fn technique_feasibility_uses_pitches_not_target_realization() {
-    let tuning = Tuning::standard();
+    let tuning = Tuning::standard_e();
     let strings = technique_feasible_strings(&tuning, 12, Pitch(64), Pitch(76));
     assert!(strings.iter().all(|&string| {
         tuning
@@ -150,7 +141,7 @@ fn technique_feasibility_uses_pitches_not_target_realization() {
 
 #[test]
 fn target_unreachable_string_is_removed() {
-    let tuning = Tuning::standard();
+    let tuning = Tuning::standard_e();
     let origin: Vec<_> = tuning
         .candidates(Pitch(64), 12)
         .into_iter()
@@ -164,7 +155,7 @@ fn target_unreachable_string_is_removed() {
 fn known_hand_breaks_only_primary_ties_lexicographically() {
     let chain = Chain::v1(
         &[Pitch(64)],
-        &Tuning::standard(),
+        &Tuning::standard_e(),
         &FingeringWeights {
             fret: 0,
             open_string: 0,
@@ -176,14 +167,14 @@ fn known_hand_breaks_only_primary_ties_lexicographically() {
     .unwrap();
     let profile = conditioned_profile(&chain, 0);
     let estimate = estimate_with_hand(&profile, None, HandEstimate::Known(5));
-    assert_eq!(estimate, OriginStringEstimate::Known { string: 1 });
+    assert_eq!(estimate, OriginStringEstimate::Known { string: 2 });
 }
 
 #[test]
 fn unknown_hand_does_not_become_zero_or_absent() {
     let chain = Chain::v1(
         &[Pitch(64)],
-        &Tuning::standard(),
+        &Tuning::standard_e(),
         &FingeringWeights {
             fret: 0,
             open_string: 0,
@@ -205,7 +196,7 @@ fn unknown_hand_does_not_become_zero_or_absent() {
 fn allowed_domain_is_sorted_and_permutation_stable() {
     let chain = Chain::v1(
         &[Pitch(64)],
-        &Tuning::standard(),
+        &Tuning::standard_e(),
         &FingeringWeights {
             fret: 0,
             open_string: 0,
