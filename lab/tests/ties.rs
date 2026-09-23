@@ -495,6 +495,23 @@ fn anchor_distance_sums_fretted_distance_to_the_anchor() {
 }
 
 #[test]
+fn conditioning_one_note_to_a_string_preserves_other_states() {
+    let chain = Chain::v1(
+        &[Pitch(64), Pitch(67)],
+        &Tuning::standard_e(),
+        &FingeringWeights::v1(),
+        24,
+    )
+    .unwrap();
+    let conditioned = chain.condition_string(0, 2).unwrap();
+    assert!(conditioned
+        .candidates(0)
+        .iter()
+        .all(|position| position.string == 2));
+    assert_eq!(conditioned.candidates(1), chain.candidates(1));
+}
+
+#[test]
 fn anchored_lexicographic_path_is_secondary_optimal() {
     let tuning = Tuning::standard_e();
     let mut secondary: Features = [0; FEATURES];
