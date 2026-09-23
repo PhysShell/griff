@@ -4661,7 +4661,7 @@ fn causal_boundary_replay(
         let transported = decode_context(&bytes).map_err(std::io::Error::other)?;
         let consumed = consume_for_line(transported, &voice, &line.tab.note_ids)
             .map_err(std::io::Error::other)?;
-        let transport_equal = direct == consumed;
+        let mut transport_equal = direct == consumed;
         if !transport_equal {
             return Err(std::io::Error::other(
                 "serialized transport changed consumption",
@@ -4674,6 +4674,9 @@ fn causal_boundary_replay(
             STANDARD_MAX_FRET,
         )
         .map_err(std::io::Error::other)?;
+        let direct_conditioned =
+            condition_consumer_chain(base.clone(), &line.tab.note_ids, &direct)
+                .map_err(std::io::Error::other)?;
         let conditioned = condition_consumer_chain(base, &line.tab.note_ids, &consumed)
             .map_err(std::io::Error::other)?;
         let anchor = match consumed.anchor_fret() {
@@ -4683,6 +4686,26 @@ fn causal_boundary_replay(
         };
         let chain = conditioned.with_anchor(anchor);
         let secondary = anchor.map(|_| &anchor_features);
+        let direct_anchor = match direct.anchor_fret() {
+            Ok(value) => value,
+            Err(griff_constraint_lab::boundary_context::BoundaryContextError::UnknownHand) => None,
+            Err(error) => return Err(std::io::Error::other(error)),
+        };
+        let direct_chain = direct_conditioned.with_anchor(direct_anchor);
+        let zero = [0; FEATURES];
+        let direct_path = lexicographic_path(
+            &direct_chain,
+            direct_anchor.map_or(&zero, |_| &anchor_features),
+            None,
+        );
+        let transported_path = lexicographic_path(&chain, secondary.unwrap_or(&zero), None);
+        transport_equal &=
+            direct_chain.positions_of(&direct_path) == chain.positions_of(&transported_path);
+        if !transport_equal {
+            return Err(std::io::Error::other(
+                "serialized transport changed causal replay",
+            ));
+        }
         for obligation in consumed.consumed() {
             let target = line
                 .tab
@@ -4710,8 +4733,7 @@ fn causal_boundary_replay(
                 },
             );
         }
-        let zero = [0; FEATURES];
-        let path = lexicographic_path(&chain, secondary.unwrap_or(&zero), None);
+        let path = transported_path;
         let positions = chain
             .positions_of(&path)
             .ok_or_else(|| std::io::Error::other("causal path is ragged"))?;
