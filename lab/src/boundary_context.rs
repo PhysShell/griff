@@ -288,6 +288,26 @@ pub enum BoundaryContextError {
     Encoding(String),
 }
 
+fn canonicalize_pending(
+    mut pending: Vec<PendingTechniqueObligation>,
+) -> Result<Vec<PendingTechniqueObligation>, BoundaryContextError> {
+    pending.sort_unstable();
+    pending.dedup();
+    let mut required_by_target = BTreeMap::new();
+    for obligation in &pending {
+        if let Some(required) =
+            required_by_target.insert(obligation.target_note_id, obligation.required_string)
+        {
+            if required != obligation.required_string {
+                return Err(BoundaryContextError::ConflictingObligation(
+                    obligation.target_note_id,
+                ));
+            }
+        }
+    }
+    Ok(pending)
+}
+
 /// Produces outgoing state using only a completed prefix and projected ids.
 ///
 /// # Errors
@@ -327,23 +347,7 @@ pub fn produce_context(
             kind: relation.kind,
         });
     }
-    pending.sort_unstable();
-    let mut canonical: Vec<PendingTechniqueObligation> = Vec::with_capacity(pending.len());
-    for obligation in pending {
-        if let Some(existing) = canonical.last() {
-            if existing == &obligation {
-                continue;
-            }
-            if existing.target_note_id == obligation.target_note_id
-                && existing.origin_note_id == obligation.origin_note_id
-            {
-                return Err(BoundaryContextError::ConflictingObligation(
-                    obligation.target_note_id,
-                ));
-            }
-        }
-        canonical.push(obligation);
-    }
+    let canonical = canonicalize_pending(pending)?;
     Ok(BoundaryContext {
         voice: previous.voice.clone(),
         hand,
@@ -431,7 +435,6 @@ pub fn encode_context(context: &BoundaryContext) -> Result<Vec<u8>, BoundaryCont
 pub fn decode_context(bytes: &[u8]) -> Result<BoundaryContext, BoundaryContextError> {
     let mut context: BoundaryContext = serde_json::from_slice(bytes)
         .map_err(|error| BoundaryContextError::Encoding(error.to_string()))?;
-    context.pending.sort_unstable();
-    context.pending.dedup();
+    context.pending = canonicalize_pending(context.pending)?;
     Ok(context)
 }

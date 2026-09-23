@@ -185,7 +185,13 @@ fn decoder_rejects_conflicting_strings_for_one_stable_target() {
     let mut compatible = pending[0].clone();
     compatible["origin_note_id"] = serde_json::json!(11);
     pending.push(compatible);
-    assert_eq!(decode_context(&serde_json::to_vec(&value).unwrap()).unwrap().pending().len(), 2);
+    assert_eq!(
+        decode_context(&serde_json::to_vec(&value).unwrap())
+            .unwrap()
+            .pending()
+            .len(),
+        2
+    );
 
     value["pending"][1]["required_string"] = serde_json::json!(3);
     assert_eq!(

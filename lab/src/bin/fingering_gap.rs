@@ -4520,6 +4520,10 @@ struct BoundaryReplayRecord {
     causal_anchor_fret: Option<u8>,
     causal_matches_oracle_context: bool,
     causal_transport_equal: bool,
+    partition_imported: BoundaryRegimeRecord,
+    partition_required_string: u8,
+    partition_anchor_fret: Option<u8>,
+    partition_transport_equal: bool,
 }
 
 struct CausalReplay {
@@ -4614,6 +4618,12 @@ struct BoundaryReplaySummary {
     causal_transport_equal: usize,
     causal_whole_better_equal_worse: [usize; 3],
     causal_non_target_better_equal_worse: [usize; 3],
+    partition_string_matches_full: usize,
+    partition_anchor_matches_full: usize,
+    partition_context_matches_full: usize,
+    causal_string_matches_partition: usize,
+    causal_anchor_matches_partition: usize,
+    causal_context_matches_partition: usize,
     within_line_relations: u64,
     cross_line_relations: u64,
 }
@@ -4626,9 +4636,10 @@ fn boundary_kind(kind: TechniqueKind) -> griff_constraint_lab::boundary_context:
     }
 }
 
-fn causal_boundary_replay(
+fn partition_boundary_replay(
     corpus: &Corpus,
     weights: &FingeringWeights,
+    imported_positions: bool,
 ) -> std::io::Result<CausalReplayMap> {
     let mut order: Vec<usize> = (0..corpus.lines.len()).collect();
     order.sort_by_key(|&index| {
@@ -4733,10 +4744,13 @@ fn causal_boundary_replay(
                 },
             );
         }
-        let path = transported_path;
-        let positions = chain
-            .positions_of(&path)
-            .ok_or_else(|| std::io::Error::other("causal path is ragged"))?;
+        let positions = if imported_positions {
+            line.tab.human.clone()
+        } else {
+            chain
+                .positions_of(&transported_path)
+                .ok_or_else(|| std::io::Error::other("causal path is ragged"))?
+        };
         let solved = SolvedPartition::new(
             voice,
             line.tab
@@ -4821,7 +4835,8 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
         position_shift: 1,
         string_change: 0,
     };
-    let mut causal = causal_boundary_replay(corpus, &weights)?;
+    let mut partition_imported = partition_boundary_replay(corpus, &weights, true)?;
+    let mut causal = partition_boundary_replay(corpus, &weights, false)?;
     let mut records = Vec::new();
     for origin in &corpus.lines {
         for edge in &origin.tab.cross_line_edges {
@@ -4909,6 +4924,16 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
                     edge.target.note_id,
                 ))
                 .ok_or_else(|| std::io::Error::other("causal obligation was not consumed"))?;
+            let partition_replay = partition_imported
+                .remove(&(
+                    origin.file,
+                    origin.tab.track,
+                    origin.tab.voice,
+                    edge.target.note_id,
+                ))
+                .ok_or_else(|| {
+                    std::io::Error::other("partition-imported obligation was not consumed")
+                })?;
             let causal_matches_oracle_context = causal_replay.required_string == origin_string
                 && causal_replay.anchor_fret == target_line.tab.anchor_fret;
             records.push(BoundaryReplayRecord {
@@ -4933,6 +4958,10 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
                 causal_anchor_fret: causal_replay.anchor_fret,
                 causal_matches_oracle_context,
                 causal_transport_equal: causal_replay.transport_equal,
+                partition_imported: partition_replay.regime,
+                partition_required_string: partition_replay.required_string,
+                partition_anchor_fret: partition_replay.anchor_fret,
+                partition_transport_equal: partition_replay.transport_equal,
             });
         }
     }
@@ -5087,6 +5116,36 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
             .count(),
         causal_whole_better_equal_worse: causal_whole,
         causal_non_target_better_equal_worse: causal_non_target,
+        partition_string_matches_full: records
+            .iter()
+            .filter(|record| record.partition_required_string == record.origin_string)
+            .count(),
+        partition_anchor_matches_full: records
+            .iter()
+            .filter(|record| record.partition_anchor_fret == record.anchor_fret)
+            .count(),
+        partition_context_matches_full: records
+            .iter()
+            .filter(|record| {
+                record.partition_required_string == record.origin_string
+                    && record.partition_anchor_fret == record.anchor_fret
+            })
+            .count(),
+        causal_string_matches_partition: records
+            .iter()
+            .filter(|record| record.causal_required_string == record.partition_required_string)
+            .count(),
+        causal_anchor_matches_partition: records
+            .iter()
+            .filter(|record| record.causal_anchor_fret == record.partition_anchor_fret)
+            .count(),
+        causal_context_matches_partition: records
+            .iter()
+            .filter(|record| {
+                record.causal_required_string == record.partition_required_string
+                    && record.causal_anchor_fret == record.partition_anchor_fret
+            })
+            .count(),
         within_line_relations: 29_758,
         cross_line_relations: corpus.facts.cut_stats.cross_line_legato,
     };
