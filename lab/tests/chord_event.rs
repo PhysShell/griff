@@ -5,7 +5,7 @@
 )]
 
 use griff_constraint_lab::chord_event::{
-    analyze_regimes, chord_event_census, rotate_anchors_within_song, ChordEventAtom,
+    analyze_regimes, causal_anchor_controls, chord_event_census, ChordEventAtom,
     ChordEventIdentity, ChordEventProblem, HandAnchor, IncomingTechnique, ObservedAtomPosition,
     ObservedChordVoicing, TechniqueKind,
 };
@@ -161,7 +161,7 @@ fn duplicate_pitch_agreement_uses_atom_identity() {
 }
 
 #[test]
-fn rotated_anchor_control_is_deterministic_and_never_self_assigns() {
+fn causal_anchor_controls_are_past_only_and_never_wrap() {
     let rows = vec![
         (
             identity(100),
@@ -188,13 +188,49 @@ fn rotated_anchor_control_is_deterministic_and_never_self_assigns() {
             },
         ),
     ];
-    let rotated = rotate_anchors_within_song(&rows);
-    assert_eq!(rotated.len(), 3);
-    for ((event, anchor), replacement) in rows.iter().zip(&rotated) {
-        assert_eq!(&replacement.0, event);
-        assert_ne!(replacement.1, *anchor);
-    }
-    assert_eq!(rotated, rotate_anchors_within_song(&rows));
+    let previous = causal_anchor_controls(&rows, 1);
+    assert_eq!(previous.len(), 2);
+    assert_eq!(previous[0], (identity(200), rows[0].1));
+    assert_eq!(previous[1], (identity(300), rows[1].1));
+
+    let lag_two = causal_anchor_controls(&rows, 2);
+    assert_eq!(lag_two, vec![(identity(300), rows[0].1)]);
+    assert!(previous
+        .iter()
+        .all(|(event, anchor)| anchor.onset < event.onset));
+}
+
+#[test]
+fn causal_anchor_controls_reject_same_provenance_and_other_voice() {
+    let mut other_voice = identity(150);
+    other_voice.voice = 1;
+    let rows = vec![
+        (
+            identity(100),
+            HandAnchor {
+                fret: 3,
+                onset: 80,
+                source_note_id: Some(1),
+            },
+        ),
+        (
+            other_voice,
+            HandAnchor {
+                fret: 5,
+                onset: 120,
+                source_note_id: Some(7),
+            },
+        ),
+        (
+            identity(200),
+            HandAnchor {
+                fret: 7,
+                onset: 80,
+                source_note_id: Some(1),
+            },
+        ),
+    ];
+    assert!(causal_anchor_controls(&rows, 1).is_empty());
 }
 
 fn imported_note(onset: u32, pitch: u8, string: u8, fret: u8, tapped: bool) -> AtomEvent {

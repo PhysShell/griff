@@ -128,6 +128,41 @@ hard-rule layer, experiment production variants, CLI/cockpit, ADR status or
 constraint-inventory classification.  It adds no learned weights, neural model,
 MiniZinc or runtime solver.
 
+## Methodological correction registered before rerun
+
+Review after the first corpus run found that the registered cyclic anchor
+rotation is not causal. An event received the anchor recorded for the next
+eligible event, which can have been established by the event under evaluation
+or by another intervening future event. The first anchor verdict is therefore
+withdrawn as **inconclusive**; its numbers remain below as an audit trail, but
+they cannot support either a local-state or a song-register interpretation.
+
+Before inspecting a corrected rerun, the replacement controls are frozen
+within the same `source + track + voice`, sorted by stable event identity:
+
+- **C1 previous-event stale anchor:** use the anchor recorded for the previous
+  eligible event only when its provenance onset is strictly before the current
+  event and its `(onset, source_note_id)` provenance differs from the true
+  anchor.
+- **C2 lag-two distant-past anchor:** apply the same rules to the event exactly
+  two eligible rows earlier.
+
+Neither control wraps. Missing or invalid candidates are unavailable rather
+than substituted. True anchors are compared independently with C1 and C2 by
+the same A-minimum membership and uniform-agreement metrics, including song
+and leave-one-song-out summaries.
+
+The technique evidence rule is also strengthened before rerun. For every
+incoming target, each legal target string is solved while all other incoming
+requirements remain fixed. Each feasible condition records whole-chord
+membership, uniform agreement on atoms not targeted by any incoming relation,
+and B0-optimal non-target agreement. The observed string is ranked among all
+legal strings and compared with the mean, median and best feasible alternative.
+Assignment-count reduction remains descriptive only. A predictive technique
+claim now requires the observed string to outperform alternatives on the
+independent non-target metric across song keys and leave-one-song-out folds;
+otherwise technique is retained only as feasible narrowing metadata.
+
 The final run must retain 29,758 within-line and 46 cross-line relations and
 Stage 2 B/C1/D1 `0.9/13.3/16.8%` with gaps `19.1/7.6/4.2` points.  Any drift is
 a blocker until explained.
