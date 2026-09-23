@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use griff_core::event::{FretboardPosition, Pitch, Tuning};
 use serde::{Deserialize, Serialize};
 
-use crate::ties::{lexicographic_path, optimum_set, Chain, Features, FEATURES};
+use crate::ties::{lexicographic_path, optimum_set, Chain, FEATURES};
 
 /// Stable identity of one projected origin/target relation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -297,20 +297,28 @@ pub fn estimate_with_hand(
 /// The actual full-chain deterministic origin string after a transparent
 /// domain restriction and optional hand secondary. This is solver behavior,
 /// deliberately separate from [`OriginStringEstimate`] certainty.
+///
+/// `profile` must be [`conditioned_profile`] of `chain` at `note`: it supplies
+/// the registered origin-local hand secondary (`abs(origin_fret(s) - h)`, via
+/// [`estimate_with_hand`]), never [`Chain::with_anchor`]'s whole-chain
+/// `anchor_distance` feature, which charges every fretted note on the path and
+/// so is not this quantity. Any remaining tie (equal primary cost and, when
+/// the hand is known, equal hand distance) is broken by the actual zero-
+/// secondary full-chain DP over the surviving strings, the same tie-break the
+/// production solver uses.
 #[must_use]
 pub fn deterministic_restricted_string(
     chain: &Chain,
     note: usize,
+    profile: &OriginStringProfile,
     allowed: &[u8],
     hand: HandEstimate,
 ) -> Option<u8> {
-    let mut restricted = chain.clone().restrict_note_strings(note, allowed)?;
-    let mut secondary: Features = [0; FEATURES];
-    if let HandEstimate::Known(anchor) = hand {
-        restricted = restricted.with_anchor(Some(anchor));
-        secondary[FEATURES - 1] = 1;
-    }
-    let path = lexicographic_path(&restricted, &secondary, None);
+    let survivors = estimate_with_hand(profile, Some(allowed), hand);
+    let restricted = chain
+        .clone()
+        .restrict_note_strings(note, survivors.strings())?;
+    let path = lexicographic_path(&restricted, &[0; FEATURES], None);
     restricted
         .positions_of(&path)?
         .get(note)

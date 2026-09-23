@@ -5779,6 +5779,7 @@ fn technique_origin_state(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
                 deterministic_restricted_string(
                     &chain,
                     relation.from,
+                    &joint_profile,
                     &joint_allowed,
                     HandEstimate::Unknown,
                 ),
@@ -5821,6 +5822,7 @@ fn technique_origin_state(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
                 deterministic_restricted_string(
                     &base,
                     relation.from,
+                    &profile,
                     &allowed,
                     HandEstimate::Unknown,
                 ),
@@ -5828,12 +5830,12 @@ fn technique_origin_state(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
                 imported.string,
             ),
             intent_t_hp: regime_record(
-                deterministic_restricted_string(&base, relation.from, &allowed, p),
+                deterministic_restricted_string(&base, relation.from, &profile, &allowed, p),
                 hp_estimate,
                 imported.string,
             ),
             intent_t_hc: regime_record(
-                deterministic_restricted_string(&base, relation.from, &allowed, c),
+                deterministic_restricted_string(&base, relation.from, &profile, &allowed, c),
                 hc_estimate,
                 imported.string,
             ),

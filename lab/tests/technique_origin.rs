@@ -59,6 +59,7 @@ fn restricted_reporting_matches_full_chain_dp_on_generated_ties() {
                     deterministic_restricted_string(
                         &restricted,
                         1,
+                        &profile,
                         &allowed,
                         HandEstimate::Unknown
                     ),
@@ -87,6 +88,147 @@ fn reported_restricted_string_matches_actual_dp() {
         let selected = restricted.positions_of(&path).unwrap()[1].string;
         assert!(allowed.contains(&selected));
     }
+}
+
+/// Ground truth for [`deterministic_restricted_string`] on a 3-note chain,
+/// independent of [`conditioned_profile`]/[`estimate_with_hand`]/
+/// [`Chain::restrict_note_strings`]: brute forces every path, keeping only
+/// those whose `note` string is in `allowed`, and returns the `note` string of
+/// the one minimizing `(primary cost, hand distance at note)` lexicographically
+/// — the registered `abs(origin_fret(s) - h)` secondary, charged once, only at
+/// `note`. Remaining ties keep the lowest candidate-index path, matching
+/// ascending enumeration order.
+type BruteForceKey = (i64, u8, [usize; 3]);
+
+fn brute_force_deterministic_string(
+    chain: &Chain,
+    note: usize,
+    allowed: &[u8],
+    hand: HandEstimate,
+) -> Option<u8> {
+    assert_eq!(chain.len(), 3, "brute force helper assumes a 3-note chain");
+    let mut best: Option<BruteForceKey> = None;
+    for a in 0..chain.candidates(0).len() {
+        for b in 0..chain.candidates(1).len() {
+            for c in 0..chain.candidates(2).len() {
+                let path = [a, b, c];
+                let positions = chain.positions_of(&path).unwrap();
+                if !allowed.contains(&positions[note].string) {
+                    continue;
+                }
+                let cost = chain.cost(&path).unwrap();
+                let hand_cost = match hand {
+                    HandEstimate::Known(anchor) => positions[note].fret.abs_diff(anchor),
+                    HandEstimate::Unknown | HandEstimate::Absent => 0,
+                };
+                if best.is_none_or(|(bc, bh, _)| (cost, hand_cost) < (bc, bh)) {
+                    best = Some((cost, hand_cost, path));
+                }
+            }
+        }
+    }
+    best.map(|(_, _, path)| chain.positions_of(&path).unwrap()[note].string)
+}
+
+/// Differential coverage of [`deterministic_restricted_string`] with a known
+/// hand anchor, over many generated 3-note chains: the bug class the generated
+/// `HandEstimate::Unknown` sweep above cannot reach, since it never exercises
+/// the `with_anchor` branch.
+#[test]
+fn deterministic_restricted_string_matches_brute_force_with_known_hand() {
+    let tuning = Tuning::standard_e();
+    let production_weights = FingeringWeights {
+        fret: 0,
+        open_string: -3,
+        position_shift: 1,
+        string_change: 0,
+    };
+    let mut checked = 0;
+    for first in (40..=76).step_by(9) {
+        for origin in 40..=76 {
+            for last in (40..=76).step_by(9) {
+                let chain = Chain::v1(
+                    &[Pitch(first), Pitch(origin), Pitch(last)],
+                    &tuning,
+                    &production_weights,
+                    24,
+                )
+                .unwrap();
+                let profile = conditioned_profile(&chain, 1);
+                let allowed: Vec<_> = profile
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.string())
+                    .collect();
+                if allowed.len() < 2 {
+                    continue;
+                }
+                for anchor in [0_u8, 5, 10, 17] {
+                    let hand = HandEstimate::Known(anchor);
+                    checked += 1;
+                    assert_eq!(
+                        deterministic_restricted_string(&chain, 1, &profile, &allowed, hand),
+                        brute_force_deterministic_string(&chain, 1, &allowed, hand),
+                        "first={first} origin={origin} last={last} anchor={anchor}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked > 1_000);
+}
+
+/// The reviewed regression: an open neighboring note must not out-vote the
+/// origin-local hand distance. `[40, 60, 64]` gives the origin note (pitch 60,
+/// index one) two technique-domain (strings 2-6) primary-optimal paths,
+/// through origin string 3 and through origin string 2 via the target's open
+/// string-1 candidate. The registered secondary is `abs(origin_fret(s) - h)`,
+/// evaluated only at the origin; it must not become the whole path's summed
+/// `anchor_distance`, which charges the target note too and lets its open
+/// (zero-distance) candidate win regardless of the origin's own distance from
+/// the anchor.
+#[test]
+fn known_hand_ignores_anchor_distance_at_an_open_neighbor() {
+    let tuning = Tuning::standard_e();
+    let production_weights = FingeringWeights {
+        fret: 0,
+        open_string: -3,
+        position_shift: 1,
+        string_change: 0,
+    };
+    let chain = Chain::v1(
+        &[Pitch(40), Pitch(60), Pitch(64)],
+        &tuning,
+        &production_weights,
+        24,
+    )
+    .unwrap();
+    let allowed = vec![2, 3, 4, 5, 6];
+    let profile = conditioned_profile(&chain, 1);
+    let min_cost = profile
+        .entries()
+        .iter()
+        .filter(|entry| allowed.contains(&entry.string()))
+        .map(|entry| entry.cost())
+        .min()
+        .unwrap();
+    let tied = profile
+        .entries()
+        .iter()
+        .filter(|entry| allowed.contains(&entry.string()) && entry.cost() == min_cost)
+        .count();
+    assert!(
+        tied >= 2,
+        "fixture must exercise a genuine origin-string tie, found {tied}"
+    );
+
+    let hand = HandEstimate::Known(10);
+    let expected = brute_force_deterministic_string(&chain, 1, &allowed, hand);
+    assert_eq!(
+        deterministic_restricted_string(&chain, 1, &profile, &allowed, hand),
+        expected
+    );
+    assert_eq!(expected, Some(3));
 }
 
 fn identity() -> OriginIdentity {
