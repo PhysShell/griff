@@ -132,3 +132,180 @@ The final run must retain 29,758 within-line and 46 cross-line relations and
 Stage 2 B/C1/D1 `0.9/13.3/16.8%` with gaps `19.1/7.6/4.2` points.  Any drift is
 a blocker until explained.
 
+## Corpus result
+
+The registered runner was executed over the unchanged 410-file corpus
+(fingerprint `9e53e55a19cddf29`; 3 import failures; 1,149 selected guitar
+tracks).  Full licensed-corpus records remain in the disposable output
+directory.  The legacy compatibility command ran first and the general runner
+refused to proceed until its summary passed.
+
+### Population and typed refusals
+
+The census contains exactly 289,130 chord onsets, independently reproducing
+the existing `CutStats.chord_onsets` count:
+
+| status | onsets |
+|---|---:|
+| `CompleteExplicit` | 281,520 |
+| `IncompletePosition` | 134 |
+| `PitchMismatch` | 0 |
+| `DuplicateExplicitString` | 6,166 |
+| `BeyondMaxFret` | 1,310 |
+| `OtherUnsupported` | 0 |
+
+No refusal was normalized into the primary population.  Complete observations
+span chord sizes 2 / 3 / 4 / 5+ as `98,558 / 124,662 / 40,676 / 17,624` and
+GP3–5 / GP6–7 as `183,917 / 97,603`.
+
+Coverage inside the 281,520 primary observations is:
+
+```text
+preceding anchor       280,799
+incoming technique       1,020
+both                     1,020
+```
+
+### R0 — chord only and frozen B0
+
+Every complete imported voicing is assignment-feasible (`281,520/281,520`).
+R0's admissible-set size has median 16; the largest exact set has 336
+assignments.  Frozen unary B0 has median optimum-set size 1 and contains the
+imported whole chord in 87,635 cases (31.1%).  This is the general-population
+version of #209's conclusion: pitch/string feasibility is broad, while the
+context-free unary surrogate explains only a minority of imported voicings.
+
+### R1 — anchor and its registered negative control
+
+Against the R0 B0-optimum set on 280,799 anchored chords, the true anchor's
+A-minimum set gives:
+
+```text
+uniform agreement: mean delta +0.3750
+improved / same / worsened: 173,195 / 100,312 / 7,292
+human-membership delta: +117,640
+A-minimum median set size: 1
+song keys with positive / negative aggregate: 252 / 0
+```
+
+Its imported-voicing membership is 204,923 cases (73.0% of anchored chords).
+All leave-one-song-out aggregates retain a positive sign against B0: summed
+uniform delta `103,365.04 … 105,303.27` and membership delta
+`+114,938 … +117,646`.
+
+However, the preregistered within-song rotated-anchor control falsifies the
+local-state interpretation.  Among 280,798 control-eligible events:
+
+```text
+true better / equal / worse than rotated: 8,489 / 248,464 / 23,845
+mean uniform delta (true - rotated): -0.0341
+human-membership delta: -13,652
+song keys positive / negative: 7 / 245
+```
+
+Every leave-one-song-out control aggregate remains negative: summed uniform
+delta `-9,568.77 … -9,167.96`, membership delta
+`-13,665 … -13,114`.  A fret drawn from the next eligible chord in the same
+song predicts the imported A-minimum set better than the actual local anchor.
+Therefore the broad B0→A improvement cannot be claimed as evidence for local
+temporal hand state; it is consistent with song-level neck/register bias.
+
+### R2 — incoming technique
+
+There are 1,020 technique-bearing complete chords across 61 song keys.  The
+observed whole-chord realization remains feasible in `1,020/1,020`; there are
+no conflicting incoming requirements and no R2 infeasibilities.
+
+Incoming constraints reduce the complete admissible assignment count by a
+mean 65.3% and median 82.4%.  Fifty-five of 61 song keys have positive mean
+reduction and six have zero; none has a negative reduction.  The largest song
+contributes 113/1,020 cases.  Leaving out any one song keeps the case-weighted
+mean reduction between 63.0% and 73.4%, so no repeated phrase family creates
+the effect.
+
+For the 405 events with at least one atom not itself technique-constrained,
+non-target uniform agreement improves in 277, is unchanged in 127 and worsens
+in 1 (mean +0.0674); 35 song keys have positive aggregate and one negative.
+This diagnostic is not mechanically guaranteed by the target condition.
+
+The complete legal-string controls contain 6,910 conditions, of which 5,276
+are assignment-feasible.  They retain exact counts plus B0 and A minima.  The
+observed condition's own target agreement is deliberately not interpreted as
+independent validation.
+
+### R3 — incremental anchor primitive after technique
+
+On the 1,020 events carrying both channels, R3 changes uniform agreement over
+R2's B0-optimum set as follows:
+
+```text
+improved / same / worsened: 212 / 756 / 52
+mean uniform delta: +0.0676
+human-membership delta: +156
+song keys positive / negative: 23 / 4
+```
+
+Every leave-one-song-out aggregate remains positive (summed uniform delta
+`+54.92 … +75.58`; membership `+124 … +160`).  Thus the A primitive adds
+information after technique in a descriptive exact-set comparison.  It does
+not rescue the semantic claim for *local* anchor state: the registered rotated
+control has already shown that this A signal is better explained by non-local
+within-song fret distribution.
+
+### Legacy cohort and exact-search cost
+
+The separate fail-closed compatibility artifact reproduces:
+
+```text
+38 cases
+176 legal target-string conditions
+174 feasible conditions
+B0 ranks 11 / 24 / 3
+O rank 1: 36 / 38
+A rank 1: 30 / 38
+```
+
+Exhaustive in-repo enumeration remained sufficient.  The maximum raw candidate
+product was 12,960, the maximum admissible set 336, and the full import,
+enumeration, controls and output pass took about 8.5 seconds in release mode.
+The slowest single event took below one millisecond in the final run.  No
+external solver, heuristic pruning or saturation occurred.
+
+## Verdict against the registered evidence rules
+
+1. **Anchor semantic state: not supported.**  It passes the B0 comparison,
+   song breadth and leave-one-song-out checks, and is not confined to the
+   legacy 38.  It fails the mandatory negative control decisively: the true
+   local anchor is worse than the within-song rotated anchor.  Per the
+   preregistration, no local-context claim is made.
+2. **Incoming technique state: supported as a Lab representation field.**  It
+   preserves all 1,020 imported whole chords, produces no conflicts, sharply
+   reduces exact ambiguity across 55 positively affected song keys, improves
+   non-target agreement where measurable, and survives every song omission.
+   This remains conditional on imported technique evidence and does not choose
+   a production constraint API.
+3. **Combined state: not supported as evidence for both channels.**  R3 adds a
+   positive exact-set effect beyond R2 across multiple songs, but its anchor
+   channel fails the required locality control.  The more minimal supported
+   representation is therefore chord atoms plus incoming technique; anchor is
+   retained only as a diagnostic primitive pending a better falsifiable state
+   definition.
+
+The answer to the core question is mixed but narrowing: chord atoms alone lose
+measurable technique information, while a single preceding fret does not yet
+qualify as local semantic state on this population.  `TabLine` may remain a
+computational partition, but imported incoming technique relations can cross
+that partition and materially reduce chord-assignment ambiguity.
+
+## Limitations and invariance
+
+Agreement uses one imported voicing, not unique ground truth.  Technique
+relations are observed labels; target equality is not independent validation.
+The anchor control preserves song identity and fret distribution but not every
+possible phrase/tuning covariate.  A is a primitive preference set, not a hand
+anatomy model.  The experiment does not establish a production API, objective,
+chord solver, `TabLine` change or global sequence model.
+
+The final independent reruns retain 29,758 within-line relations and 46
+cross-line relations.  Stage 2 remains B/C1/D1 `0.9 / 13.3 / 16.8%`, with
+gaps `19.1 / 7.6 / 4.2` points.  No production or Stage 2 behavior changed.
