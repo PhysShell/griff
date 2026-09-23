@@ -102,6 +102,36 @@ but does not invalidate #211/#212's measurement findings.
 Scope excludes production crates, public APIs, global graph solving, joined
 lines, fitted objectives and changes to `TabLine` slicing or projection.
 
+## Methodological amendment registered before rerun
+
+Review found that the first hand-fidelity comparison joined two effects.
+`TabLine::anchor_fret` is derived from the full imported voice, including
+onsets excluded from retained monophonic partitions, while causal production
+sees only solved retained partitions. Their tap-update semantics also differ.
+The first full-oracle `1/8` remains an observed end-to-end mismatch but is
+withdrawn as a pure objective-fidelity attribution.
+
+Before rerun, hand fidelity is decomposed into three frozen producers:
+
+- **F full-import oracle:** existing `target_line.tab.anchor_fret`;
+- **P partition-compatible imported replay:** the same retained partitions and
+  the same `produce_context`, supplied with imported human positions;
+- **C causal solver replay:** the same retained partitions and producer,
+  supplied with frozen `v1-fit` positions.
+
+`F == P` measures representation/partition loss. `P == C` is the registered
+solver-objective fidelity gate. F/P/C must use identical tap filtering,
+lifetime, serialization and consumer code after their position source enters
+the producer. Report string and hand comparisons separately; no threshold is
+chosen after outcome.
+
+The serialized-state gate is also strengthened. Producer and decoder must use
+one shared pending-obligation canonicalizer. Exact duplicates are deduplicated;
+multiple relations requiring the same string for one target are compatible;
+more than one distinct required string for one `target_note_id` is rejected by
+`decode_context` as `ConflictingObligation(target)` before consumer solving.
+A crafted-payload regression test is required.
+
 ## Corpus outcome
 
 The typed contract and adversarial tests were implemented before the corpus
