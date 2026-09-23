@@ -334,6 +334,75 @@ that partition and materially reduce chord-assignment ambiguity.
 
 ## Limitations and invariance
 
+## Corrected causal-control and alternative-string rerun
+
+The amended runner was executed on the same fingerprint before changing any
+model, objective or production code. Population, refusals, R0–R3, legacy
+compatibility and technique feasibility are unchanged. The corrected controls
+change both methodological conclusions.
+
+### Past-only anchor controls
+
+The true immediate anchor beats both strictly causal stale controls:
+
+| control | cases | better / equal / worse | mean uniform delta | membership delta | positive / negative song keys |
+|---|---:|---:|---:|---:|---:|
+| C1 previous eligible event | 260,048 | 20,568 / 230,247 / 9,233 | +0.0267 | +8,845 | 240 / 10 |
+| C2 fixed lag two | 266,399 | 32,525 / 221,629 / 12,245 | +0.0466 | +16,059 | 239 / 12 |
+
+There is no cyclic wrap and every replacement provenance onset is strictly
+earlier than the evaluated chord. Every leave-one-song-out aggregate remains
+positive: C1 summed uniform delta `+6,807.46 … +6,972.24`; C2
+`+12,137.25 … +12,477.72`. Thus the earlier negative rotated result was an
+artifact of future leakage. The corrected evidence supports immediate
+preceding hand state beyond generic recent or more distant track register.
+
+### Observed string against every legal alternative
+
+The 1,973 incoming targets yield 496 cases with measurable non-target
+agreement and 453 with at least one measurable alternative. Observed-string
+dense ranks among feasible legal strings are:
+
+```text
+rank 1 / 2 / 3 / 4: 399 / 73 / 20 / 4
+```
+
+Against the mean alternative, observed strings improve / tie / worsen in
+`336 / 105 / 12`, with mean delta `+0.1014`. Against the median the split is
+`303 / 140 / 10` (mean `+0.1198`); against the best alternative it is
+`110 / 246 / 97` (mean `+0.0217`). On the frozen B0-optimal non-target set,
+the observed-vs-mean split remains positive at `132 / 235 / 86`, mean
+`+0.0899`.
+
+The primary full-feasible-set comparison is positive in 35 song keys and
+negative in one. Every leave-one-song-out sum remains positive
+(`+30.65 … +45.96`). Therefore the observed technique string is not merely an
+arbitrary hard condition that mechanically shrinks the assignment space: it
+predicts the positions of unconstrained chord atoms better than alternative
+legal target strings.
+
+### Corrected verdict
+
+1. **Anchor semantic state: supported as a Lab representation field.** True
+   anchors outperform both fixed strictly-past controls across songs and every
+   leave-one-song-out fold. This supersedes the withdrawn cyclic-control
+   verdict; it does not select a production weight or hand model.
+2. **Incoming technique state: supported as a Lab representation field.** All
+   observed chords remain feasible, and the observed target string ranks first
+   in 399/496 measurable controls while outperforming alternatives on the
+   independent non-target metric across song omissions.
+3. **Combined state: supported for representation experiments.** The existing
+   positive R2→R3 measurement now has independently valid evidence for both
+   channels. It still does not authorize a production solver or fitted scalar
+   objective.
+
+The minimal next representation experiment may therefore carry chord atoms,
+preceding hand state and incoming technique relations across a `TabLine`
+solver partition. The evidence supports those information identities, not a
+specific API or objective composition.
+
+## Limitations and invariance
+
 Agreement uses one imported voicing, not unique ground truth.  Technique
 relations are observed labels; target equality is not independent validation.
 The anchor control preserves song identity and fret distribution but not every

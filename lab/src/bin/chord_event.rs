@@ -542,7 +542,7 @@ fn run() -> Result<(), DynError> {
         .filter_map(|effect| effect.technique_fractional_reduction)
         .collect();
     let summary = Summary {
-        schema: "griff.constraint-lab-chord-event-representation.v1",
+        schema: "griff.constraint-lab-chord-event-representation.v2",
         corpus,
         statuses,
         coverage,
@@ -625,6 +625,8 @@ fn run() -> Result<(), DynError> {
                     &row.song_key,
                     row.technique_cases,
                     row.mean_technique_fractional_reduction,
+                    row.technique_observed_control_cases,
+                    row.technique_observed_minus_alternatives,
                 )
             })
             .collect::<Vec<_>>(),
