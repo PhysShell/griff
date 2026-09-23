@@ -428,17 +428,22 @@ in this rerun, the corrected `deterministic_restricted_string`'s pick and the
 original reporting's `estimate.strings().first()` (the lowest surviving
 string number) agree on literally every row — zero disagreements, and the
 same holds for all 10,293 `Ambiguous` T rows, which is why T's own count
-never moved either. `Tuning::candidates` is ordered by ascending string
-number by construction (ADR-0019; `core/src/event.rs:548-552`), and
-`Chain::v1` builds every candidate list from it, so the production DP's own
-"lowest candidate index" tie-break *is* "lowest string number" for any chain
-this experiment builds — provably, not just in this corpus. The DP-based
-rewrite is still the right implementation (it is what the production solver
-actually does, rather than an unproven assumption that happened to match
-it), but it was always a no-op for the *reported string*, for T and for H-P/
-H-C alike. The only defect this correction fixes — and the only thing that
-ever moved these numbers — is `anchor_distance` being scored on a tie that
-the registered rule leaves unbroken.
+never moved either — 12,520 `Ambiguous` rows checked across all three
+regimes, zero disagreements. `Tuning::candidates` is ordered by ascending
+string number by construction
+(ADR-0019; `core/src/event.rs:548-552`), which is why this agreement is
+plausible and should be stable rather than a fluke of this corpus — but the
+DP's own tie-break is resolved by backward parent-pointer propagation from
+the chain's last note, not by a local comparison at the origin candidate, so
+candidate ordering alone is not a general proof that the two rules coincide
+for an arbitrary chain; the exhaustive corpus-wide agreement above, not a
+theorem, is the evidence used here. The DP-based rewrite is still the right
+implementation (it is what the production solver actually does, rather than
+an unproven assumption that happened to match it), but on this corpus it was
+always a no-op for the *reported string*, for T and for H-P/H-C alike. The
+only defect this correction fixes — and the only thing that ever moved these
+numbers — is `anchor_distance` being scored on a tie that the registered
+rule leaves unbroken.
 
 This correction was validated with the corpus it needed: `cargo fmt --all --
 --check`, the full `griff-constraint-lab` test suite (172 tests across every
@@ -474,20 +479,19 @@ No production behavior, projection, census, corpus fingerprint or
    1,496 cases, worsens none, is positive across 69 song keys and never reverses
    under leave-one-song-out. J shows that hard joint equality alone does not
    identify the imported origin string.
-4. **D — hand adds independent causal signal: rejected, on balance.** H-P is
-   unambiguously positive over T (`14,729` to `13,441`: `1,849` better /
-   `561` worse). H-C, corrected, is close to a wash against T rather than
-   clearly negative: 47 fewer exact cases case-weighted (`13,394` to
-   `13,441`) and behind it in the concentration view (`2,392` to `2,405`),
-   but 0.1 points *ahead* of it macro-by-song (`48.1%` to `48.0%`), and every
-   leave-one-song-out omission still leaves H-C ahead of V0. The
-   case-weighted and concentration readings — the metrics this document
-   otherwise treats as primary — still call it against H-C, so the rejection
-   stands, but on a margin of a few dozen cases, where the two corrections
-   made to this figure have each moved the sign of at least one reading. That
-   is closer than the original "does not survive endogenous replay" framing
-   suggested, and is worth an explicit second look rather than taking the
-   label on faith.
+4. **D — hand adds independent causal signal: not supported, mixed under the
+   preregistered summaries.** H-P is unambiguously positive over T (`14,729`
+   to `13,441`: `1,849` better / `561` worse). Endogenous H-C does not
+   consistently improve on T across the two prereg'd summary types (above:
+   "All summaries are case-weighted and macro-by-song"): it is 47 fewer exact
+   cases case-weighted (`13,394` to `13,441`) but 0.1 points *ahead* of T
+   macro-by-song (`48.1%` to `48.0%`) — the two registered aggregates
+   disagree on sign. The rule is "supported only when... the H-P effect does
+   not disappear under H-C"; with no single registered aggregate cleanly
+   deciding that, the condition is not met, so no promotion follows. The
+   signature-concentration audit also slightly favors T (`2,392` to `2,405`),
+   but it is registered above as "a concentration diagnostic, not a primary
+   gate," so it is reported for context and not used to break this tie.
 5. **E — safe hard obligation: rejected.** Every transparent regime emits many
    wrong Known strings; the pinned 8/38 cohorts demonstrate the downstream
    consequence directly.
