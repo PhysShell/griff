@@ -230,7 +230,7 @@ fingerprint `9e53e55a19cddf29`. The frozen census remained 29,758 within-line
 plus 46 cross-line relations. All 29,804 relations had a distinct stable
 origin; there were no multiple-target, missing-origin or unsupported
 refusals. Every imported string survived T, so the intent domain passed its
-forensic gate. Exact profiling and all downstream artifacts took 139 seconds
+forensic gate. The amended exact profiling and all downstream artifacts took 244 seconds
 after compilation.
 
 ### BLIND objective diagnosis
@@ -289,29 +289,28 @@ Any wrong Known result fails the preregistered universal-hard-obligation gate.
 
 ### Hand state: teacher-forced versus endogenous
 
-With the retained-partition imported past, T+H-P reached 14,729 deterministic
-exact cases. Relative to T this is `1,849 better / 27,394 equal / 561 worse`.
+With the retained-partition imported past, T+H-P reached 14,613 deterministic
+exact cases. Relative to T this is `1,761 better / 27,454 equal / 589 worse`.
 It made 28,978 estimates Known, 14,284 correct (49.3% precision), and left 826
 Ambiguous.
 
-With the same producer semantics but frozen solver past, T+H-C fell to 13,394
-exact: `220 better / 29,317 equal / 267 worse` relative to T, and 1,335 fewer
+With the same producer semantics but frozen solver past, T+H-C fell to 13,360
+exact: `242 better / 29,239 equal / 323 worse` relative to T, and 1,253 fewer
 exact cases than H-P. It made 28,403 estimates Known, 12,818 correct (45.1%
 precision), and left 1,401 Ambiguous.
 
 Teacher-forced hand state therefore contains independent preference signal,
 but it does not survive endogenous replay. Evidence rule D fails: current past
-state estimation, rather than transport, erases the gain. H-C is essentially
-flat to slightly worse than T case-weighted, despite a small positive
-macro-by-song change (48.0% to 48.1%).
+state estimation, rather than transport, erases the gain. H-C is slightly
+worse than T both case-weighted and macro-by-song (48.0% to 47.7%).
 
 ### Concentration and robustness
 
 The largest song contributed 1,075 of 29,804 relations. Omitting any one song
-left the H-C versus V0 exact-count effect positive (`+1,263` to `+1,463`). The
+left the H-C versus V0 exact-count effect positive (`+1,229` to `+1,429`). The
 descriptive signature audit found 4,719 unique signatures and 5,450
 `(song, signature)` rows; the largest such cell contained 110 relations. On one
-representative per cell, exact counts were V0 2,159, T 2,405 and H-C 2,392.
+representative per cell, exact counts were V0 2,159, T 2,405 and H-C 2,378.
 The T result is therefore not one song or one repeated phrase. The very small
 H-C-over-T aggregate does not survive this concentration view.
 
@@ -327,6 +326,29 @@ target constraints were exact-chord feasible and the imported chord itself
 remained physically feasible, but only 9/24 estimated origin strings were
 correct and only those same nine imported chords satisfied the estimated
 constraint. This also rejects production hard obligations.
+
+### Deterministic-reporting amendment
+
+Review of the first outcome found that its deterministic T/H counts selected
+the first canonically ordered string from an `Ambiguous` estimate. That was a
+valid set representative but not a measurement of the full-chain solver's
+actual tie behavior. The profile, ranks, deltas and typed Known/Ambiguous
+metrics were unaffected.
+
+Before rerun, `Chain::restrict_note_strings` was added to preserve every
+surviving candidate and its unary/pairwise edges. Deterministic T is now the
+origin position from `lexicographic_path` on that restricted chain. H-P/H-C use
+the same chain with the registered anchor-distance secondary. Tests compare the
+reported result differentially with direct restricted DP across more than one
+thousand generated tied profiles. Solver behavior and epistemic certainty are
+now independent outputs.
+
+The fresh rerun left T exactly unchanged at 13,441 and retained its
+`1,496 better / 28,308 equal / 0 worse` comparison with V0. The hand counts did
+change: H-P moved from the withdrawn 14,729 to 14,613, and H-C from 13,394 to
+13,360. All figures elsewhere in this outcome use the amended actual-DP
+reporting. The primary diagnosis and hard-obligation rejection remain
+unchanged.
 
 ### Invariance and validation
 
