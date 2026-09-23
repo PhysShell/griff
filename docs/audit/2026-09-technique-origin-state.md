@@ -304,6 +304,15 @@ but it does not survive endogenous replay. Evidence rule D fails: current past
 state estimation, rather than transport, erases the gain. H-C is slightly
 worse than T both case-weighted and macro-by-song (48.0% to 47.7%).
 
+**Correction (post-review, see "Hand-secondary correctness correction"
+below):** the *deterministic* exact counts and paired comparisons in this
+section — H-P's `14,613` / `1,761 better / 27,454 equal / 589 worse`, and
+H-C's `13,360` / `242 better / 29,239 equal / 323 worse` — were computed with
+a `deterministic_restricted_string` that did not implement the registered
+hand secondary and must be recomputed. The Known/Ambiguous counts and
+precision figures in this section come from `estimate_with_hand`, which was
+already origin-local throughout, and are unaffected.
+
 ### Concentration and robustness
 
 The largest song contributed 1,075 of 29,804 relations. Omitting any one song
@@ -350,6 +359,66 @@ change: H-P moved from the withdrawn 14,729 to 14,613, and H-C from 13,394 to
 reporting. The primary diagnosis and hard-obligation rejection remain
 unchanged.
 
+### Hand-secondary correctness correction
+
+Pre-merge review found that the amendment above was itself wrong for H-P/H-C.
+`deterministic_restricted_string` restricted the origin to `allowed` and, for a
+known hand, called `Chain::with_anchor` and gave the DP's secondary a weight of
+1 on the `anchor_distance` feature. That feature is summed by `note_features`
+over *every fretted note on the path*, not the origin alone. The registered
+rule (above) is `abs(origin_fret(s) - h)`, a quantity of the origin candidate
+only. Concretely, whenever a competing origin string's path routed through a
+neighboring note with a smaller or open (zero-cost) fret — most often the
+target — that neighbor's distance to the anchor could outweigh the origin's
+own, and the reported string no longer matched the registered rule.
+
+This is a solver-behavior defect, not an epistemic one: `estimate_with_hand`
+computes `abs(origin_fret(s) - h)` directly from the conditioned string
+profile and was never routed through `with_anchor`, so it did not regress: the
+typed Known/Ambiguous estimates and precision figures throughout this outcome
+are unaffected. Only the *deterministic* T+H-P/T+H-C strings, exact counts and
+paired comparisons are in question — J is also unaffected, since it is only
+ever computed with `HandEstimate::Unknown`.
+
+`deterministic_restricted_string` now takes the already-computed
+`OriginStringProfile` and calls `estimate_with_hand` to get the registered,
+origin-local survivor set, then restricts the chain to those surviving
+strings and runs the same zero-secondary `lexicographic_path` full-chain DP
+the T fix above already uses, so any remaining tie (equal primary cost and,
+when the hand is known, equal registered hand distance) still resolves to the
+production solver's own lowest-index tie-break. `Chain::with_anchor` and
+`anchor_distance` are untouched for their other, legitimate uses elsewhere in
+the lab crate (e.g. the learned anchor tie-break); this fix only stops
+repurposing them here.
+
+A regression test brute-forces an independent ground truth (every path,
+scored by `(primary cost, hand distance at the origin)`, restricted to
+`allowed`) against `deterministic_restricted_string` across thousands of
+generated `HandEstimate::Known` chains, and a second, concrete test pins the
+counter-example class directly: pitches `[40, 60, 64]` with technique domain
+`{2..6}` and anchor fret `10` give the origin two tied primary-optimal paths,
+one through origin string 3 and one through origin string 2 via the target's
+open string-1 candidate; the withdrawn code reported string 2, the corrected
+code reports string 3, matching the independent brute force. Both new tests
+fail against the withdrawn implementation and pass against the correction.
+
+The H-P/H-C deterministic exact counts, their paired better/equal/worse
+comparisons against T, and every macro-by-song, concentration and
+pinned-cohort figure that reads the *deterministic* (not typed) H-P/H-C
+column need a fresh corpus rerun against the corrected
+`deterministic_restricted_string` before Evidence rule D's verdict can be
+trusted again. That rerun needs the licensed 410-file corpus this document's
+`fit`/`technique-origin-state` run was built from, which is not available in
+the environment that produced this correction; the numbers above are left in
+place, marked stale, for whoever next runs the registered corpus to amend.
+
+This correction itself was validated without the corpus: `cargo fmt --all --
+--check`, the full `griff-constraint-lab` test suite (172 tests across every
+test binary, including the two new ones) and `cargo clippy --all-targets --
+-D warnings -A clippy::too_many_lines -A clippy::items_after_statements` all
+pass, and `fingering_gap` builds clean in release. It does not by itself touch
+the corpus, the frozen census or `BoundaryContext`.
+
 ### Invariance and validation
 
 Release offline tests, formatting and all-target clippy passed. The independent
@@ -375,8 +444,12 @@ No production behavior, projection, census, corpus fingerprint or
    1,496 cases, worsens none, is positive across 69 song keys and never reverses
    under leave-one-song-out. J shows that hard joint equality alone does not
    identify the imported origin string.
-4. **D — hand adds independent causal signal: rejected.** H-P is positive, but
-   H-C loses the gain and is 47 cases worse than T overall.
+4. **D — hand adds independent causal signal: rejected, pending rerun.** H-P is
+   positive, but H-C loses the gain and is 47 cases worse than T overall. This
+   reads the deterministic H-P/H-C counts the "Hand-secondary correctness
+   correction" section flags as stale; the direction has held across every
+   revision of this figure so far, but the rejection is not final until the
+   corrected numbers are in.
 5. **E — safe hard obligation: rejected.** Every transparent regime emits many
    wrong Known strings; the pinned 8/38 cohorts demonstrate the downstream
    consequence directly.
