@@ -5,8 +5,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use griff_core::event::{FretboardPosition, Pitch, Tuning};
+use griff_core::event::{FretboardPosition, NoteMark, Pitch, SpanTechnique, Tuning};
 use griff_core::fretboard::FingeringWeights;
+use griff_core::score::{AtomEvent, Score};
 use thiserror::Error;
 
 use crate::fingering::v1_unary;
@@ -160,6 +161,320 @@ impl ChordEventProblem {
     pub fn incoming_techniques(&self) -> &[IncomingTechnique] {
         &self.incoming_techniques
     }
+
+    /// Imported tuning in its original string orientation.
+    #[must_use]
+    pub const fn tuning(&self) -> &Tuning {
+        &self.tuning
+    }
+
+    /// Registered maximum fret.
+    #[must_use]
+    pub const fn max_fret(&self) -> u8 {
+        self.max_fret
+    }
+
+    /// Returns the same information regime with a substituted anchor.
+    #[must_use]
+    pub fn with_anchor(&self, anchor: Option<HandAnchor>) -> Self {
+        let mut replaced = self.clone();
+        replaced.preceding_hand = anchor;
+        replaced
+    }
+}
+
+/// Typed status of one chord onset in the general census.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ChordCensusStatus {
+    /// Every atom has a usable explicit imported position.
+    CompleteExplicit,
+    /// At least one atom has no imported position.
+    IncompletePosition,
+    /// An explicit position does not sound the imported pitch.
+    PitchMismatch,
+    /// Two imported atoms use one physical string.
+    DuplicateExplicitString,
+    /// At least one imported position exceeds the registered fret range.
+    BeyondMaxFret,
+    /// A typed problem or observation could not be constructed.
+    OtherUnsupported,
+}
+
+/// One onset in the complete chord census.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChordCensusEvent {
+    /// Stable event identity.
+    pub identity: ChordEventIdentity,
+    /// Typed observation status.
+    pub status: ChordCensusStatus,
+    /// Number of note atoms at the onset.
+    pub atom_count: usize,
+    /// Solver input, present for complete explicit observations.
+    pub problem: Option<ChordEventProblem>,
+    /// Separate imported evaluation object.
+    pub observed: Option<ObservedChordVoicing>,
+}
+
+#[derive(Clone)]
+struct ImportedNote {
+    note_id: usize,
+    onset: u32,
+    duration: u32,
+    pitch: Pitch,
+    position: Option<FretboardPosition>,
+    tapped: bool,
+    technique: Option<TechniqueKind>,
+}
+
+/// Extracts every chord onset from one imported track exactly once.
+///
+/// Stable ids and incoming technique targets are resolved over the whole
+/// imported voice before any chord is classified.
+///
+/// # Errors
+///
+/// Refuses a missing track index.
+pub fn chord_event_census(
+    score: &Score,
+    source: &str,
+    song_key: &str,
+    track_index: usize,
+    max_fret: u8,
+) -> Result<Vec<ChordCensusEvent>, ChordEventError> {
+    let track = score
+        .tracks
+        .get(track_index)
+        .ok_or(ChordEventError::MissingTrack(track_index))?;
+    let mut output = Vec::new();
+    for voice in &track.voices {
+        let mut notes: Vec<ImportedNote> = voice
+            .event_groups
+            .iter()
+            .flat_map(|group| {
+                let technique =
+                    imported_technique(group.technique_spans.iter().map(|span| span.technique));
+                group.atoms.iter().filter_map(move |atom| match atom {
+                    AtomEvent::Note(note) => Some((note, technique)),
+                    AtomEvent::Rest(_) => None,
+                })
+            })
+            .enumerate()
+            .map(|(order, (note, technique))| ImportedNote {
+                note_id: order,
+                onset: note.absolute_start.0,
+                duration: note.duration.0,
+                pitch: note.pitch,
+                position: note.position.map(|position| position.position),
+                tapped: note.marks.contains(NoteMark::Tap),
+                technique,
+            })
+            .collect();
+        notes.sort_by_key(|note| (note.onset, note.note_id));
+        for (note_id, note) in notes.iter_mut().enumerate() {
+            note.note_id = note_id;
+        }
+        let targets = projected_targets(&notes);
+        let mut anchor: Option<HandAnchor> = None;
+        let mut start = 0;
+        while start < notes.len() {
+            let onset = notes[start].onset;
+            let end = notes[start..]
+                .iter()
+                .position(|note| note.onset != onset)
+                .map_or(notes.len(), |width| start + width);
+            let group = &notes[start..end];
+            if group.len() >= 2 {
+                output.push(build_census_event(
+                    source,
+                    song_key,
+                    track_index,
+                    voice.id,
+                    onset,
+                    &track.tuning,
+                    max_fret,
+                    group,
+                    &notes,
+                    &targets,
+                    anchor,
+                ));
+            }
+            if let Some(note) = group
+                .iter()
+                .filter(|note| !note.tapped)
+                .filter_map(|note| note.position.map(|position| (note, position)))
+                .filter(|(_, position)| position.fret > 0)
+                .min_by_key(|(_, position)| position.fret)
+            {
+                anchor = Some(HandAnchor {
+                    fret: note.1.fret,
+                    onset,
+                    source_note_id: Some(note.0.note_id),
+                });
+            }
+            start = end;
+        }
+    }
+    output.sort_by(|left, right| left.identity.cmp(&right.identity));
+    Ok(output)
+}
+
+fn imported_technique(
+    mut techniques: impl Iterator<Item = SpanTechnique>,
+) -> Option<TechniqueKind> {
+    techniques.find_map(|technique| match technique {
+        SpanTechnique::HammerOn => Some(TechniqueKind::HammerOn),
+        SpanTechnique::PullOff => Some(TechniqueKind::PullOff),
+        SpanTechnique::Legato => Some(TechniqueKind::Legato),
+        _ => None,
+    })
+}
+
+fn projected_targets(notes: &[ImportedNote]) -> Vec<Option<usize>> {
+    let mut targets = vec![None; notes.len()];
+    let mut next = [None; 256];
+    let mut end = notes.len();
+    while end > 0 {
+        let onset = notes[end - 1].onset;
+        let start = notes[..end]
+            .iter()
+            .rposition(|note| note.onset != onset)
+            .map_or(0, |index| index + 1);
+        for index in start..end {
+            if notes[index].technique.is_some() {
+                targets[index] = notes[index]
+                    .position
+                    .and_then(|position| next[usize::from(position.string)]);
+            }
+        }
+        for (offset, note) in notes[start..end].iter().enumerate() {
+            if let Some(position) = note.position {
+                next[usize::from(position.string)] = Some(start + offset);
+            }
+        }
+        end = start;
+    }
+    targets
+}
+
+#[allow(clippy::too_many_arguments)] // transparent census identity and context
+fn build_census_event(
+    source: &str,
+    song_key: &str,
+    track: usize,
+    voice: u8,
+    onset: u32,
+    tuning: &Tuning,
+    max_fret: u8,
+    group: &[ImportedNote],
+    voice_notes: &[ImportedNote],
+    targets: &[Option<usize>],
+    anchor: Option<HandAnchor>,
+) -> ChordCensusEvent {
+    let identity = ChordEventIdentity {
+        source: source.to_owned(),
+        song_key: song_key.to_owned(),
+        track,
+        voice,
+        onset,
+    };
+    let status = classify_group(group, tuning, max_fret);
+    if status != ChordCensusStatus::CompleteExplicit {
+        return ChordCensusEvent {
+            identity,
+            status,
+            atom_count: group.len(),
+            problem: None,
+            observed: None,
+        };
+    }
+    let ids: BTreeSet<usize> = group.iter().map(|note| note.note_id).collect();
+    let incoming_techniques = voice_notes
+        .iter()
+        .enumerate()
+        .filter_map(|(origin_id, origin)| {
+            let target_atom_id = targets.get(origin_id).copied().flatten()?;
+            if !ids.contains(&target_atom_id) || origin.onset >= onset {
+                return None;
+            }
+            Some(IncomingTechnique {
+                kind: origin.technique?,
+                origin_note_id: origin.note_id,
+                origin_onset: origin.onset,
+                origin_pitch: origin.pitch,
+                origin_position: origin.position?,
+                target_atom_id,
+            })
+        })
+        .collect();
+    let atoms = group
+        .iter()
+        .map(|note| ChordEventAtom {
+            note_id: note.note_id,
+            pitch: note.pitch,
+            duration: note.duration,
+            tapped: note.tapped,
+        })
+        .collect();
+    let observed_positions = group
+        .iter()
+        .filter_map(|note| {
+            note.position
+                .map(|position| ObservedAtomPosition::new(note.note_id, position))
+        })
+        .collect();
+    let problem = ChordEventProblem::new(
+        identity.clone(),
+        tuning.clone(),
+        max_fret,
+        atoms,
+        anchor,
+        incoming_techniques,
+    );
+    let observed = ObservedChordVoicing::new(observed_positions);
+    match (problem, observed) {
+        (Ok(problem), Ok(observed)) => ChordCensusEvent {
+            identity,
+            status,
+            atom_count: group.len(),
+            problem: Some(problem),
+            observed: Some(observed),
+        },
+        _ => ChordCensusEvent {
+            identity,
+            status: ChordCensusStatus::OtherUnsupported,
+            atom_count: group.len(),
+            problem: None,
+            observed: None,
+        },
+    }
+}
+
+fn classify_group(group: &[ImportedNote], tuning: &Tuning, max_fret: u8) -> ChordCensusStatus {
+    if group.iter().any(|note| note.position.is_none()) {
+        return ChordCensusStatus::IncompletePosition;
+    }
+    if group.iter().any(|note| {
+        note.position
+            .is_some_and(|position| tuning.pitch_at(position) != Some(note.pitch))
+    }) {
+        return ChordCensusStatus::PitchMismatch;
+    }
+    let mut strings = BTreeSet::new();
+    if group
+        .iter()
+        .filter_map(|note| note.position)
+        .any(|position| !strings.insert(position.string))
+    {
+        return ChordCensusStatus::DuplicateExplicitString;
+    }
+    if group
+        .iter()
+        .filter_map(|note| note.position)
+        .any(|position| position.fret > max_fret)
+    {
+        return ChordCensusStatus::BeyondMaxFret;
+    }
+    ChordCensusStatus::CompleteExplicit
 }
 
 /// One evaluation-only imported position.
@@ -304,6 +619,21 @@ pub struct ChordRegimeAnalysis {
     pub r3: Option<ExactPreferredSet>,
 }
 
+/// One complete legal-string condition for an incoming target atom.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TechniqueStringControl {
+    /// Stable target atom.
+    pub target_atom_id: usize,
+    /// Conditioned physical string.
+    pub string: u8,
+    /// Exact admissible count.
+    pub admissible_count: AssignmentCount,
+    /// Frozen B0 preferred set.
+    pub b0: Option<ExactPreferredSet>,
+    /// Anchor preferred set when an anchor exists.
+    pub anchor: Option<ExactPreferredSet>,
+}
+
 /// Typed malformed input and evaluation refusals.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ChordEventError {
@@ -327,6 +657,9 @@ pub enum ChordEventError {
         /// Chord onset.
         chord: u32,
     },
+    /// Requested track does not exist.
+    #[error("score has no track {0}")]
+    MissingTrack(usize),
 }
 
 /// Computes all four exact regimes.
@@ -358,6 +691,59 @@ pub fn analyze_regimes(
         })
     });
     Ok(ChordRegimeAnalysis { r0, r1, r2, r3 })
+}
+
+/// Enumerates the complete legal target-string domain for one stable atom.
+///
+/// Other incoming requirements remain active; requirements for the selected
+/// target are replaced by the conditioned legal string.
+///
+/// # Errors
+///
+/// Refuses a target id absent from the problem.
+pub fn technique_string_controls(
+    problem: &ChordEventProblem,
+    target_atom_id: usize,
+    observed: Option<&ObservedChordVoicing>,
+) -> Result<Vec<TechniqueStringControl>, ChordEventError> {
+    let target = problem
+        .atoms
+        .iter()
+        .find(|atom| atom.note_id == target_atom_id)
+        .ok_or(ChordEventError::MissingTechniqueTarget(target_atom_id))?;
+    let mut strings: Vec<u8> = problem
+        .tuning
+        .candidates(target.pitch, problem.max_fret)
+        .into_iter()
+        .map(|position| position.string)
+        .collect();
+    strings.sort_unstable();
+    strings.dedup();
+    let mut base_requirements = BTreeMap::new();
+    for relation in &problem.incoming_techniques {
+        if relation.target_atom_id != target_atom_id {
+            base_requirements.insert(relation.target_atom_id, relation.origin_position.string);
+        }
+    }
+    Ok(strings
+        .into_iter()
+        .map(|string| {
+            let mut requirements = base_requirements.clone();
+            requirements.insert(target_atom_id, string);
+            let assignments = enumerate(problem, &requirements);
+            TechniqueStringControl {
+                target_atom_id,
+                string,
+                admissible_count: count(assignments.len()),
+                b0: preferred(&assignments, observed, b0_cost),
+                anchor: problem.preceding_hand.and_then(|anchor| {
+                    preferred(&assignments, observed, |assignment| {
+                        anchor_cost(assignment, anchor.fret)
+                    })
+                }),
+            }
+        })
+        .collect())
 }
 
 fn enumerate(

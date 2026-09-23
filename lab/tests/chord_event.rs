@@ -1,9 +1,25 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::missing_assert_message
+)]
+
 use griff_constraint_lab::chord_event::{
-    analyze_regimes, rotate_anchors_within_song, ChordEventAtom, ChordEventIdentity,
-    ChordEventProblem, HandAnchor, IncomingTechnique, ObservedAtomPosition,
+    analyze_regimes, chord_event_census, rotate_anchors_within_song, ChordEventAtom,
+    ChordEventIdentity, ChordEventProblem, HandAnchor, IncomingTechnique, ObservedAtomPosition,
     ObservedChordVoicing, TechniqueKind,
 };
-use griff_core::event::{FretboardPosition, Pitch, Tuning};
+use griff_core::{
+    event::{
+        FretboardPosition, NoteMark, NoteMarks, NotePosition, Pitch, SpanTechnique,
+        TechniqueEvidence, Tempo, Ticks, TimeSignature, Tuning, Velocity,
+    },
+    score::{
+        AtomEvent, AtomNote, EventGroup, EventGroupKind, LossReport, MasterBar, RepeatMarker,
+        Score, TechniqueSpan, Track, Voice,
+    },
+    slice::TickRange,
+};
 
 fn standard() -> Tuning {
     Tuning::standard_e()
@@ -147,9 +163,30 @@ fn duplicate_pitch_agreement_uses_atom_identity() {
 #[test]
 fn rotated_anchor_control_is_deterministic_and_never_self_assigns() {
     let rows = vec![
-        (identity(100), HandAnchor { fret: 3, onset: 80, source_note_id: Some(1) }),
-        (identity(200), HandAnchor { fret: 7, onset: 180, source_note_id: Some(2) }),
-        (identity(300), HandAnchor { fret: 9, onset: 280, source_note_id: Some(3) }),
+        (
+            identity(100),
+            HandAnchor {
+                fret: 3,
+                onset: 80,
+                source_note_id: Some(1),
+            },
+        ),
+        (
+            identity(200),
+            HandAnchor {
+                fret: 7,
+                onset: 180,
+                source_note_id: Some(2),
+            },
+        ),
+        (
+            identity(300),
+            HandAnchor {
+                fret: 9,
+                onset: 280,
+                source_note_id: Some(3),
+            },
+        ),
     ];
     let rotated = rotate_anchors_within_song(&rows);
     assert_eq!(rotated.len(), 3);
@@ -158,4 +195,143 @@ fn rotated_anchor_control_is_deterministic_and_never_self_assigns() {
         assert_ne!(replacement.1, *anchor);
     }
     assert_eq!(rotated, rotate_anchors_within_song(&rows));
+}
+
+fn imported_note(onset: u32, pitch: u8, string: u8, fret: u8, tapped: bool) -> AtomEvent {
+    AtomEvent::Note(AtomNote {
+        absolute_start: Ticks(onset),
+        duration: Ticks(120),
+        pitch: Pitch::new(pitch).unwrap(),
+        velocity: Velocity::new(90).unwrap(),
+        marks: if tapped {
+            NoteMarks::empty().with(NoteMark::Tap)
+        } else {
+            NoteMarks::empty()
+        },
+        position: Some(NotePosition::explicit(FretboardPosition { string, fret })),
+    })
+}
+
+fn event_group(atoms: Vec<AtomEvent>, legato: bool) -> EventGroup {
+    let technique_spans = if legato {
+        vec![TechniqueSpan {
+            technique: SpanTechnique::HammerOn,
+            tick_range: TickRange::new(Ticks(0), Ticks(120)).unwrap(),
+            evidence: TechniqueEvidence::explicit(),
+        }]
+    } else {
+        Vec::new()
+    };
+    EventGroup {
+        kind: if atoms.len() > 1 {
+            EventGroupKind::Chord
+        } else {
+            EventGroupKind::Single
+        },
+        atoms,
+        technique_spans,
+    }
+}
+
+fn imported_score(groups: Vec<EventGroup>, tuning: Tuning) -> Score {
+    Score {
+        ticks_per_quarter: 480,
+        master_bars: vec![MasterBar {
+            index: 0,
+            tick_range: TickRange::new(Ticks(0), Ticks(2000)).unwrap(),
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            tempo: Tempo::from_bpm_integer(120).unwrap(),
+            repeat: RepeatMarker::default(),
+        }],
+        tracks: vec![Track {
+            name: Some("Guitar".into()),
+            channel: 0,
+            voices: vec![Voice {
+                id: 0,
+                event_groups: groups,
+            }],
+            tuning,
+        }],
+        source_meta: None,
+        loss: LossReport::new(),
+    }
+}
+
+#[test]
+fn census_emits_one_chord_once_and_extracts_anchor_and_incoming_relation() {
+    let score = imported_score(
+        vec![
+            event_group(vec![imported_note(0, 62, 2, 3, false)], true),
+            event_group(vec![imported_note(120, 67, 1, 3, true)], false),
+            event_group(
+                vec![
+                    imported_note(240, 64, 1, 0, false),
+                    imported_note(240, 67, 2, 8, false),
+                ],
+                false,
+            ),
+        ],
+        standard(),
+    );
+    let census = chord_event_census(&score, "song.gp5", "song", 0, 24).unwrap();
+    assert_eq!(census.len(), 1);
+    let problem = census[0].problem.as_ref().unwrap();
+    assert_eq!(problem.preceding_hand().unwrap().fret, 3);
+    assert_eq!(problem.incoming_techniques().len(), 1);
+    assert_eq!(
+        problem.incoming_techniques()[0].target_atom_id,
+        problem.atoms()[1].note_id
+    );
+}
+
+#[test]
+fn latest_onset_uses_lowest_untapped_fretted_anchor_and_preserves_low_first_tuning() {
+    let low_first = Tuning::new(vec![
+        Pitch(40),
+        Pitch(45),
+        Pitch(50),
+        Pitch(55),
+        Pitch(59),
+        Pitch(64),
+    ]);
+    let score = imported_score(
+        vec![
+            event_group(
+                vec![
+                    imported_note(0, 45, 1, 5, false),
+                    imported_note(0, 47, 1, 7, true),
+                    imported_note(0, 40, 1, 0, false),
+                ],
+                false,
+            ),
+            event_group(
+                vec![
+                    imported_note(120, 52, 2, 7, false),
+                    imported_note(120, 55, 3, 5, false),
+                ],
+                false,
+            ),
+        ],
+        low_first.clone(),
+    );
+    let census = chord_event_census(&score, "song.gp5", "song", 0, 24).unwrap();
+    assert_eq!(census.len(), 2);
+    let later = census
+        .iter()
+        .find(|event| event.identity.onset == 120)
+        .unwrap();
+    assert_eq!(
+        later
+            .problem
+            .as_ref()
+            .unwrap()
+            .preceding_hand()
+            .unwrap()
+            .fret,
+        5
+    );
+    assert_eq!(later.problem.as_ref().unwrap().tuning(), &low_first);
 }
