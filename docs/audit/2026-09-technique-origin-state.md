@@ -222,3 +222,147 @@ regime, transparent causal state recovers a useful fraction of
 technique-origin strings without imported endpoint realizations. It does not
 establish a production objective, global solver, automatic technique planner,
 BoundaryContext promotion or learned architecture.
+
+## Corpus outcome
+
+The registered runner completed on all 410 files (three import refusals),
+fingerprint `9e53e55a19cddf29`. The frozen census remained 29,758 within-line
+plus 46 cross-line relations. All 29,804 relations had a distinct stable
+origin; there were no multiple-target, missing-origin or unsupported
+refusals. Every imported string survived T, so the intent domain passed its
+forensic gate. Exact profiling and all downstream artifacts took 139 seconds
+after compilation.
+
+### BLIND objective diagnosis
+
+Frozen V0 chose the imported origin string in `11,945 / 29,804` cases (40.1%).
+The complete primary landscape is more informative:
+
+```text
+imported string primary-optimal: 15,327 / 29,804 (51.4%)
+positive primary delta:          14,477 / 29,804 (48.6%)
+zero-delta but wrong V0:          3,382 / 29,804 (11.3%)
+
+dense rank 1 / 2 / 3 / 4 / 5 / 6:
+15,327 / 9,321 / 3,854 / 1,153 / 127 / 22
+
+primary delta p50 / p90 / max: 0 / 6 / 33
+```
+
+Thus the residual is not mainly a deterministic tie-break bug. Tie state is
+missing in 3,382 cases, but in nearly half the population the primary objective
+strictly prefers a different origin string.
+
+The typed BLIND estimate was Known for 18,878 cases and correct for 7,523
+(39.9% precision); 10,926 were Ambiguous, with the imported label present in
+7,804 sets. This deliberately differs from merely calling V0's deterministic
+low-index choice “known”.
+
+The descriptive same-line comparison does not reveal a technique-only
+catastrophe: V0 string agreement was `11,945 / 29,804` (40.1%) on origins and
+`43,308 / 102,077` (42.4%) on other notes in the same retained lines. Origins
+are somewhat harder, but the objective mismatch is broad.
+
+### Conditional target intent
+
+T reduced the aggregate legal domain from 122,826 to 111,032 strings (4.12 to
+3.73 per origin) without inspecting or removing any imported label. Its
+deterministic exactness rose to `13,441 / 29,804` (45.1%): 1,496 paired
+improvements, 28,308 equal and zero worse than V0. Per-song signs were 69
+better, 117 equal and zero worse across 186 song keys. Macro-by-song exactness
+rose from 43.5% to 48.0%; every leave-one-song-out aggregate effect stayed
+positive.
+
+This supports target-pitch feasibility as information, but only conditional on
+an upstream planner already supplying the corrected target identity and pitch.
+It is not BLIND recovery.
+
+Joint C1/J, evaluated only on 29,758 within-line relations, reached 12,245
+deterministic exact origins (41.1%). It guarantees endpoint equality, not the
+imported choice among several jointly feasible strings, and is much weaker for
+origin recovery than T. Same-string coupling and origin-string estimation are
+therefore different questions.
+
+T's typed estimate was Known in 19,511 cases and correct in 8,796 (45.1%
+precision); 10,293 remained Ambiguous, with 7,658 imported-label memberships.
+Any wrong Known result fails the preregistered universal-hard-obligation gate.
+
+### Hand state: teacher-forced versus endogenous
+
+With the retained-partition imported past, T+H-P reached 14,729 deterministic
+exact cases. Relative to T this is `1,849 better / 27,394 equal / 561 worse`.
+It made 28,978 estimates Known, 14,284 correct (49.3% precision), and left 826
+Ambiguous.
+
+With the same producer semantics but frozen solver past, T+H-C fell to 13,394
+exact: `220 better / 29,317 equal / 267 worse` relative to T, and 1,335 fewer
+exact cases than H-P. It made 28,403 estimates Known, 12,818 correct (45.1%
+precision), and left 1,401 Ambiguous.
+
+Teacher-forced hand state therefore contains independent preference signal,
+but it does not survive endogenous replay. Evidence rule D fails: current past
+state estimation, rather than transport, erases the gain. H-C is essentially
+flat to slightly worse than T case-weighted, despite a small positive
+macro-by-song change (48.0% to 48.1%).
+
+### Concentration and robustness
+
+The largest song contributed 1,075 of 29,804 relations. Omitting any one song
+left the H-C versus V0 exact-count effect positive (`+1,263` to `+1,463`). The
+descriptive signature audit found 4,719 unique signatures and 5,450
+`(song, signature)` rows; the largest such cell contained 110 relations. On one
+representative per cell, exact counts were V0 2,159, T 2,405 and H-C 2,392.
+The T result is therefore not one song or one repeated phrase. The very small
+H-C-over-T aggregate does not survive this concentration view.
+
+### Pinned downstream cohorts
+
+For the eight kept-line boundary cases, BLIND and T were Known in 4/8; H-P and
+H-C were Known in 8/8. Every emitted constraint was feasible, but every regime
+recovered the observed target string in only 1/8. The old #213 endogenous
+fidelity result is reproduced: extra certainty did not become extra accuracy.
+
+For the 38 excluded chord-target cases, H-C was Known in 24/38. All 24 emitted
+target constraints were exact-chord feasible and the imported chord itself
+remained physically feasible, but only 9/24 estimated origin strings were
+correct and only those same nine imported chords satisfied the estimated
+constraint. This also rejects production hard obligations.
+
+### Invariance and validation
+
+Release offline tests, formatting and all-target clippy passed. The independent
+Stage-2 rerun preserved the registered v1-fit slice exactly:
+
+```text
+B / C1 / D1 exactness: 0.9% / 13.3% / 16.8%
+gaps to matched baseline: 19.1 / 7.6 / 4.2 points
+```
+
+No production behavior, projection, census, corpus fingerprint or
+`BoundaryContext` contract changed.
+
+## Verdict against preregistered evidence rules
+
+1. **A — tie-break problem: partially supported, not dominant.** There are
+   3,382 zero-delta wrong deterministic choices, but 14,477 positive-delta
+   failures.
+2. **B — primary-objective problem: supported.** Positive primary delta is
+   large and distributed across songs; changing only deterministic tie order
+   cannot recover these labels.
+3. **C — target intent informative: supported conditionally for T.** T improves
+   1,496 cases, worsens none, is positive across 69 song keys and never reverses
+   under leave-one-song-out. J shows that hard joint equality alone does not
+   identify the imported origin string.
+4. **D — hand adds independent causal signal: rejected.** H-P is positive, but
+   H-C loses the gain and is 47 cases worse than T overall.
+5. **E — safe hard obligation: rejected.** Every transparent regime emits many
+   wrong Known strings; the pinned 8/38 cohorts demonstrate the downstream
+   consequence directly.
+
+The narrow answer is that current origin errors are a mixture of missing
+secondary state and, more often, a genuinely wrong primary objective. Upstream
+target pitch supplies useful causal domain information, but the minimum tested
+regime is not sufficient for safe origin realization: endogenous hand state
+does not preserve the teacher-forced benefit. A later comparison may now
+legitimately study richer structured latent state (the HMM/hand-form direction)
+or a song-held-out learned sequence model, but this PR adds neither.
