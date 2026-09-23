@@ -1,22 +1,22 @@
 #![allow(clippy::unwrap_used, clippy::missing_assert_message)]
 
 use griff_constraint_lab::boundary_context::{
-    consume_for_line, decode_context, encode_context, produce_context, BoundaryContext,
-    BoundaryContextError, HandState, ProjectedTechnique, SolvedNote, SolvedPartition,
-    TechniqueKind, VoiceIdentity,
+    condition_consumer_chain, consume_for_line, decode_context, encode_context, produce_context,
+    BoundaryContext, BoundaryContextError, HandState, ProjectedTechnique, SolvedNote,
+    SolvedPartition, TechniqueKind, VoiceIdentity,
 };
-use griff_core::event::FretboardPosition;
+use griff_constraint_lab::ties::{lexicographic_path, Chain, Features, FEATURES};
+use griff_core::{
+    event::{FretboardPosition, Pitch, Tuning},
+    fretboard::FingeringWeights,
+};
 
 fn voice() -> VoiceIdentity {
     VoiceIdentity::new("song.gp5", 1, 0)
 }
 
 fn partition(position: FretboardPosition) -> SolvedPartition {
-    SolvedPartition::new(
-        voice(),
-        vec![SolvedNote::new(10, 120, position, false)],
-    )
-    .unwrap()
+    SolvedPartition::new(voice(), vec![SolvedNote::new(10, 120, position, false)]).unwrap()
 }
 
 fn relation() -> ProjectedTechnique {
@@ -33,7 +33,10 @@ fn producer_depends_only_on_solved_prefix() {
     let first = produce_context(&previous, &prefix, &[relation()]).unwrap();
     let second = produce_context(&previous, &prefix, &[relation()]).unwrap();
     assert_ne!(first_target_reference, mutated_target_reference);
-    assert_eq!(encode_context(&first).unwrap(), encode_context(&second).unwrap());
+    assert_eq!(
+        encode_context(&first).unwrap(),
+        encode_context(&second).unwrap()
+    );
 }
 
 #[test]
@@ -73,10 +76,16 @@ fn unknown_hand_is_not_musical_absence_or_fret_zero() {
     let unknown = HandState::Unknown;
     let absent = HandState::Absent;
     let zero = HandState::known(0, 1, 10);
-    assert_eq!(unknown.anchor_fret(), Err(BoundaryContextError::UnknownHand));
+    assert_eq!(
+        unknown.anchor_fret(),
+        Err(BoundaryContextError::UnknownHand)
+    );
     assert_eq!(absent.anchor_fret().unwrap(), None);
     assert_eq!(zero.anchor_fret().unwrap(), Some(0));
-    assert_ne!(serde_json::to_vec(&unknown).unwrap(), serde_json::to_vec(&absent).unwrap());
+    assert_ne!(
+        serde_json::to_vec(&unknown).unwrap(),
+        serde_json::to_vec(&absent).unwrap()
+    );
 }
 
 #[test]
@@ -114,4 +123,50 @@ fn wrong_voice_and_ambiguous_target_fail_closed() {
         consume_for_line(context, &voice(), &[42, 42]),
         Err(BoundaryContextError::AmbiguousTarget(42))
     );
+}
+
+#[test]
+fn serialized_fresh_consumer_matches_direct_causal_lht_without_oracle_input() {
+    let context = produce_context(
+        &BoundaryContext::unknown(voice()),
+        &partition(FretboardPosition { string: 2, fret: 5 }),
+        &[relation()],
+    )
+    .unwrap();
+    let bytes = encode_context(&context).unwrap();
+    let base = Chain::v1(
+        &[Pitch(64), Pitch(67)],
+        &Tuning::standard_e(),
+        &FingeringWeights::v1(),
+        24,
+    )
+    .unwrap();
+    let note_ids = [42, 50];
+    let direct = consume_for_line(context, &voice(), &note_ids).unwrap();
+    let fresh = consume_for_line(decode_context(&bytes).unwrap(), &voice(), &note_ids).unwrap();
+    let direct_chain = condition_consumer_chain(base.clone(), &note_ids, &direct)
+        .unwrap()
+        .with_anchor(direct.anchor_fret().unwrap());
+    let fresh_chain = condition_consumer_chain(base, &note_ids, &fresh)
+        .unwrap()
+        .with_anchor(fresh.anchor_fret().unwrap());
+    let mut anchor: Features = [0; FEATURES];
+    anchor[FEATURES - 1] = 1;
+    let direct_path = direct_chain.positions_of(&lexicographic_path(&direct_chain, &anchor, None));
+    let fresh_path = fresh_chain.positions_of(&lexicographic_path(&fresh_chain, &anchor, None));
+    assert_eq!(direct_path, fresh_path);
+
+    let oracle_reference = [
+        FretboardPosition { string: 2, fret: 5 },
+        FretboardPosition { string: 3, fret: 5 },
+    ];
+    let mutated_reference = [
+        FretboardPosition { string: 1, fret: 0 },
+        FretboardPosition {
+            string: 6,
+            fret: 15,
+        },
+    ];
+    assert_ne!(oracle_reference, mutated_reference);
+    assert_eq!(direct_path, fresh_path);
 }

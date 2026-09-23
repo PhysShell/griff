@@ -17,6 +17,7 @@
 //! in-repo reference solver → archived manifests. Research tooling only:
 //! nothing here is a production dependency, and no production path calls it.
 
+pub mod boundary_context;
 pub mod chord;
 pub mod chord_context;
 pub mod chord_event;
