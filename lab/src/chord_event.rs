@@ -628,6 +628,8 @@ pub struct TechniqueStringControl {
     pub string: u8,
     /// Exact admissible count.
     pub admissible_count: AssignmentCount,
+    /// Complete feasible set for target-independent evaluation.
+    pub assignments: Vec<ChordAssignment>,
     /// Frozen B0 preferred set.
     pub b0: Option<ExactPreferredSet>,
     /// Anchor preferred set when an anchor exists.
@@ -741,6 +743,7 @@ pub fn technique_string_controls(
                         anchor_cost(assignment, anchor.fret)
                     })
                 }),
+                assignments,
             }
         })
         .collect())
@@ -939,27 +942,40 @@ fn count(value: usize) -> AssignmentCount {
     }
 }
 
-/// Deterministically rotates anchors by one stable event inside each song.
-/// Songs with fewer than two events have no control row.
+/// Selects a fixed-lag, strictly causal anchor control per imported voice.
+///
+/// Rows are grouped by source, track and voice, then ordered by event onset.
+/// There is no wrap. Candidates whose provenance is not strictly earlier than
+/// the evaluated event, or whose provenance equals its true anchor, are
+/// unavailable rather than replaced by another row.
 #[must_use]
-pub fn rotate_anchors_within_song(
+pub fn causal_anchor_controls(
     rows: &[(ChordEventIdentity, HandAnchor)],
+    lag: usize,
 ) -> Vec<(ChordEventIdentity, HandAnchor)> {
     type AnchorRow<'a> = &'a (ChordEventIdentity, HandAnchor);
-    let mut grouped: BTreeMap<&str, Vec<AnchorRow<'_>>> = BTreeMap::new();
+    type VoiceKey<'a> = (&'a str, usize, u8);
+    let mut grouped: BTreeMap<VoiceKey<'_>, Vec<AnchorRow<'_>>> = BTreeMap::new();
     for row in rows {
-        grouped.entry(&row.0.song_key).or_default().push(row);
+        grouped
+            .entry((&row.0.source, row.0.track, row.0.voice))
+            .or_default()
+            .push(row);
     }
     let mut output = Vec::new();
-    for mut song_rows in grouped.into_values() {
-        song_rows.sort_by(|left, right| left.0.cmp(&right.0));
-        if song_rows.len() < 2 {
-            continue;
-        }
-        for index in 0..song_rows.len() {
-            let event = song_rows[index].0.clone();
-            let replacement = song_rows[(index + 1) % song_rows.len()].1;
-            output.push((event, replacement));
+    if lag == 0 {
+        return output;
+    }
+    for mut voice_rows in grouped.into_values() {
+        voice_rows.sort_by_key(|row| row.0.onset);
+        for index in lag..voice_rows.len() {
+            let (event, true_anchor) = voice_rows[index];
+            let replacement = voice_rows[index - lag].1;
+            let same_provenance = replacement.onset == true_anchor.onset
+                && replacement.source_note_id == true_anchor.source_note_id;
+            if replacement.onset < event.onset && !same_provenance {
+                output.push((event.clone(), replacement));
+            }
         }
     }
     output.sort_by(|left, right| left.0.cmp(&right.0));

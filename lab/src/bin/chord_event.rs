@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use griff_constraint_lab::chord_event::{
-    analyze_regimes, chord_event_census, rotate_anchors_within_song, technique_string_controls,
+    analyze_regimes, causal_anchor_controls, chord_event_census, technique_string_controls,
     AssignmentCount, ChordAssignment, ChordCensusEvent, ChordCensusStatus, ChordEventIdentity,
     ExactPreferredSet, HandAnchor, HumanSetMetrics, ObservedChordVoicing,
 };
@@ -146,6 +146,11 @@ struct TechniqueControlRecord {
     target_atom_id: usize,
     observed_string: u8,
     strings: Vec<TechniqueStringRecord>,
+    observed_non_target_rank: Option<usize>,
+    observed_minus_mean_alternatives: Option<f64>,
+    observed_minus_median_alternatives: Option<f64>,
+    observed_minus_best_alternative: Option<f64>,
+    observed_b0_minus_mean_alternatives: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -154,6 +159,9 @@ struct TechniqueStringRecord {
     admissible_count: CountRecord,
     b0: Option<PreferredRecord>,
     anchor: Option<PreferredRecord>,
+    whole_chord_membership: bool,
+    non_target_uniform: Option<f64>,
+    b0_non_target_uniform: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -191,8 +199,12 @@ struct Effect {
     combined_membership: Option<i8>,
     technique_fractional_reduction: Option<f64>,
     technique_non_target_uniform: Option<f64>,
-    true_minus_rotated_uniform: Option<f64>,
-    true_minus_rotated_membership: Option<i8>,
+    technique_observed_minus_alternatives: Vec<f64>,
+    technique_observed_b0_minus_alternatives: Vec<f64>,
+    true_minus_previous_uniform: Option<f64>,
+    true_minus_previous_membership: Option<i8>,
+    true_minus_lag_two_uniform: Option<f64>,
+    true_minus_lag_two_membership: Option<i8>,
 }
 
 #[derive(Default, Serialize)]
@@ -257,7 +269,10 @@ struct Summary {
     anchor_effect: EffectSummary,
     technique_non_target_effect: EffectSummary,
     combined_effect: EffectSummary,
-    anchor_control_effect: EffectSummary,
+    anchor_previous_control_effect: EffectSummary,
+    anchor_lag_two_control_effect: EffectSummary,
+    technique_observed_control_effect: EffectSummary,
+    technique_observed_b0_control_effect: EffectSummary,
     ambiguity: AmbiguitySummary,
     runtime: RuntimeSummary,
 }
@@ -274,9 +289,14 @@ struct SongSummary {
     combined_membership_delta: i64,
     technique_cases: usize,
     mean_technique_fractional_reduction: f64,
-    control_cases: usize,
-    true_minus_rotated_uniform: f64,
-    true_minus_rotated_membership: i64,
+    previous_control_cases: usize,
+    true_minus_previous_uniform: f64,
+    true_minus_previous_membership: i64,
+    lag_two_control_cases: usize,
+    true_minus_lag_two_uniform: f64,
+    true_minus_lag_two_membership: i64,
+    technique_observed_control_cases: usize,
+    technique_observed_minus_alternatives: f64,
 }
 
 #[derive(Serialize)]
@@ -286,8 +306,11 @@ struct LooRecord {
     anchor_membership_delta: i64,
     combined_uniform_delta: f64,
     combined_membership_delta: i64,
-    true_minus_rotated_uniform: f64,
-    true_minus_rotated_membership: i64,
+    true_minus_previous_uniform: f64,
+    true_minus_previous_membership: i64,
+    true_minus_lag_two_uniform: f64,
+    true_minus_lag_two_membership: i64,
+    technique_observed_minus_alternatives: f64,
 }
 
 fn main() -> ExitCode {
@@ -316,8 +339,10 @@ fn run() -> Result<(), DynError> {
             })
         })
         .collect();
-    let rotated: BTreeMap<ChordEventIdentity, HandAnchor> =
-        rotate_anchors_within_song(&anchors).into_iter().collect();
+    let previous: BTreeMap<ChordEventIdentity, HandAnchor> =
+        causal_anchor_controls(&anchors, 1).into_iter().collect();
+    let lag_two: BTreeMap<ChordEventIdentity, HandAnchor> =
+        causal_anchor_controls(&anchors, 2).into_iter().collect();
     let mut writer = BufWriter::new(File::create(out.join("chord-event-results.jsonl"))?);
     let mut census_writer = BufWriter::new(File::create(out.join("chord-event-census.jsonl"))?);
     let mut statuses = StatusCounts::default();
@@ -450,11 +475,20 @@ fn run() -> Result<(), DynError> {
                 .as_ref()
                 .map_or(0, |set| set.optimum_count.value),
         );
-        let rotated_analysis = rotated.get(&event.identity).and_then(|anchor| {
+        let previous_analysis = previous.get(&event.identity).and_then(|anchor| {
             analyze_regimes(&problem.with_anchor(Some(*anchor)), Some(observed)).ok()
         });
-        effects.push(effect(event, &analysis, rotated_analysis.as_ref()));
+        let lag_two_analysis = lag_two.get(&event.identity).and_then(|anchor| {
+            analyze_regimes(&problem.with_anchor(Some(*anchor)), Some(observed)).ok()
+        });
         let technique_controls = technique_controls(problem, observed)?;
+        effects.push(effect(
+            event,
+            &analysis,
+            previous_analysis.as_ref(),
+            lag_two_analysis.as_ref(),
+            &technique_controls,
+        ));
         for control in &technique_controls {
             technique_string_conditions =
                 technique_string_conditions.saturating_add(control.strings.len() as u64);
@@ -533,10 +567,21 @@ fn run() -> Result<(), DynError> {
         combined_effect: summarize_effect(&effects, |effect| {
             effect.combined_uniform.zip(effect.combined_membership)
         }),
-        anchor_control_effect: summarize_effect(&effects, |effect| {
+        anchor_previous_control_effect: summarize_effect(&effects, |effect| {
             effect
-                .true_minus_rotated_uniform
-                .zip(effect.true_minus_rotated_membership)
+                .true_minus_previous_uniform
+                .zip(effect.true_minus_previous_membership)
+        }),
+        anchor_lag_two_control_effect: summarize_effect(&effects, |effect| {
+            effect
+                .true_minus_lag_two_uniform
+                .zip(effect.true_minus_lag_two_membership)
+        }),
+        technique_observed_control_effect: summarize_values(&effects, |effect| {
+            &effect.technique_observed_minus_alternatives
+        }),
+        technique_observed_b0_control_effect: summarize_values(&effects, |effect| {
+            &effect.technique_observed_b0_minus_alternatives
         }),
         ambiguity: AmbiguitySummary {
             r0_median: median_u64(&mut ambiguity[0]),
@@ -561,9 +606,12 @@ fn run() -> Result<(), DynError> {
             .map(|row| {
                 (
                     &row.song_key,
-                    row.control_cases,
-                    row.true_minus_rotated_uniform,
-                    row.true_minus_rotated_membership,
+                    row.previous_control_cases,
+                    row.true_minus_previous_uniform,
+                    row.true_minus_previous_membership,
+                    row.lag_two_control_cases,
+                    row.true_minus_lag_two_uniform,
+                    row.true_minus_lag_two_membership,
                 )
             })
             .collect::<Vec<_>>(),
@@ -636,32 +684,95 @@ fn technique_controls(
     for incoming in problem.incoming_techniques() {
         targets.insert(incoming.target_atom_id, incoming.origin_position.string);
     }
+    let excluded: BTreeSet<usize> = targets.keys().copied().collect();
     targets
         .into_iter()
         .map(|(target_atom_id, observed_string)| {
-            let strings = technique_string_controls(problem, target_atom_id, Some(observed))?
-                .into_iter()
-                .map(|entry| TechniqueStringRecord {
-                    string: entry.string,
-                    admissible_count: entry.admissible_count.into(),
-                    b0: entry.b0.as_ref().map(preferred_record),
-                    anchor: entry.anchor.as_ref().map(preferred_record),
-                })
+            let strings: Vec<_> =
+                technique_string_controls(problem, target_atom_id, Some(observed))?
+                    .into_iter()
+                    .map(|entry| {
+                        let whole_chord_membership = entry
+                            .assignments
+                            .iter()
+                            .any(|assignment| assignment_matches(assignment, observed));
+                        let non_target_score =
+                            non_target_uniform(&entry.assignments, observed, &excluded);
+                        let b0_non_target_uniform = entry.b0.as_ref().and_then(|set| {
+                            non_target_uniform(&set.assignments, observed, &excluded)
+                        });
+                        TechniqueStringRecord {
+                            string: entry.string,
+                            admissible_count: entry.admissible_count.into(),
+                            b0: entry.b0.as_ref().map(preferred_record),
+                            anchor: entry.anchor.as_ref().map(preferred_record),
+                            whole_chord_membership,
+                            non_target_uniform: non_target_score,
+                            b0_non_target_uniform,
+                        }
+                    })
+                    .collect();
+            let observed_value = strings
+                .iter()
+                .find(|row| row.string == observed_string)
+                .and_then(|row| row.non_target_uniform);
+            let alternatives: Vec<f64> = strings
+                .iter()
+                .filter(|row| row.string != observed_string)
+                .filter_map(|row| row.non_target_uniform)
                 .collect();
+            let observed_b0 = strings
+                .iter()
+                .find(|row| row.string == observed_string)
+                .and_then(|row| row.b0_non_target_uniform);
+            let b0_alternatives: Vec<f64> = strings
+                .iter()
+                .filter(|row| row.string != observed_string)
+                .filter_map(|row| row.b0_non_target_uniform)
+                .collect();
+            let observed_non_target_rank = observed_value.map(|value| {
+                1 + strings
+                    .iter()
+                    .filter_map(|row| row.non_target_uniform)
+                    .filter(|alternative| *alternative > value + 1e-12)
+                    .count()
+            });
             Ok(TechniqueControlRecord {
                 target_atom_id,
                 observed_string,
                 strings,
+                observed_non_target_rank,
+                observed_minus_mean_alternatives: observed_value
+                    .filter(|_| !alternatives.is_empty())
+                    .map(|value| value - mean(&alternatives)),
+                observed_minus_median_alternatives: observed_value
+                    .filter(|_| !alternatives.is_empty())
+                    .map(|value| value - median_f64(alternatives.clone())),
+                observed_minus_best_alternative: observed_value
+                    .zip(alternatives.iter().copied().max_by(f64::total_cmp))
+                    .map(|(value, best)| value - best),
+                observed_b0_minus_mean_alternatives: observed_b0
+                    .filter(|_| !b0_alternatives.is_empty())
+                    .map(|value| value - mean(&b0_alternatives)),
             })
         })
         .collect()
+}
+
+fn assignment_matches(assignment: &ChordAssignment, observed: &ObservedChordVoicing) -> bool {
+    observed
+        .positions()
+        .iter()
+        .all(|expected| assignment.position(expected.atom_id) == Some(expected.position))
 }
 
 #[allow(clippy::cast_precision_loss)] // descriptive ratio; exact counts retained
 fn effect(
     event: &ChordCensusEvent,
     analysis: &griff_constraint_lab::chord_event::ChordRegimeAnalysis,
-    rotated: Option<&griff_constraint_lab::chord_event::ChordRegimeAnalysis>,
+    previous: Option<&griff_constraint_lab::chord_event::ChordRegimeAnalysis>,
+    lag_two: Option<&griff_constraint_lab::chord_event::ChordRegimeAnalysis>,
+    technique_controls: &[TechniqueControlRecord],
 ) -> Effect {
     let has_technique = event
         .problem
@@ -671,7 +782,10 @@ fn effect(
     let r1 = analysis.r1.as_ref().and_then(|set| set.human.as_ref());
     let r2 = analysis.r2.b0.as_ref().and_then(|set| set.human.as_ref());
     let r3 = analysis.r3.as_ref().and_then(|set| set.human.as_ref());
-    let rotated_r1 = rotated
+    let previous_r1 = previous
+        .and_then(|value| value.r1.as_ref())
+        .and_then(|set| set.human.as_ref());
+    let lag_two_r1 = lag_two
         .and_then(|value| value.r1.as_ref())
         .and_then(|set| set.human.as_ref());
     let count0 = analysis.r0.admissible_count.value as f64;
@@ -716,10 +830,24 @@ fn effect(
         technique_non_target_uniform: has_technique
             .then(|| non_target.map(|(r0, r2)| r2 - r0))
             .flatten(),
-        true_minus_rotated_uniform: r1
-            .zip(rotated_r1)
+        technique_observed_minus_alternatives: technique_controls
+            .iter()
+            .filter_map(|control| control.observed_minus_mean_alternatives)
+            .collect(),
+        technique_observed_b0_minus_alternatives: technique_controls
+            .iter()
+            .filter_map(|control| control.observed_b0_minus_mean_alternatives)
+            .collect(),
+        true_minus_previous_uniform: r1
+            .zip(previous_r1)
             .map(|(true_anchor, wrong)| true_anchor.uniform - wrong.uniform),
-        true_minus_rotated_membership: r1.zip(rotated_r1).map(|(true_anchor, wrong)| {
+        true_minus_previous_membership: r1.zip(previous_r1).map(|(true_anchor, wrong)| {
+            i8::from(true_anchor.exact_membership) - i8::from(wrong.exact_membership)
+        }),
+        true_minus_lag_two_uniform: r1
+            .zip(lag_two_r1)
+            .map(|(true_anchor, wrong)| true_anchor.uniform - wrong.uniform),
+        true_minus_lag_two_membership: r1.zip(lag_two_r1).map(|(true_anchor, wrong)| {
             i8::from(true_anchor.exact_membership) - i8::from(wrong.exact_membership)
         }),
     }
@@ -773,12 +901,23 @@ fn summarize_song<'a>(song: &str, rows: impl Iterator<Item = &'a Effect>) -> Son
         .iter()
         .filter_map(|row| row.technique_fractional_reduction)
         .collect();
-    let control: Vec<_> = rows
+    let previous_control: Vec<_> = rows
         .iter()
         .filter_map(|row| {
-            row.true_minus_rotated_uniform
-                .zip(row.true_minus_rotated_membership)
+            row.true_minus_previous_uniform
+                .zip(row.true_minus_previous_membership)
         })
+        .collect();
+    let lag_two_control: Vec<_> = rows
+        .iter()
+        .filter_map(|row| {
+            row.true_minus_lag_two_uniform
+                .zip(row.true_minus_lag_two_membership)
+        })
+        .collect();
+    let technique_control: Vec<_> = rows
+        .iter()
+        .flat_map(|row| row.technique_observed_minus_alternatives.iter().copied())
         .collect();
     SongSummary {
         song_key: song.to_owned(),
@@ -791,9 +930,14 @@ fn summarize_song<'a>(song: &str, rows: impl Iterator<Item = &'a Effect>) -> Son
         combined_membership_delta: combined.iter().map(|row| i64::from(row.1)).sum(),
         technique_cases: technique.len(),
         mean_technique_fractional_reduction: mean(&technique),
-        control_cases: control.len(),
-        true_minus_rotated_uniform: control.iter().map(|row| row.0).sum(),
-        true_minus_rotated_membership: control.iter().map(|row| i64::from(row.1)).sum(),
+        previous_control_cases: previous_control.len(),
+        true_minus_previous_uniform: previous_control.iter().map(|row| row.0).sum(),
+        true_minus_previous_membership: previous_control.iter().map(|row| i64::from(row.1)).sum(),
+        lag_two_control_cases: lag_two_control.len(),
+        true_minus_lag_two_uniform: lag_two_control.iter().map(|row| row.0).sum(),
+        true_minus_lag_two_membership: lag_two_control.iter().map(|row| i64::from(row.1)).sum(),
+        technique_observed_control_cases: technique_control.len(),
+        technique_observed_minus_alternatives: technique_control.iter().sum(),
     }
 }
 
@@ -812,8 +956,11 @@ fn loo(effects: &[Effect]) -> Vec<LooRecord> {
                 anchor_membership_delta: row.anchor_membership_delta,
                 combined_uniform_delta: row.combined_uniform_delta,
                 combined_membership_delta: row.combined_membership_delta,
-                true_minus_rotated_uniform: row.true_minus_rotated_uniform,
-                true_minus_rotated_membership: row.true_minus_rotated_membership,
+                true_minus_previous_uniform: row.true_minus_previous_uniform,
+                true_minus_previous_membership: row.true_minus_previous_membership,
+                true_minus_lag_two_uniform: row.true_minus_lag_two_uniform,
+                true_minus_lag_two_membership: row.true_minus_lag_two_membership,
+                technique_observed_minus_alternatives: row.technique_observed_minus_alternatives,
             }
         })
         .collect()
@@ -852,6 +999,36 @@ fn summarize_effect(
         songs_with_improvement: songs.values().filter(|delta| **delta > epsilon).count(),
         songs_with_worsening: songs.values().filter(|delta| **delta < -epsilon).count(),
     }
+}
+
+#[allow(clippy::cast_precision_loss)] // descriptive mean over exact control values
+fn summarize_values<'a>(
+    effects: &'a [Effect],
+    select: impl Fn(&'a Effect) -> &'a [f64],
+) -> EffectSummary {
+    let expanded: Vec<Effect> = effects
+        .iter()
+        .flat_map(|effect| {
+            select(effect).iter().map(|delta| Effect {
+                song: effect.song.clone(),
+                anchor_uniform: Some(*delta),
+                anchor_membership: Some(0),
+                combined_uniform: None,
+                combined_membership: None,
+                technique_fractional_reduction: None,
+                technique_non_target_uniform: None,
+                technique_observed_minus_alternatives: Vec::new(),
+                technique_observed_b0_minus_alternatives: Vec::new(),
+                true_minus_previous_uniform: None,
+                true_minus_previous_membership: None,
+                true_minus_lag_two_uniform: None,
+                true_minus_lag_two_membership: None,
+            })
+        })
+        .collect();
+    summarize_effect(&expanded, |effect| {
+        effect.anchor_uniform.zip(effect.anchor_membership)
+    })
 }
 
 fn median_u64(values: &mut [u64]) -> u64 {
