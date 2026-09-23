@@ -2,11 +2,11 @@
 
 use griff_constraint_lab::{
     technique_origin::{
-        conditioned_profile, estimate_primary, estimate_with_hand, technique_feasible_strings,
-        BlindOriginProblem, HandEstimate, IntentAwareOriginProblem, ObservedOriginRealization,
-        OriginIdentity, OriginStringEstimate, TechniqueIntent,
+        conditioned_profile, deterministic_restricted_string, estimate_primary, estimate_with_hand,
+        technique_feasible_strings, BlindOriginProblem, HandEstimate, IntentAwareOriginProblem,
+        ObservedOriginRealization, OriginIdentity, OriginStringEstimate, TechniqueIntent,
     },
-    ties::{lexicographic_path, Chain, Features, FEATURES},
+    ties::{lexicographic_path, Chain, FEATURES},
 };
 use griff_core::{
     event::{FretboardPosition, Pitch, Tuning},
@@ -23,32 +23,51 @@ fn weights() -> FingeringWeights {
 }
 
 #[test]
-fn restricted_full_chain_dp_not_canonical_ambiguous_representative() {
-    let chain = Chain::v1(
-        &[Pitch(59), Pitch(64), Pitch(59)],
-        &Tuning::standard_e(),
-        &FingeringWeights {
-            fret: 0,
-            open_string: 0,
-            position_shift: 1,
-            string_change: 0,
-        },
-        24,
-    )
-    .unwrap();
-    let profile = conditioned_profile(&chain, 1);
-    let allowed: Vec<_> = profile
-        .entries()
-        .iter()
-        .filter(|entry| entry.delta() == 0)
-        .map(|entry| entry.string())
-        .collect();
-    let restricted = chain.restrict_note_strings(1, &allowed).unwrap();
-    let weights: Features = [0; FEATURES];
-    let path = lexicographic_path(&restricted, &weights, None);
-    let selected = restricted.positions_of(&path).unwrap()[1].string;
-    assert!(allowed.len() > 1);
-    assert_ne!(selected, allowed[0]);
+fn restricted_reporting_matches_full_chain_dp_on_generated_ties() {
+    let tuning = Tuning::standard_e();
+    let mut tied_profiles = 0;
+    for first in 40..=76 {
+        for origin in 40..=76 {
+            for last in 40..=76 {
+                let chain = Chain::v1(
+                    &[Pitch(first), Pitch(origin), Pitch(last)],
+                    &tuning,
+                    &FingeringWeights {
+                        fret: 0,
+                        open_string: 0,
+                        position_shift: 1,
+                        string_change: 1,
+                    },
+                    24,
+                )
+                .unwrap();
+                let profile = conditioned_profile(&chain, 1);
+                let allowed: Vec<_> = profile
+                    .entries()
+                    .iter()
+                    .filter(|entry| entry.delta() == 0)
+                    .map(|entry| entry.string())
+                    .collect();
+                if allowed.len() < 2 {
+                    continue;
+                }
+                tied_profiles += 1;
+                let restricted = chain.restrict_note_strings(1, &allowed).unwrap();
+                let path = lexicographic_path(&restricted, &[0; FEATURES], None);
+                let selected = restricted.positions_of(&path).unwrap()[1].string;
+                assert_eq!(
+                    deterministic_restricted_string(
+                        &restricted,
+                        1,
+                        &allowed,
+                        HandEstimate::Unknown
+                    ),
+                    Some(selected)
+                );
+            }
+        }
+    }
+    assert!(tied_profiles > 1_000);
 }
 
 #[test]

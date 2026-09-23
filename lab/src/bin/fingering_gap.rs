@@ -117,8 +117,8 @@ use griff_constraint_lab::technique::{
     technique_cost, Continuity, LegatoDirection, TechniqueObjective,
 };
 use griff_constraint_lab::technique_origin::{
-    conditioned_profile, estimate_primary, estimate_with_hand, technique_feasible_strings,
-    HandEstimate, OriginStringEstimate, OriginStringProfile,
+    conditioned_profile, deterministic_restricted_string, estimate_primary, estimate_with_hand,
+    technique_feasible_strings, HandEstimate, OriginStringEstimate,
 };
 use griff_constraint_lab::ties::{
     lexicographic_path, optimum_set, path_matches, train_secondary, Chain, Example, Features,
@@ -5228,12 +5228,10 @@ struct OriginProfileRecord {
 }
 
 fn regime_record(
-    _profile: &OriginStringProfile,
-    _allowed: Option<&[u8]>,
+    deterministic_string: Option<u8>,
     estimate: OriginStringEstimate,
     imported: u8,
 ) -> OriginRegimeRecord {
-    let deterministic_string = estimate.strings().first().copied();
     let imported_in_set = estimate.strings().contains(&imported);
     let set_size = estimate.strings().len();
     let known_exact = match estimate {
@@ -5772,9 +5770,18 @@ fn technique_origin_state(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
             )
             .expect("registered within-line technique chain");
             let joint_profile = conditioned_profile(&chain, relation.from);
+            let joint_allowed: Vec<_> = joint_profile
+                .entries()
+                .iter()
+                .map(|entry| entry.string())
+                .collect();
             regime_record(
-                &joint_profile,
-                None,
+                deterministic_restricted_string(
+                    &chain,
+                    relation.from,
+                    &joint_allowed,
+                    HandEstimate::Unknown,
+                ),
                 estimate_primary(&joint_profile, None),
                 imported.string,
             )
@@ -5809,10 +5816,27 @@ fn technique_origin_state(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
             raw_domain: profile.entries().len(),
             technique_domain: allowed.len(),
             technique_domain_retains_imported: true,
-            blind: regime_record(&profile, None, blind_estimate, imported.string),
-            intent_t: regime_record(&profile, Some(&allowed), t_estimate, imported.string),
-            intent_t_hp: regime_record(&profile, Some(&allowed), hp_estimate, imported.string),
-            intent_t_hc: regime_record(&profile, Some(&allowed), hc_estimate, imported.string),
+            blind: regime_record(Some(v0.string), blind_estimate, imported.string),
+            intent_t: regime_record(
+                deterministic_restricted_string(
+                    &base,
+                    relation.from,
+                    &allowed,
+                    HandEstimate::Unknown,
+                ),
+                t_estimate,
+                imported.string,
+            ),
+            intent_t_hp: regime_record(
+                deterministic_restricted_string(&base, relation.from, &allowed, p),
+                hp_estimate,
+                imported.string,
+            ),
+            intent_t_hc: regime_record(
+                deterministic_restricted_string(&base, relation.from, &allowed, c),
+                hc_estimate,
+                imported.string,
+            ),
             joint_j,
             hand_p: p,
             hand_c: c,

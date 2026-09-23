@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use griff_core::event::{FretboardPosition, Pitch, Tuning};
 use serde::{Deserialize, Serialize};
 
-use crate::ties::{optimum_set, Chain};
+use crate::ties::{lexicographic_path, optimum_set, Chain, Features, FEATURES};
 
 /// Stable identity of one projected origin/target relation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +292,29 @@ pub fn estimate_with_hand(
             .map(|entry| entry.string)
             .collect(),
     )
+}
+
+/// The actual full-chain deterministic origin string after a transparent
+/// domain restriction and optional hand secondary. This is solver behavior,
+/// deliberately separate from [`OriginStringEstimate`] certainty.
+#[must_use]
+pub fn deterministic_restricted_string(
+    chain: &Chain,
+    note: usize,
+    allowed: &[u8],
+    hand: HandEstimate,
+) -> Option<u8> {
+    let mut restricted = chain.clone().restrict_note_strings(note, allowed)?;
+    let mut secondary: Features = [0; FEATURES];
+    if let HandEstimate::Known(anchor) = hand {
+        restricted = restricted.with_anchor(Some(anchor));
+        secondary[FEATURES - 1] = 1;
+    }
+    let path = lexicographic_path(&restricted, &secondary, None);
+    restricted
+        .positions_of(&path)?
+        .get(note)
+        .map(|position| position.string)
 }
 
 /// Origin strings on which both endpoint pitches are physically playable.

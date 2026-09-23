@@ -165,13 +165,21 @@ impl Chain {
     /// every cost attached to the surviving states. Returns `None` when the
     /// note is absent or has no candidate on that string.
     #[must_use]
-    pub fn condition_string(mut self, note: usize, string: u8) -> Option<Self> {
+    pub fn condition_string(self, note: usize, string: u8) -> Option<Self> {
+        self.restrict_note_strings(note, &[string])
+    }
+
+    /// Restricts one stable line note to a non-empty set of physical strings
+    /// while preserving every cost and candidate-order tie attached to the
+    /// surviving states. Returns `None` for an absent note or empty domain.
+    #[must_use]
+    pub fn restrict_note_strings(mut self, note: usize, strings: &[u8]) -> Option<Self> {
         let keep: Vec<usize> = self
             .positions
             .get(note)?
             .iter()
             .enumerate()
-            .filter_map(|(index, position)| (position.string == string).then_some(index))
+            .filter_map(|(index, position)| strings.contains(&position.string).then_some(index))
             .collect();
         if keep.is_empty() {
             return None;
