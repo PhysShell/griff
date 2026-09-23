@@ -190,6 +190,7 @@ struct Effect {
     combined_uniform: Option<f64>,
     combined_membership: Option<i8>,
     technique_fractional_reduction: Option<f64>,
+    technique_non_target_uniform: Option<f64>,
     true_minus_rotated_uniform: Option<f64>,
     true_minus_rotated_membership: Option<i8>,
 }
@@ -210,6 +211,31 @@ struct RuntimeSummary {
     worst_event_micros: u128,
 }
 
+#[derive(Default, Serialize)]
+struct EffectSummary {
+    cases: usize,
+    improved: usize,
+    unchanged: usize,
+    worsened: usize,
+    uniform_delta_sum: f64,
+    uniform_delta_mean: f64,
+    membership_delta: i64,
+    songs_with_improvement: usize,
+    songs_with_worsening: usize,
+}
+
+#[derive(Default, Serialize)]
+struct AmbiguitySummary {
+    r0_median: u64,
+    r0_b0_median: u64,
+    r1_median: u64,
+    r2_median: u64,
+    r2_b0_median: u64,
+    r3_median: u64,
+    technique_fractional_reduction_mean: f64,
+    technique_fractional_reduction_median: f64,
+}
+
 #[derive(Serialize)]
 struct Summary {
     schema: &'static str,
@@ -225,6 +251,14 @@ struct Summary {
     r2_human_membership: u64,
     r3_human_membership: u64,
     technique_conflicts: u64,
+    technique_human_feasible: u64,
+    technique_string_conditions: u64,
+    technique_string_conditions_feasible: u64,
+    anchor_effect: EffectSummary,
+    technique_non_target_effect: EffectSummary,
+    combined_effect: EffectSummary,
+    anchor_control_effect: EffectSummary,
+    ambiguity: AmbiguitySummary,
     runtime: RuntimeSummary,
 }
 
@@ -293,6 +327,17 @@ fn run() -> Result<(), DynError> {
     let mut family_counts = BTreeMap::new();
     let mut membership = [0_u64; 6];
     let mut conflicts = 0_u64;
+    let mut technique_human_feasible = 0_u64;
+    let mut technique_string_conditions = 0_u64;
+    let mut technique_string_conditions_feasible = 0_u64;
+    let mut ambiguity = [
+        Vec::<u64>::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ];
     let mut max_product = 0_u64;
     let mut max_assignments = 0_u64;
     let mut worst = None;
@@ -369,11 +414,59 @@ fn run() -> Result<(), DynError> {
             .and_then(|set| set.human.as_ref())
             .map_or(0, |human| u64::from(human.exact_membership));
         conflicts += u64::from(analysis.r2.conflict.is_some());
+        technique_human_feasible += u64::from(
+            has_technique
+                && analysis
+                    .r2
+                    .human
+                    .as_ref()
+                    .is_some_and(|human| human.exact_membership),
+        );
+        ambiguity[0].push(analysis.r0.admissible_count.value);
+        ambiguity[1].push(
+            analysis
+                .r0
+                .b0
+                .as_ref()
+                .map_or(0, |set| set.optimum_count.value),
+        );
+        ambiguity[2].push(
+            analysis
+                .r1
+                .as_ref()
+                .map_or(0, |set| set.optimum_count.value),
+        );
+        ambiguity[3].push(analysis.r2.admissible_count.value);
+        ambiguity[4].push(
+            analysis
+                .r2
+                .b0
+                .as_ref()
+                .map_or(0, |set| set.optimum_count.value),
+        );
+        ambiguity[5].push(
+            analysis
+                .r3
+                .as_ref()
+                .map_or(0, |set| set.optimum_count.value),
+        );
         let rotated_analysis = rotated.get(&event.identity).and_then(|anchor| {
             analyze_regimes(&problem.with_anchor(Some(*anchor)), Some(observed)).ok()
         });
         effects.push(effect(event, &analysis, rotated_analysis.as_ref()));
         let technique_controls = technique_controls(problem, observed)?;
+        for control in &technique_controls {
+            technique_string_conditions =
+                technique_string_conditions.saturating_add(control.strings.len() as u64);
+            technique_string_conditions_feasible = technique_string_conditions_feasible
+                .saturating_add(
+                    control
+                        .strings
+                        .iter()
+                        .filter(|condition| condition.admissible_count.value > 0)
+                        .count() as u64,
+                );
+        }
         let record = EventRecord {
             source: event.identity.source.clone(),
             song_key: event.identity.song_key.clone(),
@@ -410,6 +503,10 @@ fn run() -> Result<(), DynError> {
         worst_event: worst,
         worst_event_micros: worst_time.as_micros(),
     };
+    let technique_reductions: Vec<f64> = effects
+        .iter()
+        .filter_map(|effect| effect.technique_fractional_reduction)
+        .collect();
     let summary = Summary {
         schema: "griff.constraint-lab-chord-event-representation.v1",
         corpus,
@@ -424,6 +521,33 @@ fn run() -> Result<(), DynError> {
         r2_human_membership: membership[4],
         r3_human_membership: membership[5],
         technique_conflicts: conflicts,
+        technique_human_feasible,
+        technique_string_conditions,
+        technique_string_conditions_feasible,
+        anchor_effect: summarize_effect(&effects, |effect| {
+            effect.anchor_uniform.zip(effect.anchor_membership)
+        }),
+        technique_non_target_effect: summarize_effect(&effects, |effect| {
+            effect.technique_non_target_uniform.map(|delta| (delta, 0))
+        }),
+        combined_effect: summarize_effect(&effects, |effect| {
+            effect.combined_uniform.zip(effect.combined_membership)
+        }),
+        anchor_control_effect: summarize_effect(&effects, |effect| {
+            effect
+                .true_minus_rotated_uniform
+                .zip(effect.true_minus_rotated_membership)
+        }),
+        ambiguity: AmbiguitySummary {
+            r0_median: median_u64(&mut ambiguity[0]),
+            r0_b0_median: median_u64(&mut ambiguity[1]),
+            r1_median: median_u64(&mut ambiguity[2]),
+            r2_median: median_u64(&mut ambiguity[3]),
+            r2_b0_median: median_u64(&mut ambiguity[4]),
+            r3_median: median_u64(&mut ambiguity[5]),
+            technique_fractional_reduction_mean: mean(&technique_reductions),
+            technique_fractional_reduction_median: median_f64(technique_reductions),
+        },
         runtime,
     };
     write_json(&out.join("chord-event-census.json"), &summary)?;
@@ -539,6 +663,10 @@ fn effect(
     analysis: &griff_constraint_lab::chord_event::ChordRegimeAnalysis,
     rotated: Option<&griff_constraint_lab::chord_event::ChordRegimeAnalysis>,
 ) -> Effect {
+    let has_technique = event
+        .problem
+        .as_ref()
+        .is_some_and(|problem| !problem.incoming_techniques().is_empty());
     let r0 = analysis.r0.b0.as_ref().and_then(|set| set.human.as_ref());
     let r1 = analysis.r1.as_ref().and_then(|set| set.human.as_ref());
     let r2 = analysis.r2.b0.as_ref().and_then(|set| set.human.as_ref());
@@ -548,6 +676,20 @@ fn effect(
         .and_then(|set| set.human.as_ref());
     let count0 = analysis.r0.admissible_count.value as f64;
     let count2 = analysis.r2.admissible_count.value as f64;
+    let observed = event.observed.as_ref();
+    let targets: BTreeSet<usize> = event
+        .problem
+        .as_ref()
+        .into_iter()
+        .flat_map(griff_constraint_lab::chord_event::ChordEventProblem::incoming_techniques)
+        .map(|incoming| incoming.target_atom_id)
+        .collect();
+    let non_target =
+        observed.and_then(|observed| {
+            non_target_uniform(&analysis.r0.assignments, observed, &targets).zip(
+                non_target_uniform(&analysis.r2.assignments, observed, &targets),
+            )
+        });
     Effect {
         song: event.identity.song_key.clone(),
         anchor_uniform: r0
@@ -556,18 +698,24 @@ fn effect(
         anchor_membership: r0.zip(r1).map(|(base, context)| {
             i8::from(context.exact_membership) - i8::from(base.exact_membership)
         }),
-        combined_uniform: r2
-            .zip(r3)
-            .map(|(base, context)| context.uniform - base.uniform),
-        combined_membership: r2.zip(r3).map(|(base, context)| {
-            i8::from(context.exact_membership) - i8::from(base.exact_membership)
-        }),
-        technique_fractional_reduction: (!event
-            .problem
-            .as_ref()
-            .is_some_and(|problem| problem.incoming_techniques().is_empty())
-            && count0 > 0.0)
+        combined_uniform: has_technique
+            .then(|| {
+                r2.zip(r3)
+                    .map(|(base, context)| context.uniform - base.uniform)
+            })
+            .flatten(),
+        combined_membership: has_technique
+            .then(|| {
+                r2.zip(r3).map(|(base, context)| {
+                    i8::from(context.exact_membership) - i8::from(base.exact_membership)
+                })
+            })
+            .flatten(),
+        technique_fractional_reduction: (has_technique && count0 > 0.0)
             .then(|| (count0 - count2) / count0),
+        technique_non_target_uniform: has_technique
+            .then(|| non_target.map(|(r0, r2)| r2 - r0))
+            .flatten(),
         true_minus_rotated_uniform: r1
             .zip(rotated_r1)
             .map(|(true_anchor, wrong)| true_anchor.uniform - wrong.uniform),
@@ -575,6 +723,32 @@ fn effect(
             i8::from(true_anchor.exact_membership) - i8::from(wrong.exact_membership)
         }),
     }
+}
+
+#[allow(clippy::cast_precision_loss)] // descriptive uniform agreement
+fn non_target_uniform(
+    assignments: &[ChordAssignment],
+    observed: &ObservedChordVoicing,
+    excluded: &BTreeSet<usize>,
+) -> Option<f64> {
+    let positions: Vec<_> = observed
+        .positions()
+        .iter()
+        .filter(|position| !excluded.contains(&position.atom_id))
+        .collect();
+    if positions.is_empty() || assignments.is_empty() {
+        return None;
+    }
+    let matches: usize = assignments
+        .iter()
+        .map(|assignment| {
+            positions
+                .iter()
+                .filter(|expected| assignment.position(expected.atom_id) == Some(expected.position))
+                .count()
+        })
+        .sum();
+    Some(matches as f64 / (assignments.len() * positions.len()) as f64)
 }
 
 fn song_summaries(effects: &[Effect]) -> Vec<SongSummary> {
@@ -645,6 +819,57 @@ fn loo(effects: &[Effect]) -> Vec<LooRecord> {
         .collect()
 }
 
+#[allow(clippy::cast_precision_loss)] // descriptive mean over exact case values
+fn summarize_effect(
+    effects: &[Effect],
+    select: impl Fn(&Effect) -> Option<(f64, i8)>,
+) -> EffectSummary {
+    let rows: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| select(effect).map(|value| (&effect.song, value)))
+        .collect();
+    let mut songs: BTreeMap<&str, f64> = BTreeMap::new();
+    for (song, (delta, _)) in &rows {
+        *songs.entry(song).or_default() += *delta;
+    }
+    let epsilon = 1e-12;
+    let sum: f64 = rows.iter().map(|(_, row)| row.0).sum();
+    EffectSummary {
+        cases: rows.len(),
+        improved: rows.iter().filter(|(_, row)| row.0 > epsilon).count(),
+        unchanged: rows
+            .iter()
+            .filter(|(_, row)| row.0.abs() <= epsilon)
+            .count(),
+        worsened: rows.iter().filter(|(_, row)| row.0 < -epsilon).count(),
+        uniform_delta_sum: sum,
+        uniform_delta_mean: if rows.is_empty() {
+            0.0
+        } else {
+            sum / rows.len() as f64
+        },
+        membership_delta: rows.iter().map(|(_, row)| i64::from(row.1)).sum(),
+        songs_with_improvement: songs.values().filter(|delta| **delta > epsilon).count(),
+        songs_with_worsening: songs.values().filter(|delta| **delta < -epsilon).count(),
+    }
+}
+
+fn median_u64(values: &mut [u64]) -> u64 {
+    values.sort_unstable();
+    values
+        .get(values.len().saturating_sub(1) / 2)
+        .copied()
+        .unwrap_or(0)
+}
+
+fn median_f64(mut values: Vec<f64>) -> f64 {
+    values.sort_by(f64::total_cmp);
+    values
+        .get(values.len().saturating_sub(1) / 2)
+        .copied()
+        .unwrap_or(0.0)
+}
+
 fn candidate_product(problem: &griff_constraint_lab::chord_event::ChordEventProblem) -> u64 {
     problem
         .atoms()
@@ -702,7 +927,7 @@ fn mean(values: &[f64]) -> f64 {
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf_9ce4_8422_2325, |acc, byte| {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |acc, byte| {
         (acc ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
 }
