@@ -88,6 +88,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use griff_constraint_lab::boundary_context::{
+    condition_consumer_chain, consume_for_line, decode_context, encode_context, produce_context,
+    BoundaryContext, ProjectedTechnique, SolvedNote, SolvedPartition, VoiceIdentity,
+};
 use griff_constraint_lab::chord::{
     analyze_chord, ChordAnalysis, ChordAtom, ChordCostPolicy, ChordOptimum, HumanChordAssessment,
     TargetStringConstraint, TargetStringResult,
@@ -4511,7 +4515,22 @@ struct BoundaryReplayRecord {
     hand: Option<BoundaryRegimeRecord>,
     technique: BoundaryRegimeRecord,
     both: Option<BoundaryRegimeRecord>,
+    causal: BoundaryRegimeRecord,
+    causal_required_string: u8,
+    causal_anchor_fret: Option<u8>,
+    causal_matches_oracle_context: bool,
+    causal_transport_equal: bool,
 }
+
+struct CausalReplay {
+    regime: BoundaryRegimeRecord,
+    required_string: u8,
+    anchor_fret: Option<u8>,
+    transport_equal: bool,
+}
+
+type CausalReplayKey = (usize, usize, u8, usize);
+type CausalReplayMap = BTreeMap<CausalReplayKey, CausalReplay>;
 
 fn boundary_regime(
     chain: Option<Chain>,
@@ -4587,8 +4606,152 @@ struct BoundaryReplaySummary {
     both_whole_better_equal_worse: [usize; 3],
     target_matches: [usize; 4],
     imported_path_primary_optimum: [usize; 4],
+    causal_feasible: usize,
+    causal_target_matches: usize,
+    causal_string_matches_oracle: usize,
+    causal_anchor_matches_oracle: usize,
+    causal_context_matches_oracle: usize,
+    causal_transport_equal: usize,
+    causal_whole_better_equal_worse: [usize; 3],
+    causal_non_target_better_equal_worse: [usize; 3],
     within_line_relations: u64,
     cross_line_relations: u64,
+}
+
+fn boundary_kind(kind: TechniqueKind) -> griff_constraint_lab::boundary_context::TechniqueKind {
+    match kind {
+        TechniqueKind::HammerOn => griff_constraint_lab::boundary_context::TechniqueKind::HammerOn,
+        TechniqueKind::PullOff => griff_constraint_lab::boundary_context::TechniqueKind::PullOff,
+        TechniqueKind::Legato => griff_constraint_lab::boundary_context::TechniqueKind::Legato,
+    }
+}
+
+fn causal_boundary_replay(
+    corpus: &Corpus,
+    weights: &FingeringWeights,
+) -> std::io::Result<CausalReplayMap> {
+    let mut order: Vec<usize> = (0..corpus.lines.len()).collect();
+    order.sort_by_key(|&index| {
+        let line = &corpus.lines[index];
+        (
+            line.file,
+            line.tab.track,
+            line.tab.voice,
+            line.tab.start_tick,
+        )
+    });
+    let mut contexts: BTreeMap<(usize, usize, u8), BoundaryContext> = BTreeMap::new();
+    let mut output = BTreeMap::new();
+    let mut anchor_features = [0; FEATURES];
+    anchor_features[FEATURES - 1] = 1;
+    for index in order {
+        let line = &corpus.lines[index];
+        let key = (line.file, line.tab.track, line.tab.voice);
+        let voice = VoiceIdentity::new(
+            corpus.names[line.file].clone(),
+            line.tab.track,
+            line.tab.voice,
+        );
+        let context = contexts
+            .remove(&key)
+            .unwrap_or_else(|| BoundaryContext::unknown(voice.clone()));
+        let direct = consume_for_line(context.clone(), &voice, &line.tab.note_ids)
+            .map_err(std::io::Error::other)?;
+        let bytes = encode_context(&context).map_err(std::io::Error::other)?;
+        let transported = decode_context(&bytes).map_err(std::io::Error::other)?;
+        let consumed = consume_for_line(transported, &voice, &line.tab.note_ids)
+            .map_err(std::io::Error::other)?;
+        let transport_equal = direct == consumed;
+        if !transport_equal {
+            return Err(std::io::Error::other(
+                "serialized transport changed consumption",
+            ));
+        }
+        let base = Chain::v1(
+            &line.tab.pitches,
+            &line.tab.tuning,
+            weights,
+            STANDARD_MAX_FRET,
+        )
+        .map_err(std::io::Error::other)?;
+        let conditioned = condition_consumer_chain(base, &line.tab.note_ids, &consumed)
+            .map_err(std::io::Error::other)?;
+        let anchor = match consumed.anchor_fret() {
+            Ok(value) => value,
+            Err(griff_constraint_lab::boundary_context::BoundaryContextError::UnknownHand) => None,
+            Err(error) => return Err(std::io::Error::other(error)),
+        };
+        let chain = conditioned.with_anchor(anchor);
+        let secondary = anchor.map(|_| &anchor_features);
+        for obligation in consumed.consumed() {
+            let target = line
+                .tab
+                .note_ids
+                .iter()
+                .position(|note_id| *note_id == obligation.target_note_id())
+                .ok_or_else(|| std::io::Error::other("consumed target disappeared"))?;
+            output.insert(
+                (
+                    line.file,
+                    line.tab.track,
+                    line.tab.voice,
+                    obligation.target_note_id(),
+                ),
+                CausalReplay {
+                    regime: boundary_regime(
+                        Some(chain.clone()),
+                        &line.tab.human,
+                        target,
+                        secondary,
+                    ),
+                    required_string: obligation.required_string(),
+                    anchor_fret: anchor,
+                    transport_equal,
+                },
+            );
+        }
+        let zero = [0; FEATURES];
+        let path = lexicographic_path(&chain, secondary.unwrap_or(&zero), None);
+        let positions = chain
+            .positions_of(&path)
+            .ok_or_else(|| std::io::Error::other("causal path is ragged"))?;
+        let solved = SolvedPartition::new(
+            voice,
+            line.tab
+                .note_ids
+                .iter()
+                .zip(&line.tab.onsets)
+                .zip(&positions)
+                .zip(&line.tab.tapped)
+                .map(|(((note_id, onset), position), tapped)| {
+                    SolvedNote::new(*note_id, *onset, *position, *tapped)
+                })
+                .collect(),
+        )
+        .map_err(std::io::Error::other)?;
+        let relations: Vec<_> = line
+            .tab
+            .cross_line_edges
+            .iter()
+            .filter(|edge| edge.boundary.target_disposition == TargetDisposition::KeptLine)
+            .map(|edge| {
+                ProjectedTechnique::new(
+                    edge.origin_note_id,
+                    line.tab.onsets[edge.from],
+                    edge.target.note_id,
+                    boundary_kind(edge.kind),
+                )
+            })
+            .collect();
+        let outgoing = produce_context(consumed.remaining(), &solved, &relations)
+            .map_err(std::io::Error::other)?;
+        contexts.insert(
+            key,
+            decode_context(&encode_context(&outgoing).map_err(std::io::Error::other)?)
+                .map_err(std::io::Error::other)?,
+        );
+    }
+    Ok(output)
 }
 
 fn compare_non_target(
@@ -4636,6 +4799,7 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
         position_shift: 1,
         string_change: 0,
     };
+    let mut causal = causal_boundary_replay(corpus, &weights)?;
     let mut records = Vec::new();
     for origin in &corpus.lines {
         for edge in &origin.tab.cross_line_edges {
@@ -4715,6 +4879,16 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
                     Some(&anchor_features),
                 )
             });
+            let causal_replay = causal
+                .remove(&(
+                    origin.file,
+                    origin.tab.track,
+                    origin.tab.voice,
+                    edge.target.note_id,
+                ))
+                .ok_or_else(|| std::io::Error::other("causal obligation was not consumed"))?;
+            let causal_matches_oracle_context = causal_replay.required_string == origin_string
+                && causal_replay.anchor_fret == target_line.tab.anchor_fret;
             records.push(BoundaryReplayRecord {
                 schema: "griff.constraint-lab-boundary-context-replay.v1",
                 source: corpus.names[origin.file].clone(),
@@ -4732,6 +4906,11 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
                 hand,
                 technique,
                 both,
+                causal: causal_replay.regime,
+                causal_required_string: causal_replay.required_string,
+                causal_anchor_fret: causal_replay.anchor_fret,
+                causal_matches_oracle_context,
+                causal_transport_equal: causal_replay.transport_equal,
             });
         }
     }
@@ -4763,6 +4942,8 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
     let mut hand_whole = [0; 3];
     let mut technique_whole = [0; 3];
     let mut both_whole = [0; 3];
+    let mut causal_whole = [0; 3];
+    let mut causal_non_target = [0; 3];
     for record in &records {
         if let Some(hand) = &record.hand {
             compare_non_target(&record.independent, hand, &mut hand_counts);
@@ -4778,6 +4959,8 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
             compare_non_target(&record.independent, both, &mut both_counts);
             compare_whole(&record.independent, both, &mut both_whole);
         }
+        compare_whole(&record.independent, &record.causal, &mut causal_whole);
+        compare_non_target(&record.independent, &record.causal, &mut causal_non_target);
     }
     let summary = BoundaryReplaySummary {
         schema: "griff.constraint-lab-boundary-context-replay-summary.v1",
@@ -4856,6 +5039,32 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
                 })
                 .count(),
         ],
+        causal_feasible: records
+            .iter()
+            .filter(|record| record.causal.feasible)
+            .count(),
+        causal_target_matches: records
+            .iter()
+            .filter(|record| record.causal.deterministic_target_match == Some(true))
+            .count(),
+        causal_string_matches_oracle: records
+            .iter()
+            .filter(|record| record.causal_required_string == record.origin_string)
+            .count(),
+        causal_anchor_matches_oracle: records
+            .iter()
+            .filter(|record| record.causal_anchor_fret == record.anchor_fret)
+            .count(),
+        causal_context_matches_oracle: records
+            .iter()
+            .filter(|record| record.causal_matches_oracle_context)
+            .count(),
+        causal_transport_equal: records
+            .iter()
+            .filter(|record| record.causal_transport_equal)
+            .count(),
+        causal_whole_better_equal_worse: causal_whole,
+        causal_non_target_better_equal_worse: causal_non_target,
         within_line_relations: 29_758,
         cross_line_relations: corpus.facts.cut_stats.cross_line_legato,
     };
