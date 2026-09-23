@@ -503,7 +503,7 @@ fn conditioning_one_note_to_a_string_preserves_other_states() {
         24,
     )
     .unwrap();
-    let conditioned = chain.condition_string(0, 2).unwrap();
+    let conditioned = chain.clone().condition_string(0, 2).unwrap();
     assert!(conditioned
         .candidates(0)
         .iter()

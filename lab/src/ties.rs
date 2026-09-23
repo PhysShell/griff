@@ -161,6 +161,36 @@ impl Chain {
         Self { anchor, ..self }
     }
 
+    /// Restricts one stable line note to a physical string while preserving
+    /// every cost attached to the surviving states. Returns `None` when the
+    /// note is absent or has no candidate on that string.
+    #[must_use]
+    pub fn condition_string(mut self, note: usize, string: u8) -> Option<Self> {
+        let keep: Vec<usize> = self
+            .positions
+            .get(note)?
+            .iter()
+            .enumerate()
+            .filter_map(|(index, position)| (position.string == string).then_some(index))
+            .collect();
+        if keep.is_empty() {
+            return None;
+        }
+        if note > 0 {
+            for previous in self.pairwise.get_mut(note)? {
+                *previous = keep.iter().map(|&index| previous[index]).collect();
+            }
+        }
+        if let Some(next) = self.pairwise.get_mut(note + 1) {
+            *next = keep.iter().map(|&index| next[index].clone()).collect();
+        }
+        let positions = self.positions.get_mut(note)?;
+        *positions = keep.iter().map(|&index| positions[index]).collect();
+        let unary = self.unary.get_mut(note)?;
+        *unary = keep.iter().map(|&index| unary[index]).collect();
+        Some(self)
+    }
+
     /// The hand anchor, when set.
     #[must_use]
     pub const fn anchor(&self) -> Option<u8> {

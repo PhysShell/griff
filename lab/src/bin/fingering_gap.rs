@@ -4478,6 +4478,305 @@ fn legato_chord_context(corpus: Corpus, out: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct BoundaryRegimeRecord {
+    feasible: bool,
+    optimum: Option<i64>,
+    optimum_count: Option<u64>,
+    human_in_optimum: Option<bool>,
+    agreement_floor: Option<usize>,
+    agreement_uniform: Option<f64>,
+    agreement_ceiling: Option<usize>,
+    deterministic_matches: Option<usize>,
+    deterministic_non_target_matches: Option<usize>,
+    deterministic_target_match: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct BoundaryReplayRecord {
+    schema: &'static str,
+    source: String,
+    song: String,
+    track: usize,
+    voice: u8,
+    origin_note_id: usize,
+    target_note_id: usize,
+    origin_line_start: u32,
+    target_line_start: u32,
+    target_index: usize,
+    origin_string: u8,
+    anchor_fret: Option<u8>,
+    independent: BoundaryRegimeRecord,
+    hand: Option<BoundaryRegimeRecord>,
+    technique: BoundaryRegimeRecord,
+    both: Option<BoundaryRegimeRecord>,
+}
+
+fn boundary_regime(
+    chain: Option<Chain>,
+    human: &[FretboardPosition],
+    target: usize,
+    secondary: Option<&Features>,
+) -> BoundaryRegimeRecord {
+    let Some(chain) = chain else {
+        return BoundaryRegimeRecord {
+            feasible: false,
+            optimum: None,
+            optimum_count: None,
+            human_in_optimum: None,
+            agreement_floor: None,
+            agreement_uniform: None,
+            agreement_ceiling: None,
+            deterministic_matches: None,
+            deterministic_non_target_matches: None,
+            deterministic_target_match: None,
+        };
+    };
+    let set = optimum_set(&chain, Some(human));
+    let agreement = set.agreement.as_ref();
+    let zero = [0; FEATURES];
+    let path = lexicographic_path(&chain, secondary.unwrap_or(&zero), None);
+    let positions = chain.positions_of(&path).unwrap_or_default();
+    let deterministic_matches = positions
+        .iter()
+        .zip(human)
+        .filter(|(actual, expected)| actual == expected)
+        .count();
+    let deterministic_non_target_matches = positions
+        .iter()
+        .zip(human)
+        .enumerate()
+        .filter(|(index, (actual, expected))| *index != target && actual == expected)
+        .count();
+    BoundaryRegimeRecord {
+        feasible: true,
+        optimum: Some(set.optimum),
+        optimum_count: Some(set.count.exact),
+        human_in_optimum: agreement.map(|value| value.max == human.len()),
+        agreement_floor: agreement.map(|value| value.min),
+        agreement_uniform: agreement.map(|value| value.expected),
+        agreement_ceiling: agreement.map(|value| value.max),
+        deterministic_matches: Some(deterministic_matches),
+        deterministic_non_target_matches: Some(deterministic_non_target_matches),
+        deterministic_target_match: positions
+            .get(target)
+            .zip(human.get(target))
+            .map(|(actual, expected)| actual == expected),
+    }
+}
+
+#[derive(Serialize)]
+struct BoundaryReplaySummary {
+    schema: &'static str,
+    cases: usize,
+    anchors_present: usize,
+    technique_feasible: usize,
+    technique_human_feasible: usize,
+    hand_better_equal_worse: [usize; 3],
+    technique_better_equal_worse: [usize; 3],
+    both_better_equal_worse: [usize; 3],
+    within_line_relations: u64,
+    cross_line_relations: u64,
+}
+
+fn compare_non_target(
+    baseline: &BoundaryRegimeRecord,
+    context: &BoundaryRegimeRecord,
+    counts: &mut [usize; 3],
+) {
+    let Some(delta) = baseline
+        .deterministic_non_target_matches
+        .zip(context.deterministic_non_target_matches)
+        .map(|(base, value)| value.cmp(&base))
+    else {
+        return;
+    };
+    counts[match delta {
+        std::cmp::Ordering::Greater => 0,
+        std::cmp::Ordering::Equal => 1,
+        std::cmp::Ordering::Less => 2,
+    }] += 1;
+}
+
+fn boundary_context_replay(corpus: Corpus, out: &Path) -> std::io::Result<()> {
+    let weights = FingeringWeights {
+        fret: 0,
+        open_string: -3,
+        position_shift: 1,
+        string_change: 0,
+    };
+    let mut records = Vec::new();
+    for origin in &corpus.lines {
+        for edge in &origin.tab.cross_line_edges {
+            if edge.boundary.target_disposition != TargetDisposition::KeptLine {
+                continue;
+            }
+            let target_start = edge
+                .boundary
+                .target_line_start_tick
+                .ok_or_else(|| std::io::Error::other("kept target has no line start"))?;
+            let candidates: Vec<_> = corpus
+                .lines
+                .iter()
+                .filter(|line| {
+                    line.file == origin.file
+                        && line.tab.track == origin.tab.track
+                        && line.tab.voice == origin.tab.voice
+                        && line.tab.start_tick == target_start
+                })
+                .collect();
+            if candidates.len() != 1 {
+                return Err(std::io::Error::other("kept target line is not unique"));
+            }
+            let target_line = candidates[0];
+            let target_index = target_line
+                .tab
+                .note_ids
+                .iter()
+                .position(|note_id| *note_id == edge.target.note_id)
+                .ok_or_else(|| std::io::Error::other("target stable id missing from kept line"))?;
+            let origin_string = origin
+                .tab
+                .original_positions
+                .get(edge.from)
+                .ok_or_else(|| std::io::Error::other("origin position missing"))?
+                .string;
+            if target_line.tab.human[target_index].string != origin_string {
+                return Err(std::io::Error::other(
+                    "corrected same-string projection drift",
+                ));
+            }
+            let base = Chain::v1(
+                &target_line.tab.pitches,
+                &target_line.tab.tuning,
+                &weights,
+                STANDARD_MAX_FRET,
+            )
+            .map_err(std::io::Error::other)?;
+            let conditioned = base.clone().condition_string(target_index, origin_string);
+            let mut anchor_features = [0; FEATURES];
+            anchor_features[FEATURES - 1] = 1;
+            let independent = boundary_regime(
+                Some(base.clone()),
+                &target_line.tab.human,
+                target_index,
+                None,
+            );
+            let hand = target_line.tab.anchor_fret.map(|anchor| {
+                boundary_regime(
+                    Some(base.clone().with_anchor(Some(anchor))),
+                    &target_line.tab.human,
+                    target_index,
+                    Some(&anchor_features),
+                )
+            });
+            let technique = boundary_regime(
+                conditioned.clone(),
+                &target_line.tab.human,
+                target_index,
+                None,
+            );
+            let both = target_line.tab.anchor_fret.map(|anchor| {
+                boundary_regime(
+                    conditioned.map(|chain| chain.with_anchor(Some(anchor))),
+                    &target_line.tab.human,
+                    target_index,
+                    Some(&anchor_features),
+                )
+            });
+            records.push(BoundaryReplayRecord {
+                schema: "griff.constraint-lab-boundary-context-replay.v1",
+                source: corpus.names[origin.file].clone(),
+                song: song_key(&corpus.names[origin.file]),
+                track: origin.tab.track,
+                voice: origin.tab.voice,
+                origin_note_id: edge.origin_note_id,
+                target_note_id: edge.target.note_id,
+                origin_line_start: origin.tab.start_tick,
+                target_line_start: target_start,
+                target_index,
+                origin_string,
+                anchor_fret: target_line.tab.anchor_fret,
+                independent,
+                hand,
+                technique,
+                both,
+            });
+        }
+    }
+    records.sort_by(|left, right| {
+        (
+            &left.source,
+            left.track,
+            left.voice,
+            left.origin_note_id,
+            left.target_note_id,
+        )
+            .cmp(&(
+                &right.source,
+                right.track,
+                right.voice,
+                right.origin_note_id,
+                right.target_note_id,
+            ))
+    });
+    if records.len() != 8 {
+        return Err(std::io::Error::other(format!(
+            "boundary replay population drift: {} != 8",
+            records.len()
+        )));
+    }
+    let mut hand_counts = [0; 3];
+    let mut technique_counts = [0; 3];
+    let mut both_counts = [0; 3];
+    for record in &records {
+        if let Some(hand) = &record.hand {
+            compare_non_target(&record.independent, hand, &mut hand_counts);
+        }
+        compare_non_target(
+            &record.independent,
+            &record.technique,
+            &mut technique_counts,
+        );
+        if let Some(both) = &record.both {
+            compare_non_target(&record.independent, both, &mut both_counts);
+        }
+    }
+    let summary = BoundaryReplaySummary {
+        schema: "griff.constraint-lab-boundary-context-replay-summary.v1",
+        cases: records.len(),
+        anchors_present: records
+            .iter()
+            .filter(|record| record.hand.is_some())
+            .count(),
+        technique_feasible: records
+            .iter()
+            .filter(|record| record.technique.feasible)
+            .count(),
+        technique_human_feasible: records
+            .iter()
+            .filter(|record| record.technique.human_in_optimum.is_some())
+            .count(),
+        hand_better_equal_worse: hand_counts,
+        technique_better_equal_worse: technique_counts,
+        both_better_equal_worse: both_counts,
+        within_line_relations: 29_758,
+        cross_line_relations: corpus.facts.cut_stats.cross_line_legato,
+    };
+    let mut writer = BufWriter::new(fs::File::create(out.join("boundary-context-replay.jsonl"))?);
+    for record in &records {
+        serde_json::to_writer(&mut writer, record).map_err(std::io::Error::other)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+    write_json(&out.join("boundary-context-replay.json"), &summary)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summary).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
 // ── entry ─────────────────────────────────────────────────────────────────────
 
 struct Args {
@@ -4540,6 +4839,7 @@ fn run() -> Result<(), String> {
         "legato" => legato(corpus, &args.out),
         "legato-chords" => legato_chords(corpus, &args.out),
         "legato-chord-context" => legato_chord_context(corpus, &args.out),
+        "boundary-context" => boundary_context_replay(corpus, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
