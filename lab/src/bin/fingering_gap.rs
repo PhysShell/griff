@@ -5227,29 +5227,13 @@ struct OriginProfileRecord {
     signature: String,
 }
 
-fn deterministic_string(profile: &OriginStringProfile, allowed: Option<&[u8]>) -> Option<u8> {
-    let best = profile
-        .entries()
-        .iter()
-        .filter(|entry| allowed.is_none_or(|set| set.contains(&entry.string())))
-        .map(|entry| entry.cost())
-        .min()?;
-    profile
-        .entries()
-        .iter()
-        .find(|entry| {
-            entry.cost() == best && allowed.is_none_or(|set| set.contains(&entry.string()))
-        })
-        .map(|entry| entry.string())
-}
-
 fn regime_record(
-    profile: &OriginStringProfile,
-    allowed: Option<&[u8]>,
+    _profile: &OriginStringProfile,
+    _allowed: Option<&[u8]>,
     estimate: OriginStringEstimate,
     imported: u8,
 ) -> OriginRegimeRecord {
-    let deterministic_string = deterministic_string(profile, allowed);
+    let deterministic_string = estimate.strings().first().copied();
     let imported_in_set = estimate.strings().contains(&imported);
     let set_size = estimate.strings().len();
     let known_exact = match estimate {
@@ -5426,6 +5410,18 @@ fn summarize_rows(rows: &[OriginProfileRecord]) -> serde_json::Value {
             j.add(record);
         }
     }
+    let mut ranks: BTreeMap<usize, usize> = BTreeMap::new();
+    for row in rows {
+        *ranks.entry(row.imported_dense_rank).or_default() += 1;
+    }
+    let mut deltas: Vec<i64> = rows.iter().map(|row| row.imported_primary_delta).collect();
+    deltas.sort_unstable();
+    let percentile = |numerator: usize, denominator: usize| {
+        deltas
+            .get(deltas.len().saturating_sub(1).saturating_mul(numerator) / denominator)
+            .copied()
+            .unwrap_or(0)
+    };
     serde_json::json!({
         "schema": "griff.constraint-lab-technique-origin-summary.v1",
         "cases": rows.len(),
@@ -5433,6 +5429,8 @@ fn summarize_rows(rows: &[OriginProfileRecord]) -> serde_json::Value {
         "imported_primary_optimal": rows.iter().filter(|row| row.imported_primary_optimal).count(),
         "positive_primary_delta": rows.iter().filter(|row| row.imported_primary_delta > 0).count(),
         "zero_delta_wrong_v0": rows.iter().filter(|row| row.imported_primary_optimal && !row.v0_exact).count(),
+        "imported_dense_rank_histogram": ranks,
+        "imported_primary_delta": {"min": deltas.first().copied().unwrap_or(0), "p50": percentile(50, 100), "p90": percentile(90, 100), "max": deltas.last().copied().unwrap_or(0)},
         "intent_domain_retains_imported": rows.iter().filter(|row| row.technique_domain_retains_imported).count(),
         "raw_domain_total": rows.iter().map(|row| row.raw_domain).sum::<usize>(),
         "intent_domain_total": rows.iter().map(|row| row.technique_domain).sum::<usize>(),
@@ -5442,6 +5440,231 @@ fn summarize_rows(rows: &[OriginProfileRecord]) -> serde_json::Value {
         "intent_t_hc": hc,
         "joint_j_within_line": j,
     })
+}
+
+fn paired_baseline_context(
+    corpus: &Corpus,
+    relations: &[OriginRelation],
+    weights: &FingeringWeights,
+) -> std::io::Result<serde_json::Value> {
+    let origins: std::collections::BTreeSet<_> = relations
+        .iter()
+        .map(|relation| (relation.line, relation.from))
+        .collect();
+    let lines: std::collections::BTreeSet<_> =
+        relations.iter().map(|relation| relation.line).collect();
+    let (mut origin_notes, mut origin_exact, mut other_notes, mut other_exact) = (0, 0, 0, 0);
+    for line_index in lines {
+        let line = &corpus.lines[line_index];
+        let chain = Chain::v1(
+            &line.tab.pitches,
+            &line.tab.tuning,
+            weights,
+            STANDARD_MAX_FRET,
+        )
+        .map_err(std::io::Error::other)?;
+        let positions = chain
+            .positions_of(&lexicographic_path(&chain, &[0; FEATURES], None))
+            .ok_or_else(|| std::io::Error::other("ragged paired baseline path"))?;
+        for (note, position) in positions.iter().enumerate() {
+            if origins.contains(&(line_index, note)) {
+                origin_notes += 1;
+                origin_exact += usize::from(position.string == line.tab.human[note].string);
+            } else {
+                other_notes += 1;
+                other_exact += usize::from(position.string == line.tab.human[note].string);
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "description": "descriptive same-retained-lines context; not a matched control",
+        "technique_origins": {"notes": origin_notes, "string_exact": origin_exact},
+        "other_notes": {"notes": other_notes, "string_exact": other_exact},
+    }))
+}
+
+fn boundary_downstream(
+    corpus: &Corpus,
+    rows: &[OriginProfileRecord],
+    weights: &FingeringWeights,
+) -> std::io::Result<Vec<serde_json::Value>> {
+    let mut output = Vec::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.target_disposition == "kept_line")
+    {
+        let candidates: Vec<_> = corpus
+            .lines
+            .iter()
+            .filter(|line| {
+                corpus.names[line.file] == row.source
+                    && line.tab.track == row.track
+                    && line.tab.voice == row.voice
+                    && line.tab.note_ids.contains(&row.target_note_id)
+            })
+            .collect();
+        if candidates.len() != 1 {
+            return Err(std::io::Error::other("boundary target line identity drift"));
+        }
+        let target_line = candidates[0];
+        let target = target_line
+            .tab
+            .note_ids
+            .iter()
+            .position(|id| *id == row.target_note_id)
+            .ok_or_else(|| std::io::Error::other("boundary target id disappeared"))?;
+        let base = Chain::v1(
+            &target_line.tab.pitches,
+            &target_line.tab.tuning,
+            weights,
+            STANDARD_MAX_FRET,
+        )
+        .map_err(std::io::Error::other)?;
+        let regimes = [
+            ("blind", &row.blind),
+            ("intent_t", &row.intent_t),
+            ("intent_t_hp", &row.intent_t_hp),
+            ("intent_t_hc", &row.intent_t_hc),
+        ];
+        let replay: Vec<_> = regimes
+            .into_iter()
+            .map(|(name, regime)| {
+                let required = match regime.estimate {
+                    OriginStringEstimate::Known { string } => Some(string),
+                    _ => None,
+                };
+                let conditioned =
+                    required.and_then(|string| base.clone().condition_string(target, string));
+                let positions = conditioned.as_ref().and_then(|chain| {
+                    chain.positions_of(&lexicographic_path(chain, &[0; FEATURES], None))
+                });
+                let target_match = positions
+                    .as_ref()
+                    .map(|path| path[target].string == target_line.tab.human[target].string);
+                let whole_matches = positions.as_ref().map(|path| {
+                    path.iter()
+                        .zip(&target_line.tab.human)
+                        .filter(|(left, right)| left == right)
+                        .count()
+                });
+                let non_target_matches = positions.as_ref().map(|path| {
+                    path.iter()
+                        .zip(&target_line.tab.human)
+                        .enumerate()
+                        .filter(|(index, (left, right))| *index != target && left == right)
+                        .count()
+                });
+                serde_json::json!({
+                    "regime": name,
+                    "estimate": regime.estimate,
+                    "required_string": required,
+                    "target_feasible": conditioned.is_some(),
+                    "target_string_exact": target_match,
+                    "whole_line_matches": whole_matches,
+                    "non_target_matches": non_target_matches,
+                })
+            })
+            .collect();
+        output.push(serde_json::json!({
+            "source": row.source,
+            "origin_note_id": row.origin_note_id,
+            "target_note_id": row.target_note_id,
+            "target_line_notes": target_line.tab.pitches.len(),
+            "replay": replay,
+        }));
+    }
+    Ok(output)
+}
+
+fn chord_downstream(
+    corpus: &Corpus,
+    rows: &[OriginProfileRecord],
+) -> std::io::Result<Vec<serde_json::Value>> {
+    let by_key: BTreeMap<_, _> = rows
+        .iter()
+        .map(|row| {
+            (
+                (
+                    row.source.as_str(),
+                    row.track,
+                    row.voice,
+                    row.origin_note_id,
+                    row.target_note_id,
+                ),
+                row,
+            )
+        })
+        .collect();
+    let policy = ChordCostPolicy::v1_unary();
+    let mut output = Vec::new();
+    for line in &corpus.lines {
+        for edge in &line.tab.cross_line_edges {
+            if edge.boundary.target_disposition != TargetDisposition::Excluded
+                || edge.target_chord.len() < 2
+            {
+                continue;
+            }
+            let source = &corpus.names[line.file];
+            let row = by_key
+                .get(&(
+                    source.as_str(),
+                    line.tab.track,
+                    line.tab.voice,
+                    edge.origin_note_id,
+                    edge.target.note_id,
+                ))
+                .ok_or_else(|| std::io::Error::other("chord cohort origin row missing"))?;
+            let required = match row.intent_t_hc.estimate {
+                OriginStringEstimate::Known { string } => Some(string),
+                _ => None,
+            };
+            let required_imported = required.map(|string| {
+                if line.tab.tuning == line.tab.original_tuning {
+                    string
+                } else {
+                    u8::try_from(line.tab.original_tuning.open_strings().len())
+                        .unwrap_or(u8::MAX)
+                        .saturating_add(1)
+                        .saturating_sub(string)
+                }
+            });
+            let analysis = required
+                .zip(required_imported)
+                .map(|(_, imported_string)| {
+                    let atoms: Vec<_> = edge
+                        .target_chord
+                        .iter()
+                        .copied()
+                        .map(imported_chord_atom)
+                        .collect();
+                    analyze_chord(
+                        &atoms,
+                        &line.tab.original_tuning,
+                        STANDARD_MAX_FRET,
+                        TargetStringConstraint {
+                            atom_id: edge.target.note_id,
+                            string: imported_string,
+                        },
+                        &policy,
+                    )
+                })
+                .transpose()
+                .map_err(std::io::Error::other)?;
+            output.push(serde_json::json!({
+                "source": source,
+                "origin_note_id": edge.origin_note_id,
+                "target_note_id": edge.target.note_id,
+                "estimate": row.intent_t_hc.estimate,
+                "required_string": required,
+                "required_imported_string": required_imported,
+                "origin_string_exact": required.map(|string| string == row.imported_string),
+                "target_constraint_feasible": analysis.as_ref().map(|value| value.observed.is_some()),
+                "imported_chord_feasible": analysis.as_ref().and_then(|value| value.human.as_ref()).map(|human| human.feasible),
+                "imported_chord_satisfies_constraint": analysis.as_ref().and_then(|value| value.human.as_ref()).map(|human| human.satisfies_observed_constraint),
+            }));
+        }
+    }
+    Ok(output)
 }
 
 fn write_jsonl(path: &Path, values: &[impl Serialize]) -> std::io::Result<()> {
@@ -5611,6 +5834,7 @@ fn technique_origin_state(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
     summary["multiple_target_origins_refused"] = multiple_origins.into();
     summary["within_line_relations"] = 29_758.into();
     summary["cross_line_relations"] = 46.into();
+    summary["paired_same_line_baseline"] = paired_baseline_context(corpus, &relations, &weights)?;
     summary["runtime_ms"] = started
         .elapsed()
         .as_millis()
@@ -5683,39 +5907,13 @@ fn technique_origin_state(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
         &signature_summary,
     )?;
 
-    let boundary8: Vec<_> = rows
-        .iter()
-        .filter(|row| row.target_disposition == "kept_line")
-        .map(|row| {
-            serde_json::json!({
-                "source": row.source,
-                "origin_note_id": row.origin_note_id,
-                "target_note_id": row.target_note_id,
-                "v0": row.blind,
-                "t": row.intent_t,
-                "t_hp": row.intent_t_hp,
-                "t_hc": row.intent_t_hc,
-            })
-        })
-        .collect();
+    let boundary8 = boundary_downstream(corpus, &rows, &weights)?;
     if boundary8.len() != 8 {
         return Err(std::io::Error::other("pinned boundary-eight cohort drift"));
     }
     write_json(&out.join("technique-origin-boundary8.json"), &boundary8)?;
 
-    let chord38: Vec<_> = rows
-        .iter()
-        .filter(|row| row.target_disposition == "excluded")
-        .map(|row| {
-            serde_json::json!({
-                "source": row.source,
-                "origin_note_id": row.origin_note_id,
-                "target_note_id": row.target_note_id,
-                "t_hc": row.intent_t_hc,
-                "estimated_required_string": match row.intent_t_hc.estimate { OriginStringEstimate::Known { string } => Some(string), _ => None },
-            })
-        })
-        .collect();
+    let chord38 = chord_downstream(corpus, &rows)?;
     if chord38.len() != 38 {
         return Err(std::io::Error::other("pinned chord-38 cohort drift"));
     }
