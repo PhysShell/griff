@@ -201,3 +201,58 @@ The experiment separates mechanism from semantics:
 No alternative objective, fitted weight, exception rule or oracle fallback is
 introduced. The next research question, if pursued, belongs to sequence-state
 estimation/objective adequacy, not to boundary transport engineering.
+
+## Amended F/P/C outcome
+
+The preregistered decomposition reran on the same corpus after the review
+amendment. Decoder conflict validation also passed: exact duplicates collapse,
+same-target/same-string relations coexist, and a crafted payload requiring two
+strings for target 42 is rejected during decode as
+`ConflictingObligation(42)`.
+
+Hand-state equality separates sharply:
+
+```text
+F full-import anchor == P retained-partition imported anchor: 1 / 8
+P retained-partition imported anchor == C solver anchor:      7 / 8
+F full-import anchor == C solver anchor:                       1 / 8
+```
+
+Thus the old F↔C `1/8` is real end-to-end disagreement but was attributed to
+the wrong layer. Seven mismatches are explained primarily by representation:
+the retained monophonic stream omits full-voice events that update the imported
+anchor. Within the identical retained-partition producer domain, frozen
+`v1-fit` reproduces the imported hand anchor in seven of eight cases. The hand
+objective-fidelity gate therefore passes as narrow case evidence; the
+full-voice representation gate fails.
+
+Technique strings decompose differently:
+
+```text
+F imported origin string == P retained imported origin string: 8 / 8
+P retained imported origin string == C solver origin string:    1 / 8
+```
+
+There is no partition loss for the origin note: it belongs to the solved origin
+line. The technique producer failure remains a clean objective mismatch. The
+combined context agrees F↔P in `1/8` because hand representation is lost, and
+P↔C in `1/8` because technique string estimation fails.
+
+### Corrected verdict
+
+1. **Ownership/lifetime/serialization: PASS.** Direct and freshly serialized
+   consumer replay remain identical `8/8`; decoder validation is fail-closed.
+2. **Hand producer within retained partitions: PASS, limited case evidence.**
+   P↔C is `7/8`; the previous claim that the solver caused seven hand
+   mismatches is withdrawn.
+3. **Full-voice hand representation: FAIL.** F↔P is `1/8`; a retained-only
+   producer cannot reconstruct hand updates made by excluded voice events.
+4. **Technique producer: FAIL.** P↔C is `1/8`, unchanged in substance; current
+   `v1-fit` cannot safely originate a hard future same-string obligation.
+5. **ADR promotion: still blocked.** The transport design is sound, but the
+   proposed combined producer lacks full-voice hand events and reliable
+   endogenous technique strings.
+
+No production change follows. The decomposition moves the hand problem from
+objective adequacy to representation coverage, while technique remains an
+objective/state-estimation problem.
