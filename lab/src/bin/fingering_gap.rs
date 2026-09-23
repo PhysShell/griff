@@ -4481,6 +4481,7 @@ fn legato_chord_context(corpus: Corpus, out: &Path) -> std::io::Result<()> {
 #[derive(Serialize)]
 struct BoundaryRegimeRecord {
     feasible: bool,
+    human_path_feasible: bool,
     optimum: Option<i64>,
     optimum_count: Option<u64>,
     human_in_optimum: Option<bool>,
@@ -4521,6 +4522,7 @@ fn boundary_regime(
     let Some(chain) = chain else {
         return BoundaryRegimeRecord {
             feasible: false,
+            human_path_feasible: false,
             optimum: None,
             optimum_count: None,
             human_in_optimum: None,
@@ -4533,6 +4535,10 @@ fn boundary_regime(
         };
     };
     let set = optimum_set(&chain, Some(human));
+    let human_path_feasible = human
+        .iter()
+        .enumerate()
+        .all(|(note, position)| chain.candidates(note).contains(position));
     let agreement = set.agreement.as_ref();
     let zero = [0; FEATURES];
     let path = lexicographic_path(&chain, secondary.unwrap_or(&zero), None);
@@ -4550,6 +4556,7 @@ fn boundary_regime(
         .count();
     BoundaryRegimeRecord {
         feasible: true,
+        human_path_feasible,
         optimum: Some(set.optimum),
         optimum_count: Some(set.count.exact),
         human_in_optimum: agreement.map(|value| value.max == human.len()),
@@ -4575,6 +4582,11 @@ struct BoundaryReplaySummary {
     hand_better_equal_worse: [usize; 3],
     technique_better_equal_worse: [usize; 3],
     both_better_equal_worse: [usize; 3],
+    hand_whole_better_equal_worse: [usize; 3],
+    technique_whole_better_equal_worse: [usize; 3],
+    both_whole_better_equal_worse: [usize; 3],
+    target_matches: [usize; 4],
+    imported_path_primary_optimum: [usize; 4],
     within_line_relations: u64,
     cross_line_relations: u64,
 }
@@ -4598,7 +4610,26 @@ fn compare_non_target(
     }] += 1;
 }
 
-fn boundary_context_replay(corpus: Corpus, out: &Path) -> std::io::Result<()> {
+fn compare_whole(
+    baseline: &BoundaryRegimeRecord,
+    context: &BoundaryRegimeRecord,
+    counts: &mut [usize; 3],
+) {
+    let Some(ordering) = baseline
+        .deterministic_matches
+        .zip(context.deterministic_matches)
+        .map(|(base, value)| value.cmp(&base))
+    else {
+        return;
+    };
+    counts[match ordering {
+        std::cmp::Ordering::Greater => 0,
+        std::cmp::Ordering::Equal => 1,
+        std::cmp::Ordering::Less => 2,
+    }] += 1;
+}
+
+fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
     let weights = FingeringWeights {
         fret: 0,
         open_string: -3,
@@ -4729,17 +4760,23 @@ fn boundary_context_replay(corpus: Corpus, out: &Path) -> std::io::Result<()> {
     let mut hand_counts = [0; 3];
     let mut technique_counts = [0; 3];
     let mut both_counts = [0; 3];
+    let mut hand_whole = [0; 3];
+    let mut technique_whole = [0; 3];
+    let mut both_whole = [0; 3];
     for record in &records {
         if let Some(hand) = &record.hand {
             compare_non_target(&record.independent, hand, &mut hand_counts);
+            compare_whole(&record.independent, hand, &mut hand_whole);
         }
         compare_non_target(
             &record.independent,
             &record.technique,
             &mut technique_counts,
         );
+        compare_whole(&record.independent, &record.technique, &mut technique_whole);
         if let Some(both) = &record.both {
             compare_non_target(&record.independent, both, &mut both_counts);
+            compare_whole(&record.independent, both, &mut both_whole);
         }
     }
     let summary = BoundaryReplaySummary {
@@ -4755,11 +4792,70 @@ fn boundary_context_replay(corpus: Corpus, out: &Path) -> std::io::Result<()> {
             .count(),
         technique_human_feasible: records
             .iter()
-            .filter(|record| record.technique.human_in_optimum.is_some())
+            .filter(|record| record.technique.human_path_feasible)
             .count(),
         hand_better_equal_worse: hand_counts,
         technique_better_equal_worse: technique_counts,
         both_better_equal_worse: both_counts,
+        hand_whole_better_equal_worse: hand_whole,
+        technique_whole_better_equal_worse: technique_whole,
+        both_whole_better_equal_worse: both_whole,
+        target_matches: [
+            records
+                .iter()
+                .filter(|record| record.independent.deterministic_target_match == Some(true))
+                .count(),
+            records
+                .iter()
+                .filter(|record| {
+                    record
+                        .hand
+                        .as_ref()
+                        .is_some_and(|value| value.deterministic_target_match == Some(true))
+                })
+                .count(),
+            records
+                .iter()
+                .filter(|record| record.technique.deterministic_target_match == Some(true))
+                .count(),
+            records
+                .iter()
+                .filter(|record| {
+                    record
+                        .both
+                        .as_ref()
+                        .is_some_and(|value| value.deterministic_target_match == Some(true))
+                })
+                .count(),
+        ],
+        imported_path_primary_optimum: [
+            records
+                .iter()
+                .filter(|record| record.independent.human_in_optimum == Some(true))
+                .count(),
+            records
+                .iter()
+                .filter(|record| {
+                    record
+                        .hand
+                        .as_ref()
+                        .is_some_and(|value| value.human_in_optimum == Some(true))
+                })
+                .count(),
+            records
+                .iter()
+                .filter(|record| record.technique.human_in_optimum == Some(true))
+                .count(),
+            records
+                .iter()
+                .filter(|record| {
+                    record
+                        .both
+                        .as_ref()
+                        .is_some_and(|value| value.human_in_optimum == Some(true))
+                })
+                .count(),
+        ],
         within_line_relations: 29_758,
         cross_line_relations: corpus.facts.cut_stats.cross_line_legato,
     };
@@ -4839,7 +4935,7 @@ fn run() -> Result<(), String> {
         "legato" => legato(corpus, &args.out),
         "legato-chords" => legato_chords(corpus, &args.out),
         "legato-chord-context" => legato_chord_context(corpus, &args.out),
-        "boundary-context" => boundary_context_replay(corpus, &args.out),
+        "boundary-context" => boundary_context_replay(&corpus, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
