@@ -170,3 +170,26 @@ fn serialized_fresh_consumer_matches_direct_causal_lht_without_oracle_input() {
     assert_ne!(oracle_reference, mutated_reference);
     assert_eq!(direct_path, fresh_path);
 }
+
+#[test]
+fn decoder_rejects_conflicting_strings_for_one_stable_target() {
+    let context = produce_context(
+        &BoundaryContext::unknown(voice()),
+        &partition(FretboardPosition { string: 2, fret: 5 }),
+        &[relation()],
+    )
+    .unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&encode_context(&context).unwrap()).unwrap();
+    let pending = value["pending"].as_array_mut().unwrap();
+    let mut compatible = pending[0].clone();
+    compatible["origin_note_id"] = serde_json::json!(11);
+    pending.push(compatible);
+    assert_eq!(decode_context(&serde_json::to_vec(&value).unwrap()).unwrap().pending().len(), 2);
+
+    value["pending"][1]["required_string"] = serde_json::json!(3);
+    assert_eq!(
+        decode_context(&serde_json::to_vec(&value).unwrap()),
+        Err(BoundaryContextError::ConflictingObligation(42))
+    );
+}
