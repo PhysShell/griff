@@ -289,39 +289,40 @@ Any wrong Known result fails the preregistered universal-hard-obligation gate.
 
 ### Hand state: teacher-forced versus endogenous
 
-With the retained-partition imported past, T+H-P reached 14,613 deterministic
-exact cases. Relative to T this is `1,761 better / 27,454 equal / 589 worse`.
+With the retained-partition imported past, T+H-P reached 14,729 deterministic
+exact cases. Relative to T this is `1,849 better / 27,394 equal / 561 worse`.
 It made 28,978 estimates Known, 14,284 correct (49.3% precision), and left 826
 Ambiguous.
 
-With the same producer semantics but frozen solver past, T+H-C fell to 13,360
-exact: `242 better / 29,239 equal / 323 worse` relative to T, and 1,253 fewer
+With the same producer semantics but frozen solver past, T+H-C reached 13,394
+exact: `220 better / 29,317 equal / 267 worse` relative to T, and 1,335 fewer
 exact cases than H-P. It made 28,403 estimates Known, 12,818 correct (45.1%
 precision), and left 1,401 Ambiguous.
 
-Teacher-forced hand state therefore contains independent preference signal,
-but it does not survive endogenous replay. Evidence rule D fails: current past
-state estimation, rather than transport, erases the gain. H-C is slightly
-worse than T both case-weighted and macro-by-song (48.0% to 47.7%).
-
-**Correction (post-review, see "Hand-secondary correctness correction"
-below):** the *deterministic* exact counts and paired comparisons in this
-section — H-P's `14,613` / `1,761 better / 27,454 equal / 589 worse`, and
-H-C's `13,360` / `242 better / 29,239 equal / 323 worse` — were computed with
-a `deterministic_restricted_string` that did not implement the registered
-hand secondary and must be recomputed. The Known/Ambiguous counts and
-precision figures in this section come from `estimate_with_hand`, which was
-already origin-local throughout, and are unaffected.
+Teacher-forced hand state (H-P) is unambiguously positive over T. Endogenous
+replay (H-C) is close to flat against T rather than clearly negative: 47 fewer
+exact cases case-weighted (44.9% to 45.1%), but 0.1 points *ahead* of T
+macro-by-song (48.1% to 48.0%) — the two aggregates disagree on sign, on a
+margin of a few dozen cases either way. Whether that is "the gain erasing
+under endogenous replay" is for the verdict below to call; these are the
+corrected figures — see "Hand-secondary correctness correction" for the fix
+they reflect (**this replaces the values below marked withdrawn: the
+once-published `14,613`/`13,360` were themselves a defect, not this
+correction's baseline**).
 
 ### Concentration and robustness
 
 The largest song contributed 1,075 of 29,804 relations. Omitting any one song
-left the H-C versus V0 exact-count effect positive (`+1,229` to `+1,429`). The
-descriptive signature audit found 4,719 unique signatures and 5,450
-`(song, signature)` rows; the largest such cell contained 110 relations. On one
-representative per cell, exact counts were V0 2,159, T 2,405 and H-C 2,378.
-The T result is therefore not one song or one repeated phrase. The very small
-H-C-over-T aggregate does not survive this concentration view.
+left the H-C versus V0 exact-count effect positive (`+1,263` to `+1,463`,
+corrected; see "Hand-secondary correctness correction" — the once-published
+`+1,229` to `+1,429` is withdrawn along with the H-C exact count it was
+computed from). The descriptive signature audit found 4,719 unique signatures
+and 5,450 `(song, signature)` rows; the largest such cell contained 110
+relations. On one representative per cell, exact counts were V0 2,159, T 2,405
+and H-C 2,392 (corrected; withdrawn: 2,378). The T result is therefore not one
+song or one repeated phrase; H-C stays slightly behind T (2,392 to 2,405) in
+this concentration view too, agreeing with the case-weighted sign rather than
+the macro-by-song one.
 
 ### Pinned downstream cohorts
 
@@ -405,19 +406,48 @@ fail against the withdrawn implementation and pass against the correction.
 The H-P/H-C deterministic exact counts, their paired better/equal/worse
 comparisons against T, and every macro-by-song, concentration and
 pinned-cohort figure that reads the *deterministic* (not typed) H-P/H-C
-column need a fresh corpus rerun against the corrected
-`deterministic_restricted_string` before Evidence rule D's verdict can be
-trusted again. That rerun needs the licensed 410-file corpus this document's
-`fit`/`technique-origin-state` run was built from, which is not available in
-the environment that produced this correction; the numbers above are left in
-place, marked stale, for whoever next runs the registered corpus to amend.
+column needed a fresh corpus rerun against the corrected
+`deterministic_restricted_string`. That rerun has now run against the
+licensed 410-file corpus this document was originally built from
+(`410 files (3 failed)`, matching the frozen census exactly — fingerprint
+accepted, `29,758` within-line / `46` cross-line, `29,804` resolved
+relations, no drift). It reproduced every figure this document already
+reported for V0, T, J, BLIND, and the typed H-P/H-C Known/Ambiguous/precision
+columns bit for bit, including the pinned boundary-8 (Known 4/4/8/8,
+target-string-exact 1/8 for every regime) and chord-38 (Known 24/38,
+origin-string-exact 9/24) cohorts. Only the deterministic H-P/H-C figures
+moved, to the corrected values folded into "Hand state" and "Concentration
+and robustness" above.
 
-This correction itself was validated without the corpus: `cargo fmt --all --
+The corrected H-P/H-C deterministic exact counts (`14,729`/`13,394`) land
+exactly on the *original*, pre-amendment numbers this document withdrew when
+it first introduced the DP-based tie-break (which moved them to the
+now-also-withdrawn `14,613`/`13,360`). That is not a coincidence: verified
+directly against every one of the 826 (H-P) and 1,401 (H-C) `Ambiguous` rows
+in this rerun, the corrected `deterministic_restricted_string`'s pick and the
+original reporting's `estimate.strings().first()` (the lowest surviving
+string number) agree on literally every row — zero disagreements, and the
+same holds for all 10,293 `Ambiguous` T rows, which is why T's own count
+never moved either. `Tuning::candidates` is ordered by ascending string
+number by construction (ADR-0019; `core/src/event.rs:548-552`), and
+`Chain::v1` builds every candidate list from it, so the production DP's own
+"lowest candidate index" tie-break *is* "lowest string number" for any chain
+this experiment builds — provably, not just in this corpus. The DP-based
+rewrite is still the right implementation (it is what the production solver
+actually does, rather than an unproven assumption that happened to match
+it), but it was always a no-op for the *reported string*, for T and for H-P/
+H-C alike. The only defect this correction fixes — and the only thing that
+ever moved these numbers — is `anchor_distance` being scored on a tie that
+the registered rule leaves unbroken.
+
+This correction was validated with the corpus it needed: `cargo fmt --all --
 --check`, the full `griff-constraint-lab` test suite (172 tests across every
-test binary, including the two new ones) and `cargo clippy --all-targets --
--D warnings -A clippy::too_many_lines -A clippy::items_after_statements` all
-pass, and `fingering_gap` builds clean in release. It does not by itself touch
-the corpus, the frozen census or `BoundaryContext`.
+test binary, including the two new ones), `cargo clippy --all-targets --
+-D warnings -A clippy::too_many_lines -A clippy::items_after_statements`, a
+release build of `fingering_gap`, and the registered
+`technique-origin-state --tabs <410-file corpus> --out …` run itself
+(`runtime_ms: 366257`, ≈6m6s on this machine) all pass. It does not by itself
+touch the corpus, the frozen census or `BoundaryContext`.
 
 ### Invariance and validation
 
@@ -444,12 +474,20 @@ No production behavior, projection, census, corpus fingerprint or
    1,496 cases, worsens none, is positive across 69 song keys and never reverses
    under leave-one-song-out. J shows that hard joint equality alone does not
    identify the imported origin string.
-4. **D — hand adds independent causal signal: rejected, pending rerun.** H-P is
-   positive, but H-C loses the gain and is 47 cases worse than T overall. This
-   reads the deterministic H-P/H-C counts the "Hand-secondary correctness
-   correction" section flags as stale; the direction has held across every
-   revision of this figure so far, but the rejection is not final until the
-   corrected numbers are in.
+4. **D — hand adds independent causal signal: rejected, on balance.** H-P is
+   unambiguously positive over T (`14,729` to `13,441`: `1,849` better /
+   `561` worse). H-C, corrected, is close to a wash against T rather than
+   clearly negative: 47 fewer exact cases case-weighted (`13,394` to
+   `13,441`) and behind it in the concentration view (`2,392` to `2,405`),
+   but 0.1 points *ahead* of it macro-by-song (`48.1%` to `48.0%`), and every
+   leave-one-song-out omission still leaves H-C ahead of V0. The
+   case-weighted and concentration readings — the metrics this document
+   otherwise treats as primary — still call it against H-C, so the rejection
+   stands, but on a margin of a few dozen cases, where the two corrections
+   made to this figure have each moved the sign of at least one reading. That
+   is closer than the original "does not survive endogenous replay" framing
+   suggested, and is worth an explicit second look rather than taking the
+   label on faith.
 5. **E — safe hard obligation: rejected.** Every transparent regime emits many
    wrong Known strings; the pinned 8/38 cohorts demonstrate the downstream
    consequence directly.
