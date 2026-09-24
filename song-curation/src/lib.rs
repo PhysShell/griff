@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod apply;
+
 // ── inventory ─────────────────────────────────────────────────────────────────
 
 /// One source file (by exact `sha256`) with its deterministic, sorted/unique
@@ -176,10 +178,21 @@ const POLICY_VERSION: &str = "1";
 /// The one decisions-ledger schema this slice reads; anything else is refused.
 const DECISIONS_SCHEMA: &str = "song-curation.decisions.v1";
 
-/// Per-source batch state after replay: `Some(song)` = the batch assigns this
-/// label; `None` = the batch reviewed the source without assigning (a `reject`
-/// that supersedes any earlier pending assignment).
-type BatchState = BTreeMap<String, Option<String>>;
+/// Per-source batch effect after replay: `song = Some(..)` = the batch assigns
+/// this label; `None` = the batch reviewed the source without assigning (a
+/// `reject` that supersedes any earlier pending assignment). `event_id` names
+/// the acting event — the latest event whose effect set this state — which is
+/// the §9-permitted internal attribution the Slice-2 authority law consumes.
+/// Attribution is carried alongside the effect and never changes what Slice 1
+/// derives from it.
+#[derive(Debug, Clone)]
+pub(crate) struct BatchEffect {
+    pub(crate) song: Option<String>,
+    pub(crate) event_id: String,
+}
+
+/// Per-source batch state after replay (latest event wins).
+pub(crate) type BatchState = BTreeMap<String, BatchEffect>;
 
 // ── typed refusals (Slice-1 subset) ─────────────────────────────────────────────
 
@@ -247,7 +260,9 @@ pub enum CurationError {
 
 /// Emit `value` as compact UTF-8 JSON with object keys sorted lexicographically
 /// and array order preserved — the shared canonical encoding for every digest.
-fn canonical_json(value: &Value) -> String {
+/// Crate-visible so Slice 2's `report_digest` uses this one encoding rather
+/// than a near-copy (contract §5.4).
+pub(crate) fn canonical_json(value: &Value) -> String {
     let mut out = String::new();
     write_canonical(value, &mut out);
     out
@@ -583,7 +598,10 @@ fn action_effects(action: &Action) -> Vec<(String, Option<String>)> {
 /// the source without assigning (a reject that supersedes any earlier pending
 /// assignment). Every referenced source is validated; a source assigned two
 /// distinct labels within one event refuses.
-fn replay(inventory: &Inventory, batch: &DecisionBatch) -> Result<BatchState, Vec<CurationError>> {
+pub(crate) fn replay(
+    inventory: &Inventory,
+    batch: &DecisionBatch,
+) -> Result<BatchState, Vec<CurationError>> {
     let known: BTreeSet<&str> = inventory
         .sources
         .iter()
@@ -609,7 +627,13 @@ fn replay(inventory: &Inventory, batch: &DecisionBatch) -> Result<BatchState, Ve
         }
         for (sha, effect) in effects {
             if known.contains(sha.as_str()) {
-                state.insert(sha, effect);
+                state.insert(
+                    sha,
+                    BatchEffect {
+                        song: effect,
+                        event_id: event.event_id.clone(),
+                    },
+                );
             } else {
                 errors.push(CurationError::UnknownDecisionSource { source_sha256: sha });
             }
@@ -656,7 +680,7 @@ fn derive(
     let mut assignments: Vec<Assignment> = state
         .iter()
         .filter_map(|(sha, effect)| {
-            let song = effect.clone()?;
+            let song = effect.song.clone()?;
             let record = by_sha.get(sha.as_str());
             Some(Assignment {
                 source_sha256: sha.clone(),
@@ -673,7 +697,9 @@ fn derive(
     // untouched labels survive (the map is the Slice-2 manifest projection).
     let mut generated_songs_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for source in &inventory.sources {
-        let batch_label = state.get(&source.source_sha256).and_then(Clone::clone);
+        let batch_label = state
+            .get(&source.source_sha256)
+            .and_then(|effect| effect.song.clone());
         if let Some(song) = batch_label.or_else(|| source.existing_label()) {
             generated_songs_map
                 .entry(song)
