@@ -116,6 +116,10 @@ use griff_constraint_lab::technique::{
     derived_direction, direction_between, tap_aware_chain, tap_aware_cost, technique_chain,
     technique_cost, Continuity, LegatoDirection, TechniqueObjective,
 };
+use griff_constraint_lab::technique_origin::{
+    conditioned_profile, deterministic_restricted_string, estimate_primary, estimate_with_hand,
+    technique_feasible_strings, HandEstimate, OriginStringEstimate,
+};
 use griff_constraint_lab::ties::{
     lexicographic_path, optimum_set, path_matches, train_secondary, Chain, Example, Features,
     PerceptronConfig, FEATURES, FEATURE_NAMES,
@@ -5163,6 +5167,790 @@ fn boundary_context_replay(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── technique-origin performance-state recovery ──────────────────────────────
+
+#[derive(Clone, Copy)]
+struct OriginRelation {
+    line: usize,
+    from: usize,
+    target_note_id: usize,
+    target_onset: u32,
+    target_pitch: griff_core::event::Pitch,
+    target_in_line: Option<usize>,
+    disposition: Option<TargetDisposition>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OriginRegimeRecord {
+    deterministic_string: Option<u8>,
+    deterministic_exact: Option<bool>,
+    estimate: OriginStringEstimate,
+    known_exact: Option<bool>,
+    imported_in_set: bool,
+    set_size: usize,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Serialize)]
+struct OriginProfileRecord {
+    schema: &'static str,
+    source: String,
+    song: String,
+    track: usize,
+    voice: u8,
+    origin_note_id: usize,
+    target_note_id: usize,
+    origin_onset: u32,
+    target_onset: u32,
+    origin_pitch: u8,
+    target_pitch: u8,
+    target_in_line: bool,
+    target_disposition: &'static str,
+    imported_string: u8,
+    imported_fret: u8,
+    v0_string: u8,
+    v0_exact: bool,
+    imported_primary_delta: i64,
+    imported_dense_rank: usize,
+    imported_primary_optimal: bool,
+    primary_optimal_strings: usize,
+    raw_domain: usize,
+    technique_domain: usize,
+    technique_domain_retains_imported: bool,
+    blind: OriginRegimeRecord,
+    intent_t: OriginRegimeRecord,
+    intent_t_hp: OriginRegimeRecord,
+    intent_t_hc: OriginRegimeRecord,
+    joint_j: Option<OriginRegimeRecord>,
+    hand_p: HandEstimate,
+    hand_c: HandEstimate,
+    signature: String,
+}
+
+fn regime_record(
+    deterministic_string: Option<u8>,
+    estimate: OriginStringEstimate,
+    imported: u8,
+) -> OriginRegimeRecord {
+    let imported_in_set = estimate.strings().contains(&imported);
+    let set_size = estimate.strings().len();
+    let known_exact = match estimate {
+        OriginStringEstimate::Known { string } => Some(string == imported),
+        OriginStringEstimate::Ambiguous { .. } | OriginStringEstimate::Unsupported { .. } => None,
+    };
+    OriginRegimeRecord {
+        deterministic_string,
+        deterministic_exact: deterministic_string.map(|string| string == imported),
+        estimate,
+        known_exact,
+        imported_in_set,
+        set_size,
+    }
+}
+
+fn update_hand(state: &mut HandEstimate, position: FretboardPosition, tapped: bool) {
+    if !tapped && position.fret > 0 {
+        *state = HandEstimate::Known(position.fret);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn causal_hand_maps(
+    corpus: &Corpus,
+    weights: &FingeringWeights,
+) -> std::io::Result<(
+    HashMap<(usize, usize), HandEstimate>,
+    HashMap<(usize, usize), HandEstimate>,
+)> {
+    let mut order: Vec<usize> = (0..corpus.lines.len()).collect();
+    order.sort_by_key(|&index| {
+        let line = &corpus.lines[index];
+        (
+            line.file,
+            line.tab.track,
+            line.tab.voice,
+            line.tab.start_tick,
+        )
+    });
+    let mut imported_state: HashMap<(usize, usize, u8), HandEstimate> = HashMap::new();
+    let mut causal_state: HashMap<(usize, usize, u8), HandEstimate> = HashMap::new();
+    let mut imported = HashMap::new();
+    let mut causal = HashMap::new();
+    for line_index in order {
+        let line = &corpus.lines[line_index];
+        let key = (line.file, line.tab.track, line.tab.voice);
+        let mut p = *imported_state.get(&key).unwrap_or(&HandEstimate::Unknown);
+        let mut c = *causal_state.get(&key).unwrap_or(&HandEstimate::Unknown);
+        let chain = Chain::v1(
+            &line.tab.pitches,
+            &line.tab.tuning,
+            weights,
+            STANDARD_MAX_FRET,
+        )
+        .map_err(std::io::Error::other)?;
+        let path = lexicographic_path(&chain, &[0; FEATURES], None);
+        let positions = chain
+            .positions_of(&path)
+            .ok_or_else(|| std::io::Error::other("ragged causal path"))?;
+        for (note, position) in positions.iter().copied().enumerate() {
+            imported.insert((line_index, note), p);
+            causal.insert((line_index, note), c);
+            update_hand(&mut p, line.tab.human[note], line.tab.tapped[note]);
+            update_hand(&mut c, position, line.tab.tapped[note]);
+        }
+        imported_state.insert(key, p);
+        causal_state.insert(key, c);
+    }
+    Ok((imported, causal))
+}
+
+fn origin_relations(corpus: &Corpus) -> Vec<OriginRelation> {
+    let mut relations = Vec::new();
+    for (line_index, line) in corpus.lines.iter().enumerate() {
+        relations.extend(line.tab.edges.iter().map(|edge| OriginRelation {
+            line: line_index,
+            from: edge.from,
+            target_note_id: line.tab.note_ids[edge.to],
+            target_onset: line.tab.onsets[edge.to],
+            target_pitch: line.tab.pitches[edge.to],
+            target_in_line: Some(edge.to),
+            disposition: None,
+        }));
+        relations.extend(line.tab.cross_line_edges.iter().map(|edge| OriginRelation {
+            line: line_index,
+            from: edge.from,
+            target_note_id: edge.target.note_id,
+            target_onset: edge.target.onset,
+            target_pitch: edge.target.pitch,
+            target_in_line: None,
+            disposition: Some(edge.boundary.target_disposition),
+        }));
+    }
+    relations
+}
+
+fn target_disposition(relation: OriginRelation) -> &'static str {
+    match relation.disposition {
+        None => "within_line",
+        Some(TargetDisposition::KeptLine) => "kept_line",
+        Some(TargetDisposition::DroppedShortLine) => "dropped_short_line",
+        Some(TargetDisposition::Excluded) => "excluded",
+    }
+}
+
+fn relation_signature(line: &Line, relation: OriginRelation) -> String {
+    let origin = i16::from(line.tab.pitches[relation.from].0);
+    let target = i16::from(relation.target_pitch.0);
+    let before = relation
+        .from
+        .checked_sub(1)
+        .map(|index| origin - i16::from(line.tab.pitches[index].0));
+    let after = relation.target_in_line.and_then(|target_index| {
+        line.tab
+            .pitches
+            .get(target_index + 1)
+            .map(|pitch| i16::from(pitch.0) - target)
+    });
+    format!(
+        "pc{}:int{}:gap{}:before{}:after{}:dir{}",
+        origin.rem_euclid(12),
+        target - origin,
+        relation
+            .target_onset
+            .saturating_sub(line.tab.onsets[relation.from]),
+        before.map_or_else(|| "na".into(), |value| value.to_string()),
+        after.map_or_else(|| "na".into(), |value| value.to_string()),
+        (target - origin).signum()
+    )
+}
+
+#[derive(Default, Serialize)]
+struct RegimeSummary {
+    cases: usize,
+    deterministic_exact: usize,
+    known: usize,
+    known_correct: usize,
+    ambiguous: usize,
+    ambiguous_contains_imported: usize,
+    unsupported: usize,
+}
+
+impl RegimeSummary {
+    fn add(&mut self, record: &OriginRegimeRecord) {
+        self.cases += 1;
+        self.deterministic_exact += usize::from(record.deterministic_exact == Some(true));
+        match &record.estimate {
+            OriginStringEstimate::Known { .. } => {
+                self.known += 1;
+                self.known_correct += usize::from(record.known_exact == Some(true));
+            }
+            OriginStringEstimate::Ambiguous { .. } => {
+                self.ambiguous += 1;
+                self.ambiguous_contains_imported += usize::from(record.imported_in_set);
+            }
+            OriginStringEstimate::Unsupported { .. } => self.unsupported += 1,
+        }
+    }
+}
+
+fn summarize_rows(rows: &[OriginProfileRecord]) -> serde_json::Value {
+    let mut blind = RegimeSummary::default();
+    let mut t = RegimeSummary::default();
+    let mut hp = RegimeSummary::default();
+    let mut hc = RegimeSummary::default();
+    let mut j = RegimeSummary::default();
+    for row in rows {
+        blind.add(&row.blind);
+        t.add(&row.intent_t);
+        hp.add(&row.intent_t_hp);
+        hc.add(&row.intent_t_hc);
+        if let Some(record) = &row.joint_j {
+            j.add(record);
+        }
+    }
+    let mut ranks: BTreeMap<usize, usize> = BTreeMap::new();
+    for row in rows {
+        *ranks.entry(row.imported_dense_rank).or_default() += 1;
+    }
+    let mut deltas: Vec<i64> = rows.iter().map(|row| row.imported_primary_delta).collect();
+    deltas.sort_unstable();
+    let percentile = |numerator: usize, denominator: usize| {
+        deltas
+            .get(deltas.len().saturating_sub(1).saturating_mul(numerator) / denominator)
+            .copied()
+            .unwrap_or(0)
+    };
+    serde_json::json!({
+        "schema": "griff.constraint-lab-technique-origin-summary.v1",
+        "cases": rows.len(),
+        "v0_exact": rows.iter().filter(|row| row.v0_exact).count(),
+        "imported_primary_optimal": rows.iter().filter(|row| row.imported_primary_optimal).count(),
+        "positive_primary_delta": rows.iter().filter(|row| row.imported_primary_delta > 0).count(),
+        "zero_delta_wrong_v0": rows.iter().filter(|row| row.imported_primary_optimal && !row.v0_exact).count(),
+        "imported_dense_rank_histogram": ranks,
+        "imported_primary_delta": {"min": deltas.first().copied().unwrap_or(0), "p50": percentile(50, 100), "p90": percentile(90, 100), "max": deltas.last().copied().unwrap_or(0)},
+        "intent_domain_retains_imported": rows.iter().filter(|row| row.technique_domain_retains_imported).count(),
+        "raw_domain_total": rows.iter().map(|row| row.raw_domain).sum::<usize>(),
+        "intent_domain_total": rows.iter().map(|row| row.technique_domain).sum::<usize>(),
+        "blind": blind,
+        "intent_t": t,
+        "intent_t_hp": hp,
+        "intent_t_hc": hc,
+        "joint_j_within_line": j,
+    })
+}
+
+fn paired_baseline_context(
+    corpus: &Corpus,
+    relations: &[OriginRelation],
+    weights: &FingeringWeights,
+) -> std::io::Result<serde_json::Value> {
+    let origins: std::collections::BTreeSet<_> = relations
+        .iter()
+        .map(|relation| (relation.line, relation.from))
+        .collect();
+    let lines: std::collections::BTreeSet<_> =
+        relations.iter().map(|relation| relation.line).collect();
+    let (mut origin_notes, mut origin_exact, mut other_notes, mut other_exact) = (0, 0, 0, 0);
+    for line_index in lines {
+        let line = &corpus.lines[line_index];
+        let chain = Chain::v1(
+            &line.tab.pitches,
+            &line.tab.tuning,
+            weights,
+            STANDARD_MAX_FRET,
+        )
+        .map_err(std::io::Error::other)?;
+        let positions = chain
+            .positions_of(&lexicographic_path(&chain, &[0; FEATURES], None))
+            .ok_or_else(|| std::io::Error::other("ragged paired baseline path"))?;
+        for (note, position) in positions.iter().enumerate() {
+            if origins.contains(&(line_index, note)) {
+                origin_notes += 1;
+                origin_exact += usize::from(position.string == line.tab.human[note].string);
+            } else {
+                other_notes += 1;
+                other_exact += usize::from(position.string == line.tab.human[note].string);
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "description": "descriptive same-retained-lines context; not a matched control",
+        "technique_origins": {"notes": origin_notes, "string_exact": origin_exact},
+        "other_notes": {"notes": other_notes, "string_exact": other_exact},
+    }))
+}
+
+fn boundary_downstream(
+    corpus: &Corpus,
+    rows: &[OriginProfileRecord],
+    weights: &FingeringWeights,
+) -> std::io::Result<Vec<serde_json::Value>> {
+    let mut output = Vec::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.target_disposition == "kept_line")
+    {
+        let candidates: Vec<_> = corpus
+            .lines
+            .iter()
+            .filter(|line| {
+                corpus.names[line.file] == row.source
+                    && line.tab.track == row.track
+                    && line.tab.voice == row.voice
+                    && line.tab.note_ids.contains(&row.target_note_id)
+            })
+            .collect();
+        if candidates.len() != 1 {
+            return Err(std::io::Error::other("boundary target line identity drift"));
+        }
+        let target_line = candidates[0];
+        let target = target_line
+            .tab
+            .note_ids
+            .iter()
+            .position(|id| *id == row.target_note_id)
+            .ok_or_else(|| std::io::Error::other("boundary target id disappeared"))?;
+        let base = Chain::v1(
+            &target_line.tab.pitches,
+            &target_line.tab.tuning,
+            weights,
+            STANDARD_MAX_FRET,
+        )
+        .map_err(std::io::Error::other)?;
+        let regimes = [
+            ("blind", &row.blind),
+            ("intent_t", &row.intent_t),
+            ("intent_t_hp", &row.intent_t_hp),
+            ("intent_t_hc", &row.intent_t_hc),
+        ];
+        let replay: Vec<_> = regimes
+            .into_iter()
+            .map(|(name, regime)| {
+                let required = match regime.estimate {
+                    OriginStringEstimate::Known { string } => Some(string),
+                    _ => None,
+                };
+                let conditioned =
+                    required.and_then(|string| base.clone().condition_string(target, string));
+                let positions = conditioned.as_ref().and_then(|chain| {
+                    chain.positions_of(&lexicographic_path(chain, &[0; FEATURES], None))
+                });
+                let target_match = positions
+                    .as_ref()
+                    .map(|path| path[target].string == target_line.tab.human[target].string);
+                let whole_matches = positions.as_ref().map(|path| {
+                    path.iter()
+                        .zip(&target_line.tab.human)
+                        .filter(|(left, right)| left == right)
+                        .count()
+                });
+                let non_target_matches = positions.as_ref().map(|path| {
+                    path.iter()
+                        .zip(&target_line.tab.human)
+                        .enumerate()
+                        .filter(|(index, (left, right))| *index != target && left == right)
+                        .count()
+                });
+                serde_json::json!({
+                    "regime": name,
+                    "estimate": regime.estimate,
+                    "required_string": required,
+                    "target_feasible": conditioned.is_some(),
+                    "target_string_exact": target_match,
+                    "whole_line_matches": whole_matches,
+                    "non_target_matches": non_target_matches,
+                })
+            })
+            .collect();
+        output.push(serde_json::json!({
+            "source": row.source,
+            "origin_note_id": row.origin_note_id,
+            "target_note_id": row.target_note_id,
+            "target_line_notes": target_line.tab.pitches.len(),
+            "replay": replay,
+        }));
+    }
+    Ok(output)
+}
+
+fn chord_downstream(
+    corpus: &Corpus,
+    rows: &[OriginProfileRecord],
+) -> std::io::Result<Vec<serde_json::Value>> {
+    let by_key: BTreeMap<_, _> = rows
+        .iter()
+        .map(|row| {
+            (
+                (
+                    row.source.as_str(),
+                    row.track,
+                    row.voice,
+                    row.origin_note_id,
+                    row.target_note_id,
+                ),
+                row,
+            )
+        })
+        .collect();
+    let policy = ChordCostPolicy::v1_unary();
+    let mut output = Vec::new();
+    for line in &corpus.lines {
+        for edge in &line.tab.cross_line_edges {
+            if edge.boundary.target_disposition != TargetDisposition::Excluded
+                || edge.target_chord.len() < 2
+            {
+                continue;
+            }
+            let source = &corpus.names[line.file];
+            let row = by_key
+                .get(&(
+                    source.as_str(),
+                    line.tab.track,
+                    line.tab.voice,
+                    edge.origin_note_id,
+                    edge.target.note_id,
+                ))
+                .ok_or_else(|| std::io::Error::other("chord cohort origin row missing"))?;
+            let required = match row.intent_t_hc.estimate {
+                OriginStringEstimate::Known { string } => Some(string),
+                _ => None,
+            };
+            let required_imported = required.map(|string| {
+                if line.tab.tuning == line.tab.original_tuning {
+                    string
+                } else {
+                    u8::try_from(line.tab.original_tuning.open_strings().len())
+                        .unwrap_or(u8::MAX)
+                        .saturating_add(1)
+                        .saturating_sub(string)
+                }
+            });
+            let analysis = required
+                .zip(required_imported)
+                .map(|(_, imported_string)| {
+                    let atoms: Vec<_> = edge
+                        .target_chord
+                        .iter()
+                        .copied()
+                        .map(imported_chord_atom)
+                        .collect();
+                    analyze_chord(
+                        &atoms,
+                        &line.tab.original_tuning,
+                        STANDARD_MAX_FRET,
+                        TargetStringConstraint {
+                            atom_id: edge.target.note_id,
+                            string: imported_string,
+                        },
+                        &policy,
+                    )
+                })
+                .transpose()
+                .map_err(std::io::Error::other)?;
+            output.push(serde_json::json!({
+                "source": source,
+                "origin_note_id": edge.origin_note_id,
+                "target_note_id": edge.target.note_id,
+                "estimate": row.intent_t_hc.estimate,
+                "required_string": required,
+                "required_imported_string": required_imported,
+                "origin_string_exact": required.map(|string| string == row.imported_string),
+                "target_constraint_feasible": analysis.as_ref().map(|value| value.observed.is_some()),
+                "imported_chord_feasible": analysis.as_ref().and_then(|value| value.human.as_ref()).map(|human| human.feasible),
+                "imported_chord_satisfies_constraint": analysis.as_ref().and_then(|value| value.human.as_ref()).map(|human| human.satisfies_observed_constraint),
+            }));
+        }
+    }
+    Ok(output)
+}
+
+fn write_jsonl(path: &Path, values: &[impl Serialize]) -> std::io::Result<()> {
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    for value in values {
+        serde_json::to_writer(&mut writer, value).map_err(std::io::Error::other)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()
+}
+
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::similar_names,
+    clippy::type_complexity
+)]
+fn technique_origin_state(corpus: &Corpus, out: &Path) -> std::io::Result<()> {
+    let started = Instant::now();
+    let weights = FingeringWeights {
+        fret: 0,
+        open_string: -3,
+        position_shift: 1,
+        string_change: 0,
+    };
+    if corpus.facts.files != 410
+        || corpus.facts.corpus_fingerprint_hex != "9e53e55a19cddf29"
+        || corpus.facts.cut_stats.cross_line_legato != 46
+    {
+        return Err(std::io::Error::other(
+            "frozen corpus/cross-line census drift",
+        ));
+    }
+    let relations = origin_relations(corpus);
+    if relations.len() != 29_804 {
+        return Err(std::io::Error::other(format!(
+            "resolved relation census drift: {} != 29804",
+            relations.len()
+        )));
+    }
+    let mut by_origin: BTreeMap<(usize, usize, u8, usize), Vec<OriginRelation>> = BTreeMap::new();
+    for relation in &relations {
+        let line = &corpus.lines[relation.line];
+        by_origin
+            .entry((
+                line.file,
+                line.tab.track,
+                line.tab.voice,
+                line.tab.note_ids[relation.from],
+            ))
+            .or_default()
+            .push(*relation);
+    }
+    let multiple_origins = by_origin.values().filter(|items| items.len() > 1).count();
+    let (hand_p, hand_c) = causal_hand_maps(corpus, &weights)?;
+    let mut rows = Vec::new();
+    for items in by_origin.values().filter(|items| items.len() == 1) {
+        let relation = items[0];
+        let line = &corpus.lines[relation.line];
+        let tab = &line.tab;
+        let imported = tab.human[relation.from];
+        let base = Chain::v1(&tab.pitches, &tab.tuning, &weights, STANDARD_MAX_FRET)
+            .map_err(std::io::Error::other)?;
+        let v0_path = lexicographic_path(&base, &[0; FEATURES], None);
+        let v0 = base
+            .positions_of(&v0_path)
+            .ok_or_else(|| std::io::Error::other("ragged baseline"))?[relation.from];
+        let profile = conditioned_profile(&base, relation.from);
+        let imported_entry = profile
+            .entries()
+            .iter()
+            .find(|entry| entry.string() == imported.string)
+            .ok_or_else(|| std::io::Error::other("imported origin string is not playable"))?;
+        let allowed = technique_feasible_strings(
+            &tab.tuning,
+            STANDARD_MAX_FRET,
+            tab.pitches[relation.from],
+            relation.target_pitch,
+        );
+        if !allowed.contains(&imported.string) {
+            return Err(std::io::Error::other(format!(
+                "intent domain removed imported string: {} note {}",
+                corpus.names[line.file], tab.note_ids[relation.from]
+            )));
+        }
+        let p = hand_p[&(relation.line, relation.from)];
+        let c = hand_c[&(relation.line, relation.from)];
+        let blind_estimate = estimate_primary(&profile, None);
+        let t_estimate = estimate_primary(&profile, Some(&allowed));
+        let hp_estimate = estimate_with_hand(&profile, Some(&allowed), p);
+        let hc_estimate = estimate_with_hand(&profile, Some(&allowed), c);
+        let joint_j = relation.target_in_line.map(|_| {
+            let objective = TechniqueObjective {
+                weights,
+                tap_shift: weights.position_shift,
+                continuity: Continuity::Hard,
+                pull_open_waiver: false,
+            };
+            let chain = technique_chain(
+                &tab.pitches,
+                &tab.tuning,
+                &tab.tapped,
+                &tab.edges,
+                &objective,
+                STANDARD_MAX_FRET,
+            )
+            .expect("registered within-line technique chain");
+            let joint_profile = conditioned_profile(&chain, relation.from);
+            let joint_allowed: Vec<_> = joint_profile
+                .entries()
+                .iter()
+                .map(|entry| entry.string())
+                .collect();
+            regime_record(
+                deterministic_restricted_string(
+                    &chain,
+                    relation.from,
+                    &joint_profile,
+                    &joint_allowed,
+                    HandEstimate::Unknown,
+                ),
+                estimate_primary(&joint_profile, None),
+                imported.string,
+            )
+        });
+        let target_disposition = target_disposition(relation);
+        rows.push(OriginProfileRecord {
+            schema: "griff.constraint-lab-technique-origin-profile.v1",
+            source: corpus.names[line.file].clone(),
+            song: song_key(&corpus.names[line.file]),
+            track: tab.track,
+            voice: tab.voice,
+            origin_note_id: tab.note_ids[relation.from],
+            target_note_id: relation.target_note_id,
+            origin_onset: tab.onsets[relation.from],
+            target_onset: relation.target_onset,
+            origin_pitch: tab.pitches[relation.from].0,
+            target_pitch: relation.target_pitch.0,
+            target_in_line: relation.target_in_line.is_some(),
+            target_disposition,
+            imported_string: imported.string,
+            imported_fret: imported.fret,
+            v0_string: v0.string,
+            v0_exact: v0.string == imported.string,
+            imported_primary_delta: imported_entry.delta(),
+            imported_dense_rank: imported_entry.dense_rank(),
+            imported_primary_optimal: imported_entry.delta() == 0,
+            primary_optimal_strings: profile
+                .entries()
+                .iter()
+                .filter(|entry| entry.delta() == 0)
+                .count(),
+            raw_domain: profile.entries().len(),
+            technique_domain: allowed.len(),
+            technique_domain_retains_imported: true,
+            blind: regime_record(Some(v0.string), blind_estimate, imported.string),
+            intent_t: regime_record(
+                deterministic_restricted_string(
+                    &base,
+                    relation.from,
+                    &profile,
+                    &allowed,
+                    HandEstimate::Unknown,
+                ),
+                t_estimate,
+                imported.string,
+            ),
+            intent_t_hp: regime_record(
+                deterministic_restricted_string(&base, relation.from, &profile, &allowed, p),
+                hp_estimate,
+                imported.string,
+            ),
+            intent_t_hc: regime_record(
+                deterministic_restricted_string(&base, relation.from, &profile, &allowed, c),
+                hc_estimate,
+                imported.string,
+            ),
+            joint_j,
+            hand_p: p,
+            hand_c: c,
+            signature: relation_signature(line, relation),
+        });
+    }
+    rows.sort_by(|left, right| {
+        (&left.source, left.track, left.voice, left.origin_note_id).cmp(&(
+            &right.source,
+            right.track,
+            right.voice,
+            right.origin_note_id,
+        ))
+    });
+    write_jsonl(&out.join("technique-origin-profile.jsonl"), &rows)?;
+    let mut summary = summarize_rows(&rows);
+    summary["resolved_relations"] = relations.len().into();
+    summary["unique_origins"] = rows.len().into();
+    summary["multiple_target_origins_refused"] = multiple_origins.into();
+    summary["within_line_relations"] = 29_758.into();
+    summary["cross_line_relations"] = 46.into();
+    summary["paired_same_line_baseline"] = paired_baseline_context(corpus, &relations, &weights)?;
+    summary["runtime_ms"] = started
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+        .into();
+    write_json(&out.join("technique-origin-summary.json"), &summary)?;
+
+    let mut songs: BTreeMap<String, Vec<&OriginProfileRecord>> = BTreeMap::new();
+    for row in &rows {
+        songs.entry(row.song.clone()).or_default().push(row);
+    }
+    let song_summary: Vec<_> = songs
+        .iter()
+        .map(|(song, song_rows)| {
+            serde_json::json!({
+                "song": song,
+                "relations": song_rows.len(),
+                "v0_exact": song_rows.iter().filter(|row| row.v0_exact).count(),
+                "t_exact": song_rows.iter().filter(|row| row.intent_t.deterministic_exact == Some(true)).count(),
+                "hc_exact": song_rows.iter().filter(|row| row.intent_t_hc.deterministic_exact == Some(true)).count(),
+                "positive_delta": song_rows.iter().filter(|row| row.imported_primary_delta > 0).count(),
+                "hc_known": song_rows.iter().filter(|row| matches!(row.intent_t_hc.estimate, OriginStringEstimate::Known { .. })).count(),
+                "hc_known_correct": song_rows.iter().filter(|row| row.intent_t_hc.known_exact == Some(true)).count(),
+            })
+        })
+        .collect();
+    write_json(
+        &out.join("technique-origin-song-summary.json"),
+        &song_summary,
+    )?;
+
+    let full_effect = rows
+        .iter()
+        .filter(|row| row.intent_t_hc.deterministic_exact == Some(true))
+        .count() as i64
+        - rows.iter().filter(|row| row.v0_exact).count() as i64;
+    let loo: Vec<_> = songs
+        .iter()
+        .map(|(song, omitted)| {
+            let omitted_effect = omitted
+                .iter()
+                .filter(|row| row.intent_t_hc.deterministic_exact == Some(true))
+                .count() as i64
+                - omitted.iter().filter(|row| row.v0_exact).count() as i64;
+            serde_json::json!({"omitted_song": song, "effect": full_effect - omitted_effect})
+        })
+        .collect();
+    write_json(&out.join("technique-origin-loo.json"), &loo)?;
+
+    let mut signatures: BTreeMap<(String, String), Vec<&OriginProfileRecord>> = BTreeMap::new();
+    for row in &rows {
+        signatures
+            .entry((row.song.clone(), row.signature.clone()))
+            .or_default()
+            .push(row);
+    }
+    let signature_summary = serde_json::json!({
+        "song_signature_rows": signatures.len(),
+        "unique_signatures": rows.iter().map(|row| &row.signature).collect::<std::collections::BTreeSet<_>>().len(),
+        "largest_song_signature_count": signatures.values().map(Vec::len).max().unwrap_or(0),
+        "one_per_song_signature": {
+            "v0_exact": signatures.values().filter(|items| items[0].v0_exact).count(),
+            "t_exact": signatures.values().filter(|items| items[0].intent_t.deterministic_exact == Some(true)).count(),
+            "hc_exact": signatures.values().filter(|items| items[0].intent_t_hc.deterministic_exact == Some(true)).count(),
+        }
+    });
+    write_json(
+        &out.join("technique-origin-signature-summary.json"),
+        &signature_summary,
+    )?;
+
+    let boundary8 = boundary_downstream(corpus, &rows, &weights)?;
+    if boundary8.len() != 8 {
+        return Err(std::io::Error::other("pinned boundary-eight cohort drift"));
+    }
+    write_json(&out.join("technique-origin-boundary8.json"), &boundary8)?;
+
+    let chord38 = chord_downstream(corpus, &rows)?;
+    if chord38.len() != 38 {
+        return Err(std::io::Error::other("pinned chord-38 cohort drift"));
+    }
+    write_json(&out.join("technique-origin-chord38.json"), &chord38)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summary).map_err(std::io::Error::other)?
+    );
+    Ok(())
+}
+
 // ── entry ─────────────────────────────────────────────────────────────────────
 
 struct Args {
@@ -5226,6 +6014,7 @@ fn run() -> Result<(), String> {
         "legato-chords" => legato_chords(corpus, &args.out),
         "legato-chord-context" => legato_chord_context(corpus, &args.out),
         "boundary-context" => boundary_context_replay(&corpus, &args.out),
+        "technique-origin-state" => technique_origin_state(&corpus, &args.out),
         other => return Err(format!("unknown command {other}")),
     };
     result.map_err(|e| e.to_string())
