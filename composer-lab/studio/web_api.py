@@ -109,7 +109,10 @@ def _validate_state(state):
 
 def _apply_change(state, fn):
     pid, old_rec, undo_stack = _validate_state(state)
+    base_rec = engine._ensure_studio(old_rec)
     new_rec = fn(old_rec)
+    if new_rec == base_rec:
+        return {"id": pid, "recipe": old_rec, "undo": undo_stack}
     next_undo = (undo_stack + [old_rec])[-UNDO_LIMIT:]
     return {"id": pid, "recipe": new_rec, "undo": next_undo}
 

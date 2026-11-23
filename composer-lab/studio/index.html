@@ -409,7 +409,7 @@ function renderWorkspace(preserveTime = null) {
     "mute_share",
     "Глухие ноты (доля ударов ритм-гитары)",
     0, 1, 0.05,
-    "Глушит долю ударов ритм-гитары в куплетах и середине B; применяется сразу."
+    "Глушит долю ударов ритм-гитары в секциях A, A2, A3 и B; применяется сразу."
   );
 
   {
@@ -431,7 +431,6 @@ function renderWorkspace(preserveTime = null) {
     autoBtn.dataset.option = "octave_share";
     autoBtn.dataset.value = "auto";
     autoBtn.textContent = "Авто";
-    autoBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "octave_share", value: null }, d.id);
     const inp = document.createElement("input");
     inp.type = "range";
     inp.dataset.option = "octave_share";
@@ -441,6 +440,7 @@ function renderWorkspace(preserveTime = null) {
     inp.value = isAuto ? "0.5" : String(opts.octave_share);
     inp.className = isAuto ? "slider-dim" : "";
     inp.style.flex = "1";
+    autoBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "octave_share", value: isAuto ? parseFloat(inp.value) : null }, d.id);
     inp.oninput = () => {
       inp.classList.remove("slider-dim");
       valText.textContent = inp.value;

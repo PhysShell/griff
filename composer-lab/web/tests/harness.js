@@ -613,6 +613,14 @@ function createAppHarness(options = {}) {
       const oldSt = deepClone(payload.state);
       const nextRec = deepClone(oldSt.recipe);
       nextRec.studio.options[payload.name] = payload.value;
+      if (JSON.stringify(nextRec) === JSON.stringify(oldSt.recipe)) {
+        const sameSt = { id: oldSt.id, recipe: oldSt.recipe, undo: [...(oldSt.undo || [])] };
+        return {
+          state: sameSt,
+          detail: buildDetailFromState(sameSt, env.sectionLabels),
+          events: eventsForState ? eventsForState(sameSt) : defaultFakeEvents(sameSt),
+        };
+      }
       const nextUndo = [...(oldSt.undo || []), deepClone(oldSt.recipe)].slice(-50);
       const nextSt = { id: oldSt.id, recipe: nextRec, undo: nextUndo };
       return {

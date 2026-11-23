@@ -221,14 +221,18 @@ def set_option(recipe, name, value):
         opts["square_repeat"] = value
     elif name in VALID_DOSE_FLOATS:
         num = _number(value, name)
-        _backfill_comp_doses(st)
-        opts[name] = max(0.0, min(1.0, float(num)))
+        clamped = max(0.0, min(1.0, float(num)))
+        if opts[name] != clamped:
+            _backfill_comp_doses(st)
+            opts[name] = clamped
     elif name == "slide_max":
         num = _number(value, name)
         if num != int(num):
             raise ValueError("slide_max must be an integer")
-        _backfill_comp_doses(st)
-        opts["slide_max"] = max(0, min(12, int(num)))
+        clamped = max(0, min(12, int(num)))
+        if opts[name] != clamped:
+            _backfill_comp_doses(st)
+            opts[name] = clamped
     else:
         raise ValueError(f"unknown option: {name}")
     return rec
@@ -477,7 +481,11 @@ class StudioStore:
         pdir = self._piece_dir(piece_id)
         with self._write_lock(piece_id):
             old_rec = self._read_recipe(pdir)
+            base_rec = _ensure_studio(old_rec)
             new_rec = change(old_rec)
+            if new_rec == base_rec:
+                piece = composer.compose(old_rec)
+                return piece_detail(piece_id, old_rec, piece, can_undo=bool(self._read_undo(pdir)))
             stack = self._read_undo(pdir) + [old_rec]
             piece, stage, reuse = self._build(pdir, new_rec)
             self._publish(pdir, stage, reuse, stack)

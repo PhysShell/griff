@@ -231,6 +231,77 @@ class TestWebApi(unittest.TestCase):
         self.assertEqual(web_api.option(st, "mute_share", -0.1)["recipe"]["studio"]["options"]["mute_share"], 0.0)
         self.assertEqual(web_api.option(st, "octave_share", 2.0)["recipe"]["studio"]["options"]["octave_share"], 1.0)
 
+    def test_square_repeat_repeats_disjoint_a_runs_independently(self):
+        import xml.etree.ElementTree as ET
+
+        st = web_api.new_piece(802000)
+        form = st["recipe"]["form"]
+        a_bars = [copy.deepcopy(b) for b in form if b["sec"] == "A"]
+        b_end = max(i for i, b in enumerate(form) if b["sec"] == "B")
+        st["recipe"]["form"] = form[:b_end + 1] + a_bars + form[b_end + 1:]
+
+        snap1 = web_api.snapshot(st)
+        b_secs_1 = [s for s in snap1["detail"]["sections"] if s["section"] == "B"]
+        self.assertEqual(len(b_secs_1), 1)
+        b_dur_1 = b_secs_1[0]["end16"] - b_secs_1[0]["start16"]
+
+        st2 = web_api.option(st, "square_repeat", 2)
+        snap2 = web_api.snapshot(st2)
+        b_secs_2 = [s for s in snap2["detail"]["sections"] if s["section"] == "B"]
+        self.assertEqual(len(b_secs_2), 1)
+        self.assertEqual(b_secs_2[0]["end16"] - b_secs_2[0]["start16"], b_dur_1)
+
+        a_secs_1 = [s for s in snap1["detail"]["sections"] if s["section"] == "A"]
+        a_secs_2 = [s for s in snap2["detail"]["sections"] if s["section"] == "A"]
+        self.assertEqual(len(a_secs_2), 2)
+        for s1, s2 in zip(a_secs_1, a_secs_2):
+            self.assertEqual(s2["end16"] - s2["start16"], 2 * (s1["end16"] - s1["start16"]))
+
+        root = ET.fromstring(web_api.export_musicxml(st2))
+        for part in root.iter("part"):
+            num = den = None
+            for m in part.iter("measure"):
+                t = m.find("attributes/time")
+                if t is not None:
+                    num, den = int(t.findtext("beats")), int(t.findtext("beat-type"))
+                total = sum(int(n.findtext("duration")) for n in m.iter("note") if n.find("chord") is None)
+                self.assertEqual(total, num * 16 // den, (part.get("id"), m.get("number")))
+
+    def test_noop_option_does_not_push_undo(self):
+        st0 = web_api.new_piece(801000)
+        for name, val in (
+            ("intro_bars", "auto"),
+            ("square_repeat", 1),
+            ("mute_share", 0.0),
+            ("octave_share", None),
+            ("b_lead", "augmented"),
+            ("trailing_rest", st0["recipe"]["studio"]["options"]["trailing_rest"]),
+            ("octave_piece", composer.V8["octave_piece"]),
+            ("slide_max", composer.V8["slide_max"]),
+            ("mute_share", -0.1),
+        ):
+            st1 = web_api.option(st0, name, val)
+            self.assertEqual(st1["undo"], [], (name, val))
+            self.assertEqual(st1["recipe"], st0["recipe"], (name, val))
+            self.assertFalse(web_api.detail(st1)["can_undo"], (name, val))
+
+        st_changed = web_api.option(st0, "intro_bars", 8)
+        self.assertEqual(len(st_changed["undo"]), 1)
+
+        st_same = web_api.option(st_changed, "intro_bars", 8)
+        self.assertEqual(len(st_same["undo"]), 1)
+        self.assertEqual(st_same["recipe"], st_changed["recipe"])
+
+        st_undone = web_api.undo(st_same)
+        self.assertEqual(st_undone["recipe"]["studio"]["options"]["intro_bars"], "auto")
+        self.assertEqual(st_undone["undo"], [])
+
+        legacy_st = copy.deepcopy(st0)
+        for key in ("mute_share", "intro_bars", "square_repeat", "octave_share"):
+            legacy_st["recipe"]["studio"]["options"].pop(key, None)
+        legacy_after = web_api.option(legacy_st, "intro_bars", "auto")
+        self.assertEqual(legacy_after["undo"], [])
+
 
 class TestReviewFixesPython(unittest.TestCase):
     def _load_check_site(self):

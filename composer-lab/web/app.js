@@ -1595,7 +1595,7 @@
       0,
       1,
       0.05,
-      "Глушит долю ударов ритм-гитары в куплетах и середине B; применяется сразу."
+      "Глушит долю ударов ритм-гитары в секциях A, A2, A3 и B; применяется сразу."
     );
 
     {
@@ -1606,9 +1606,9 @@
       valText.textContent = isAuto ? "авто" : String(opts.octave_share);
       const head = document.createElement("div");
       head.className = "slider-head";
-      const labelSpan = document.createElement("span");
-      labelSpan.textContent = "Октавные аккорды (доля тактов)";
-      head.appendChild(labelSpan);
+      const lbl = document.createElement("span");
+      lbl.textContent = "Октавные аккорды (доля тактов)";
+      head.appendChild(lbl);
       head.appendChild(valText);
       const row = document.createElement("div");
       row.className = "row";
@@ -1617,7 +1617,6 @@
       autoBtn.dataset.option = "octave_share";
       autoBtn.dataset.value = "auto";
       autoBtn.textContent = "Авто";
-      autoBtn.onclick = () => sendOption("octave_share", null);
       const inp = document.createElement("input");
       inp.type = "range";
       inp.dataset.option = "octave_share";
@@ -1627,6 +1626,7 @@
       inp.value = isAuto ? "0.5" : String(opts.octave_share);
       inp.className = isAuto ? "slider-dim" : "";
       inp.style.flex = "1 1 120px";
+      autoBtn.onclick = () => sendOption("octave_share", isAuto ? parseFloat(inp.value) : null);
       inp.oninput = () => {
         inp.classList.remove("slider-dim");
         valText.textContent = inp.value;
@@ -1797,6 +1797,12 @@
         return;
       }
       const { result: snap, elapsedMs } = resp;
+      if (samePieceState(latestState, snap.state)) {
+        if (appState.currentId === pieceId && !appState.navPending) {
+          renderWorkspace();
+        }
+        return;
+      }
       if (cmd === "reroll") {
         debugInfo.lastRerollMs = elapsedMs;
       }
