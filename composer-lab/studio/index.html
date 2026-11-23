@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Griff Studio</title>
+<style>
+  :root {
+    --bg: #121417;
+    --panel: #1b1f24;
+    --panel2: #242a31;
+    --border: #323a44;
+    --text: #eef2f6;
+    --muted: #98a4b3;
+    --accent: #4ea1ff;
+    --accent-dim: #254b75;
+    --warn: #e09f3e;
+    --ok: #52b788;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.4;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    min-height: 100vh;
+  }
+  aside {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  main {
+    padding: 20px;
+    max-width: 1040px;
+    width: 100%;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  h1 { margin: 0; font-size: 1.25rem; }
+  h2 { margin: 0 0 10px 0; font-size: 1rem; color: var(--muted); font-weight: 600; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, .btn {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  button:hover, .btn:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent-dim); border-color: var(--accent); }
+  button.active { background: var(--accent); color: #08121e; border-color: var(--accent); font-weight: 600; }
+  button.locked { border-color: var(--warn); color: var(--warn); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  input[type="number"] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 9px;
+    width: 110px;
+  }
+  .piece-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+    max-height: calc(100vh - 180px);
+  }
+  .piece-item {
+    text-align: left;
+    padding: 10px;
+    border-radius: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    color: var(--text);
+    display: block;
+    width: 100%;
+  }
+  .piece-item.selected { border-color: var(--accent); background: #162231; }
+  .piece-meta { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .header-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .busy {
+    display: none;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #3a2d12;
+    color: var(--warn);
+    border: 1px solid var(--warn);
+    font-size: 0.85rem;
+  }
+  .busy.show { display: inline-flex; align-items: center; gap: 6px; }
+  audio { width: 100%; margin-top: 6px; }
+  .timeline {
+    display: flex;
+    gap: 4px;
+    margin-top: 10px;
+    width: 100%;
+  }
+  .sec-block {
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 6px;
+    padding: 8px 6px;
+    color: #fff;
+    cursor: pointer;
+    min-width: 56px;
+    text-align: left;
+    overflow: hidden;
+    transition: transform 0.1s ease, outline 0.1s ease;
+  }
+  .sec-block:hover { transform: translateY(-1px); outline: 1px solid #fff; }
+  .sec-block.playing { outline: 2px solid #fff; }
+  .sec-block .name { font-size: 0.82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sec-block .time { font-size: 0.72rem; opacity: 0.9; }
+  .sec-intro { background: #2d4f6c; }
+  .sec-A { background: #2d6a4f; }
+  .sec-A2 { background: #3b7a57; }
+  .sec-B { background: #7f4f24; }
+  .sec-A3 { background: #8c2f39; }
+  .sec-end { background: #495057; }
+  .sections-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+    gap: 12px;
+  }
+  .sec-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .layer-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .layer-row .reroll-btn { flex: 1; justify-content: space-between; }
+  .salt-badge {
+    font-size: 0.75rem;
+    color: var(--muted);
+    background: var(--bg);
+    padding: 1px 6px;
+    border-radius: 999px;
+  }
+  .options-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+  }
+  .slider-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.88rem;
+  }
+  .slider-head { display: flex; justify-content: space-between; color: var(--muted); }
+  input[type="range"] { width: 100%; }
+  .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  @media (max-width: 780px) {
+    .layout { grid-template-columns: 1fr; }
+    aside { border-right: none; border-bottom: 1px solid var(--border); }
+    .piece-list { max-height: 220px; }
+    .timeline { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <div class="header-bar">
+      <h1>Griff Studio</h1>
+      <span id="busy" class="busy">Рендер...</span>
+    </div>
+    <div class="row">
+      <button id="newBtn" class="primary">Новая пьеса</button>
+      <input id="seedInput" type="number" placeholder="seed (опц.)">
+    </div>
+    <div id="pieceList" class="piece-list"></div>
+  </aside>
+  <main id="workspace">
+    <div class="empty">Нажмите «Новая пьеса» или выберите готовую из списка.</div>
+  </main>
+</div>
+<script>
+const state = { pieces: [], current: null, currentId: null, busyCount: 0, navSeq: 0, editSeq: 0 };
+
+function setBusy(delta) {
+  state.busyCount = Math.max(0, state.busyCount + delta);
+  document.getElementById("busy").classList.toggle("show", state.busyCount > 0);
+}
+
+async function api(url, opts = {}) {
+  setBusy(1);
+  try {
+    const res = await fetch(url, {
+      headers: opts.body ? { "Content-Type": "application/json" } : {},
+      ...opts,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || res.statusText);
+    }
+    return await res.json();
+  } finally {
+    setBusy(-1);
+  }
+}
+
+function fmtSec(s) {
+  return `${Number(s).toFixed(1)} с`;
+}
+
+function renderList() {
+  const el = document.getElementById("pieceList");
+  el.innerHTML = "";
+  for (const p of state.pieces) {
+    const btn = document.createElement("button");
+    btn.className = "piece-item" + (state.current && state.current.id === p.id ? " selected" : "");
+    btn.innerHTML = `<div><strong>#${p.seed}</strong> · ${p.meter} · ${p.key} ${p.mode}</div>
+      <div class="piece-meta">${p.tempo} BPM · ${p.length} с</div>`;
+    btn.onclick = () => selectPiece(p.id);
+    el.appendChild(btn);
+  }
+}
+
+function renderWorkspace(preserveTime = null) {
+  const main = document.getElementById("workspace");
+  const d = state.current;
+  if (!d) {
+    main.innerHTML = '<div class="empty">Нажмите «Новая пьеса» или выберите готовую из списка.</div>';
+    return;
+  }
+
+  const audioUrl = `/api/piece/${encodeURIComponent(d.id)}/audio.mp3?t=${Date.now()}`;
+  const total = Math.max(1, d.length);
+
+  main.innerHTML = `
+    <div class="card">
+      <div class="header-bar">
+        <div>
+          <strong>Пьеса #${d.seed}</strong> · ${d.meter} · ${d.key} ${d.mode} · ${d.tempo} BPM · ${d.length} с
+        </div>
+        <div class="row">
+          <button id="undoBtn" ${d.can_undo ? "" : "disabled"}>Отменить</button>
+          <a class="btn" href="/api/piece/${encodeURIComponent(d.id)}/piece.mid" download>Скачать MIDI</a>
+          <a class="btn" href="/api/piece/${encodeURIComponent(d.id)}/piece.musicxml" download>Скачать табы (MusicXML)</a>
+        </div>
+      </div>
+      <audio id="player" controls src="${audioUrl}"></audio>
+      <div id="timeline" class="timeline"></div>
+    </div>
+
+    <div class="card">
+      <h2>Вся пьеса</h2>
+      <div class="row" id="wholeRow"></div>
+    </div>
+
+    <div class="card">
+      <h2>Секции</h2>
+      <div class="sections-grid" id="sectionsGrid"></div>
+    </div>
+
+    <div class="card">
+      <h2>Параметры (для следующих перегенераций)</h2>
+      <div class="options-grid" id="optionsGrid"></div>
+    </div>
+  `;
+
+  const player = document.getElementById("player");
+  if (preserveTime !== null) {
+    player.addEventListener("loadedmetadata", () => {
+      try { player.currentTime = Math.min(preserveTime, player.duration || preserveTime); } catch (_) {}
+    }, { once: true });
+  }
+
+  const tl = document.getElementById("timeline");
+  for (const s of d.sections) {
+    const dur = Math.max(0.5, s.end_sec - s.start_sec);
+    const blk = document.createElement("button");
+    blk.className = `sec-block sec-${s.section}`;
+    blk.style.flexGrow = String(dur / total);
+    blk.dataset.start = String(s.start_sec);
+    blk.dataset.end = String(s.end_sec);
+    blk.innerHTML = `<div class="name">${s.label}</div><div class="time">${s.start_sec.toFixed(1)}–${s.end_sec.toFixed(1)} с</div>`;
+    blk.onclick = () => {
+      player.currentTime = s.start_sec;
+      player.play().catch(() => {});
+    };
+    tl.appendChild(blk);
+  }
+  player.addEventListener("timeupdate", () => {
+    const t = player.currentTime;
+    for (const blk of tl.children) {
+      const a = Number(blk.dataset.start), b = Number(blk.dataset.end);
+      blk.classList.toggle("playing", t >= a && t < b);
+    }
+  });
+
+  document.getElementById("undoBtn").onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/undo`, {}, d.id);
+
+  const wholeRow = document.getElementById("wholeRow");
+  for (const l of d.whole_layers) {
+    wholeRow.appendChild(makeLayerControl(d.id, l));
+  }
+  const allBtn = document.createElement("button");
+  allBtn.className = "primary";
+  allBtn.textContent = "Перегенерировать всё незакреплённое";
+  allBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/reroll`, { layer: "all", section: "all" }, d.id);
+  wholeRow.appendChild(allBtn);
+
+  const sGrid = document.getElementById("sectionsGrid");
+  for (const s of d.sections) {
+    if (!s.layers || s.layers.length === 0) continue;
+    const box = document.createElement("div");
+    box.className = "sec-card";
+    const head = document.createElement("div");
+    head.className = "row";
+    head.style.justifyContent = "space-between";
+    head.innerHTML = `<strong>${s.label}</strong><span class="piece-meta">${fmtSec(s.start_sec)} – ${fmtSec(s.end_sec)}</span>`;
+    box.appendChild(head);
+    for (const l of s.layers) {
+      box.appendChild(makeLayerControl(d.id, l));
+    }
+    sGrid.appendChild(box);
+  }
+
+  const oGrid = document.getElementById("optionsGrid");
+  const opts = d.options;
+
+  const bBox = document.createElement("div");
+  bBox.innerHTML = `<div class="piece-meta" style="margin-bottom:6px">Соло в середине B (b_lead)</div>`;
+  const bRow = document.createElement("div");
+  bRow.className = "row";
+  for (const [val, txt] of [["augmented", "Удвоенно (как сейчас)"], ["same_speed", "В темпе рифа"], ["rest", "Без соло"]]) {
+    const b = document.createElement("button");
+    b.className = opts.b_lead === val ? "active" : "";
+    b.textContent = txt;
+    b.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "b_lead", value: val }, d.id);
+    bRow.appendChild(b);
+  }
+  bBox.appendChild(bRow);
+  oGrid.appendChild(bBox);
+
+  const tBox = document.createElement("div");
+  tBox.innerHTML = `<div class="piece-meta" style="margin-bottom:6px">Пауза в конце риф-такта (trailing_rest)</div>`;
+  const tBtn = document.createElement("button");
+  tBtn.className = opts.trailing_rest ? "active" : "";
+  tBtn.textContent = opts.trailing_rest ? "Вкл (есть пауза)" : "Выкл (--notail)";
+  tBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "trailing_rest", value: !opts.trailing_rest }, d.id);
+  tBox.appendChild(tBtn);
+  oGrid.appendChild(tBox);
+
+  for (const [name, label, min, max, step] of [
+    ["octave_piece", "Доля октавных секций", 0, 1, 0.05],
+    ["octave_sixteenths", "Октавы шестнадцатыми", 0, 1, 0.05],
+    ["dead_notes", "Глухие ноты (dead notes)", 0, 1, 0.05],
+    ["slide_max", "Макс. слайд октав (лады)", 0, 12, 1],
+  ]) {
+    const wrap = document.createElement("div");
+    wrap.className = "slider-row";
+    const valText = document.createElement("span");
+    valText.textContent = String(opts[name]);
+    const head = document.createElement("div");
+    head.className = "slider-head";
+    head.innerHTML = `<span>${label}</span>`;
+    head.appendChild(valText);
+    const inp = document.createElement("input");
+    inp.type = "range";
+    inp.min = String(min);
+    inp.max = String(max);
+    inp.step = String(step);
+    inp.value = String(opts[name]);
+    inp.oninput = () => { valText.textContent = inp.value; };
+    inp.onchange = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, {
+      name,
+      value: step === 1 ? parseInt(inp.value, 10) : parseFloat(inp.value),
+    }, d.id);
+    wrap.appendChild(head);
+    wrap.appendChild(inp);
+    oGrid.appendChild(wrap);
+  }
+}
+
+function makeLayerControl(pieceId, l) {
+  const row = document.createElement("div");
+  row.className = "layer-row";
+  const btn = document.createElement("button");
+  btn.className = "reroll-btn";
+  btn.disabled = l.locked;
+  btn.innerHTML = `<span>${l.label}</span><span class="salt-badge">#${l.salt}</span>`;
+  btn.onclick = () => mutate(`/api/piece/${encodeURIComponent(pieceId)}/reroll`, { layer: l.layer, section: l.section }, pieceId);
+
+  const lockBtn = document.createElement("button");
+  lockBtn.className = l.locked ? "locked" : "";
+  lockBtn.title = l.locked ? "Открепить" : "Закрепить";
+  lockBtn.textContent = l.locked ? "Закр." : "Откр.";
+  lockBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(pieceId)}/lock`, {
+    layer: l.layer,
+    section: l.section,
+    locked: !l.locked,
+  }, pieceId);
+  row.appendChild(btn);
+  row.appendChild(lockBtn);
+  return row;
+}
+
+async function mutate(url, body, pieceId) {
+  const player = document.getElementById("player");
+  const pos = player ? player.currentTime : null;
+  const seq = ++state.editSeq;
+  let det;
+  try {
+    det = await api(url, { method: "POST", body: JSON.stringify(body) });
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  const fresh = () => seq === state.editSeq && state.currentId === pieceId;
+  if (fresh()) state.current = det;
+  await refreshList();
+  if (fresh()) renderWorkspace(pos);
+}
+
+async function refreshList() {
+  const data = await api("/api/pieces");
+  state.pieces = data.pieces || [];
+  renderList();
+}
+
+async function selectPiece(id) {
+  const seq = ++state.navSeq;
+  const edits = state.editSeq;
+  state.currentId = id;
+  let det;
+  try {
+    det = await api(`/api/piece/${encodeURIComponent(id)}`);
+  } catch (err) {
+    if (seq === state.navSeq) state.currentId = state.current ? state.current.id : null;
+    alert(err.message);
+    return;
+  }
+  if (seq !== state.navSeq || edits !== state.editSeq) return;
+  state.current = det;
+  renderList();
+  renderWorkspace();
+}
+
+document.getElementById("newBtn").onclick = async () => {
+  const raw = document.getElementById("seedInput").value.trim();
+  const seed = raw === "" ? null : parseInt(raw, 10);
+  const seq = ++state.navSeq;
+  let det;
+  try {
+    det = await api("/api/new", { method: "POST", body: JSON.stringify({ seed }) });
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  if (seq === state.navSeq) {
+    state.current = det;
+    state.currentId = det.id;
+  }
+  await refreshList();
+  if (seq === state.navSeq) renderWorkspace();
+};
+
+refreshList().then(() => {
+  if (state.pieces.length > 0 && !state.current && !state.currentId) {
+    selectPiece(state.pieces[0].id);
+  }
+});
+</script>
+</body>
+</html>

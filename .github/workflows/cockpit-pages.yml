@@ -12,6 +12,7 @@ on:
       - 'experiment/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'composer-lab/**'
       - '.github/workflows/cockpit-pages.yml'
   workflow_dispatch:
 
@@ -54,6 +55,17 @@ jobs:
           cargo install wasm-bindgen-cli --version "$ver" --locked
       - name: Build cockpit → cockpit/dist
         run: ./cockpit/build-web.sh
+      # Studio Web (composer-lab/web, Pyodide in the browser) is served under /studio/.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build Studio Web → cockpit/dist/studio
+        run: |
+          python composer-lab/web/build.py
+          python composer-lab/web/check_site.py
+          mkdir -p cockpit/dist/studio
+          cp -r composer-lab/web/index.html composer-lab/web/app.js composer-lab/web/worker.js \
+                composer-lab/web/py composer-lab/web/samples cockpit/dist/studio/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: cockpit/dist
