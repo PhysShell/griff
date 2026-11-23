@@ -40,6 +40,8 @@ LAYER_LABELS = {
 
 VALID_B_LEAD = ("augmented", "same_speed", "rest")
 VALID_DOSE_FLOATS = ("octave_piece", "octave_sixteenths", "dead_notes")
+VALID_INTRO_BARS = ("auto", 1, 2, 4, 8)
+VALID_SQUARE_REPEAT = (1, 2)
 PIECE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -47,6 +49,10 @@ def default_options():
     return {
         "b_lead": "augmented",
         "trailing_rest": True,
+        "mute_share": 0.0,
+        "octave_share": None,
+        "intro_bars": "auto",
+        "square_repeat": 1,
         "octave_piece": float(composer.V8["octave_piece"]),
         "octave_sixteenths": float(composer.V8["octave_sixteenths"]),
         "dead_notes": float(composer.V8["dead_notes"]),
@@ -193,6 +199,26 @@ def set_option(recipe, name, value):
         if not isinstance(value, bool):
             raise ValueError("trailing_rest must be a boolean")
         opts["trailing_rest"] = value
+    elif name == "mute_share":
+        num = _number(value, name)
+        opts["mute_share"] = max(0.0, min(1.0, float(num)))
+    elif name == "octave_share":
+        if value is None:
+            opts["octave_share"] = None
+        else:
+            num = _number(value, name)
+            opts["octave_share"] = max(0.0, min(1.0, float(num)))
+    elif name == "intro_bars":
+        if value == "auto":
+            opts["intro_bars"] = "auto"
+        elif isinstance(value, bool) or not isinstance(value, int) or value not in (1, 2, 4, 8):
+            raise ValueError(f"invalid intro_bars: {value}")
+        else:
+            opts["intro_bars"] = value
+    elif name == "square_repeat":
+        if isinstance(value, bool) or not isinstance(value, int) or value not in (1, 2):
+            raise ValueError(f"invalid square_repeat: {value}")
+        opts["square_repeat"] = value
     elif name in VALID_DOSE_FLOATS:
         num = _number(value, name)
         _backfill_comp_doses(st)

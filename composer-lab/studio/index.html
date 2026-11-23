@@ -186,6 +186,10 @@
     font-size: 0.88rem;
   }
   .slider-head { display: flex; justify-content: space-between; color: var(--muted); }
+  .option-hint { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+  .slider-dim { opacity: 0.55; }
+  .advanced-options { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .advanced-options summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; font-weight: 600; margin-bottom: 10px; }
   input[type="range"] { width: 100%; }
   .empty { color: var(--muted); padding: 24px 0; text-align: center; }
   @media (max-width: 780px) {
@@ -293,8 +297,12 @@ function renderWorkspace(preserveTime = null) {
     </div>
 
     <div class="card">
-      <h2>Параметры (для следующих перегенераций)</h2>
+      <h2>Параметры пьесы</h2>
       <div class="options-grid" id="optionsGrid"></div>
+      <details class="advanced-options">
+        <summary>Дополнительно</summary>
+        <div class="options-grid" id="advancedGrid"></div>
+      </details>
     </div>
   `;
 
@@ -357,7 +365,145 @@ function renderWorkspace(preserveTime = null) {
   }
 
   const oGrid = document.getElementById("optionsGrid");
+  const advGrid = document.getElementById("advancedGrid");
   const opts = d.options;
+
+  function addHint(parent, text) {
+    const h = document.createElement("div");
+    h.className = "option-hint";
+    h.textContent = text;
+    parent.appendChild(h);
+  }
+
+  function addSlider(grid, name, label, min, max, step, hint) {
+    const wrap = document.createElement("div");
+    wrap.className = "slider-row";
+    const valText = document.createElement("span");
+    valText.textContent = String(opts[name] ?? 0);
+    const head = document.createElement("div");
+    head.className = "slider-head";
+    const lbl = document.createElement("span");
+    lbl.textContent = label;
+    head.appendChild(lbl);
+    head.appendChild(valText);
+    const inp = document.createElement("input");
+    inp.type = "range";
+    inp.dataset.option = name;
+    inp.min = String(min);
+    inp.max = String(max);
+    inp.step = String(step);
+    inp.value = String(opts[name] ?? 0);
+    inp.oninput = () => { valText.textContent = inp.value; };
+    inp.onchange = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, {
+      name,
+      value: step === 1 ? parseInt(inp.value, 10) : parseFloat(inp.value),
+    }, d.id);
+    wrap.appendChild(head);
+    wrap.appendChild(inp);
+    if (hint) addHint(wrap, hint);
+    grid.appendChild(wrap);
+  }
+
+  addSlider(
+    oGrid,
+    "mute_share",
+    "Глухие ноты (доля ударов ритм-гитары)",
+    0, 1, 0.05,
+    "Глушит долю ударов ритм-гитары в куплетах и середине B; применяется сразу."
+  );
+
+  {
+    const wrap = document.createElement("div");
+    wrap.className = "slider-row";
+    const isAuto = opts.octave_share === null || opts.octave_share === undefined;
+    const valText = document.createElement("span");
+    valText.textContent = isAuto ? "авто" : String(opts.octave_share);
+    const head = document.createElement("div");
+    head.className = "slider-head";
+    const lbl = document.createElement("span");
+    lbl.textContent = "Октавные аккорды (доля тактов)";
+    head.appendChild(lbl);
+    head.appendChild(valText);
+    const row = document.createElement("div");
+    row.className = "row";
+    const autoBtn = document.createElement("button");
+    autoBtn.className = isAuto ? "active" : "";
+    autoBtn.dataset.option = "octave_share";
+    autoBtn.dataset.value = "auto";
+    autoBtn.textContent = "Авто";
+    autoBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "octave_share", value: null }, d.id);
+    const inp = document.createElement("input");
+    inp.type = "range";
+    inp.dataset.option = "octave_share";
+    inp.min = "0";
+    inp.max = "1";
+    inp.step = "0.05";
+    inp.value = isAuto ? "0.5" : String(opts.octave_share);
+    inp.className = isAuto ? "slider-dim" : "";
+    inp.style.flex = "1";
+    inp.oninput = () => {
+      inp.classList.remove("slider-dim");
+      valText.textContent = inp.value;
+    };
+    inp.onchange = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, {
+      name: "octave_share",
+      value: parseFloat(inp.value),
+    }, d.id);
+    row.appendChild(autoBtn);
+    row.appendChild(inp);
+    wrap.appendChild(head);
+    wrap.appendChild(row);
+    addHint(wrap, "Доля тактов A и A2 с октавами («Авто» — как в пьесе); применяется сразу.");
+    oGrid.appendChild(wrap);
+  }
+
+  {
+    const box = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "piece-meta";
+    title.style.marginBottom = "6px";
+    title.textContent = "Длина вступления (тактов)";
+    const row = document.createElement("div");
+    row.className = "row";
+    const cur = opts.intro_bars ?? "auto";
+    for (const [val, txt] of [["auto", "Авто"], [1, "1"], [2, "2"], [4, "4"], [8, "8"]]) {
+      const b = document.createElement("button");
+      b.className = cur === val ? "active" : "";
+      b.dataset.option = "intro_bars";
+      b.dataset.value = String(val);
+      b.textContent = txt;
+      b.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "intro_bars", value: val }, d.id);
+      row.appendChild(b);
+    }
+    box.appendChild(title);
+    box.appendChild(row);
+    addHint(box, "Меняет число тактов вступления по аккордам A; применяется сразу.");
+    oGrid.appendChild(box);
+  }
+
+  {
+    const box = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "piece-meta";
+    title.style.marginBottom = "6px";
+    title.textContent = "Повтор квадрата в куплетах";
+    const row = document.createElement("div");
+    row.className = "row";
+    const cur = opts.square_repeat ?? 1;
+    for (const [val, txt] of [[1, "1× (4 такта)"], [2, "2× (8 тактов)"]]) {
+      const b = document.createElement("button");
+      b.className = cur === val ? "active" : "";
+      b.dataset.option = "square_repeat";
+      b.dataset.value = String(val);
+      b.textContent = txt;
+      b.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "square_repeat", value: val }, d.id);
+      row.appendChild(b);
+    }
+    box.appendChild(title);
+    box.appendChild(row);
+    addHint(box, "Повторяет 4-тактовый квадрат куплетов A и A2 дважды подряд; применяется сразу.");
+    oGrid.appendChild(box);
+  }
 
   const bBox = document.createElement("div");
   bBox.innerHTML = `<div class="piece-meta" style="margin-bottom:6px">Соло в середине B (b_lead)</div>`;
@@ -383,33 +529,12 @@ function renderWorkspace(preserveTime = null) {
   oGrid.appendChild(tBox);
 
   for (const [name, label, min, max, step] of [
-    ["octave_piece", "Доля октавных секций", 0, 1, 0.05],
-    ["octave_sixteenths", "Октавы шестнадцатыми", 0, 1, 0.05],
-    ["dead_notes", "Глухие ноты (dead notes)", 0, 1, 0.05],
-    ["slide_max", "Макс. слайд октав (лады)", 0, 12, 1],
+    ["octave_piece", "Вероятность октав при перегенерации ритма", 0, 1, 0.05],
+    ["octave_sixteenths", "Октавы шестнадцатыми (при перегенерации)", 0, 1, 0.05],
+    ["dead_notes", "Глухие перед акцентами в октавах (при перегенерации)", 0, 1, 0.05],
+    ["slide_max", "Макс. слайд октав в ладах (при перегенерации)", 0, 12, 1],
   ]) {
-    const wrap = document.createElement("div");
-    wrap.className = "slider-row";
-    const valText = document.createElement("span");
-    valText.textContent = String(opts[name]);
-    const head = document.createElement("div");
-    head.className = "slider-head";
-    head.innerHTML = `<span>${label}</span>`;
-    head.appendChild(valText);
-    const inp = document.createElement("input");
-    inp.type = "range";
-    inp.min = String(min);
-    inp.max = String(max);
-    inp.step = String(step);
-    inp.value = String(opts[name]);
-    inp.oninput = () => { valText.textContent = inp.value; };
-    inp.onchange = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, {
-      name,
-      value: step === 1 ? parseInt(inp.value, 10) : parseFloat(inp.value),
-    }, d.id);
-    wrap.appendChild(head);
-    wrap.appendChild(inp);
-    oGrid.appendChild(wrap);
+    addSlider(advGrid, name, label, min, max, step, null);
   }
 }
 

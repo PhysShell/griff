@@ -167,6 +167,70 @@ class TestWebApi(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0, res.stderr)
 
+    def test_new_controls_sequence_matches_studio_store(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = studio_engine.StudioStore(d, render_fn=studio_render.fake_render)
+            det = store.create_piece(801000)
+            pid = det["id"]
+            st = web_api.new_piece(801000)
+
+            steps = [
+                ("mute_share", 0.4),
+                ("octave_share", 1.0),
+                ("intro_bars", 8),
+                ("square_repeat", 2),
+                ("octave_share", 0.0),
+                ("octave_share", None),
+            ]
+            pdir = Path(d) / pid
+            for name, val in steps:
+                s_det = store.set_option(pid, name, val)
+                st = json.loads(json.dumps(web_api.option(st, name, val)))
+                w_det = web_api.detail(st)
+                self.assertEqual(w_det, s_det, (name, val))
+                self.assertEqual(
+                    st["recipe"],
+                    json.loads((pdir / "recipe.json").read_text(encoding="utf-8")),
+                    (name, val),
+                )
+                self.assertEqual(
+                    base64.b64decode(web_api.export_midi(st)),
+                    (pdir / "piece.mid").read_bytes(),
+                    (name, val),
+                )
+
+            s_det = store.undo(pid)
+            st = json.loads(json.dumps(web_api.undo(st)))
+            self.assertEqual(web_api.detail(st), s_det)
+            self.assertEqual(base64.b64decode(web_api.export_midi(st)), (pdir / "piece.mid").read_bytes())
+
+    def test_new_controls_validation(self):
+        st = web_api.new_piece(801000)
+        for name, bad in (
+            ("mute_share", True),
+            ("mute_share", "0.5"),
+            ("octave_share", False),
+            ("intro_bars", 3),
+            ("intro_bars", True),
+            ("intro_bars", "8"),
+            ("square_repeat", 3),
+            ("square_repeat", True),
+        ):
+            with self.assertRaises(ValueError, msg=(name, bad)):
+                web_api.option(st, name, bad)
+            bad_st = copy.deepcopy(st)
+            bad_st["recipe"]["studio"]["options"][name] = bad
+            with self.assertRaises(ValueError, msg=("validate", name, bad)):
+                web_api.detail(bad_st)
+
+        for name, out_of_range in (("mute_share", -0.1), ("mute_share", 1.5), ("octave_share", 2.0)):
+            bad_st = copy.deepcopy(st)
+            bad_st["recipe"]["studio"]["options"][name] = out_of_range
+            with self.assertRaises(ValueError, msg=("validate", name, out_of_range)):
+                web_api.detail(bad_st)
+        self.assertEqual(web_api.option(st, "mute_share", -0.1)["recipe"]["studio"]["options"]["mute_share"], 0.0)
+        self.assertEqual(web_api.option(st, "octave_share", 2.0)["recipe"]["studio"]["options"]["octave_share"], 1.0)
+
 
 class TestReviewFixesPython(unittest.TestCase):
     def _load_check_site(self):

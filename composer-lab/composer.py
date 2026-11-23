@@ -7,6 +7,7 @@ Every sampled decision is stored in a recipe so a piece can be rebuilt.
 import argparse
 import copy
 import functools
+import hashlib
 import itertools
 import json
 import math
@@ -810,6 +811,110 @@ def _studio_rng(seed, layer, section, salt):
     return random.Random(f"{seed}:{layer}:{section}:{salt}")
 
 
+def _det_unit(key):
+    h = hashlib.sha256(key.encode("utf-8")).digest()
+    return (int.from_bytes(h[:7], "big") >> 3) / (1 << 53)
+
+
+def _studio_octave_spec(seed, sec, comp_doses_map):
+    doses = comp_doses_map.get(sec) or V8
+    rng = random.Random(f"{seed}:octave_spec:{sec}")
+    return {
+        "grid": 16 if rng.random() < float(doses.get("octave_sixteenths", V8["octave_sixteenths"])) else 8,
+        "dead": rng.random() < float(doses.get("dead_notes", V8["dead_notes"])),
+        "slide_max": int(doses.get("slide_max", V8["slide_max"])),
+    }
+
+
+def _strip_leading_legato(notes, s0, s1):
+    in_sec = sorted((n for n in notes if s0 <= n["start"] < s1), key=lambda n: (n["start"], n["pitch"]))
+    for n in in_sec:
+        if not n.get("chordtone") and not n.get("dyad") and not (n.get("fixed") and "preset_tech" not in n):
+            n["tech"] = [x for x in n.get("tech", []) if x not in ("hammer", "pull", "slide")]
+            break
+    seen_dyad_str = set()
+    for n in in_sec:
+        if n.get("dyad") and n["string"] not in seen_dyad_str:
+            seen_dyad_str.add(n["string"])
+            n["tech"] = [x for x in n.get("tech", []) if x != "slide"]
+
+
+def _apply_square_repeat(parts, chords, meters, total16, repeat, form=None):
+    if repeat <= 1:
+        return total16
+    for target_sec in ("A", "A2"):
+        idxs = [i for i, c in enumerate(chords) if c["sec"] == target_sec]
+        if not idxs:
+            continue
+        first_i, last_i = idxs[0], idxs[-1]
+        s0 = chords[first_i]["start"]
+        s1 = chords[last_i + 1]["start"] if last_i + 1 < len(chords) else total16
+        sec_len = s1 - s0
+        extra_len = sec_len * (repeat - 1)
+        for g in ("g1", "g2"):
+            _strip_leading_legato(parts[g], s0, s1)
+            sec_notes = []
+            for n in parts[g]:
+                if s0 <= n["start"] < s1:
+                    n["dur"] = min(n["dur"], max(1, s1 - n["start"]))
+                    sec_notes.append(n)
+                elif n["start"] >= s1:
+                    n["start"] += extra_len
+            for r in range(1, repeat):
+                shift = sec_len * r
+                parts[g].extend(dict(copy.deepcopy(n), start=n["start"] + shift) for n in sec_notes)
+            parts[g].sort(key=lambda n: (n["start"], n["pitch"]))
+        for c in chords[last_i + 1:]:
+            c["start"] += extra_len
+        block = [dict(c) for c in chords[first_i:last_i + 1]]
+        inserted_chords = []
+        for r in range(1, repeat):
+            shift = sec_len * r
+            inserted_chords.extend(dict(c, start=c["start"] + shift) for c in block)
+        chords[last_i + 1:last_i + 1] = inserted_chords
+        for i, c in enumerate(chords):
+            c["bar"] = i
+        if form is not None:
+            fblock = [copy.deepcopy(b) for b in form[first_i:last_i + 1]]
+            inserted_form = []
+            for r in range(1, repeat):
+                inserted_form.extend(copy.deepcopy(b) for b in fblock)
+            form[last_i + 1:last_i + 1] = inserted_form
+        for k, (tick, num, den) in enumerate(meters):
+            if tick >= s1 * 120:
+                meters[k] = (tick + extra_len * 120, num, den)
+        total16 += extra_len
+    return total16
+
+
+def _apply_mute_share(parts, other, chords, total16, seed, mute_share):
+    if mute_share <= 0.0:
+        return
+    spans = [
+        (c["start"], chords[i + 1]["start"] if i + 1 < len(chords) else total16)
+        for i, c in enumerate(chords)
+        if c["sec"] in ("A", "A2", "A3", "B")
+    ]
+    if not spans:
+        return
+    by_onset = {}
+    for n in parts[other]:
+        st = n["start"]
+        if any(s0 <= st < s1 for s0, s1 in spans):
+            by_onset.setdefault(st, []).append(n)
+    for onset, group in sorted(by_onset.items()):
+        if all("dead" in n.get("tech", []) for n in group):
+            continue
+        if _det_unit(f"{seed}:mute:{onset}") < mute_share:
+            for n in group:
+                if "dead" in n.get("tech", []):
+                    continue
+                n["tech"] = ["dead"]
+                n["dur"] = 1
+                n["vel"] = 40
+                n["ring"] = False
+
+
 def _studio_cycle(rng, v8):
     cycle = rng.choice([3, 4, 5, 5, 6, 7])
     ladder_pick = list(range(cycle))
@@ -1065,6 +1170,26 @@ def _prepare_studio(recipe, arp, v8):
         ]
         form = new_intro + non_intro
 
+    intro_bars_opt = opts.get("intro_bars", "auto")
+    if intro_bars_opt != "auto":
+        n_bars = int(intro_bars_opt)
+        orig_intro = [b for b in form if b["sec"] == "intro"]
+        non_intro = [b for b in form if b["sec"] != "intro"]
+        harmony_a = recipe["harmony"]["A"]
+        template = {k: v for k, v in orig_intro[0].items() if k != "handover"} if orig_intro else {
+            "sec": "intro",
+            "prog": "intro",
+            "dens": 2,
+        }
+        last_handover = orig_intro[-1].get("handover") if orig_intro else None
+        new_intro = []
+        for i in range(n_bars):
+            bar = dict(template, sec="intro", chord=harmony_a[i % len(harmony_a)], prog="intro", _orig_bar_i=i)
+            if last_handover and i == n_bars - 1:
+                bar["handover"] = last_handover
+            new_intro.append(bar)
+        form = new_intro + non_intro
+
     L = METERS[it["meter"]][0]
     for sec in ("A", "A2"):
         csalt = int(salts.get(f"comp@{sec}", 0))
@@ -1092,6 +1217,34 @@ def _prepare_studio(recipe, arp, v8):
                             b["comp"] = list(cplan["comp"])
                             b["_fallback_comp"] = list(cplan["comp"])
                         ri += 1
+
+    raw_oct_share = opts.get("octave_share", None)
+    octave_share = None if raw_oct_share is None else max(0.0, min(1.0, float(raw_oct_share)))
+    if octave_share is not None:
+        for sec in ("A", "A2"):
+            comping_bars = [
+                b for b in form
+                if b["sec"] == sec and b.get("role") in ("chords", "chatter", "octave") and not b.get("tex")
+            ]
+            if not comping_bars:
+                continue
+            if "texture" in recipe and sec in recipe["texture"].get("role", {}):
+                fallback_roles = [recipe["texture"]["role"][sec]]
+            elif "repeat" in recipe and recipe["repeat"].get("roles"):
+                fallback_roles = list(recipe["repeat"]["roles"])
+            else:
+                fallback_roles = ["chords"]
+            base_oct = next((b.get("oct") for b in comping_bars if b.get("oct")), None)
+            oct_spec = dict(base_oct) if base_oct is not None else _studio_octave_spec(seed, sec, comp_doses_map)
+            for ri, b in enumerate(comping_bars):
+                if _det_unit(f"{seed}:octave:{b['_orig_bar_i']}") < octave_share:
+                    b["role"] = "octave"
+                    b["oct"] = dict(b.get("oct") or oct_spec)
+                    b.pop("comp", None)
+                    b.pop("_fallback_comp", None)
+                elif b.get("role") == "octave":
+                    b.pop("oct", None)
+                    b["role"] = fallback_roles[ri % len(fallback_roles)]
 
     sec_arp = {}
     for sec in ("A", "A2"):
@@ -1135,6 +1288,9 @@ def _prepare_studio(recipe, arp, v8):
     tempo_salt = int(salts.get("tempo@all", 0))
     tempo = _studio_tempo(seed, base_tempo, tempo_salt) if tempo_salt > 0 else base_tempo
 
+    mute_share = max(0.0, min(1.0, float(opts.get("mute_share", 0.0))))
+    square_repeat = int(opts.get("square_repeat", 1))
+
     return {
         "hook": hook,
         "lead_plan": lead_plan,
@@ -1146,6 +1302,8 @@ def _prepare_studio(recipe, arp, v8):
         "tempo": tempo,
         "base": base,
         "end_riff": end_riff,
+        "mute_share": mute_share,
+        "square_repeat": square_repeat,
     }
 
 
@@ -1542,6 +1700,15 @@ def compose(recipe, _trace=None):
         parts = out_parts
         if fix:
             report["m9_resolved"] = resolve_minor_ninths(parts, lead, other)
+        if st_cfg["square_repeat"] > 1:
+            t = _apply_square_repeat(
+                parts, chords, meters, t, st_cfg["square_repeat"],
+                form=form if _trace is not None else None,
+            )
+            if _trace is not None:
+                _trace["form"] = form
+        if st_cfg["mute_share"] > 0.0:
+            _apply_mute_share(parts, other, chords, t, recipe["seed"], st_cfg["mute_share"])
     else:
         for g in ("g1", "g2"):
             ns = sorted(parts[g], key=lambda n: (n["start"], n["pitch"]))

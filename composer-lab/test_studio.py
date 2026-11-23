@@ -1302,5 +1302,353 @@ class TestStudioPage(unittest.TestCase):
         self.assertEqual(out["latestSeed"], 2)
 
 
+class TestStudioControls(unittest.TestCase):
+    def _v8_plain(self, seed):
+        args = argparse.Namespace(meter=None, mode=None, key=None, tempo=None, v8=True)
+        return composer.make_recipe(seed, args)
+
+    def test_defaults_byte_identical(self):
+        rng = random.Random(20261123)
+        seeds = [s * 1000 for s in (801, 802, 805, 807, 809, 810)] + rng.sample(range(1000, 999999), 20)
+        for seed in seeds:
+            plain = self._v8_plain(seed)
+            rec = studio_engine.new_recipe(seed)
+            rec_omitted = copy.deepcopy(rec)
+            for k in ("mute_share", "octave_share", "intro_bars", "square_repeat"):
+                rec_omitted["studio"]["options"].pop(k, None)
+            h_plain = midi_sha256(composer.compose(plain))
+            h_rec = midi_sha256(composer.compose(rec))
+            h_omitted = midi_sha256(composer.compose(rec_omitted))
+            self.assertEqual(h_rec, h_plain, seed)
+            self.assertEqual(h_omitted, h_plain, seed)
+        for s, expected in GOLDEN_V8_MID_SHA256.items():
+            self.assertEqual(midi_sha256(composer.compose(studio_engine.new_recipe(s * 1000))), expected, s)
+
+    def test_mute_share(self):
+        seeds_20 = [s * 1000 for s in range(801, 821)]
+        target_secs = {"A", "A2", "A3", "B"}
+
+        for seed in seeds_20:
+            rec0 = studio_engine.new_recipe(seed)
+            p0 = composer.compose(rec0)
+            rec1 = studio_engine.set_option(rec0, "mute_share", 1.0)
+            p1 = composer.compose(rec1)
+            lead = rec0["intent"]["lead"]
+            other = other_of(rec0)
+
+            self.assertEqual(p0["parts"][lead], p1["parts"][lead], ("lead changed", seed))
+
+            spans = section_spans(p0)
+            self.assertEqual(spans, section_spans(p1), seed)
+            for sn, s0, e0 in spans:
+                ns0 = sorted((n for n in p0["parts"][other] if s0 <= n["start"] < e0), key=lambda n: (n["start"], n["pitch"]))
+                ns1 = sorted((n for n in p1["parts"][other] if s0 <= n["start"] < e0), key=lambda n: (n["start"], n["pitch"]))
+                if sn in target_secs:
+                    self.assertEqual(len(ns0), len(ns1), (seed, sn))
+                    for a, b in zip(ns0, ns1):
+                        self.assertEqual(
+                            (a["start"], a["pitch"], a["string"], a["fret"]),
+                            (b["start"], b["pitch"], b["string"], b["fret"]),
+                            (seed, sn),
+                        )
+                        self.assertIn("dead", b.get("tech", []), (seed, sn, b))
+                        self.assertEqual(b["dur"], 1, (seed, sn, b))
+                        if "dead" in a.get("tech", []):
+                            self.assertEqual(b["vel"], a["vel"], (seed, sn, b))
+                        else:
+                            self.assertEqual(b["vel"], 40, (seed, sn, b))
+                else:
+                    self.assertEqual(ns0, ns1, ("non-target section changed", seed, sn))
+
+        # mute_share=0.3 share, onset grouping, determinism, and undo
+        muted_onsets = 0
+        total_onsets = 0
+        for seed in seeds_20:
+            rec0 = studio_engine.new_recipe(seed)
+            p0 = composer.compose(rec0)
+            rec_m1 = studio_engine.set_option(rec0, "mute_share", 0.3)
+            rec_m2 = studio_engine.set_option(rec0, "mute_share", 0.3)
+            p_m1 = composer.compose(rec_m1)
+            self.assertEqual(midi_sha256(p_m1), midi_sha256(composer.compose(rec_m2)), seed)
+            other = other_of(rec0)
+
+            pre_dead_onsets = set()
+            for n in p0["parts"][other]:
+                if "dead" in n.get("tech", []):
+                    pre_dead_onsets.add(n["start"])
+
+            for sn, s0, e0 in section_spans(p_m1):
+                if sn not in target_secs:
+                    continue
+                by_onset = {}
+                for n in p_m1["parts"][other]:
+                    if s0 <= n["start"] < e0:
+                        by_onset.setdefault(n["start"], []).append(n)
+                for on, grp in by_onset.items():
+                    if on in pre_dead_onsets:
+                        continue
+                    total_onsets += 1
+                    deads = ["dead" in n.get("tech", []) for n in grp]
+                    self.assertTrue(all(deads) or not any(deads), ("partial onset mute", seed, on, grp))
+                    if all(deads):
+                        muted_onsets += 1
+
+        share = muted_onsets / max(1, total_onsets)
+        self.assertTrue(0.2 <= share <= 0.4, (muted_onsets, total_onsets, share))
+
+        with tempfile.TemporaryDirectory() as d:
+            store = studio_engine.StudioStore(d, render_fn=studio_render.fake_render)
+            det0 = store.create_piece(801000)
+            pid = det0["id"]
+            pdir = Path(d) / pid
+            mid0 = (pdir / "piece.mid").read_bytes()
+            store.set_option(pid, "mute_share", 0.5)
+            mid1 = (pdir / "piece.mid").read_bytes()
+            self.assertNotEqual(mid0, mid1)
+            store.undo(pid)
+            self.assertEqual((pdir / "piece.mid").read_bytes(), mid0)
+
+    def test_octave_share(self):
+        seeds_20 = [s * 1000 for s in range(801, 821)]
+        for seed in seeds_20:
+            rec0 = studio_engine.new_recipe(seed)
+            p0 = composer.compose(rec0)
+            rec_auto = studio_engine.set_option(rec0, "octave_share", None)
+            self.assertEqual(midi_sha256(p0), midi_sha256(composer.compose(rec_auto)), seed)
+
+            other = other_of(rec0)
+            rec1 = studio_engine.set_option(rec0, "octave_share", 1.0)
+            p1, t1 = traced(rec1)
+            for i, b in enumerate(t1["form"]):
+                if b["sec"] in ("A", "A2") and b.get("role") and not b.get("tex"):
+                    self.assertEqual(b["role"], "octave", (seed, i, b))
+                    s0 = p1["chords"][i]["start"]
+                    s1 = p1["chords"][i + 1]["start"] if i + 1 < len(p1["chords"]) else p1["total16"]
+                    dyads = [n for n in p1["parts"][other] if s0 <= n["start"] < s1 and n.get("dyad")]
+                    self.assertTrue(dyads, (seed, i))
+                    by_on = {}
+                    for n in dyads:
+                        by_on.setdefault(n["start"], []).append(n)
+                    for pair in by_on.values():
+                        self.assertEqual(sorted(n["string"] for n in pair), [1, 3], (seed, pair))
+                        lo, hi = sorted(n["pitch"] for n in pair)
+                        self.assertEqual(hi - lo, 12, (seed, pair))
+
+            rec_zero = studio_engine.set_option(rec0, "octave_share", 0.0)
+            p_zero, t_zero = traced(rec_zero)
+            for i, b in enumerate(t_zero["form"]):
+                if b["sec"] in ("A", "A2"):
+                    self.assertNotEqual(b.get("role"), "octave", (seed, i, b))
+                    s0 = p_zero["chords"][i]["start"]
+                    s1 = p_zero["chords"][i + 1]["start"] if i + 1 < len(p_zero["chords"]) else p_zero["total16"]
+                    dyads = [n for n in p_zero["parts"][other] if s0 <= n["start"] < s1 and n.get("dyad")]
+                    self.assertEqual(dyads, [], (seed, i))
+
+    def test_intro_bars(self):
+        for seed in [s * 1000 for s in range(801, 811)]:
+            rec0 = studio_engine.new_recipe(seed)
+            p0 = composer.compose(rec0)
+            rec_auto = studio_engine.set_option(rec0, "intro_bars", "auto")
+            self.assertEqual(midi_sha256(p0), midi_sha256(composer.compose(rec_auto)), seed)
+
+            for count in (1, 2, 4, 8):
+                rec_n = studio_engine.set_option(rec0, "intro_bars", count)
+                p_n = composer.compose(rec_n)
+                intro_chords = [c for c in p_n["chords"] if c["sec"] == "intro"]
+                self.assertEqual(len(intro_chords), count, (seed, count))
+                harm_a = rec0["harmony"]["A"]
+                self.assertEqual(
+                    [c["root_deg"] for c in intro_chords],
+                    [harm_a[i % len(harm_a)] for i in range(count)],
+                    (seed, count),
+                )
+            p8 = composer.compose(studio_engine.set_option(rec0, "intro_bars", 8))
+            s0 = section_spans(p0)
+            s8 = section_spans(p8)
+            for (sn0, a0, b0), (sn8, a8, b8) in zip(s0[1:], s8[1:]):
+                self.assertEqual(sn0, sn8)
+                for g in ("g1", "g2"):
+                    self.assertTrue(
+                        boundary_equal(section_notes(p0, g, a0, b0), section_notes(p8, g, a8, b8), b0 - a0),
+                        (seed, sn0, g),
+                    )
+
+    def test_square_repeat(self):
+        seeds_20 = [s * 1000 for s in range(801, 821)]
+        saw_a2 = False
+        for seed in seeds_20:
+            rec0 = studio_engine.new_recipe(seed)
+            p0 = composer.compose(rec0)
+            rec1 = studio_engine.set_option(rec0, "square_repeat", 1)
+            self.assertEqual(midi_sha256(p0), midi_sha256(composer.compose(rec1)), seed)
+
+            rec2 = studio_engine.set_option(rec0, "square_repeat", 2)
+            p2 = composer.compose(rec2)
+            sp0 = section_spans(p0)
+            sp2 = section_spans(p2)
+            self.assertEqual([x[0] for x in sp0], [x[0] for x in sp2], seed)
+
+            grow = sum(e - s for sn, s, e in sp0 if sn in ("A", "A2"))
+            self.assertEqual(p2["total16"], p0["total16"] + grow, seed)
+
+            for sec in ("A", "A2"):
+                if not any(sn == sec for sn, _, _ in sp0):
+                    continue
+                if sec == "A2":
+                    saw_a2 = True
+                bars0 = sum(1 for c in p0["chords"] if c["sec"] == sec)
+                bars2 = sum(1 for c in p2["chords"] if c["sec"] == sec)
+                self.assertEqual(bars2, bars0 * 2, (seed, sec))
+                s0, e0 = span_of(p2, sec)
+                half = (e0 - s0) // 2
+                for g in ("g1", "g2"):
+                    first_half = section_notes(p2, g, s0, s0 + half)
+                    second_half = section_notes(p2, g, s0 + half, e0)
+                    self.assertEqual(first_half, second_half, (seed, sec, g))
+        self.assertTrue(saw_a2)
+
+    def test_server_options_validation_and_ui_labels(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = studio_server.create_server(d, host="127.0.0.1", port=0, render_fn=studio_render.fake_render)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{srv.server_address[1]}"
+            try:
+                with urllib.request.urlopen(base + "/", timeout=10) as resp:
+                    html = resp.read().decode("utf-8")
+                for label in (
+                    "Глухие ноты (доля ударов ритм-гитары)",
+                    "Октавные аккорды (доля тактов)",
+                    "Длина вступления (тактов)",
+                    "Повтор квадрата в куплетах",
+                    "Дополнительно",
+                    "Вероятность октав при перегенерации ритма",
+                    "Октавы шестнадцатыми (при перегенерации)",
+                    "Глухие перед акцентами в октавах (при перегенерации)",
+                ):
+                    self.assertIn(label, html)
+
+                def post(path, body):
+                    req = urllib.request.Request(
+                        base + path,
+                        data=json.dumps(body).encode("utf-8"),
+                        method="POST",
+                        headers={"Content-Type": "application/json"},
+                    )
+                    try:
+                        with urllib.request.urlopen(req, timeout=10) as r:
+                            return r.status, json.loads(r.read())
+                    except urllib.error.HTTPError as exc:
+                        return exc.code, json.loads(exc.read())
+
+                st, det = post("/api/new", {"seed": 801000})
+                self.assertEqual(st, 200)
+                pid = det["id"]
+                for name, val in (
+                    ("mute_share", 0.35),
+                    ("octave_share", 0.5),
+                    ("octave_share", None),
+                    ("intro_bars", 8),
+                    ("intro_bars", "auto"),
+                    ("square_repeat", 2),
+                ):
+                    st, out = post(f"/api/piece/{pid}/option", {"name": name, "value": val})
+                    self.assertEqual(st, 200, (name, val, out))
+                    self.assertEqual(out["options"][name], val)
+
+                for name, bad_val in (
+                    ("mute_share", True),
+                    ("mute_share", "0.5"),
+                    ("octave_share", True),
+                    ("intro_bars", 3),
+                    ("intro_bars", True),
+                    ("intro_bars", "8"),
+                    ("square_repeat", 3),
+                    ("square_repeat", True),
+                ):
+                    st, out = post(f"/api/piece/{pid}/option", {"name": name, "value": bad_val})
+                    self.assertEqual(st, 400, (name, bad_val, out))
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+    def test_composer_invariants_with_random_control_combinations(self):
+        bad_clash = shared_clash = 0
+        for s in range(801, 821):
+            rng = random.Random(s + 9191)
+            rec = studio_engine.new_recipe(s * 1000)
+            rec = studio_engine.set_option(rec, "mute_share", rng.choice([0.0, 0.3, 0.6, 1.0]))
+            rec = studio_engine.set_option(rec, "octave_share", rng.choice([None, 0.0, 0.5, 1.0]))
+            rec = studio_engine.set_option(rec, "intro_bars", rng.choice(["auto", 1, 2, 4, 8]))
+            rec = studio_engine.set_option(rec, "square_repeat", rng.choice([1, 2]))
+
+            p = composer.compose(rec)
+
+            for g, notes in p["parts"].items():
+                for n in notes:
+                    self.assertTrue(0 <= n["fret"] <= fretboard.MAX_FRET, (s, g, n))
+                    self.assertEqual(fretboard.OPEN[n["string"]] + n["fret"], n["pitch"], (s, g, n))
+
+            for g, notes in p["parts"].items():
+                line = [
+                    n for n in notes
+                    if not n.get("chordtone") and not n.get("dyad") and not (n.get("fixed") and "preset_tech" not in n)
+                ]
+                for prev, n in zip(line, line[1:]):
+                    if {"hammer", "pull", "slide"} & set(n["tech"]):
+                        self.assertEqual(prev["string"], n["string"], (s, g, n))
+                    if "hammer" in n["tech"]:
+                        self.assertGreater(n["fret"], prev["fret"], (s, g, n))
+
+            for g, notes in p["parts"].items():
+                last = {}
+                for n in sorted((x for x in notes if x.get("dyad")), key=lambda x: x["start"]):
+                    if "slide" in n["tech"]:
+                        prev = last.get(n["string"])
+                        self.assertTrue(prev is not None and prev["fret"] != n["fret"], (s, g, n))
+                    last[n["string"]] = n
+
+            for g, notes in p["parts"].items():
+                for _, n in zip(notes, notes[1:]):
+                    if "tap" in n.get("tech", []) and n.get("fixed"):
+                        nxt = [
+                            m for m in notes
+                            if n["start"] < m["start"] <= n["start"] + 2
+                            and m["string"] == n["string"]
+                            and "pull" in m.get("tech", [])
+                        ][:1]
+                        for m in nxt:
+                            self.assertGreater(n["fret"], m["fret"], (s, g, n))
+
+            g2 = {}
+            for n in p["parts"]["g2"]:
+                g2.setdefault(n["start"], []).append(n["pitch"])
+            for n in p["parts"]["g1"]:
+                for q in g2.get(n["start"], []):
+                    shared_clash += 1
+                    bad_clash += abs(n["pitch"] - q) % 12 in (1, 11)
+
+            a = [(n["start"], n["start"] + n["dur"], n["pitch"]) for n in p["parts"]["g1"]]
+            b = [(n["start"], n["start"] + n["dur"], n["pitch"]) for n in p["parts"]["g2"]]
+            for x, y in ((a, b), (b, a)):
+                for s0, _, pa in x:
+                    for s2, e2, q in y:
+                        if s2 <= s0 < e2 and pa != q:
+                            self.assertNotEqual(abs(pa - q) % 12, 1, (s, s0, pa, q))
+
+            with tempfile.TemporaryDirectory() as d:
+                composer.export(p, Path(d) / "x")
+                root = ET.parse(Path(d) / "x.musicxml").getroot()
+            for part in root.iter("part"):
+                num = den = None
+                for m in part.iter("measure"):
+                    t = m.find("attributes/time")
+                    if t is not None:
+                        num, den = int(t.findtext("beats")), int(t.findtext("beat-type"))
+                    total = sum(int(n.findtext("duration")) for n in m.iter("note") if n.find("chord") is None)
+                    self.assertEqual(total, num * 16 // den, (s, part.get("id"), m.get("number")))
+
+        self.assertLess(bad_clash / max(1, shared_clash), 0.03, (bad_clash, shared_clash))
+
+
 if __name__ == "__main__":
     unittest.main()

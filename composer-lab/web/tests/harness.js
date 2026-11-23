@@ -36,6 +36,10 @@ function makeFakeState(seed = 801000, overrides = {}) {
       options: {
         b_lead: "augmented",
         trailing_rest: true,
+        mute_share: 0,
+        octave_share: null,
+        intro_bars: "auto",
+        square_repeat: 1,
         octave_piece: 0.25,
         octave_sixteenths: 0.3,
         dead_notes: 0.2,
@@ -69,7 +73,8 @@ function buildDetailFromState(st, sectionLabels = {}) {
   for (const bar of rec.form || []) {
     if (!secsSeen.includes(bar.sec)) secsSeen.push(bar.sec);
   }
-  const sections = secsSeen.map((sec, idx) => {
+  let cursor = 0;
+  const sections = secsSeen.map((sec) => {
     const layers = [];
     if (sec === "A" || sec === "A2") {
       const k = `comp@${sec}`;
@@ -90,10 +95,18 @@ function buildDetailFromState(st, sectionLabels = {}) {
         locked: locks.has(k),
       });
     }
+    let dur = 2;
+    if (sec === "intro" && typeof opts.intro_bars === "number") {
+      dur = opts.intro_bars * 2;
+    } else if ((sec === "A" || sec === "A2") && opts.square_repeat === 2) {
+      dur = 4;
+    }
+    const start_sec = cursor;
+    cursor += dur;
     return {
       section: sec,
-      start_sec: idx * 2,
-      end_sec: idx * 2 + 2,
+      start_sec,
+      end_sec: cursor,
       label: sectionLabels[sec] || defaultLabels[sec] || sec,
       layers,
     };
@@ -105,7 +118,7 @@ function buildDetailFromState(st, sectionLabels = {}) {
     mode: rec.intent.mode,
     key: rec.intent.tonic,
     tempo: rec.intent.tempo,
-    length: Math.max(2, sections.length * 2),
+    length: Math.max(2, cursor),
     sections,
     whole_layers: [
       {
@@ -126,6 +139,10 @@ function buildDetailFromState(st, sectionLabels = {}) {
     options: {
       b_lead: opts.b_lead || "augmented",
       trailing_rest: opts.trailing_rest !== undefined ? opts.trailing_rest : true,
+      mute_share: opts.mute_share ?? 0,
+      octave_share: opts.octave_share !== undefined ? opts.octave_share : null,
+      intro_bars: opts.intro_bars ?? "auto",
+      square_repeat: opts.square_repeat ?? 1,
       octave_piece: opts.octave_piece ?? 0.25,
       octave_sixteenths: opts.octave_sixteenths ?? 0.3,
       dead_notes: opts.dead_notes ?? 0.2,
