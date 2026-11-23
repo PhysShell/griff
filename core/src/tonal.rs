@@ -265,10 +265,10 @@ impl PitchEvidence {
         let Some(range) = self.pitch_range else {
             return Ok(());
         };
-        for pc in 0..12_usize {
+        for (pc, &count) in self.onset_counts.iter().enumerate() {
             #[allow(clippy::cast_possible_truncation)] // pc < 12
             let pitch_class = pc as u8;
-            if self.onset_counts[pc] > 0 && !range_holds_class(range, pitch_class) {
+            if count > 0 && !range_holds_class(range, pitch_class) {
                 return Err(TonalArtifactError::PitchClassOutsideObservedRange { pitch_class });
             }
         }
