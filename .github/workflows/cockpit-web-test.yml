@@ -30,7 +30,8 @@ permissions:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    # Playwright 1.56.1 has no browser dependencies for ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     steps:
       # persist-credentials: false — later steps build and run PR-authored code
       # (build scripts, the wasm, browser JS), so don't leave the token in
