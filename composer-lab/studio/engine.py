@@ -38,10 +38,35 @@ LAYER_LABELS = {
     "tempo": "Темп",
 }
 
+LAYER_SHORT_LABELS = {
+    "comp": "ритм-гитара",
+    "texture": "фактура",
+    "lead_rhythm": "новый риф",
+    "b": "вариант середины",
+    "intro": "вступление",
+    "ending": "концовка",
+    "tempo": "темп",
+}
+
+OPTION_LABELS = {
+    "b_lead": "соло в середине B",
+    "mute_share": "глухие ноты",
+    "octave_share": "доля октав",
+    "intro_bars": "длина вступления",
+    "square_repeat": "повтор квадрата",
+    "octave_piece": "вероятность октав",
+    "octave_sixteenths": "октавы шестнадцатыми",
+    "dead_notes": "глухие удары перед акцентами",
+    "slide_max": "макс. слайд октав",
+}
+
+B_LEAD_LABELS = {"augmented": "медленнее", "same_speed": "в темпе рифа", "rest": "без соло"}
+
 VALID_B_LEAD = ("augmented", "same_speed", "rest")
 VALID_DOSE_FLOATS = ("octave_piece", "octave_sixteenths", "dead_notes")
 VALID_INTRO_BARS = ("auto", 1, 2, 4, 8)
 VALID_SQUARE_REPEAT = (1, 2)
+HISTORY_LIMIT = 50
 PIECE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -107,6 +132,49 @@ def layer_key(layer, section):
     return f"{layer}@{section}"
 
 
+def _layer_title(key):
+    layer, _, section = key.partition("@")
+    where = "Вся пьеса" if section == "all" else SECTION_LABELS.get(section, section)
+    return f"«{where} · {LAYER_SHORT_LABELS.get(layer, layer)}»"
+
+
+def _option_text(name, value):
+    if name == "trailing_rest":
+        return "пауза в конце такта" if value else "без паузы в конце такта"
+    label = OPTION_LABELS.get(name, name)
+    if name == "b_lead":
+        return f"{label}: {B_LEAD_LABELS.get(value, value)}"
+    if value is None or value == "auto":
+        return f"{label}: авто"
+    return f"{label} {value:g}" if isinstance(value, float) else f"{label} {value}"
+
+
+def change_label(before, after):
+    old, new = _ensure_studio(before)["studio"], _ensure_studio(after)["studio"]
+    salts = sorted(k for k in set(old["salts"]) | set(new["salts"]) if old["salts"].get(k, 0) != new["salts"].get(k, 0))
+    locked = sorted(set(new["locks"]) - set(old["locks"]))
+    unlocked = sorted(set(old["locks"]) - set(new["locks"]))
+    opts = sorted(k for k in new["options"] if old["options"].get(k) != new["options"][k])
+    if salts and not (locked or unlocked or opts):
+        return f"перегенерация {_layer_title(salts[0])}" if len(salts) == 1 else "перегенерация всего незакреплённого"
+    if len(locked) == 1 and not (salts or unlocked or opts):
+        return f"закрепление {_layer_title(locked[0])}"
+    if len(unlocked) == 1 and not (salts or locked or opts):
+        return f"снятие закрепления {_layer_title(unlocked[0])}"
+    if len(opts) == 1 and not (salts or locked or unlocked):
+        return _option_text(opts[0], new["options"][opts[0]])
+    return "изменение"
+
+
+def history_labels(recipe, undo_stack, redo_stack):
+    return {
+        "can_undo": bool(undo_stack),
+        "can_redo": bool(redo_stack),
+        "undo_label": change_label(undo_stack[-1], recipe) if undo_stack else None,
+        "redo_label": change_label(recipe, redo_stack[-1]) if redo_stack else None,
+    }
+
+
 def _snapshot_comp_doses(st, sec):
     opts = st["options"]
     st.setdefault("comp_doses", {})[sec] = {
@@ -168,6 +236,8 @@ def set_lock(recipe, layer, section, locked):
         raise ValueError(f"invalid layer@section: {layer}@{section}")
     key = layer_key(layer, section)
     st = rec["studio"]
+    if (key in st["locks"]) == locked:
+        return rec
     st["locks"] = [k for k in st["locks"] if k != key] + ([key] if locked else [])
     if key == "ending@end":
         riffs = st.setdefault("locked_riffs", {})
@@ -256,7 +326,7 @@ def piece_sections(piece):
     return spans
 
 
-def piece_detail(piece_id, recipe, piece, can_undo=False):
+def piece_detail(piece_id, recipe, piece, undo_stack=(), redo_stack=()):
     rec = _ensure_studio(recipe)
     st = rec["studio"]
     salts = st["salts"]
@@ -298,7 +368,7 @@ def piece_detail(piece_id, recipe, piece, can_undo=False):
         "sections": sections,
         "whole_layers": whole_layers,
         "options": dict(st["options"]),
-        "can_undo": can_undo,
+        **history_labels(recipe, list(undo_stack), list(redo_stack)),
     }
 
 
@@ -385,6 +455,19 @@ class StudioStore:
         tmp.write_text(json.dumps(stack), encoding="utf-8")
         _replace(tmp, pdir / "undo.json")
 
+    def _read_redo(self, pdir):
+        rpath = self._inside(pdir, "redo.json")
+        if not rpath.exists():
+            return []
+        return json.loads(rpath.read_text(encoding="utf-8"))
+
+    def _write_redo(self, pdir, stack):
+        if not stack and not self._inside(pdir, "redo.json").exists():
+            return
+        tmp = self._inside(pdir, "redo.json.tmp")
+        tmp.write_text(json.dumps(stack), encoding="utf-8")
+        _replace(tmp, pdir / "redo.json")
+
     def _log_history(self, pdir, action, layer=None, section=None, salt=None, value=None):
         row = {
             "t": _now_iso(),
@@ -418,15 +501,32 @@ class StudioStore:
             shutil.rmtree(stage, ignore_errors=True)
             raise
 
-    def _publish(self, pdir, stage, reuse, stack):
+    def _publish(self, pdir, stage, reuse, stack, redo=()):
         names = ["piece.musicxml", "piece.tab.txt", "piece.mid"]
         if not reuse:
             names.insert(0, "piece.mp3")
+        tracked = names + ["undo.json", "redo.json", "recipe.json"]
+        backup = stage / "backup"
+        touched = False
         try:
+            backup.mkdir()
+            for name in tracked:
+                if (pdir / name).is_file():
+                    shutil.copy2(pdir / name, backup / name)
+            touched = True
             for name in names:
                 _replace(stage / name, pdir / name)
-            self._write_undo(pdir, stack)
+            self._write_undo(pdir, stack[-HISTORY_LIMIT:])
+            self._write_redo(pdir, list(redo)[-HISTORY_LIMIT:])
             _replace(stage / "recipe.json", pdir / "recipe.json")
+        except BaseException:
+            if touched:
+                for name in tracked:
+                    if (backup / name).is_file():
+                        _replace(backup / name, pdir / name)
+                    else:
+                        (pdir / name).unlink(missing_ok=True)
+            raise
         finally:
             shutil.rmtree(stage, ignore_errors=True)
 
@@ -440,7 +540,7 @@ class StudioStore:
                 piece, stage, reuse = self._build(pdir, rec)
                 self._publish(pdir, stage, reuse, [])
                 self._log_history(pdir, "new", value=rec["seed"])
-            return piece_detail(pid, rec, piece, can_undo=False)
+            return piece_detail(pid, rec, piece)
         except BaseException:
             shutil.rmtree(pdir, ignore_errors=True)
             raise
@@ -475,7 +575,7 @@ class StudioStore:
         pdir = self._piece_dir(piece_id)
         rec = self._read_recipe(pdir)
         piece = composer.compose(rec)
-        return piece_detail(piece_id, rec, piece, can_undo=bool(self._read_undo(pdir)))
+        return piece_detail(piece_id, rec, piece, self._read_undo(pdir), self._read_redo(pdir))
 
     def _change(self, piece_id, change, log):
         pdir = self._piece_dir(piece_id)
@@ -485,12 +585,12 @@ class StudioStore:
             new_rec = change(old_rec)
             if new_rec == base_rec:
                 piece = composer.compose(old_rec)
-                return piece_detail(piece_id, old_rec, piece, can_undo=bool(self._read_undo(pdir)))
+                return piece_detail(piece_id, old_rec, piece, self._read_undo(pdir), self._read_redo(pdir))
             stack = self._read_undo(pdir) + [old_rec]
             piece, stage, reuse = self._build(pdir, new_rec)
             self._publish(pdir, stage, reuse, stack)
             log(pdir, new_rec)
-            return piece_detail(piece_id, new_rec, piece, can_undo=True)
+            return piece_detail(piece_id, new_rec, piece, stack[-HISTORY_LIMIT:])
 
     def reroll(self, piece_id, layer, section):
         def log(pdir, rec):
@@ -518,14 +618,31 @@ class StudioStore:
         pdir = self._piece_dir(piece_id)
         with self._write_lock(piece_id):
             stack = self._read_undo(pdir)
+            cur_rec = self._read_recipe(pdir)
+            redo = self._read_redo(pdir)
             if not stack:
-                rec = self._read_recipe(pdir)
-                return piece_detail(piece_id, rec, composer.compose(rec), can_undo=False)
+                return piece_detail(piece_id, cur_rec, composer.compose(cur_rec), [], redo)
             prev_rec = stack.pop()
+            redo = redo + [cur_rec]
             piece, stage, reuse = self._build(pdir, prev_rec)
-            self._publish(pdir, stage, reuse, stack)
+            self._publish(pdir, stage, reuse, stack, redo)
             self._log_history(pdir, "undo")
-            return piece_detail(piece_id, prev_rec, piece, can_undo=bool(stack))
+            return piece_detail(piece_id, prev_rec, piece, stack, redo[-HISTORY_LIMIT:])
+
+    def redo(self, piece_id):
+        pdir = self._piece_dir(piece_id)
+        with self._write_lock(piece_id):
+            redo = self._read_redo(pdir)
+            cur_rec = self._read_recipe(pdir)
+            stack = self._read_undo(pdir)
+            if not redo:
+                return piece_detail(piece_id, cur_rec, composer.compose(cur_rec), stack, [])
+            next_rec = redo.pop()
+            stack = stack + [cur_rec]
+            piece, stage, reuse = self._build(pdir, next_rec)
+            self._publish(pdir, stage, reuse, stack, redo)
+            self._log_history(pdir, "redo")
+            return piece_detail(piece_id, next_rec, piece, stack[-HISTORY_LIMIT:], redo)
 
     def file_path(self, piece_id, filename, log_export=False):
         pdir = self._piece_dir(piece_id)

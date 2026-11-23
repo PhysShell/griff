@@ -190,6 +190,9 @@ def _make_handler(store):
                     if action == "undo":
                         self._send_json(HTTPStatus.OK, store.undo(pid))
                         return
+                    if action == "redo":
+                        self._send_json(HTTPStatus.OK, store.redo(pid))
+                        return
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             except BodyTooLarge:
                 self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request body too large"})
