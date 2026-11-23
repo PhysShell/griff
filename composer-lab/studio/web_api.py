@@ -64,6 +64,22 @@ def _validate_recipe(rec):
                 raise ValueError("invalid studio.options.b_lead")
             if "trailing_rest" in opts and not isinstance(opts["trailing_rest"], bool):
                 raise ValueError("invalid studio.options.trailing_rest")
+            if "mute_share" in opts:
+                v = opts["mute_share"]
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0.0 <= float(v) <= 1.0:
+                    raise ValueError("invalid studio.options.mute_share")
+            if "octave_share" in opts and opts["octave_share"] is not None:
+                v = opts["octave_share"]
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0.0 <= float(v) <= 1.0:
+                    raise ValueError("invalid studio.options.octave_share")
+            if "intro_bars" in opts:
+                ib = opts["intro_bars"]
+                if ib != "auto" and (not _is_int(ib) or ib not in (1, 2, 4, 8)):
+                    raise ValueError("invalid studio.options.intro_bars")
+            if "square_repeat" in opts:
+                sr = opts["square_repeat"]
+                if not _is_int(sr) or sr not in (1, 2):
+                    raise ValueError("invalid studio.options.square_repeat")
             for k in engine.VALID_DOSE_FLOATS:
                 if k in opts:
                     v = opts[k]
@@ -93,7 +109,10 @@ def _validate_state(state):
 
 def _apply_change(state, fn):
     pid, old_rec, undo_stack = _validate_state(state)
+    base_rec = engine._ensure_studio(old_rec)
     new_rec = fn(old_rec)
+    if new_rec == base_rec:
+        return {"id": pid, "recipe": old_rec, "undo": undo_stack}
     next_undo = (undo_stack + [old_rec])[-UNDO_LIMIT:]
     return {"id": pid, "recipe": new_rec, "undo": next_undo}
 

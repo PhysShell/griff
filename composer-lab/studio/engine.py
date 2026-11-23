@@ -40,6 +40,8 @@ LAYER_LABELS = {
 
 VALID_B_LEAD = ("augmented", "same_speed", "rest")
 VALID_DOSE_FLOATS = ("octave_piece", "octave_sixteenths", "dead_notes")
+VALID_INTRO_BARS = ("auto", 1, 2, 4, 8)
+VALID_SQUARE_REPEAT = (1, 2)
 PIECE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -47,6 +49,10 @@ def default_options():
     return {
         "b_lead": "augmented",
         "trailing_rest": True,
+        "mute_share": 0.0,
+        "octave_share": None,
+        "intro_bars": "auto",
+        "square_repeat": 1,
         "octave_piece": float(composer.V8["octave_piece"]),
         "octave_sixteenths": float(composer.V8["octave_sixteenths"]),
         "dead_notes": float(composer.V8["dead_notes"]),
@@ -193,16 +199,40 @@ def set_option(recipe, name, value):
         if not isinstance(value, bool):
             raise ValueError("trailing_rest must be a boolean")
         opts["trailing_rest"] = value
+    elif name == "mute_share":
+        num = _number(value, name)
+        opts["mute_share"] = max(0.0, min(1.0, float(num)))
+    elif name == "octave_share":
+        if value is None:
+            opts["octave_share"] = None
+        else:
+            num = _number(value, name)
+            opts["octave_share"] = max(0.0, min(1.0, float(num)))
+    elif name == "intro_bars":
+        if value == "auto":
+            opts["intro_bars"] = "auto"
+        elif isinstance(value, bool) or not isinstance(value, int) or value not in (1, 2, 4, 8):
+            raise ValueError(f"invalid intro_bars: {value}")
+        else:
+            opts["intro_bars"] = value
+    elif name == "square_repeat":
+        if isinstance(value, bool) or not isinstance(value, int) or value not in (1, 2):
+            raise ValueError(f"invalid square_repeat: {value}")
+        opts["square_repeat"] = value
     elif name in VALID_DOSE_FLOATS:
         num = _number(value, name)
-        _backfill_comp_doses(st)
-        opts[name] = max(0.0, min(1.0, float(num)))
+        clamped = max(0.0, min(1.0, float(num)))
+        if opts[name] != clamped:
+            _backfill_comp_doses(st)
+            opts[name] = clamped
     elif name == "slide_max":
         num = _number(value, name)
         if num != int(num):
             raise ValueError("slide_max must be an integer")
-        _backfill_comp_doses(st)
-        opts["slide_max"] = max(0, min(12, int(num)))
+        clamped = max(0, min(12, int(num)))
+        if opts[name] != clamped:
+            _backfill_comp_doses(st)
+            opts[name] = clamped
     else:
         raise ValueError(f"unknown option: {name}")
     return rec
@@ -451,7 +481,11 @@ class StudioStore:
         pdir = self._piece_dir(piece_id)
         with self._write_lock(piece_id):
             old_rec = self._read_recipe(pdir)
+            base_rec = _ensure_studio(old_rec)
             new_rec = change(old_rec)
+            if new_rec == base_rec:
+                piece = composer.compose(old_rec)
+                return piece_detail(piece_id, old_rec, piece, can_undo=bool(self._read_undo(pdir)))
             stack = self._read_undo(pdir) + [old_rec]
             piece, stage, reuse = self._build(pdir, new_rec)
             self._publish(pdir, stage, reuse, stack)

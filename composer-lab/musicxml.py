@@ -85,7 +85,10 @@ def part_xml(piece, g, pid):
             nxt = onsets[k + 1] if k + 1 < len(onsets) else b1
             group = [n for n in inbar if int(n["start"]) == on]
             longest = max(n["dur"] for n in group)
-            written = max(1, min(nxt - on, int(round(longest)) if nxt == b1 else nxt - on))
+            if all("dead" in n.get("tech", []) for n in group):
+                written = 1
+            else:
+                written = max(1, min(nxt - on, int(round(longest)) if nxt == b1 else nxt - on))
             pieces = split_dur(written)
             is_pm = any("pm" in n.get("tech", []) for n in group)
             if is_pm and not pm_on:

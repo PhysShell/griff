@@ -357,3 +357,187 @@ test("Finding 11: worker.onerror rejects pending calls, clears pending map, and 
   await env.flushAll(10);
   assert.equal(env.window.__studioDebug.ready, true, "retry worker ready must mark studio ready");
 });
+
+test("Studio controls send option immediately without reroll, refresh UI, and hide old doses under Дополнительно", async () => {
+  const env = await bootWithPiece();
+  env.workerMessages.length = 0;
+
+  const ws = env.document.getElementById("workspace");
+  const adv = ws.querySelectorAll("details");
+  assert.equal(adv.length, 1, "advanced doses must be inside a <details> element");
+  const summary = adv[0].querySelectorAll("summary");
+  assert.equal(summary.length, 1);
+  assert.equal(summary[0].textContent, "Дополнительно");
+  for (const lbl of [
+    "Вероятность октав при перегенерации ритма",
+    "Октавы шестнадцатыми (при перегенерации)",
+    "Глухие перед акцентами в октавах (при перегенерации)",
+  ]) {
+    assert.ok(adv[0].textContent.includes(lbl), `missing renamed advanced dose label: ${lbl}`);
+  }
+
+  const hints = ws.querySelectorAll(".option-hint");
+  assert.equal(hints.length, 4, "each of the 4 new controls must have a one-line Russian hint");
+  for (const h of hints) {
+    assert.match(h.textContent, /применяется сразу/i);
+  }
+
+  // 1. mute_share slider
+  const muteSlider = ws
+    .querySelectorAll("input")
+    .find((el) => el.dataset.option === "mute_share");
+  assert.ok(muteSlider, "mute_share slider must exist");
+  muteSlider.value = "0.6";
+  muteSlider.onchange();
+  await env.flushAll(15);
+
+  // 2. octave_share slider then Авто button
+  const octSlider = env.document
+    .getElementById("workspace")
+    .querySelectorAll("input")
+    .find((el) => el.dataset.option === "octave_share");
+  assert.ok(octSlider, "octave_share slider must exist");
+  octSlider.value = "0.8";
+  octSlider.onchange();
+  await env.flushAll(15);
+
+  const octAutoBtn = env.document
+    .getElementById("workspace")
+    .querySelectorAll("button")
+    .find((el) => el.dataset.option === "octave_share" && el.dataset.value === "auto");
+  assert.ok(octAutoBtn, "octave_share auto button must exist");
+  octAutoBtn.click();
+  await env.flushAll(15);
+
+  // 3. intro_bars = 8
+  const intro8Btn = env.document
+    .getElementById("workspace")
+    .querySelectorAll("button")
+    .find((el) => el.dataset.option === "intro_bars" && el.dataset.value === "8");
+  assert.ok(intro8Btn, "intro_bars=8 button must exist");
+  intro8Btn.click();
+  await env.flushAll(15);
+
+  // 4. square_repeat = 2
+  const rep2Btn = env.document
+    .getElementById("workspace")
+    .querySelectorAll("button")
+    .find((el) => el.dataset.option === "square_repeat" && el.dataset.value === "2");
+  assert.ok(rep2Btn, "square_repeat=2 button must exist");
+  rep2Btn.click();
+  await env.flushAll(15);
+
+  const calls = env.workerMessages.filter((m) => m.type === "call");
+  assert.equal(
+    calls.filter((m) => m.cmd === "reroll").length,
+    0,
+    "changing the four controls must not trigger reroll",
+  );
+  const optCalls = calls.filter((m) => m.cmd === "option").map((m) => [m.payload.name, m.payload.value]);
+  assert.deepEqual(optCalls, [
+    ["mute_share", 0.6],
+    ["octave_share", 0.8],
+    ["octave_share", null],
+    ["intro_bars", 8],
+    ["square_repeat", 2],
+  ]);
+
+  const saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.recipe.studio.options.mute_share, 0.6);
+  assert.equal(saved.state.recipe.studio.options.octave_share, null);
+  assert.equal(saved.state.recipe.studio.options.intro_bars, 8);
+  assert.equal(saved.state.recipe.studio.options.square_repeat, 2);
+  assert.match(env.document.getElementById("workspace").textContent, /24 с/);
+});
+
+test("Active Auto button switches to displayed manual value without wasting undo, and mute hint names A, A2, A3, B", async () => {
+  const env = await bootWithPiece();
+  env.workerMessages.length = 0;
+
+  const ws = env.document.getElementById("workspace");
+  const hints = ws.querySelectorAll(".option-hint");
+  assert.match(hints[0].textContent, /A,\s*A2,\s*A3\s+и\s+B/);
+
+  const octAutoBtn1 = ws
+    .querySelectorAll("button")
+    .find((el) => el.dataset.option === "octave_share" && el.dataset.value === "auto");
+  assert.ok(octAutoBtn1);
+  assert.equal(octAutoBtn1.classList.contains("active"), true);
+  octAutoBtn1.click();
+  await env.flushAll(15);
+
+  let saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.recipe.studio.options.octave_share, 0.5);
+  assert.equal(saved.state.undo.length, 1);
+
+  const octSlider2 = env.document
+    .getElementById("workspace")
+    .querySelectorAll("input")
+    .find((el) => el.dataset.option === "octave_share");
+  assert.equal(octSlider2.classList.contains("slider-dim"), false);
+
+  const octAutoBtn2 = env.document
+    .getElementById("workspace")
+    .querySelectorAll("button")
+    .find((el) => el.dataset.option === "octave_share" && el.dataset.value === "auto");
+  assert.equal(octAutoBtn2.classList.contains("active"), false);
+  octAutoBtn2.click();
+  await env.flushAll(15);
+
+  saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.recipe.studio.options.octave_share, null);
+  assert.equal(saved.state.undo.length, 2);
+
+  const optCalls = env.workerMessages
+    .filter((m) => m.type === "call" && m.cmd === "option")
+    .map((m) => [m.payload.name, m.payload.value]);
+  assert.deepEqual(optCalls, [
+    ["octave_share", 0.5],
+    ["octave_share", null],
+  ]);
+});
+
+test("Re-clicking already active options does not push undo or append option logs", async () => {
+  const env = await bootWithPiece();
+
+  const ws = env.document.getElementById("workspace");
+  const introAuto = ws.querySelectorAll("button").find((el) => el.dataset.option === "intro_bars" && el.dataset.value === "auto");
+  const sq1 = ws.querySelectorAll("button").find((el) => el.dataset.option === "square_repeat" && el.dataset.value === "1");
+  const bLeadAug = ws.querySelectorAll("button").find((el) => el.textContent === "Удвоенно (как сейчас)");
+  const muteSlider = ws.querySelectorAll("input").find((el) => el.dataset.option === "mute_share");
+  assert.ok(introAuto && sq1 && bLeadAug && muteSlider);
+
+  introAuto.click();
+  sq1.click();
+  bLeadAug.click();
+  muteSlider.value = "0";
+  muteSlider.onchange();
+  await env.flushAll(20);
+
+  let saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.undo.length, 0);
+  assert.equal(env.document.getElementById("undoBtn").disabled, true);
+  assert.equal(env.indexedDB._logs.filter((l) => l.action === "option").length, 0);
+
+  const intro8 = env.document
+    .getElementById("workspace")
+    .querySelectorAll("button")
+    .find((el) => el.dataset.option === "intro_bars" && el.dataset.value === "8");
+  intro8.click();
+  await env.flushAll(15);
+
+  saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.undo.length, 1);
+  assert.equal(env.indexedDB._logs.filter((l) => l.action === "option").length, 1);
+
+  const intro8Again = env.document
+    .getElementById("workspace")
+    .querySelectorAll("button")
+    .find((el) => el.dataset.option === "intro_bars" && el.dataset.value === "8");
+  intro8Again.click();
+  await env.flushAll(15);
+
+  saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.undo.length, 1);
+  assert.equal(env.indexedDB._logs.filter((l) => l.action === "option").length, 1);
+});

@@ -7,6 +7,7 @@ Every sampled decision is stored in a recipe so a piece can be rebuilt.
 import argparse
 import copy
 import functools
+import hashlib
 import itertools
 import json
 import math
@@ -503,9 +504,12 @@ def octave_bar(th, root, bar_start, L, accents, grid, dead, state, slide_max=Non
         nxt = ons[k + 1] if k + 1 < len(ons) else L
         tech = ["slide"] if slide and k == 0 else []
         for s, f in ((1, x), (3, x + 2)):
-            notes.append({"start": bar_start + o, "dur": max(1, nxt - o), "pitch": fretboard.OPEN[s] + f,
-                          "fixed": (s, f), "preset_tech": tech, "dyad": True, "ring": False,
-                          "vel": 86 if o in accents else 72})
+            note = {"start": bar_start + o, "dur": max(1, nxt - o), "pitch": fretboard.OPEN[s] + f,
+                    "fixed": (s, f), "preset_tech": tech, "dyad": True, "ring": False,
+                    "vel": 86 if o in accents else 72}
+            if tech:
+                note["_slide_max"] = smax
+            notes.append(note)
     if dead:
         for a in sorted(accents):
             if a > 0 and a - 1 not in ons:
@@ -810,6 +814,276 @@ def _studio_rng(seed, layer, section, salt):
     return random.Random(f"{seed}:{layer}:{section}:{salt}")
 
 
+def _det_unit(key):
+    h = hashlib.sha256(key.encode("utf-8")).digest()
+    return (int.from_bytes(h[:7], "big") >> 3) / (1 << 53)
+
+
+def _oct_art_key(spec, has_dead_slot=True):
+    grid = spec["grid"]
+    dead = False if (grid == 16 or not has_dead_slot) else bool(spec["dead"])
+    return (grid, dead)
+
+
+def _oct_alternatives(grid_p, dead_p, smax, base_key, has_dead_slot=True):
+    cands = []
+    if grid_p > 0.0:
+        cands.append({"grid": 16, "dead": False, "slide_max": smax})
+    if grid_p < 1.0 and (not has_dead_slot or dead_p < 1.0):
+        cands.append({"grid": 8, "dead": False, "slide_max": smax})
+    if has_dead_slot and grid_p < 1.0 and dead_p > 0.0:
+        cands.append({"grid": 8, "dead": True, "slide_max": smax})
+    return [c for c in cands if _oct_art_key(c, has_dead_slot) != base_key]
+
+
+def _studio_octave_spec(seed, sec, comp_doses_map, opts=None, comp_salt=0, base_oct=None, has_dead_slot=True):
+    if sec in comp_doses_map:
+        doses = comp_doses_map[sec]
+    elif comp_salt > 0 and opts:
+        doses = opts
+    else:
+        doses = V8
+    grid_p = float(doses.get("octave_sixteenths", V8["octave_sixteenths"]))
+    dead_p = float(doses.get("dead_notes", V8["dead_notes"]))
+    smax = int(doses.get("slide_max", V8["slide_max"]))
+
+    def draw(rng, gp=grid_p, dp=dead_p, sm=smax):
+        return {
+            "grid": 16 if rng.random() < gp else 8,
+            "dead": rng.random() < dp,
+            "slide_max": sm,
+        }
+
+    base_spec = (
+        dict(base_oct)
+        if base_oct is not None
+        else draw(
+            random.Random(f"{seed}:octave_spec:{sec}"),
+            float(V8["octave_sixteenths"]),
+            float(V8["dead_notes"]),
+            int(V8["slide_max"]),
+        )
+    )
+    if comp_salt <= 0:
+        return base_spec
+    base_key = _oct_art_key(base_spec, has_dead_slot)
+    rng = random.Random(f"{seed}:octave_spec:{sec}:{comp_salt}")
+    spec = draw(rng)
+    if comp_salt == 1:
+        for _ in range(8):
+            if _oct_art_key(spec, has_dead_slot) != base_key:
+                break
+            spec = draw(rng)
+        if _oct_art_key(spec, has_dead_slot) == base_key:
+            alts = _oct_alternatives(grid_p, dead_p, smax, base_key, has_dead_slot)
+            if alts:
+                spec = rng.choice(alts)
+    return spec
+
+
+def _is_line_note(n):
+    return (
+        not n.get("chordtone")
+        and not n.get("dyad")
+        and not (n.get("fixed") and "preset_tech" not in n)
+    )
+
+
+def _pred_sig(p):
+    return None if p is None else (p["string"], p["fret"], "dead" in p.get("tech", []))
+
+
+def _strip_leading_legato(notes, s0, s1):
+    ordered = sorted(notes, key=lambda n: (n["start"], n["string"], n["pitch"]))
+    prev_str_before = {}
+    last_str_in = {}
+    prev_line_before = None
+    last_line_in = None
+    in_sec = []
+    for n in ordered:
+        if n["start"] < s0:
+            prev_str_before[n["string"]] = n
+            if _is_line_note(n):
+                prev_line_before = n
+        elif n["start"] < s1:
+            in_sec.append(n)
+            last_str_in[n["string"]] = n
+            if _is_line_note(n):
+                last_line_in = n
+    seen_str = set()
+    seen_line = False
+    for n in in_sec:
+        tech = n.get("tech", [])
+        leg = {"hammer", "pull", "slide"} & set(tech)
+        if leg and n["string"] not in seen_str:
+            pb = prev_str_before.get(n["string"])
+            pr = last_str_in.get(n["string"])
+            valid = (
+                pr is not None
+                and _pred_sig(pb) == _pred_sig(pr)
+                and "dead" not in pr.get("tech", [])
+                and pr["fret"] != n["fret"]
+                and ("hammer" not in leg or n["fret"] > pr["fret"])
+                and ("pull" not in leg or n["fret"] < pr["fret"])
+                and (not n.get("dyad") or "slide" not in leg or abs(n["fret"] - pr["fret"]) <= n.get("_slide_max", V8["slide_max"]))
+            )
+            if not valid:
+                n["tech"] = [x for x in tech if x not in ("hammer", "pull", "slide")]
+        if _is_line_note(n) and not seen_line:
+            tech = n.get("tech", [])
+            leg = {"hammer", "pull", "slide"} & set(tech)
+            if leg:
+                valid_line = (
+                    last_line_in is not None
+                    and _pred_sig(prev_line_before) == _pred_sig(last_line_in)
+                    and "dead" not in last_line_in.get("tech", [])
+                    and last_line_in["string"] == n["string"]
+                    and last_line_in["fret"] != n["fret"]
+                    and ("hammer" not in leg or n["fret"] > last_line_in["fret"])
+                    and ("pull" not in leg or n["fret"] < last_line_in["fret"])
+                )
+                if not valid_line:
+                    n["tech"] = [x for x in tech if x not in ("hammer", "pull", "slide")]
+        seen_str.add(n["string"])
+        if _is_line_note(n):
+            seen_line = True
+
+
+def _validate_octave_slides(parts):
+    for g in ("g1", "g2"):
+        by_string = {}
+        for n in sorted(parts[g], key=lambda x: (x["start"], x["string"], x["pitch"])):
+            if n.get("dyad") and "slide" in n.get("tech", []):
+                p = by_string.get(n["string"])
+                smax = n.get("_slide_max", V8["slide_max"])
+                if (
+                    p is None
+                    or p["fret"] == n["fret"]
+                    or "dead" in p.get("tech", [])
+                    or abs(n["fret"] - p["fret"]) > smax
+                ):
+                    n["tech"] = [x for x in n["tech"] if x != "slide"]
+            by_string[n["string"]] = n
+
+
+def _section_runs(chords, total16):
+    runs = []
+    seen = {}
+    i = 0
+    while i < len(chords):
+        sec = chords[i]["sec"]
+        j = i + 1
+        while j < len(chords) and chords[j]["sec"] == sec:
+            j += 1
+        occ = seen.get(sec, 0)
+        seen[sec] = occ + 1
+        s0 = chords[i]["start"]
+        s1 = chords[j]["start"] if j < len(chords) else total16
+        runs.append((sec, occ, s0, s1))
+        i = j
+    return runs
+
+
+def _strip_legato_from_dead(notes):
+    by_string = {}
+    prev_line = None
+    for n in sorted(notes, key=lambda x: (x["start"], x["string"], x["pitch"])):
+        is_line = _is_line_note(n)
+        p_str = by_string.get(n["string"])
+        bad_str = p_str is not None and "dead" in p_str.get("tech", [])
+        bad_line = is_line and prev_line is not None and "dead" in prev_line.get("tech", [])
+        if bad_str or bad_line:
+            n["tech"] = [x for x in n.get("tech", []) if x not in ("hammer", "pull", "slide")]
+        by_string[n["string"]] = n
+        if is_line:
+            prev_line = n
+
+
+def _apply_square_repeat(parts, chords, meters, total16, repeat, form=None):
+    if repeat <= 1:
+        return total16
+    runs = []
+    i = 0
+    while i < len(chords):
+        sec = chords[i]["sec"]
+        if sec in ("A", "A2"):
+            j = i + 1
+            while j < len(chords) and chords[j]["sec"] == sec:
+                j += 1
+            runs.append((i, j - 1))
+            i = j
+        else:
+            i += 1
+    for first_i, last_i in reversed(runs):
+        s0 = chords[first_i]["start"]
+        s1 = chords[last_i + 1]["start"] if last_i + 1 < len(chords) else total16
+        sec_len = s1 - s0
+        extra_len = sec_len * (repeat - 1)
+        for g in ("g1", "g2"):
+            _strip_leading_legato(parts[g], s0, s1)
+            sec_notes = []
+            for n in parts[g]:
+                if s0 <= n["start"] < s1:
+                    n["dur"] = min(n["dur"], max(1, s1 - n["start"]))
+                    sec_notes.append(n)
+                elif n["start"] >= s1:
+                    n["start"] += extra_len
+            for r in range(1, repeat):
+                shift = sec_len * r
+                parts[g].extend(dict(copy.deepcopy(n), start=n["start"] + shift) for n in sec_notes)
+            parts[g].sort(key=lambda n: (n["start"], n["pitch"]))
+        for c in chords[last_i + 1:]:
+            c["start"] += extra_len
+        block = [dict(c) for c in chords[first_i:last_i + 1]]
+        inserted_chords = []
+        for r in range(1, repeat):
+            shift = sec_len * r
+            inserted_chords.extend(dict(c, start=c["start"] + shift) for c in block)
+        chords[last_i + 1:last_i + 1] = inserted_chords
+        if form is not None:
+            fblock = [copy.deepcopy(b) for b in form[first_i:last_i + 1]]
+            inserted_form = []
+            for r in range(1, repeat):
+                inserted_form.extend(copy.deepcopy(b) for b in fblock)
+            form[last_i + 1:last_i + 1] = inserted_form
+        for k, (tick, num, den) in enumerate(meters):
+            if tick >= s1 * 120:
+                meters[k] = (tick + extra_len * 120, num, den)
+        total16 += extra_len
+    for i, c in enumerate(chords):
+        c["bar"] = i
+    return total16
+
+
+def _apply_mute_share(parts, other, chords, total16, seed, mute_share):
+    if mute_share <= 0.0:
+        return
+    runs = [r for r in _section_runs(chords, total16) if r[0] in ("A", "A2", "A3", "B")]
+    if not runs:
+        return
+    by_key = {}
+    for n in parts[other]:
+        st = n["start"]
+        for sec, occ, s0, s1 in runs:
+            if s0 <= st < s1:
+                by_key.setdefault((sec, occ, st - s0, st), []).append(n)
+                break
+    for (sec, occ, rel, _onset), group in sorted(by_key.items()):
+        if all("dead" in n.get("tech", []) for n in group):
+            continue
+        key = f"{seed}:mute:{sec}:{rel}" if occ == 0 else f"{seed}:mute:{sec}:{occ}:{rel}"
+        if _det_unit(key) < mute_share:
+            for n in group:
+                if "dead" in n.get("tech", []):
+                    continue
+                n["tech"] = ["dead"]
+                n["dur"] = 1
+                n["vel"] = 40
+                n["ring"] = False
+                n["_muted"] = True
+    _strip_legato_from_dead(parts[other])
+
+
 def _studio_cycle(rng, v8):
     cycle = rng.choice([3, 4, 5, 5, 6, 7])
     ladder_pick = list(range(cycle))
@@ -881,18 +1155,21 @@ def _studio_lead_rhythm(seed, intent, salt, tail_rest):
     return m["hook"], lp
 
 
-def _studio_intro(seed, base_bars, base_dens, salt):
+def _studio_intro(seed, base_bars, base_dens, salt, fixed_bars=False, base_tex="arp"):
     rng = _studio_rng(seed, "intro", "intro", salt)
     for _ in range(8):
         n_bars = rng.choice([1, 2, 4])
         dens = rng.choice([1, 2, 3])
         tex = rng.choice(["arp", "tap"]) if dens == 3 else "arp"
-        if salt != 1 or n_bars != base_bars or dens != base_dens:
+        if fixed_bars:
+            if salt != 1 or (dens, tex) != (base_dens, base_tex):
+                return n_bars, dens, tex
+        elif salt != 1 or n_bars != base_bars or dens != base_dens:
             return n_bars, dens, tex
     return n_bars, dens, tex
 
 
-def _studio_comp(seed, sec, salt, grouping, L, doses, base_sec_bars):
+def _studio_comp(seed, sec, salt, grouping, L, doses, base_sec_bars, base_oct=None, has_dead_slot=True):
     rng = _studio_rng(seed, "comp", sec, salt)
     pool = [
         ["chords", "chords", "chatter"],
@@ -901,8 +1178,8 @@ def _studio_comp(seed, sec, salt, grouping, L, doses, base_sec_bars):
         ["chords", "chords", "chords"],
         ["chatter", "chatter", "chords"],
     ]
-    base_roles = [b.get("role") for b in base_sec_bars if b.get("role")]
-    base_oct = base_sec_bars[0].get("oct") if base_roles and base_roles[0] == "octave" else None
+    if base_oct is None:
+        base_oct = next((b.get("oct") for b in base_sec_bars if b.get("oct")), None)
     base_acc_pat = [(a, "hit") for a in sorted(accents_of(grouping))]
 
     def draw():
@@ -922,14 +1199,24 @@ def _studio_comp(seed, sec, salt, grouping, L, doses, base_sec_bars):
         if salt != 1:
             break
         if plan["kind"] == "octave":
-            same = base_oct is not None and (
-                plan["oct"]["grid"] == base_oct.get("grid") and plan["oct"]["dead"] == base_oct.get("dead")
-            )
+            same = base_oct is not None and _oct_art_key(plan["oct"], has_dead_slot) == _oct_art_key(base_oct, has_dead_slot)
         else:
             same = plan["comp"] == base_acc_pat
         if not same:
             break
         plan = draw()
+    if salt == 1 and plan["kind"] == "octave" and base_oct is not None:
+        base_key = _oct_art_key(base_oct, has_dead_slot)
+        if _oct_art_key(plan["oct"], has_dead_slot) == base_key:
+            alts = _oct_alternatives(
+                doses["octave_sixteenths"],
+                doses["dead_notes"],
+                int(doses["slide_max"]),
+                base_key,
+                has_dead_slot,
+            )
+            if alts:
+                plan = {"kind": "octave", "oct": rng.choice(alts)}
     return plan
 
 
@@ -1044,12 +1331,17 @@ def _prepare_studio(recipe, arp, v8):
 
     form = [dict(b, _orig_bar_i=idx) for idx, b in enumerate(recipe["form"])]
 
+    intro_bars_opt = opts.get("intro_bars", "auto")
     intro_salt = int(salts.get("intro@intro", 0))
     if intro_salt > 0:
         orig_intro = [b for b in form if b["sec"] == "intro"]
         base_bars = len(orig_intro)
         base_dens = orig_intro[0].get("dens", 3) if orig_intro else 3
-        n_bars, dens, intro_tex = _studio_intro(seed, base_bars, base_dens, intro_salt)
+        base_tex = "tap" if (base_dens == 3 and arp.get("texture") == "tap") else "arp"
+        n_bars, dens, intro_tex = _studio_intro(
+            seed, base_bars, base_dens, intro_salt,
+            fixed_bars=(intro_bars_opt != "auto"), base_tex=base_tex,
+        )
         non_intro = [b for b in form if b["sec"] != "intro"]
         harmony_a = recipe["harmony"]["A"]
         new_intro = [
@@ -1065,7 +1357,52 @@ def _prepare_studio(recipe, arp, v8):
         ]
         form = new_intro + non_intro
 
+    if intro_bars_opt != "auto":
+        n_bars = int(intro_bars_opt)
+        orig_intro = [b for b in form if b["sec"] == "intro"]
+        non_intro = [b for b in form if b["sec"] != "intro"]
+        harmony_a = recipe["harmony"]["A"]
+        template = {k: v for k, v in orig_intro[0].items() if k != "handover"} if orig_intro else {
+            "sec": "intro",
+            "prog": "intro",
+            "dens": 2,
+        }
+        last_handover = orig_intro[-1].get("handover") if orig_intro else None
+        new_intro = []
+        for i in range(n_bars):
+            bar = dict(template, sec="intro", chord=harmony_a[i % len(harmony_a)], prog="intro", _orig_bar_i=i)
+            if last_handover and i == n_bars - 1:
+                bar["handover"] = last_handover
+            new_intro.append(bar)
+        form = new_intro + non_intro
+
     L = METERS[it["meter"]][0]
+    raw_oct_share = opts.get("octave_share", None)
+    octave_share = None if raw_oct_share is None else max(0.0, min(1.0, float(raw_oct_share)))
+    skel = recipe["motifs"].get("skeleton")
+    sec_acc = set(skel["A"]) if skel else accents_of(it["grouping"])
+    ons8 = eighths(sec_acc, L)
+    has_dead_slot = any(a > 0 and (a - 1) not in ons8 for a in sec_acc)
+
+    salt0_oct_map = {}
+    for sec in ("A", "A2"):
+        orig_comping = [
+            b for b in form
+            if b["sec"] == sec
+            and not b.get("tex")
+            and (b.get("role") in ("chords", "chatter", "octave") or b.get("prog") == "cad_open")
+        ]
+        orig_oct = next((b.get("oct") for b in orig_comping if b.get("oct")), None)
+        any_forced_oct = octave_share is not None and any(
+            _det_unit(f"{seed}:octave:{b['_orig_bar_i']}") < octave_share for b in orig_comping
+        )
+        if orig_oct is not None:
+            salt0_oct_map[sec] = dict(orig_oct)
+        elif any_forced_oct:
+            salt0_oct_map[sec] = _studio_octave_spec(seed, sec, {}, opts=None, comp_salt=0)
+        else:
+            salt0_oct_map[sec] = None
+
     for sec in ("A", "A2"):
         csalt = int(salts.get(f"comp@{sec}", 0))
         if csalt > 0:
@@ -1077,7 +1414,10 @@ def _prepare_studio(recipe, arp, v8):
                     "dead_notes": float(comp_doses_map.get(sec, {}).get("dead_notes", opts.get("dead_notes", V8["dead_notes"]))),
                     "slide_max": int(comp_doses_map.get(sec, {}).get("slide_max", opts.get("slide_max", V8["slide_max"]))),
                 }
-                cplan = _studio_comp(seed, sec, csalt, it["grouping"], L, doses, sec_bars)
+                cplan = _studio_comp(
+                    seed, sec, csalt, it["grouping"], L, doses, sec_bars,
+                    base_oct=salt0_oct_map.get(sec), has_dead_slot=has_dead_slot,
+                )
                 ri = 0
                 for b in form:
                     if b["sec"] == sec and b.get("role") in ("chords", "chatter", "octave"):
@@ -1092,6 +1432,41 @@ def _prepare_studio(recipe, arp, v8):
                             b["comp"] = list(cplan["comp"])
                             b["_fallback_comp"] = list(cplan["comp"])
                         ri += 1
+
+    if octave_share is not None:
+        for sec in ("A", "A2"):
+            comping_bars = [
+                b for b in form
+                if b["sec"] == sec
+                and not b.get("tex")
+                and (b.get("role") in ("chords", "chatter", "octave") or b.get("prog") == "cad_open")
+            ]
+            if not comping_bars:
+                continue
+            if "texture" in recipe and sec in recipe["texture"].get("role", {}):
+                fallback_roles = [recipe["texture"]["role"][sec]]
+            elif "repeat" in recipe and recipe["repeat"].get("roles"):
+                fallback_roles = list(recipe["repeat"]["roles"])
+            else:
+                fallback_roles = ["chords"]
+            base_oct = next((b.get("oct") for b in comping_bars if b.get("oct")), None)
+            csalt = int(salts.get(f"comp@{sec}", 0))
+            oct_spec = dict(base_oct) if base_oct is not None else _studio_octave_spec(
+                seed, sec, comp_doses_map, opts=opts, comp_salt=csalt,
+                base_oct=salt0_oct_map.get(sec), has_dead_slot=has_dead_slot,
+            )
+            for ri, b in enumerate(comping_bars):
+                if _det_unit(f"{seed}:octave:{b['_orig_bar_i']}") < octave_share:
+                    b["role"] = "octave"
+                    b["oct"] = dict(b.get("oct") or oct_spec)
+                    b.pop("comp", None)
+                    b.pop("_fallback_comp", None)
+                elif b.get("role") == "octave":
+                    b.pop("oct", None)
+                    if b.get("prog") == "cad_open":
+                        b.pop("role", None)
+                    else:
+                        b["role"] = fallback_roles[ri % len(fallback_roles)]
 
     sec_arp = {}
     for sec in ("A", "A2"):
@@ -1135,6 +1510,9 @@ def _prepare_studio(recipe, arp, v8):
     tempo_salt = int(salts.get("tempo@all", 0))
     tempo = _studio_tempo(seed, base_tempo, tempo_salt) if tempo_salt > 0 else base_tempo
 
+    mute_share = max(0.0, min(1.0, float(opts.get("mute_share", 0.0))))
+    square_repeat = int(opts.get("square_repeat", 1))
+
     return {
         "hook": hook,
         "lead_plan": lead_plan,
@@ -1146,6 +1524,8 @@ def _prepare_studio(recipe, arp, v8):
         "tempo": tempo,
         "base": base,
         "end_riff": end_riff,
+        "mute_share": mute_share,
+        "square_repeat": square_repeat,
     }
 
 
@@ -1345,6 +1725,9 @@ def compose(recipe, _trace=None):
                 resp = [dict(e, on=e["on"] + L // 2) for e in resp if e["on"] + L // 2 < L]
                 fn2 = phrase_anchor("call", root, -5, rec_hook["anchor"])
                 parts[other] += place_line(th, resp, root, fn2, t, acc, *rng_lead[other], 86)
+            elif bar.get("role") == "octave":
+                parts[other] += octave_bar(th, root, t, L, acc, bar["oct"]["grid"], bar["oct"]["dead"], oct_state,
+                                           slide_max=bar["oct"].get("slide_max"))
             elif comp is not None and (pr == "cad_open" or bar.get("role") == "chords"):
                 parts[other] += comp_strike(th, root, t, L, other, comp, 84 if pr == "cad_open" else 74, v8)
             elif pr == "cad_open":
@@ -1355,9 +1738,6 @@ def compose(recipe, _trace=None):
                     for s, f, p in v or []:
                         parts[other].append({"start": t + a, "dur": 2, "pitch": p, "vel": 92 if a == 0 else 84,
                                              "fixed": (s, f)})
-            elif bar.get("role") == "octave":
-                parts[other] += octave_bar(th, root, t, L, acc, bar["oct"]["grid"], bar["oct"]["dead"], oct_state,
-                                           slide_max=bar["oct"].get("slide_max"))
             elif bar.get("role") == "chords" or (bar.get("role") and dense):
                 if bar.get("_fallback_comp") is not None:
                     parts[other] += comp_strike(th, root, t, L, other, bar["_fallback_comp"], 74, v8)
@@ -1542,6 +1922,16 @@ def compose(recipe, _trace=None):
         parts = out_parts
         if fix:
             report["m9_resolved"] = resolve_minor_ninths(parts, lead, other)
+        _validate_octave_slides(parts)
+        if st_cfg["mute_share"] > 0.0:
+            _apply_mute_share(parts, other, chords, t, recipe["seed"], st_cfg["mute_share"])
+        if st_cfg["square_repeat"] > 1:
+            t = _apply_square_repeat(
+                parts, chords, meters, t, st_cfg["square_repeat"],
+                form=form if _trace is not None else None,
+            )
+            if _trace is not None:
+                _trace["form"] = form
     else:
         for g in ("g1", "g2"):
             ns = sorted(parts[g], key=lambda n: (n["start"], n["pitch"]))
