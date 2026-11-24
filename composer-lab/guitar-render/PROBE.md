@@ -51,10 +51,20 @@ Facts:
 - sfizz 1.2.3 from nixpkgs 26ef669 (the auditbox's pin), binary `sfizz_render` (cache.nixos.org build).
   CLI (`--help`): `--sfz --midi --wav -b -s -q -p -v --log --use-eot`; there is no `--version`.
   Output is 16-bit PCM stereo WAV (not configurable from the CLI).
-- Standard Guitar (Unreal Instruments): download blocked by Google Drive "quota exceeded" for the whole run
-  (one 1 KB range request got through at 10:32 and showed a RAR v4 archive; every full download got the
-  quota page). No account involved; not obtained.
-- Used instead: Karoryfer Black And Green Guitars v1.000 (CC0, GitHub release of sfzinstruments, listed in the
+- Standard Guitar (Unreal Instruments): the Google Drive download returned "quota exceeded" for every try
+  in this run (no account involved). The owner downloaded `UI_Standard_Guitar.rar` (750,502,921 B, SHA-256
+  `0777b8cbbfe2fe79e843fa6c2c24ab300c2d5a538d46f4d970f057979f87fee0`) and the manual RAR. Both were tested
+  and unpacked inside the offline auditbox with unar 1.10.8 (`jobs/sg_extract.sh`; 3,714 entries passed:
+  2,953 FLAC, 612 SFZ). Licence "Custom", no terms found: private use only, nothing committed.
+  Program `01-Standard Guitar KSOP.sfz`; keyswitches from `Standard_Guitar_KSMap.txt` and the `sw_last`
+  values (c1 = 24): 20 natural harmonics, 21 pinch harmonics, 23 fret mute (dead), 24/25/26 sustain
+  down/up/alternate, 27/28/29 palm mute down/up/alternate, 30 hammer/pull, 31 slide down, 32 slide up,
+  33 slide in, 34 slide out; playable 35-86 (7-string range). Mapping in `instruments/sg_ksop.json`:
+  sustain 26, palm mute 29, dead 23, hammer/pull/tap 30, slides 31/32 by direction from the MusicXML slide start.
+  Samples are stereo doubled takes (left and right differ); the DI takes the left channel.
+  Attack: 23-30 ms after note-on in the first smoke test; after a 25 ms DI advance most clear notes sit
+  within -2..+11 ms (the detector is crude on repeated notes).
+- Also used (and used first, while Standard Guitar was blocked): Karoryfer Black And Green Guitars v1.000 (CC0, GitHub release of sfzinstruments, listed in the
   owner's task as an alternative): a green Gretsch Anniversary and a black Hofner Club, mono 44.1 kHz 24-bit
   DI samples. Keyswitches: green 36 twang / 37 staccato / 38 hammer-on; black 36 twang / 37 staccato /
   38 behind-the-bridge. No palm-mute, slide, pull-off, dead or tap samples; bend ranges are set per region
@@ -150,3 +160,22 @@ Articulation mapping (`plan.json` -> `mapping_logs`):
   from an external sampler.
 - Gaps found on the way: the final chords at tick 30240 are not in composer-lab's MusicXML, the writer skips
   notes with fractional onsets (by its code), and it writes only the start of a P.M. run; Griff's MIDI import drops mid-bar tempo changes (#224).
+
+## 7. Standard Guitar results and the owner's pieces
+
+- `out/sg`: STRICT, EXPRESSIVE, no-FX, four SWAN presets, palm-mute solo; whole render 18-20 s for 33.7 s
+  (RTF 0.53-0.60); sfizz 4-6.5 s per stem, peak RSS about 1 GB (more samples than B&G).
+- `out/repro_sg`: 3 fresh processes plus the batch run in another VM: mix WAV and MP3 byte-identical;
+  float stems numerically identical (PEAK-chunk timestamp only).
+- One float stem (preset_sg_SWAN-CLEAN guitar3.processed.wav, the palm-mute riff through the clean preset after
+  the -20 LUFS trim) peaks at +1.1 dBFS; it is float, the mix is not clipped.
+- Owner's pieces (`out/owner/`, copies of `Downloads/piece_9285936.mid` and `piece_1619764.mid`, originals untouched):
+  - piece_9285936: type 1, PPQ 480, one tempo 135 BPM, 7/8; Guitar 1 (88 notes), Guitar 2 (189),
+    Guitar 2 (palm mute) (53). No MusicXML or recipe; only PM is known as a technique.
+  - piece_1619764: type 1, PPQ 480, one tempo 144 BPM, 7/8 -> 5/4 -> 7/8; Guitar 1 (96), Guitar 2 (296).
+    94 Guitar 2 notes have velocity 40 and one-sixteenth length, which is how composer.py writes dead strokes
+    (`"vel": 40` with `preset_tech ["dead"]`); `--dead-velocity 40` maps them to the fret-mute keyswitch. Inference
+    from the generator code, not from a recipe.
+  - Variants: best (per-track presets), heavy (SWAN-HEAVY on all), clean (SWAN-CLEAN on all); STRICT only.
+- Blind clips (`out/clips_v2`): one loudness per group, lowered for the whole group if any clip would pass
+  -1 dBFS (the first SG DI clip set clipped at +2.6 dBFS and was regenerated).

@@ -14,7 +14,7 @@ def _part_for(track_name):
     return f"P{m.group(1)}" if m else None
 
 
-def build(midi_paths, musicxml=None, stem_names=None):
+def build(midi_paths, musicxml=None, stem_names=None, dead_velocity=None):
     """midi_paths: one type-1 file (one stem per note track) or several files (one stem each, first note track)."""
     songs = [smf.read(p) for p in midi_paths]
     base = songs[0]
@@ -50,6 +50,10 @@ def build(midi_paths, musicxml=None, stem_names=None):
             if palm_track:
                 n["tech"].append("pm")
                 n["tech_source"]["pm"] = "midi track name (composer-lab exports palm-muted notes to their own track)"
+            if dead_velocity is not None and n["vel"] == dead_velocity and n["off"] - n["on"] <= six:
+                n["tech"].append("dead")
+                n["tech_source"]["dead"] = (f"velocity {dead_velocity} and at most one sixteenth long "
+                                            "(composer-lab writes dead strokes this way)")
             if not xml or part not in xml:
                 continue
             key = (round(n["on"] * 4 / six), n["pitch"])

@@ -30,6 +30,7 @@ def main(argv=None):
     ap.add_argument("--di-only", action="store_true")
     ap.add_argument("--no-fx", action="store_true", help="switch off delay and reverb buses")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--dead-velocity", type=int, help="mark notes with this velocity and <= 1/16 length as dead strokes")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
 
@@ -37,7 +38,7 @@ def main(argv=None):
     song = songs[a.song]
     chains = json.load(open(HERE / "presets/chains.json"))
     assets = json.load(open(HERE / "presets/assets.json"))
-    rep = ir.build(a.input, a.musicxml)
+    rep = ir.build(a.input, a.musicxml, dead_velocity=a.dead_velocity)
     checks = ir.midi_checks(rep)
     out = Path(a.out)
     (out / "midi").mkdir(parents=True, exist_ok=True)

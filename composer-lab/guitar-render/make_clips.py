@@ -28,7 +28,8 @@ def main():
         arms = [(a, p) for a, p in sorted(g["arms"].items()) if os.path.exists(p)]
         missing += [p for _a, p in g["arms"].items() if not os.path.exists(p)]
         rng.shuffle(arms)
-        for i, (arm, path) in enumerate(arms):
+        segs = []
+        for arm, path in arms:
             x, sr = sf.read(path, dtype="float64", always_2d=True)
             if x.shape[1] == 1:
                 x = np.repeat(x, 2, axis=1)  # centred mono for listening only; stems themselves stay mono
@@ -38,8 +39,13 @@ def main():
             seg[:fade] *= ramp
             seg[-fade:] *= ramp[::-1]
             lufs = pyloudnorm.Meter(sr).integrated_loudness(seg)
-            gain = spec.get("lufs", -20) - lufs
-            seg *= 10 ** (gain / 20)
+            segs.append((seg, lufs, spec.get("lufs", -20) - lufs))
+        # One target per group: lowered for every clip if any clip would pass -1 dBFS.
+        over = max(20 * np.log10(max(float(np.max(np.abs(s))), 1e-12)) + g for s, _l, g in segs)
+        drop = max(0.0, over + 1.0)
+        for i, ((arm, path), (seg, lufs, gain)) in enumerate(zip(arms, segs)):
+            gain -= drop
+            seg = seg * 10 ** (gain / 20)
             peak = float(np.max(np.abs(seg)))
             name = f"{g['window']}_{chr(65 + i)}"
             p = os.path.join(listen, name + ".wav")
