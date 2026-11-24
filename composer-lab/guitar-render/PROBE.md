@@ -136,3 +136,17 @@ Articulation mapping (`plan.json` -> `mapping_logs`):
   Windows Sandbox; (2) the writable mapped folder is the one path back to the host; (3) the pedalboard
   Windows wheel and an embeddable Python would be fetched through the auditbox fetch VM first;
   (4) whether Defender should scan the extracted portable folder before mapping (it scans on access anyway).
+
+## 6. What could go into Griff (assessment, nothing integrated)
+
+- Worth keeping close to Griff: the articulation JSON (instrument-independent, built from Score/MusicXML
+  data Griff already has), the per-instrument mapping files and the STRICT/EXPRESSIVE rules. These are small,
+  testable and have no audio dependency.
+- Keep external: sfizz, sample libraries, NAM captures, IRs, .NET runtime, pedalboard. They are large,
+  have separate licences (T3K captures may not be redistributed; Unirock samples may not be extracted)
+  and need the isolated render job. An offline "render this candidate" job that Griff calls and that writes
+  WAV/MP3 plus a manifest fits #218 (offline analysis) better than any cockpit playback path.
+- A C# Griff tool could call NAudio.Nam directly (managed, no native code); it would still need the DI
+  from an external sampler.
+- Gaps found on the way: composer-lab's MusicXML writer drops the final chord and notes with fractional
+  onsets, and writes only the start of a P.M. run; Griff's MIDI import drops mid-bar tempo changes (#224).
