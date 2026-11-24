@@ -786,6 +786,8 @@ def _place_group(group):
             return
         if i == len(group):
             fretted = [f for _, f in picks if f]
+            if fretted and max(fretted) - min(fretted) > fretboard.SPAN:
+                return
             total = cost + 0.5 * (max(fretted) - min(fretted) if fretted else 0)
             if not best or total < best[0]:
                 best[:] = [total, list(picks)]
@@ -797,6 +799,58 @@ def _place_group(group):
 
     walk(0, frozenset(), [], 0.0)
     return best[1] if best else None
+
+
+def _tidy_chords(parts, g, new, report, lo, hi):
+    """Within one guitar's chord, collapse doubled pitches and move or drop tones
+    that sit a semitone or a minor ninth from another tone or that form a low
+    cluster. The lowest tone and notes that are not fixed chord shapes stay."""
+    scale_pcs = {(new.tonic_pc + x) % 12 for x in new.scale}
+    by_start = {}
+    for n in parts[g]:
+        if "dead" not in n.get("preset_tech", ()):
+            by_start.setdefault(n["start"], []).append(n)
+    gone = set()
+    for group in by_start.values():
+        movable = {id(n) for n in group if n.get("fixed") and not n.get("dyad") and "preset_tech" not in n}
+        if not movable or len(group) < 2:
+            continue
+        live = lambda skip: [m for m in group if id(m) not in gone and m is not skip]
+        seen = set()
+        for n in sorted(group, key=lambda n: id(n) in movable):
+            if n["pitch"] in seen and id(n) in movable:
+                gone.add(id(n))
+                report["chord_collapsed"] += 1
+            seen.add(n["pitch"])
+        lowest = min((n for n in group if id(n) not in gone), key=lambda n: n["pitch"])
+        for n in sorted((n for n in group if id(n) in movable and id(n) not in gone), key=lambda n: -n["pitch"]):
+            if n is lowest or not any(abs(n["pitch"] - m["pitch"]) % 12 == 1 for m in live(n)):
+                continue
+            cands = sorted((p for p in range(n["pitch"] - 7, n["pitch"] + 8)
+                            if lo <= p <= hi and p % 12 in scale_pcs and p != n["pitch"]),
+                           key=lambda p: (abs(p - n["pitch"]), p))
+            fit = next((p for p in cands if all(abs(p - m["pitch"]) % 12 != 1 and p != m["pitch"] for m in live(n))), None)
+            if fit is None:
+                gone.add(id(n))
+                report["chord_dropped"] += 1
+            else:
+                n["pitch"] = fit
+                report["chord_moved"] += 1
+        for _ in range(len(group)):
+            low = sorted((n for n in live(None) if n["pitch"] < 66), key=lambda n: n["pitch"])
+            trio = next((t for t in zip(low, low[1:], low[2:]) if t[2]["pitch"] - t[0]["pitch"] <= 4), None)
+            if trio is None:
+                break
+            mid = trio[1]
+            if id(mid) not in movable:
+                break
+            if mid["pitch"] + 12 <= hi and all(m["pitch"] != mid["pitch"] + 12 for m in live(mid)):
+                mid["pitch"] += 12
+                report["chord_moved"] += 1
+            else:
+                gone.add(id(mid))
+                report["chord_dropped"] += 1
+    parts[g] = [n for n in parts[g] if id(n) not in gone]
 
 
 def _key_octave(old, new, ref):
@@ -817,7 +871,8 @@ def apply_key_to_parts(parts, chords, total16, old, new, ref):
     One tonic shift of at most a tritone for the whole piece; a run of one guitar
     inside a section leaving the fretboard moves by an octave as a whole, and only
     when no octave fits the run are single chords or dyads folded."""
-    report = {"runs_moved": 0, "folded": 0, "merged": 0, "revoiced": 0}
+    report = {"runs_moved": 0, "folded": 0, "merged": 0, "revoiced": 0,
+              "chord_moved": 0, "chord_dropped": 0, "chord_collapsed": 0}
     shift = _key_octave(old, new, ref)
     for g in ("g1", "g2"):
         for n in parts[g]:
@@ -861,20 +916,33 @@ def apply_key_to_parts(parts, chords, total16, old, new, ref):
                     move(group, k)
                     report["folded"] += len(group)
     for g in ("g1", "g2"):
+        _tidy_chords(parts, g, new, report, lo, hi)
         by_start = {}
         for n in parts[g]:
             if n.get("fixed"):
                 by_start.setdefault(n["start"], []).append(n)
+        gone = set()
         for group in by_start.values():
             pos = _place_group(group)
             for n in sorted(group, key=lambda n: n["pitch"]):
-                if pos is not None or n["pitch"] + 12 > fretboard.OPEN[5] + fretboard.MAX_FRET:
+                if pos is not None or n["pitch"] + 12 > hi:
                     continue
                 n["pitch"] += 12
+                ps = sorted(m["pitch"] for m in group)
+                if fretboard.low_cluster(ps) or any(b - a < 2 or (b - a) % 12 == 1 for a, b in zip(ps, ps[1:])):
+                    n["pitch"] -= 12
+                    continue
                 report["revoiced"] += 1
+                pos = _place_group(group)
+            while pos is None and len(group) > 1:
+                top = max(group, key=lambda n: n["pitch"])
+                group.remove(top)
+                gone.add(id(top))
+                report["chord_dropped"] += 1
                 pos = _place_group(group)
             for n, p in zip(group, pos or [_place(n["pitch"], *n["fixed"]) for n in group]):
                 n["fixed"] = p
+        parts[g] = [n for n in parts[g] if id(n) not in gone]
         triads = sorted((n for n in parts[g] if tap_triad(n)), key=lambda n: n["start"])
         for prev, n in zip([None] + triads, triads):
             leg = {"hammer", "pull"} & set(n["preset_tech"])

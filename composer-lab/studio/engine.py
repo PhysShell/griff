@@ -403,6 +403,7 @@ def piece_detail(piece_id, recipe, piece, undo_stack=(), redo_stack=()):
         "meter": rec["intent"]["meter"],
         "mode": (st["options"]["key"] or rec["intent"])["mode"],
         "key": (st["options"]["key"] or rec["intent"])["tonic"],
+        "own_key": {"tonic": rec["intent"]["tonic"], "mode": rec["intent"]["mode"]},
         "tempo": piece["tempo"],
         "length": round(piece["total16"] * 15.0 / piece["tempo"], 2),
         "sections": sections,

@@ -1202,3 +1202,18 @@ test("Key: two quick clicks, tonic then mode, end in the combined key", async ()
   assert.deepEqual(saved.recipe.studio.options.key, { tonic: "D", mode: "aeolian" });
   assert.match(env.document.getElementById("workspace").textContent, /D минор \(эолийский\)/);
 });
+
+test("Key: Как в пьесе while a key request is pending does not reuse the old key", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  env.workerMessages.length = 0;
+  keyButton(env, "key_tonic", "D").click();
+  await env.flushAll(10);
+  keyButton(env, "key", "auto").click();
+  await env.flushAll(10);
+  keyButton(env, "key_mode", "dorian").click();
+  await env.flushAll(10);
+  await resolveAll(env);
+  await env.flushAll(15);
+  assert.deepEqual(keyCalls(env), [{ tonic: "D", mode: "lydian" }, null, { tonic: "E", mode: "dorian" }]);
+});

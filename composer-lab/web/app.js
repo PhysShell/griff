@@ -1741,7 +1741,7 @@
       grid.appendChild(wrap);
     }
 
-    function makeChoiceRow(label, name, choices, current, pick) {
+    function makeChoiceRow(label, name, choices, current, pick, force) {
       const row = document.createElement("div");
       row.className = "row";
       row.setAttribute("role", "group");
@@ -1755,7 +1755,7 @@
         b.textContent = txt;
         b.setAttribute("aria-pressed", selected ? "true" : "false");
         b.onclick = () => {
-          if (!selected) pick(val, b);
+          if (!selected || (force && force())) pick(val, b);
         };
         row.appendChild(b);
       }
@@ -1774,14 +1774,26 @@
       grid.appendChild(box);
     }
 
-    function sendKey(patch, ctl) {
-      const pending = appState.keyPending && appState.keyPending.id === d.id ? appState.keyPending.value : null;
-      const next = Object.assign({}, pending || { tonic: d.key, mode: d.mode }, patch);
-      appState.keyPending = { id: d.id, value: next };
+    function pendingKey() {
+      return appState.keyPending && appState.keyPending.id === d.id ? appState.keyPending.value : null;
+    }
+
+    function trackKey(value, request) {
+      appState.keyPending = { id: d.id, value };
       appState.keyBusy = (appState.keyBusy || 0) + 1;
-      return Promise.resolve(sendOption("key", next, ctl)).finally(() => {
+      return Promise.resolve(request()).finally(() => {
         if (--appState.keyBusy === 0) appState.keyPending = null;
       });
+    }
+
+    function sendKey(patch, ctl) {
+      const pending = pendingKey();
+      const next = Object.assign({}, pending || { tonic: d.key, mode: d.mode }, patch);
+      return trackKey(next, () => sendOption("key", next, ctl));
+    }
+
+    function resetKey(ctl) {
+      return trackKey(d.own_key || { tonic: d.key, mode: d.mode }, () => sendOption("key", null, ctl));
     }
 
     function addKeyControl(grid) {
@@ -1802,7 +1814,7 @@
       );
       box.appendChild(
         makeChoiceRow(`${title}: как в пьесе`, "key", [["auto", "Как в пьесе"]], opts.key ? null : "auto", (v, b) =>
-          sendOption("key", null, b)
+          resetKey(b), pendingKey
         )
       );
       addOptionHint(box, "Переводит все ноты в выбранную тональность по ступеням; ритм и форма не меняются. Применяется сразу.");

@@ -209,6 +209,7 @@ function buildDetailFromState(st, sectionLabels = {}) {
     meter: rec.intent.meter,
     mode: opts.key ? opts.key.mode : rec.intent.mode,
     key: opts.key ? opts.key.tonic : rec.intent.tonic,
+    own_key: { tonic: rec.intent.tonic, mode: rec.intent.mode },
     tempo: rec.intent.tempo,
     length: Math.max(2, cursor),
     sections,

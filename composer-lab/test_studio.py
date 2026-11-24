@@ -2787,6 +2787,19 @@ class TestStudioKey(unittest.TestCase):
             for n in notes:
                 self.assertNotIn((n["start"], n["string"]), seen, (ctx, g, n))
                 seen[(n["start"], n["string"])] = n
+            chords = {}
+            for n in notes:
+                if "dead" not in n["tech"]:
+                    chords.setdefault(n["start"], []).append(n)
+            for start, group in chords.items():
+                if len(group) < 2:
+                    continue
+                fretted = [n["fret"] for n in group if n["fret"]]
+                self.assertLessEqual(max(fretted) - min(fretted) if fretted else 0, fretboard.SPAN, (ctx, g, start))
+                pitches = sorted(n["pitch"] for n in group)
+                self.assertEqual(len(set(pitches)), len(pitches), (ctx, g, start, pitches))
+                self.assertFalse(any((b - a) % 12 == 1 for a, b in zip(pitches, pitches[1:])), (ctx, g, start, pitches))
+                self.assertFalse(fretboard.low_cluster(pitches), (ctx, g, start, pitches))
             line = [n for n in notes if not n.get("chordtone") and not n.get("dyad")
                     and not (n.get("fixed") and "preset_tech" not in n)]
             for prev, n in zip(line, line[1:]):
@@ -2866,24 +2879,32 @@ class TestStudioKey(unittest.TestCase):
                 got, _ = map_notes([p], old, new)
                 self.assertEqual(got, [e], (old, new, p))
         merged = map_notes([65, 66], ("E", "ionian"), ("E", "phrygian"))
-        self.assertEqual(merged, ([64, 65], {"runs_moved": 0, "folded": 0, "merged": 1, "revoiced": 0}))
+        self.assertEqual(merged, ([64, 65], {"runs_moved": 0, "folded": 0, "merged": 1, "revoiced": 0,
+                                  "chord_moved": 0, "chord_dropped": 0, "chord_collapsed": 0}))
         wide = map_notes([55, 60, 66, 64, 71, 85], ("E", "ionian"), ("B", "locrian"))[0]
         self.assertTrue(all(40 <= p <= 86 for p in wide), wide)
 
     def test_every_mode_pair_matches_the_independent_oracle(self):
-        pitches = list(range(48, 85, 3))
-        for old_tonic in ("E", "A", "D"):
-            for old_mode in composer.KEY_MODES:
-                for new_tonic in composer.TONICS:
-                    for new_mode in composer.KEY_MODES:
-                        old, new = (old_tonic, old_mode), (new_tonic, new_mode)
-                        got, rep = map_notes(pitches, old, new)
-                        shift = oracle_shift(old, new, pitches)
-                        want = [oracle_pitch(p, old, new, shift) for p in pitches]
-                        if rep["runs_moved"] == rep["folded"] == 0:
-                            self.assertEqual(got, want, (old, new))
-                        else:
-                            self.assertTrue(all((a - b) % 12 == 0 for a, b in zip(got, want)), (old, new))
+        for pitches in (list(range(48, 85, 3)), list(range(55, 70, 2))):
+            for old_tonic in ("E", "A", "D"):
+                for old_mode in composer.KEY_MODES:
+                    for new_tonic in composer.TONICS:
+                        for new_mode in composer.KEY_MODES:
+                            old, new = (old_tonic, old_mode), (new_tonic, new_mode)
+                            got, rep = map_notes(pitches, old, new)
+                            shift = oracle_shift(old, new, pitches)
+                            want = [oracle_pitch(p, old, new, shift) for p in pitches]
+                            high = max(want) > 86
+                            order = (-1, 1, -2, 2) if high else (1, -1, 2, -2)
+                            if min(want) >= 40 and not high:
+                                expected = want
+                            else:
+                                k = next((k for k in order if all(40 <= p + 12 * k <= 86 for p in want)), None)
+                                expected = want if k is None else [p + 12 * k for p in want]
+                            if rep["folded"] == 0:
+                                self.assertEqual(got, expected, (old, new))
+                            else:
+                                self.assertTrue(all((a - b) % 12 == 0 for a, b in zip(got, want)), (old, new))
 
     def test_round_trip_restores_pitches_and_fails_when_mapping_is_a_no_op(self):
         checked = 0
@@ -2921,7 +2942,7 @@ class TestStudioKey(unittest.TestCase):
                 resolved = set(dst["report"]["m9_resolved"])
                 shift = oracle_shift(old, (tonic, mode), ref)
                 KEY_STATS["pieces"] += 1
-                for name in ("runs_moved", "folded", "merged", "revoiced"):
+                for name in ("runs_moved", "folded", "merged", "revoiced", "chord_moved", "chord_dropped", "chord_collapsed"):
                     KEY_STATS[name] += rep[name]
                 KEY_STATS["pieces_with_moved_run"] += rep["runs_moved"] > 0
                 KEY_STATS["pieces_with_folds"] += rep["folded"] > 0
@@ -2930,21 +2951,27 @@ class TestStudioKey(unittest.TestCase):
                 moved_notes = 0
                 for g in ("g1", "g2"):
                     a_notes, b_notes = pre[g], ktrace["pre"][g]
-                    self.assertEqual(len(a_notes), len(b_notes), ctx)
+                    if len(a_notes) != len(b_notes):
+                        self.assertGreater(rep["chord_dropped"] + rep["chord_collapsed"], 0, ctx)
+                        key = lambda n: (n["start"], n["dur"], n["vel"])
+                        self.assertFalse(collections.Counter(map(key, b_notes)) - collections.Counter(map(key, a_notes)), ctx)
+                        continue
                     deltas = []
+                    off_degree = 0
                     for a, b in zip(a_notes, b_notes):
                         self.assertEqual((a["start"], a["dur"], a["vel"]), (b["start"], b["dur"], b["vel"]), (ctx, g, a))
                         delta = b["pitch"] - oracle_pitch(a["pitch"], old, (tonic, mode), shift)
-                        self.assertEqual(delta % 12, 0, (ctx, g, a, b))
+                        off_degree += delta % 12 != 0
                         deltas.append(delta)
-                    moved_notes += sum(x != 0 for x in deltas)
+                    self.assertLessEqual(off_degree, rep["chord_moved"], (ctx, g))
+                    moved_notes += sum(x != 0 for x in deltas)  # includes chord tones moved by tidy
                     for i in range(len(a_notes) - 1):
                         if deltas[i] == deltas[i + 1] and a_notes[i]["start"] < a_notes[i + 1]["start"]:
                             self.assertEqual(sign(b_notes[i + 1]["pitch"] - b_notes[i]["pitch"]),
                                              sign(a_notes[i + 1]["pitch"] - a_notes[i]["pitch"]), (ctx, g, i))
-                if not rep["runs_moved"] and not rep["folded"] and not rep["revoiced"]:
-                    self.assertEqual(moved_notes, 0, ctx)
-                self.assertGreaterEqual(rep["runs_moved"] + rep["folded"] + rep["revoiced"] > 0, moved_notes > 0, ctx)
+                adjusted = rep["runs_moved"] + rep["folded"] + rep["revoiced"] + rep["chord_moved"] + rep["chord_dropped"]
+                self.assertEqual(adjusted > 0, moved_notes > 0, ctx)
+                chord_budget = rep["chord_dropped"] + rep["chord_collapsed"]
                 for g in ("g1", "g2"):
                     pool = collections.Counter((n["start"], n["vel"]) for n in dst["parts"][g])
                     for n in src["parts"][g]:
@@ -2952,7 +2979,9 @@ class TestStudioKey(unittest.TestCase):
                         if pool[(n["start"], n["vel"])] > 0:
                             pool[(n["start"], n["vel"])] -= 1
                         else:
-                            self.assertIn(n["start"], resolved, (ctx, g, n))
+                            if n["start"] not in resolved:
+                                chord_budget -= 1
+                                self.assertGreaterEqual(chord_budget, 0, (ctx, g, n))
                             self.assertNotIn("dead", n["tech"], (ctx, g, n))
                             KEY_STATS["dropped"] += 1
                 self.assertEqual(
@@ -2965,6 +2994,44 @@ class TestStudioKey(unittest.TestCase):
                 KEY_STATS["tech_compared"] += len(same)
                 self.assert_playable(dst, ctx)
                 self.assert_no_minor_ninth(dst, ctx)
+
+    def chord(self, pitches, old, new):
+        parts = {"g1": [{"pitch": p, "start": 0, "dur": 4, "vel": 80, "fixed": (1, max(0, p - 45)), "ring": True}
+                        for p in pitches], "g2": []}
+        rep = composer.apply_key_to_parts(
+            parts, [{"start": 0, "sec": "A"}], 16, composer.Theory(composer.TONICS[old[0]], old[1]),
+            composer.Theory(composer.TONICS[new[0]], new[1]), pitches)
+        return parts["g1"], rep
+
+    def test_regression_chord_tones_are_moved_dropped_or_collapsed(self):
+        notes, rep = self.chord([57, 59, 64, 71], ("G", "mixolydian"), ("D", "aeolian"))
+        ps = sorted(n["pitch"] for n in notes)
+        self.assertEqual(len(set(ps)), len(ps))
+        self.assertFalse(any(abs(a - b) % 12 == 1 for a in ps for b in ps), ps)
+        self.assertGreater(rep["chord_moved"] + rep["chord_dropped"], 0)
+        self.assertEqual(ps[0], 52)
+        fretted = [n["fixed"][1] for n in notes if n["fixed"][1]]
+        self.assertLessEqual(max(fretted) - min(fretted), fretboard.SPAN)
+        notes, rep = self.chord([64, 65], ("E", "ionian"), ("E", "phrygian"))
+        self.assertEqual([n["pitch"] for n in notes], [64])
+        self.assertEqual(rep["chord_collapsed"], 1)
+        notes, rep = self.chord([40, 44, 47, 52], ("E", "ionian"), ("E", "ionian"))
+        self.assertEqual(len(notes), 4)
+        cluster, rep = self.chord([55, 57, 60], ("A", "aeolian"), ("A", "dorian"))
+        self.assertFalse(fretboard.low_cluster([n["pitch"] for n in cluster]))
+
+    def test_regression_chords_keep_a_playable_span_and_stay_consonant(self):
+        for seed, tonic, mode, g, start in ((986307, "C#", "ionian", "g2", 128), (801000, "D", "aeolian", "g1", 323)):
+            _, krec = keyed(seed, tonic, mode)
+            p = composer.compose(krec)
+            self.assert_playable(p, (seed, tonic, mode))
+            group = notes_at(p, g, start)
+            self.assertGreaterEqual(len(group), 2)
+            fretted = [n["fret"] for n in group if n["fret"]]
+            self.assertLessEqual(max(fretted) - min(fretted) if fretted else 0, fretboard.SPAN)
+        rec = studio_engine.new_recipe(986307)
+        p = composer.compose(studio_engine.set_option(rec, "key", {"tonic": "D", "mode": "aeolian"}))
+        self.assert_playable(p, 986307)
 
     def test_runs_move_whole_and_square_copies_decide_alike(self):
         for seed, tonic, mode in ((801000, "F#", "locrian"), (801000, "D", "aeolian"), (802000, "B", "phrygian")):
@@ -3183,6 +3250,28 @@ while (held.length) { held.shift()(); await sleep(20); }
 console.log(JSON.stringify({ sent: calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body.value) }));
 """)
         self.assertEqual(out["sent"], [{"tonic": "D", "mode": "lydian"}, {"tonic": "D", "mode": "aeolian"}])
+
+
+    def test_reset_while_a_key_request_is_pending_does_not_reuse_the_old_key(self):
+        out = _run_page("""
+show({ key: "E", mode: "lydian", own_key: { tonic: "E", mode: "lydian" }, options: { key: null, octave_share: null, mute_share: 0 } });
+let held = [];
+respond = (url, body) => {
+  if (!url.endsWith("/option")) return { pieces: [] };
+  const v = body.value || { tonic: "E", mode: "lydian" };
+  return new Promise((resolve) => held.push(() => resolve(piece({ key: v.tonic, mode: v.mode, own_key: { tonic: "E", mode: "lydian" }, options: { key: body.value, octave_share: null, mute_share: 0 } }))));
+};
+const click = (o, v) => find((e) => e.dataset && e.dataset.option === o && e.dataset.value === v && e.tagName === "button").onclick();
+click("key_tonic", "D");
+await sleep(20);
+click("key", "auto");
+await sleep(20);
+click("key_mode", "dorian");
+await sleep(20);
+while (held.length) { held.shift()(); await sleep(20); }
+console.log(JSON.stringify({ sent: calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body.value) }));
+""")
+        self.assertEqual(out["sent"], [{"tonic": "D", "mode": "lydian"}, None, {"tonic": "E", "mode": "dorian"}])
 
 
 if __name__ == "__main__":
