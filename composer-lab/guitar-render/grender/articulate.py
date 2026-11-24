@@ -41,6 +41,8 @@ def stem_events(stem, inst, mode, ppq, meters, channel=0, ks_channel=None):
         for _a, t in arts:
             if t and t in inst.get("approximations", {}):
                 log["approximated"][t] = log["approximated"].get(t, 0) + 1
+        if art == "slide_dir":
+            art = _slide_direction(stem, group[0])
         if art not in ks:
             log["unsupported_on_instrument"][art] = log["unsupported_on_instrument"].get(art, 0) + 1
             art = "sustain"
@@ -74,6 +76,16 @@ def stem_events(stem, inst, mode, ppq, meters, channel=0, ks_channel=None):
             events.append((max(off, start + 1), 2, bytes([0x80 | channel, n["pitch"], 0])))
     events.append((0, -1, bytes([0xB0 | channel, 7, 100])))
     return sorted(events, key=lambda e: (e[0], e[1])), log
+
+
+def _slide_direction(stem, n):
+    """slide_up or slide_down from the notated slide start on the same string (MusicXML slide start/stop)."""
+    prev = [p for p in stem["notes"] if p["on"] < n["on"] and "slide_from" in p["tech"]
+            and (n.get("string") is None or p.get("string") == n.get("string"))]
+    if not prev:
+        return "sustain"
+    p = max(prev, key=lambda p: p["on"])
+    return "slide_up" if n["pitch"] >= p["pitch"] else "slide_down"
 
 
 def _legato_overlaps(stem, inst, ppq):

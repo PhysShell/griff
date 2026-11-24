@@ -49,9 +49,10 @@ def main():
         v = min(v, 16383)
         ev.append((bar + 2 * q + q // 2 + i * q // 8, 2, bytes([0xE0, v & 0x7F, v >> 7])))
     ev.append((bar + 4 * q - 1, 2, bytes([0xE0, 0, 64])))
-    switch(2 * bar, "staccato")
+    short = "pm" if "pm" in ks else "staccato"
+    switch(2 * bar, short)
     for i in range(4):
-        note(2 * bar + i * q // 2, q // 2 - 20, 45, 95, "staccato (palm-mute stand-in)")
+        note(2 * bar + i * q // 2, q // 2 - 20, 45, 95, f"{short} (palm-mute or its stand-in)")
     switch(2 * bar + 2 * q, "sustain")
     for i in range(4):
         note(2 * bar + 2 * q + i * q // 2, q // 2 - 20, 45, 95, "back to sustain")

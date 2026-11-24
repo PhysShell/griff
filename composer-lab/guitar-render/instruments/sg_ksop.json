@@ -1,0 +1,44 @@
+{
+ "id": "sg_ksop",
+ "backend": "sfizz",
+ "title": "Unreal Instruments Standard Guitar (humbucker DI), keyswitch program 01-Standard Guitar KSOP",
+ "license": "Custom (no terms found); private use only, never redistributed or committed",
+ "library_dir": "standard-guitar",
+ "sfz": "UI_Standard_Guitar/Programs/01-Standard Guitar KSOP.sfz",
+ "keyswitch": {
+  "sustain": 26,
+  "pm": 29,
+  "dead": 23,
+  "legato": 30,
+  "slide_down": 31,
+  "slide_up": 32,
+  "slide_in": 33,
+  "slide_out": 34,
+  "nat_harm": 20,
+  "pinch_harm": 21,
+  "sus_down": 24,
+  "sus_up": 25
+ },
+ "keyswitch_source": "и¦‹гЃ¦гЃ­в™Ў/Standard_Guitar_KSMap.txt and sw_last values in Programs/Individual Patchs/Standard_Guitar_KSOP (c1 = 24)",
+ "articulation_map": {
+  "pm": "pm",
+  "dead": "dead",
+  "hammer": "legato",
+  "pull": "legato",
+  "slide": "slide_dir",
+  "tap": "legato"
+ },
+ "approximations": {
+  "slide": "slide-up / slide-down samples of the arrival note; the slide length of the sample is not the notated interval",
+  "tap": "no tap samples; hammer/pull samples stand in",
+  "pull": "one hammer/pull keyswitch for both"
+ },
+ "uniform_bend_range": false,
+ "playable": [
+  35,
+  86
+ ],
+ "di_channel": "left",
+ "di_advance_ms": 25,
+ "di_advance_note": "first SG smoke: steepest attack rise 23-30 ms after note-on on clearly separated notes (the KSOP programs set delay_cc30=0.020 with cc30=75, about 12 ms, plus the sample lead-in); checked again after the advance"
+}

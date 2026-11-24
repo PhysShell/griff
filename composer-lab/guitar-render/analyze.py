@@ -31,11 +31,11 @@ def onsets(wav, expected):
             continue
         seen.add(t)
         i = int(t * sr)
-        pre = e[max(0, i - int(0.03 * sr)):max(1, i - int(0.002 * sr))]
+        pre = e[max(0, i - int(0.06 * sr)):max(1, i - int(0.002 * sr))]
         post = e[i:i + int(0.04 * sr)]
         ratio = float(post.max() / max(pre.mean(), 1e-9)) if len(post) and len(pre) else 0.0
-        d = np.diff(e[max(0, i - int(0.03 * sr)):i + int(0.03 * sr)])
-        lag = (int(np.argmax(d)) - int(0.03 * sr)) / sr * 1000 if len(d) else None
+        d = np.diff(e[max(0, i - int(0.06 * sr)):i + int(0.06 * sr)])
+        lag = (int(np.argmax(d)) - int(0.06 * sr)) / sr * 1000 if len(d) else None
         rep.append({"t": t, "tag": nt["tag"], "rise_ratio": round(ratio, 2), "steepest_rise_ms": round(lag, 1)})
     last = np.nonzero(np.abs(x) > 10 ** (-60 / 20))[0]
     out = {"file": wav, "notes": rep, "detected": sum(1 for r in rep if r["rise_ratio"] > 1.5),
