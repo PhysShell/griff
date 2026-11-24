@@ -216,8 +216,9 @@ function buildDetailFromState(st, sectionLabels = {}) {
   const marks = (Array.isArray(st.marks) ? st.marks : []).map((m) => ({
     ...m,
     stale: m.rev !== rev,
-    from_sec: Math.max(0, m.t - 2),
+    from_sec: Math.min(length, Math.max(0, m.t - 2)),
     to_sec: Math.min(length, m.t + 2),
+    can_audition: m.t <= length,
   }));
   return {
     id: st.id,
@@ -764,7 +765,7 @@ function createAppHarness(options = {}) {
       let mark;
       if (cmd === "mark_add") {
         mark = {
-          id: `m${++env.markSeq}`,
+          id: payload.id || `m${++env.markSeq}`,
           t: payload.t,
           bar: 1 + Math.floor(payload.t / 2),
           sixteenth: 1,
@@ -773,9 +774,9 @@ function createAppHarness(options = {}) {
           guitar: payload.guitar || "both",
           text: payload.text || "",
           notes: [],
-          rev: fakeRev(st.recipe),
+          rev: payload.rev || fakeRev(st.recipe),
         };
-        marks.push(mark);
+        if (!marks.some((m) => m.id === mark.id)) marks.push(mark);
       } else {
         const i = marks.findIndex((m) => m.id === payload.id);
         if (i < 0) throw new Error(`unknown mark id: ${payload.id}`);

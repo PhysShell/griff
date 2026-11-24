@@ -1533,3 +1533,145 @@ test("Marks: production markup has the sidebar button and the page has no alert"
   assert.match(html, /\.mark-flag[^{]*\{/);
   assert.match(html, /\.mark-flag\.stale|\.stale/);
 });
+
+const markCalls = (env) => env.workerMessages.filter((m) => m.type === "call" && m.cmd.startsWith("mark_"));
+
+test("Marks review: a slow mark write keeps what another tab did meanwhile and only adds its mark", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  env.press(KEY_M);
+  await env.flushAll(10);
+  assert.equal(env.pendingWorkerCalls.length, 1);
+
+  const stored = env.indexedDB._pieces.get("piece_801000");
+  stored.state.recipe.studio.salts["comp@A"] = 3;
+  stored.state.undo = [];
+  stored.state.redo = [makeFakeState(801000).recipe];
+  stored.state.marks = [{ id: "mother", t: 1, bar: 1, sixteenth: 1, section: "A", section_label: "Куплет A", guitar: "both", text: "", notes: [], rev: "x" }];
+
+  const call = env.pendingWorkerCalls.shift();
+  call.resolve(env.runFakePy(call.msg.cmd, call.msg.payload));
+  await env.flushAll(30);
+
+  const after = env.indexedDB._pieces.get("piece_801000").state;
+  assert.equal(after.recipe.studio.salts["comp@A"], 3, "the recipe changed meanwhile must stay");
+  assert.equal(after.redo.length, 1, "redo must not be cleared");
+  assert.equal(after.undo.length, 0);
+  assert.deepEqual(after.marks.map((m) => m.id).sort(), [after.marks.find((m) => m.id !== "mother").id, "mother"].sort());
+  assert.equal(after.marks.length, 2);
+  assert.deepEqual(markLogs(env).map((l) => l.action), ["mark_add"]);
+});
+
+test("Marks review: a mark sends full precision time, a client id and the revision that was loaded", async () => {
+  const env = await bootWithPiece();
+  const sampler = env.window.__studioDebug.sampler;
+  await sampler.seek(1.2345678, false);
+  env.press(KEY_M);
+  await env.flushAll(20);
+  const [call] = markCalls(env);
+  assert.equal(call.payload.t, 1.2345678);
+  assert.match(call.payload.id, /^m[0-9a-f]{6,}$/);
+  assert.equal(call.payload.rev, "{}");
+  assert.equal(savedMarks(env)[0].id, call.payload.id);
+});
+
+test("Marks review: pressing М while a reroll is running names the revision that is playing", async () => {
+  const env = await bootWithPiece();
+  const shown = env.document.getElementById("workspace").querySelectorAll(".reroll-btn").find((b) => b.dataset.layer === "tempo");
+  env.autoRunWorkerCalls = false;
+  shown.click();
+  await env.flushAll(10);
+  env.press(KEY_M);
+  await env.flushAll(10);
+  await resolveAll(env);
+  const [call] = markCalls(env);
+  assert.equal(call.payload.rev, "{}", "the old revision was audible when М was pressed");
+  const row = byClass(env, "mark-row")[0];
+  assert.match(row.textContent, /\(до изменения\)/);
+});
+
+test("Marks review: audition is disabled for a mark outside the current piece and never inverted", async () => {
+  const env = await bootWithMarks([{ t: 100, rev: "0".repeat(12) }, { t: 5 }]);
+  const listen = byClass(env, "mark-audition");
+  assert.equal(listen[0].disabled, true);
+  assert.equal(listen[1].disabled, false);
+  const sampler = env.window.__studioDebug.sampler;
+  await sampler.seek(1, false);
+  listen[0].click();
+  await env.flushAll(10);
+  assert.equal(sampler.currentTime(), 1);
+});
+
+test("Marks review: М works on sliders and buttons but not in text fields", async () => {
+  const env = await bootWithPiece();
+  env.press({ ...KEY_M, target: { tagName: "INPUT", type: "range" } });
+  await env.flushAll(20);
+  env.press({ ...KEY_M, target: { tagName: "BUTTON" } });
+  await env.flushAll(20);
+  env.press({ ...KEY_M, target: { tagName: "INPUT", type: "text" } });
+  env.press({ ...KEY_M, target: { tagName: "INPUT", type: "number" } });
+  env.press({ ...KEY_M, target: { tagName: "TEXTAREA" } });
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 2);
+});
+
+test("Marks review: opening another flag or another piece keeps the typed comment", async () => {
+  const env = await bootWithMarks([{ t: 3 }, { t: 5 }]);
+  const flags = () => byClass(env, "mark-flag");
+  flags()[0].onclick();
+  env.document.getElementById("markText").value = "черновик";
+  flags()[1].onclick();
+  await env.flushAll(20);
+  assert.equal(savedMarks(env)[0].text, "черновик");
+  assert.equal(env.document.getElementById("markEditor").dataset.markId, "m2");
+
+  const env2 = await bootTwoPieces();
+  const st = env2.indexedDB._pieces.get("piece_801000").state;
+  st.marks = [{ id: "m1", t: 3, bar: 2, sixteenth: 5, section: "A", section_label: "Куплет A", guitar: "both", text: "", notes: [], rev: "{}" }];
+  env2.document.getElementById("pieceList").querySelectorAll(".piece-item")[0].click();
+  await env2.flushAll(30);
+  byClass(env2, "mark-flag")[0].onclick();
+  env2.document.getElementById("markText").value = "не потерять";
+  pieceItems(env2)[1].click();
+  await env2.flushAll(40);
+  assert.equal(env2.indexedDB._pieces.get("piece_801000").state.marks[0].text, "не потерять");
+});
+
+test("Marks review: moving a touch more than 10 px cancels the long press", async () => {
+  const env = await bootWithPiece();
+  const blk = env.document.getElementById("timeline").children[1];
+  blk.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  blk.onpointerdown({ pointerType: "touch", clientX: 50, clientY: 10 });
+  blk.onpointermove({ pointerType: "touch", clientX: 70, clientY: 10 });
+  await new Promise((r) => setTimeout(r, 650));
+  await env.flushAll(10);
+  assert.equal(savedMarks(env).length, 0);
+  blk.onpointerup({});
+  blk.onpointerdown({ pointerType: "touch", clientX: 50, clientY: 10 });
+  blk.onpointermove({ pointerType: "touch", clientX: 54, clientY: 13 });
+  await new Promise((r) => setTimeout(r, 650));
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 1);
+});
+
+test("Marks review: importing a piece with marks logs their ids", async () => {
+  const env = await bootWithMarks([{ t: 5 }, { t: 6 }]);
+  const st = JSON.parse(JSON.stringify(env.indexedDB._pieces.get("piece_801000").state));
+  st.recipe.studio.salts["comp@A"] = 4;
+  const impInput = env.document.getElementById("importPiecesInput");
+  impInput.files = [{ text: async () => JSON.stringify({ version: 1, pieces: [{ id: st.id, state: st }] }) }];
+  await impInput.onchange();
+  await env.flushAll(30);
+  const row = env.indexedDB._logs.find((l) => l.action === "mark_import");
+  assert.deepEqual(row.value.ids, ["m1", "m2"]);
+  assert.equal(row.piece_id, "piece_801000_2");
+});
+
+test("Marks review: the editor opens for the newest added mark", async () => {
+  const env = await bootWithPiece();
+  env.press(KEY_M);
+  env.press(KEY_M);
+  await env.flushAll(40);
+  assert.equal(savedMarks(env).length, 2);
+  assert.equal(env.document.getElementById("markEditor").dataset.markId, savedMarks(env)[1].id);
+});

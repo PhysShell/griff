@@ -318,10 +318,13 @@ const SHORT_SECTION_LABELS = { intro: "Вст.", A: "A", A2: "A2", B: "B", A3: "
 const SLIDER_DEBOUNCE_MS = 600;
 const LONG_PRESS_MS = 500;
 const MARK_TEXT_MAX = 80;
+const TEXT_INPUT_TYPES = ["", "text", "search", "number", "email", "url", "password", "tel"];
+const LONG_PRESS_SLOP_PX = 10;
 const MARK_GUITARS = [["lead", "Соло"], ["rhythm", "Ритм"], ["both", "Обе"]];
 const MARK_GUITAR_LABELS = { lead: "соло", rhythm: "ритм", both: "обе" };
 const MARK_HINT = "Отметьте место, где звучит не по-человечески: кнопка «Тут не так», клавиша M или Shift+клик по таймлайну. Музыку это не меняет.";
 let pressTimer = null;
+let pressStart = null;
 let swallowClick = false;
 const ERROR_BANNER_HTML = `<div id="errorBanner" class="load-banner" role="alert" hidden>
       <span id="errorText"></span>
@@ -538,11 +541,18 @@ function renderWorkspace(preserveTime = null) {
       clearTimeout(pressTimer);
       pressTimer = null;
       if (!ev || ev.pointerType !== "touch") return;
+      pressStart = { x: ev.clientX, y: ev.clientY };
       pressTimer = setTimeout(() => {
         pressTimer = null;
         swallowClick = true;
         addMark(timelineTime(blk, s, ev));
       }, LONG_PRESS_MS);
+    };
+    blk.onpointermove = (ev) => {
+      if (pressTimer && pressStart && Math.hypot(ev.clientX - pressStart.x, ev.clientY - pressStart.y) > LONG_PRESS_SLOP_PX) {
+        clearTimeout(pressTimer);
+        pressTimer = null;
+      }
     };
     blk.onpointerup = () => {
       clearTimeout(pressTimer);
@@ -922,9 +932,7 @@ function findMark(id) {
   return ((state.current && state.current.marks) || []).find((m) => m.id === id) || null;
 }
 
-async function markRequest(action, body, onDone) {
-  const pieceId = state.currentId;
-  if (!pieceId) return null;
+async function markRequest(pieceId, action, body, onDone) {
   let res;
   try {
     res = await api(`/api/piece/${encodeURIComponent(pieceId)}/${action}`, { method: "POST", body: JSON.stringify(body) });
@@ -932,20 +940,34 @@ async function markRequest(action, body, onDone) {
     showError(err, pieceId);
     return null;
   }
-  if (state.currentId === pieceId && state.current && state.current.id === pieceId) {
-    state.current = Object.assign({}, state.current, { marks: res.marks, rev: res.rev });
+  if (state.current && state.current.id === pieceId) {
+    const id = action === "mark_add" ? res.mark && res.mark.id : body.id;
+    const own = res.marks.find((m) => m.id === id);
+    let marks = state.current.marks || [];
+    if (action === "mark_delete") marks = marks.filter((m) => m.id !== id);
+    else if (own) marks = marks.some((m) => m.id === id) ? marks.map((m) => (m.id === id ? own : m)) : marks.concat([own]);
+    state.current = Object.assign({}, state.current, { marks });
     if (onDone) onDone(res.mark);
     renderMarks();
   }
   return res.mark;
 }
 
+let markSeq = 0;
+
+function newMarkId() {
+  return `m${Math.random().toString(16).slice(2, 10).padEnd(8, "0")}`;
+}
+
 function addMark(t) {
   if (!state.current) return Promise.resolve(null);
-  const at = Math.round(Math.max(0, Math.min(state.current.length, Number(t) || 0)) * 1000) / 1000;
+  const pieceId = state.current.id;
+  const body = { t: Math.max(0, Math.min(state.current.length, Number(t) || 0)), id: newMarkId() };
+  if (state.current.rev) body.rev = state.current.rev;
+  const seq = ++markSeq;
   return finishMarkEdit(true).then(() =>
-    markRequest("mark_add", { t: at }, (mark) => {
-      state.markEdit = { id: mark.id, fresh: true, guitar: mark.guitar, text: mark.text };
+    markRequest(pieceId, "mark_add", body, (mark) => {
+      if (seq === markSeq) state.markEdit = { id: mark.id, fresh: true, guitar: mark.guitar, text: mark.text };
     })
   );
 }
@@ -957,7 +979,7 @@ async function finishMarkEdit(commit) {
   const mark = findMark(ed.id);
   state.markEdit = null;
   if (commit && mark && (ed.guitar !== mark.guitar || text !== mark.text)) {
-    await markRequest("mark_edit", { id: ed.id, guitar: ed.guitar, text });
+    await markRequest(state.current.id, "mark_edit", { id: ed.id, guitar: ed.guitar, text });
   } else {
     renderMarks();
   }
@@ -965,7 +987,7 @@ async function finishMarkEdit(commit) {
 
 function dropMark(id) {
   state.markEdit = null;
-  return markRequest("mark_delete", { id });
+  return markRequest(state.current.id, "mark_delete", { id });
 }
 
 function cancelMarkEdit() {
@@ -978,14 +1000,24 @@ function cancelMarkEdit() {
 }
 
 function openMark(m) {
-  const player = document.getElementById("player");
-  state.auditionEnd = null;
-  player.currentTime = m.from_sec;
-  state.markEdit = { id: m.id, fresh: false, guitar: m.guitar, text: m.text };
-  renderMarks();
+  const go = () => {
+    const cur = findMark(m.id);
+    if (!cur) return;
+    const player = document.getElementById("player");
+    state.auditionEnd = null;
+    player.currentTime = cur.from_sec;
+    state.markEdit = { id: cur.id, fresh: false, guitar: cur.guitar, text: cur.text };
+    renderMarks();
+  };
+  if (!state.markEdit) {
+    go();
+    return Promise.resolve();
+  }
+  return finishMarkEdit(true).then(go);
 }
 
 function auditionMark(m) {
+  if (m.can_audition === false) return;
   const player = document.getElementById("player");
   player.currentTime = m.from_sec;
   state.auditionEnd = m.to_sec;
@@ -1004,6 +1036,7 @@ function makeMarkEditor(m) {
   const box = document.createElement("div");
   box.id = "markEditor";
   box.className = "mark-editor";
+  box.dataset.markId = m.id;
   box.setAttribute("role", "group");
   box.setAttribute("aria-label", `Отметка ${m.bar}:${m.sixteenth}`);
   const guitars = [];
@@ -1086,6 +1119,7 @@ function renderMarks() {
     const listen = document.createElement("button");
     listen.className = "mark-audition";
     listen.textContent = "Послушать место";
+    listen.disabled = m.can_audition === false;
     listen.onclick = () => auditionMark(m);
     row.appendChild(open);
     row.appendChild(listen);
@@ -1101,7 +1135,8 @@ function renderMarks() {
 
 function isTextTarget(t) {
   const tag = t && t.tagName ? String(t.tagName).toUpperCase() : "";
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || Boolean(t && t.isContentEditable);
+  if (tag === "INPUT") return TEXT_INPUT_TYPES.includes(String(t.type || "").toLowerCase());
+  return tag === "TEXTAREA" || Boolean(t && t.isContentEditable);
 }
 
 document.addEventListener("keydown", (ev) => {
@@ -1192,6 +1227,7 @@ async function refreshList() {
 }
 
 async function selectPiece(id) {
+  if (state.markEdit) await finishMarkEdit(true);
   const seq = ++state.navSeq;
   if (state.pendingSliders.length) await settlePending();
   if (seq !== state.navSeq) return;
@@ -1228,6 +1264,7 @@ async function selectPiece(id) {
 document.getElementById("newBtn").onclick = async () => {
   const raw = document.getElementById("seedInput").value.trim();
   const seed = raw === "" ? null : parseInt(raw, 10);
+  if (state.markEdit) await finishMarkEdit(true);
   const seq = ++state.navSeq;
   if (state.pendingSliders.length) await settlePending();
   if (seq !== state.navSeq) return;

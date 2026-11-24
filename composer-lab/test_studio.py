@@ -3,6 +3,7 @@ import collections
 import copy
 import hashlib
 import json
+import os
 import random
 import shutil
 import sys
@@ -3317,7 +3318,7 @@ class TestStudioMarks(unittest.TestCase):
             sec = 15.0 / piece["tempo"]
             times = [0.0, sec * 0.9, sec, sec * 13.5, piece["total16"] * sec - 0.001]
             for c in piece["chords"]:
-                times += [c["start"] * sec, c["start"] * sec + sec * 5.5, (c["start"] - 0.01) * sec]
+                times += [c["start"] * sec, c["start"] * sec + sec * 5.5, (c["start"] - 0.05) * sec]
             for t in times:
                 if t < 0:
                     continue
@@ -3363,11 +3364,11 @@ class TestStudioMarks(unittest.TestCase):
         piece = composer.compose(rec)
         sec = 15.0 / piece["tempo"]
         for t in (0.0, 3.2, 7.77, 12.0, piece["total16"] * sec - 0.05):
-            t16 = t / sec
+            tick = int(t / sec + 1e-6)
             expected = []
             for guitar, g in ((1, "g1"), (2, "g2")):
                 for n in piece["parts"][g]:
-                    if n["start"] <= t16 + 1 and n["start"] + n["dur"] > t16 - 1:
+                    if n["start"] <= tick + 1 and n["start"] + n["dur"] > tick - 1:
                         expected.append(
                             (guitar, n["start"], n["dur"], n["pitch"], n["string"], n["fret"], tuple(n.get("tech", [])))
                         )
@@ -3496,19 +3497,6 @@ class TestStudioMarks(unittest.TestCase):
             marks = {m["id"]: m for m in det["marks"]}
             self.assertFalse(marks[mark["id"]]["stale"])
             self.assertTrue(marks[fresh["id"]]["stale"])
-
-    def test_detail_gives_the_audition_range_one_bar_each_side(self):
-        rec = studio_engine.new_recipe(801022)
-        piece = composer.compose(rec)
-        sec = 15.0 / piece["tempo"]
-        starts = [c["start"] for c in piece["chords"]] + [piece["total16"]]
-        for t in (0.5, 21.4, piece["total16"] * sec - 0.2):
-            mark = studio_engine.make_mark(rec, piece, t)
-            view = studio_engine.marks_view(rec, piece, [mark])[0]
-            i = max(k for k, s in enumerate(starts[:-1]) if s <= t / sec + 1e-6)
-            bar = (starts[i + 1] - starts[i]) * sec
-            self.assertAlmostEqual(view["from_sec"], max(0.0, t - bar), places=2)
-            self.assertAlmostEqual(view["to_sec"], min(piece["total16"] * sec, t + bar), places=2)
 
     def test_marks_json_name_cannot_leave_the_piece_folder(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3702,7 +3690,7 @@ console.log(JSON.stringify({
   played: player.played,
 }));
 """)
-        self.assertEqual(out["sent"], [["/api/piece/p1/mark_add", {"t": 3.456}]])
+        self.assertEqual([[u, b["t"]] for u, b in out["sent"]], [["/api/piece/p1/mark_add", 3.456]])
         self.assertEqual(out["total"], 1)
         self.assertEqual(out["title"], "Отметки (1)")
         self.assertEqual(out["flags"], 1)
@@ -3723,7 +3711,7 @@ await sleep(30);
 console.log(JSON.stringify({ none, sent: marksCalls().map((c) => c.body) }));
 """)
         self.assertEqual(out["none"], 0)
-        self.assertEqual(out["sent"], [{"t": 7}])
+        self.assertEqual([b["t"] for b in out["sent"]], [7])
 
     def test_shift_click_adds_a_mark_and_a_plain_click_only_seeks(self):
         out = _run_page(MARKS_PAGE_FIXTURE + """
@@ -3740,7 +3728,7 @@ blk.onclick({ shiftKey: false, clientX: 150 });
 await sleep(20);
 console.log(JSON.stringify({ afterShift, after: marksCalls().length, time: player.currentTime, played: player.played }));
 """)
-        self.assertEqual(out["afterShift"], [{"t": 2.5}])
+        self.assertEqual([b["t"] for b in out["afterShift"]], [2.5])
         self.assertEqual(out["after"], 1)
         self.assertEqual(out["time"], 0)
         self.assertEqual(out["played"], 1)
@@ -3883,6 +3871,356 @@ console.log(JSON.stringify({ one: ctx.document.getElementById("marksDlBtn").href
         self.assertRegex(
             html, r'<a class="btn" id="allMarksBtn" href="/api/marks\.json" download>Скачать отметки всех пьес</a>'
         )
+
+
+def bar_table(piece):
+    """(start, length) of every bar, walked from the meter list."""
+    out, start = [], 0
+    while start < piece["total16"]:
+        num = den = None
+        for tick, n, d in piece["meters"]:
+            if tick <= start * 120:
+                num, den = n, d
+        length = num * 16 // den
+        out.append((start, length))
+        start += length
+    return out
+
+
+class TestStudioMarksReview(unittest.TestCase):
+    def _store(self, d):
+        return studio_engine.StudioStore(d, render_fn=studio_render.fake_render)
+
+    def _history(self, store, pid):
+        path = store._piece_dir(pid) / "history.jsonl"
+        return [json.loads(x) for x in path.read_text(encoding="utf-8").split("\n") if x]
+
+    def test_time_within_a_millisecond_of_a_bar_start_snaps_to_the_bar(self):
+        rec = studio_engine.new_recipe(801000)
+        piece = composer.compose(rec)
+        sec = 15.0 / piece["tempo"]
+        first_a = next(i for i, c in enumerate(piece["chords"]) if c["sec"] == "A")
+        start = piece["chords"][first_a]["start"] * sec
+        for t in (start, round(start, 3), round(start, 2) + 0.0, start - 0.0005, start + 0.0004):
+            if abs(t - start) > 0.001:
+                continue
+            with self.subTest(t=t):
+                self.assertEqual(studio_engine.bar_position(piece, t), {"bar": first_a + 1, "sixteenth": 1})
+        self.assertEqual(studio_engine.bar_position(piece, start - 0.0025)["bar"], first_a)
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            mark = store.add_mark(pid, round(start, 3))["mark"]
+            self.assertEqual((mark["bar"], mark["sixteenth"], mark["section"]), (first_a + 1, 1, "A"))
+
+    def test_mark_at_the_displayed_end_is_valid_and_clamped_to_the_exact_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            det = store.create_piece(801000)
+            exact = composer.compose(studio_engine.new_recipe(801000))
+            exact_len = exact["total16"] * 15.0 / exact["tempo"]
+            self.assertGreater(det["length"], exact_len)
+            mark = store.add_mark(det["id"], det["length"])["mark"]
+            self.assertAlmostEqual(mark["t"], exact_len, places=9)
+            self.assertLessEqual(mark["t"], exact_len)
+            with self.assertRaises(ValueError):
+                store.add_mark(det["id"], det["length"] + 0.5)
+
+    def test_notes_window_is_measured_in_whole_ticks(self):
+        rec = studio_engine.new_recipe(49)
+        piece = composer.compose(rec)
+        mark = studio_engine.make_mark(rec, piece, 8.04)
+        got = {(n["guitar"], n["start"], n["pitch"]) for n in mark["notes"]}
+        expected = {
+            (1 if g == "g1" else 2, n["start"], n["pitch"])
+            for g in ("g1", "g2") for n in piece["parts"][g] if n["start"] == 68
+        }
+        self.assertTrue({p for _, _, p in expected} >= {74, 59})
+        self.assertTrue(expected <= got, expected - got)
+
+    def test_audition_range_uses_the_real_previous_and_next_bars(self):
+        rec = studio_engine.new_recipe(801022)
+        piece = composer.compose(rec)
+        sec = 15.0 / piece["tempo"]
+        table = bar_table(piece)
+        five = next(i for i, (_, length) in enumerate(table) if length == 20)
+        times = [
+            table[five][0] * sec,
+            table[five][0] * sec + 0.5,
+            table[five - 1][0] * sec + 0.3,
+            table[five + 1][0] * sec,
+            0.2,
+            piece["total16"] * sec - 0.1,
+        ]
+        for t in times:
+            mark = studio_engine.make_mark(rec, piece, t)
+            view = studio_engine.marks_view(rec, piece, [mark])[0]
+            i = max(k for k, (s, _) in enumerate(table) if s <= t / sec + 1e-6)
+            lo = table[max(i - 1, 0)][0] * sec
+            hi = (table[min(i + 1, len(table) - 1)][0] + table[min(i + 1, len(table) - 1)][1]) * sec
+            with self.subTest(t=t):
+                self.assertAlmostEqual(view["from_sec"], lo, places=2)
+                self.assertAlmostEqual(view["to_sec"], min(hi, piece["total16"] * sec), places=2)
+                self.assertTrue(view["can_audition"])
+        first = studio_engine.marks_view(
+            rec, piece, [studio_engine.make_mark(rec, piece, table[five][0] * sec)]
+        )[0]
+        self.assertAlmostEqual(first["from_sec"], table[five - 1][0] * sec, places=2)
+
+    def test_stale_marks_never_get_an_inverted_audition_range(self):
+        base = studio_engine.new_recipe(801022)
+        long_rec = studio_engine.set_option(studio_engine.set_option(base, "intro_bars", 8), "square_repeat", 2)
+        long_piece = composer.compose(long_rec)
+        mark = studio_engine.make_mark(long_rec, long_piece, 34.12)
+        short_rec = studio_engine.set_option(long_rec, "square_repeat", 1)
+        short_piece = composer.compose(short_rec)
+        length = short_piece["total16"] * 15.0 / short_piece["tempo"]
+        self.assertLess(length, 34.12)
+        for history in ((), (long_rec,)):
+            view = studio_engine.marks_view(short_rec, short_piece, [mark], history)[0]
+            with self.subTest(history=len(history)):
+                self.assertTrue(view["stale"])
+                self.assertLessEqual(view["from_sec"], view["to_sec"])
+                self.assertLessEqual(view["to_sec"], round(length, 2))
+                self.assertFalse(view["can_audition"])
+        early = studio_engine.make_mark(long_rec, long_piece, 5.0)
+        view = studio_engine.marks_view(short_rec, short_piece, [early], ())[0]
+        self.assertTrue(view["stale"])
+        self.assertTrue(view["can_audition"])
+        self.assertLess(view["from_sec"], view["to_sec"])
+
+    def test_stale_range_uses_the_marks_own_revision_when_it_is_known(self):
+        old = studio_engine.new_recipe(801000)
+        old_piece = composer.compose(old)
+        mark = studio_engine.make_mark(old, old_piece, 10.0)
+        new = studio_engine.reroll(old, "tempo", "all")
+        new_piece = composer.compose(new)
+        self.assertNotEqual(new_piece["tempo"], old_piece["tempo"])
+        length = new_piece["total16"] * 15.0 / new_piece["tempo"]
+        expected = studio_engine.marks_view(old, old_piece, [mark])[0]
+        got = studio_engine.marks_view(new, new_piece, [mark], (old,))[0]
+        self.assertAlmostEqual(got["from_sec"], min(expected["from_sec"], length), places=2)
+        self.assertAlmostEqual(got["to_sec"], min(expected["to_sec"], length), places=2)
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            store.add_mark(pid, 10.0)
+            det = store.reroll(pid, "tempo", "all")
+            self.assertTrue(det["marks"][0]["stale"])
+            self.assertAlmostEqual(det["marks"][0]["from_sec"], got["from_sec"], places=2)
+
+    def test_mark_made_while_a_reroll_runs_is_on_the_revision_that_was_heard(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            det0 = store.create_piece(801000)
+            pid, rev0 = det0["id"], det0["rev"]
+            old_rec = json.loads((store._piece_dir(pid) / "recipe.json").read_text(encoding="utf-8"))
+            store.reroll(pid, "tempo", "all")
+            det = store.add_mark(pid, 10.0, rev=rev0)
+            mark = det["mark"]
+            old_piece = composer.compose(old_rec)
+            self.assertEqual(mark["rev"], rev0)
+            self.assertEqual(mark["notes"], studio_engine.mark_notes(old_piece, 10.0))
+            pos = studio_engine.bar_position(old_piece, 10.0)
+            self.assertEqual((mark["bar"], mark["sixteenth"]), (pos["bar"], pos["sixteenth"]))
+            self.assertTrue(det["marks"][0]["stale"])
+            unknown = store.add_mark(pid, 5.0, rev="0" * 12)["mark"]
+            self.assertEqual((unknown["notes"], unknown["rev"]), ([], "0" * 12))
+            self.assertTrue(store.get_piece(pid)["marks"][1]["stale"])
+            for bad in ("xyz", 5, ""):
+                with self.assertRaises(ValueError):
+                    store.add_mark(pid, 5.0, rev=bad)
+
+    def test_failed_add_leaves_no_mark_and_a_retry_does_not_duplicate(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            real = store._log_history
+
+            def broken(*args, **kwargs):
+                raise OSError("disk")
+
+            store._log_history = broken
+            with self.assertRaises(OSError):
+                store.add_mark(pid, 4.0, mark_id="mretry1")
+            store._log_history = real
+            self.assertEqual(store.get_piece(pid)["marks"], [])
+            self.assertFalse((pdir / "marks.json").exists())
+            first = store.add_mark(pid, 4.0, mark_id="mretry1")["mark"]
+            again = store.add_mark(pid, 4.0, mark_id="mretry1")
+            self.assertEqual(again["mark"], first)
+            self.assertEqual(len(again["marks"]), 1)
+            self.assertEqual([r["action"] for r in self._history(store, pid)].count("mark_add"), 1)
+            store._log_history = broken
+            before = (pdir / "marks.json").read_bytes()
+            with self.assertRaises(OSError):
+                store.edit_mark(pid, "mretry1", text="x")
+            with self.assertRaises(OSError):
+                store.delete_mark(pid, "mretry1")
+            self.assertEqual((pdir / "marks.json").read_bytes(), before)
+            with self.assertRaises(ValueError):
+                store.add_mark(pid, 4.0, mark_id="bad id")
+
+    def test_marks_write_never_touches_sibling_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            alias = pdir / "marks.json.tmp"
+            try:
+                os.link(pdir / "recipe.json", alias)
+            except OSError:
+                self.skipTest("cannot create hard links here")
+            before = snapshot_files(pdir)
+            store.add_mark(pid, 4.0)
+            store.add_mark(pid, 6.0)
+            after = snapshot_files(pdir)
+            for name in before:
+                if name != "history.jsonl":
+                    self.assertEqual(after[name], before[name], name)
+            self.assertEqual(sorted(set(after) - set(before)), ["marks.json"])
+
+    def test_a_second_server_on_the_same_folder_refuses_to_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            first = studio_server.create_server(d, host="127.0.0.1", port=0, render_fn=studio_render.fake_render)
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    studio_server.create_server(d, host="127.0.0.1", port=0, render_fn=studio_render.fake_render)
+                self.assertRegex(str(ctx.exception), "[А-Яа-я]")
+            finally:
+                first.server_close()
+            studio_server.create_server(d, host="127.0.0.1", port=0, render_fn=studio_render.fake_render).server_close()
+
+    def test_revision_ignores_integer_valued_floats(self):
+        rec = studio_engine.new_recipe(801000)
+        other = copy.deepcopy(rec)
+        self.assertEqual(rec["studio"]["options"]["mute_share"], 0.0)
+        other["studio"]["options"]["mute_share"] = 0
+        other["studio"]["options"]["slide_max"] = float(other["studio"]["options"]["slide_max"])
+        self.assertEqual(studio_engine.recipe_rev(rec), studio_engine.recipe_rev(other))
+        changed = studio_engine.set_option(rec, "mute_share", 0.5)
+        self.assertNotEqual(studio_engine.recipe_rev(rec), studio_engine.recipe_rev(changed))
+
+    def test_summary_counts_imported_marks_and_reads_lines_split_on_newline_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "history.jsonl"
+            rows = [
+                {"t": "x", "action": "mark_import", "layer": None, "section": None, "salt": None,
+                 "value": {"ids": ["a", "b"]}, "piece_id": "p1"},
+                {"t": "x", "action": "mark_delete", "layer": None, "section": None, "salt": None,
+                 "value": {"id": "a"}, "piece_id": "p1"},
+                {"t": "x", "action": "mark_add", "layer": None, "section": None, "salt": None,
+                 "value": {"id": "c", "text": "до после"}, "piece_id": "p1"},
+            ]
+            path.write_bytes(("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n").encode("utf-8"))
+            self.assertEqual(studio_summary.summarize(path)["marks_per_piece"], {"p1": 2})
+
+
+class TestStudioMarksPageReview(unittest.TestCase):
+    def test_mark_goes_to_the_visible_piece_with_full_time_id_and_loaded_revision(self):
+        out = _run_page(MARKS_PAGE_FIXTURE + """
+show(withMarks([], { rev: "r1" }));
+const player = getPlayer();
+player.currentTime = 3.456789;
+respond = async (url, body) => url.endsWith("/mark_add") ? Object.assign(withMarks([mk("m1", 3.456789)], { rev: "r2" }), { mark: mk("m1", 3.456789) }) : { pieces: [] };
+run('state.currentId = "p2";');
+press({ key: "m", code: "KeyM" });
+await sleep(30);
+const during = marksCalls().map((c) => c.url);
+run('state.currentId = "p1";');
+press({ key: "m", code: "KeyM" });
+await sleep(30);
+const sent = marksCalls().map((c) => [c.url, c.body]);
+console.log(JSON.stringify({ during, sent, rev: run("state.current.rev") }));
+""")
+        self.assertTrue(all("/p1/" in u for u in out["during"]))
+        url, body = out["sent"][-1]
+        self.assertEqual(url, "/api/piece/p1/mark_add")
+        self.assertEqual(body["t"], 3.456789)
+        self.assertEqual(body["rev"], "r1")
+        self.assertRegex(body["id"], r"^m[0-9a-f]{6,}$")
+        self.assertEqual(out["rev"], "r1")
+
+    def test_reordered_mark_responses_keep_every_flag_and_the_newest_editor(self):
+        out = _run_page(MARKS_PAGE_FIXTURE + """
+show(withMarks([]));
+const player = getPlayer();
+const held = [];
+respond = (url, body) => {
+  if (!url.endsWith("/mark_add")) return { pieces: [] };
+  const n = held.length + 1;
+  return new Promise((resolve) => held.push(() => {
+    const ms = [mk("m1", 1)].concat(n > 1 ? [mk("m2", 2)] : []);
+    resolve(Object.assign(withMarks(ms), { mark: mk("m" + n, n) }));
+  }));
+};
+player.currentTime = 1;
+press({ key: "m", code: "KeyM" });
+await sleep(20);
+player.currentTime = 2;
+press({ key: "m", code: "KeyM" });
+await sleep(20);
+held[1]();
+await sleep(20);
+held[0]();
+await sleep(30);
+const editor = find((e) => e.id === "markEditor");
+console.log(JSON.stringify({
+  flags: findAll((e) => cls(e, "mark-flag")).map((f) => f.dataset.markId),
+  title: ctx.document.getElementById("marksTitle").textContent,
+  editor: editor ? editor.dataset.markId : null,
+}));
+""")
+        self.assertEqual(sorted(out["flags"]), ["m1", "m2"])
+        self.assertEqual(out["title"], "Отметки (2)")
+        self.assertEqual(out["editor"], "m2")
+
+    def test_audition_is_disabled_when_the_range_is_gone(self):
+        out = _run_page(MARKS_PAGE_FIXTURE + """
+show(withMarks([mk("m1", 5, { can_audition: false }), mk("m2", 6)]));
+const player = getPlayer();
+const btns = findAll((e) => cls(e, "mark-audition"));
+btns[0].onclick();
+console.log(JSON.stringify({ disabled: btns.map((b) => b.disabled), played: player.played }));
+""")
+        self.assertEqual(out["disabled"], [True, False])
+        self.assertEqual(out["played"], 0)
+
+    def test_m_on_sliders_draft_kept_and_long_press_cancelled_by_movement(self):
+        out = _run_page(MARKS_PAGE_FIXTURE + """
+show(withMarks([mk("m1", 3), mk("m2", 5)]));
+const player = getPlayer();
+let n = 0;
+respond = async (url, body) => {
+  if (url.endsWith("/mark_add")) { n++; return Object.assign(withMarks([mk("m1", 3), mk("m2", 5)]), { mark: mk("n" + n, 1) }); }
+  if (url.endsWith("/mark_edit")) return Object.assign(withMarks([mk("m1", 3, { text: body.text }), mk("m2", 5)]), { mark: mk("m1", 3, { text: body.text }) });
+  return { pieces: [] };
+};
+const out = {};
+press({ key: "m", code: "KeyM", target: { tagName: "INPUT", type: "range" } });
+press({ key: "m", code: "KeyM", target: { tagName: "BUTTON" } });
+press({ key: "m", code: "KeyM", target: { tagName: "INPUT", type: "text" } });
+await sleep(40);
+out.adds = marksCalls().filter((c) => c.url.endsWith("/mark_add")).length;
+const flags = () => findAll((e) => cls(e, "mark-flag"));
+flags()[0].onclick();
+find((e) => e.id === "markText").value = "черновик";
+flags()[1].onclick();
+await sleep(30);
+out.edits = marksCalls().filter((c) => c.url.endsWith("/mark_edit")).map((c) => c.body);
+const blk = find((e) => cls(e, "sec-block"));
+blk.getBoundingClientRect = () => ({ left: 0, width: 100 });
+const before = marksCalls().length;
+blk.onpointerdown({ pointerType: "touch", clientX: 50, clientY: 10 });
+blk.onpointermove({ pointerType: "touch", clientX: 70, clientY: 10 });
+await sleep(650);
+out.movedAdds = marksCalls().length - before;
+console.log(JSON.stringify(out));
+""")
+        self.assertEqual(out["adds"], 2)
+        self.assertEqual(out["edits"], [{"id": "m1", "guitar": "both", "text": "черновик"}])
+        self.assertEqual(out["movedAdds"], 0)
 
 
 if __name__ == "__main__":

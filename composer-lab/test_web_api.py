@@ -872,5 +872,83 @@ class TestWebApiMarks(unittest.TestCase):
         self.assertEqual(res["state"]["marks"], [])
 
 
+class TestWebApiMarksReview(unittest.TestCase):
+    def setUp(self):
+        if web_api is None:
+            self.fail("studio.web_api is not implemented yet")
+
+    @staticmethod
+    def _rt(obj):
+        return json.loads(json.dumps(obj))
+
+    def _with_mark(self, seed=801000):
+        st = web_api.mark_add(web_api.new_piece(seed), 4.0, "lead", "т")["state"]
+        return self._rt(st)
+
+    def test_malformed_imported_marks_are_rejected_with_a_russian_message(self):
+        def broken(change):
+            st = self._with_mark()
+            change(st["marks"])
+            return st
+
+        cases = {
+            "notes": lambda m: m[0].update(notes=[{}]),
+            "note type": lambda m: m[0].update(notes=[{"guitar": "1", "pitch": 60, "start": 0, "dur": 1, "string": 1, "fret": 0, "tech": []}]),
+            "time": lambda m: m[0].update(t=1000),
+            "negative time": lambda m: m[0].update(t=-1),
+            "bar": lambda m: m[0].update(bar=m[0]["bar"] + 1),
+            "sixteenth": lambda m: m[0].update(sixteenth=m[0]["sixteenth"] % 16 + 1),
+            "guitar": lambda m: m[0].update(guitar="bass"),
+            "text": lambda m: m[0].update(text="я" * 81),
+            "too many notes": lambda m: m[0].update(notes=[
+                {"guitar": 1, "pitch": 60, "start": 0, "dur": 1, "string": 1, "fret": 0, "tech": []}] * 65),
+            "too many marks": lambda m: m.extend(
+                [dict(m[0], id=f"x{i}") for i in range(200)]),
+            "duplicate id": lambda m: m.append(dict(m[0])),
+        }
+        for name, change in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ValueError, "[А-Яа-я]"):
+                    web_api.import_state(broken(change))
+        good = self._with_mark()
+        good["marks"][0]["notes"] = [
+            {"guitar": 2, "pitch": 60, "start": 0, "dur": 2, "string": None, "fret": None, "tech": ["pm"]}
+        ] * 64
+        self.assertEqual(len(web_api.import_state(good)["state"]["marks"][0]["notes"]), 64)
+
+    def test_stale_imported_marks_keep_their_time_but_still_get_a_bounded_audition(self):
+        st = self._with_mark()
+        st["marks"][0]["rev"] = "0" * 12
+        st["marks"][0]["t"] = 1000
+        marks = web_api.import_state(st)["detail"]["marks"]
+        self.assertTrue(marks[0]["stale"])
+        self.assertFalse(marks[0]["can_audition"])
+        self.assertLessEqual(marks[0]["from_sec"], marks[0]["to_sec"])
+
+    def test_added_mark_keeps_a_client_id_and_the_audible_revision(self):
+        st = web_api.new_piece(801000)
+        rev0 = web_api.detail(st)["rev"]
+        st = web_api.reroll(st, "tempo", "all")
+        res = web_api.mark_add(st, 10.0, "both", "", "mclient1", rev0)
+        self.assertEqual(res["mark"]["id"], "mclient1")
+        self.assertEqual(res["mark"]["rev"], rev0)
+        self.assertTrue(res["detail"]["marks"][0]["stale"])
+        old_piece = composer.compose(st["undo"][-1])
+        self.assertEqual(res["mark"]["notes"], studio_engine.mark_notes(old_piece, 10.0))
+        again = web_api.mark_add(res["state"], 10.0, "both", "", "mclient1", rev0)
+        self.assertEqual(again["state"]["marks"], res["state"]["marks"])
+        via_json = json.loads(web_api.handle_json(json.dumps(
+            {"cmd": "mark_add", "payload": {"state": res["state"], "t": 3.0, "id": "mjson1", "rev": rev0}})))
+        self.assertEqual(via_json["mark"]["id"], "mjson1")
+
+    def test_zero_and_zero_point_zero_give_the_same_revision_in_the_web_state(self):
+        st = self._with_mark()
+        before = web_api.detail(st)["marks"][0]["stale"]
+        changed = web_api.option(st, "mute_share", 0.5)
+        back = web_api.option(self._rt(changed), "mute_share", 0)
+        self.assertFalse(before)
+        self.assertFalse(web_api.detail(self._rt(back))["marks"][0]["stale"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -221,6 +221,7 @@ def snapshot(state):
     redo_stack = _redo_stack(state)
     marks = _marks(state)
     piece = composer.compose(rec)
+    engine.check_marks(rec, piece, marks)
     return {
         "state": _state(pid, rec, undo_stack, redo_stack, marks),
         "detail": engine.piece_detail(pid, rec, piece, undo_stack, redo_stack, marks),
@@ -243,7 +244,7 @@ def _mark_result(state, change):
     pid, rec, undo_stack = _validate_state(state)
     redo_stack = _redo_stack(state)
     piece = composer.compose(rec)
-    marks, mark, _ = change(rec, piece, _marks(state))
+    marks, mark, _ = change(rec, piece, _marks(state), undo_stack + redo_stack)
     return {
         "state": _state(pid, rec, undo_stack, redo_stack, marks),
         "detail": engine.piece_detail(pid, rec, piece, undo_stack, redo_stack, marks),
@@ -251,18 +252,21 @@ def _mark_result(state, change):
     }
 
 
-def mark_add(state, t, guitar="both", text=""):
-    return _mark_result(state, lambda rec, piece, marks: engine.apply_mark_add(rec, piece, marks, t, guitar, text))
+def mark_add(state, t, guitar="both", text="", mark_id=None, rev=None):
+    return _mark_result(
+        state,
+        lambda rec, piece, marks, hist: engine.apply_mark_add(rec, piece, marks, t, guitar, text, mark_id, rev, hist),
+    )
 
 
 def mark_edit(state, mark_id, guitar=None, text=None):
     return _mark_result(
-        state, lambda rec, piece, marks: engine.apply_mark_edit(rec, piece, marks, mark_id, guitar, text)
+        state, lambda rec, piece, marks, hist: engine.apply_mark_edit(rec, piece, marks, mark_id, guitar, text)
     )
 
 
 def mark_delete(state, mark_id):
-    return _mark_result(state, lambda rec, piece, marks: engine.apply_mark_delete(rec, piece, marks, mark_id))
+    return _mark_result(state, lambda rec, piece, marks, hist: engine.apply_mark_delete(rec, piece, marks, mark_id))
 
 
 def export_marks(state):
@@ -330,7 +334,10 @@ def handle_json(req_json):
         return json.dumps(export_tab(payload["state"]), ensure_ascii=False)
     if cmd == "mark_add":
         return json.dumps(
-            mark_add(payload["state"], payload["t"], payload.get("guitar", "both"), payload.get("text", "")),
+            mark_add(
+                payload["state"], payload["t"], payload.get("guitar", "both"), payload.get("text", ""),
+                payload.get("id"), payload.get("rev"),
+            ),
             ensure_ascii=False,
         )
     if cmd == "mark_edit":

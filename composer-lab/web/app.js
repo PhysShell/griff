@@ -10,6 +10,8 @@
   const SLIDER_DEBOUNCE_MS = 600;
   const LONG_PRESS_MS = 500;
   const MARK_TEXT_MAX = 80;
+  const TEXT_INPUT_TYPES = ["", "text", "search", "number", "email", "url", "password", "tel"];
+  const LONG_PRESS_SLOP_PX = 10;
   const MARK_GUITARS = [["lead", "Соло"], ["rhythm", "Ритм"], ["both", "Обе"]];
   const MARK_GUITAR_LABELS = { lead: "соло", rhythm: "ритм", both: "обе" };
   const MARK_HINT =
@@ -292,6 +294,52 @@
       }
     }
 
+    async function patchMarks(pieceId, change, logEntry) {
+      const row = logEntry ? makeLogRow(logEntry) : null;
+      const apply = (rec) => {
+        const next = cloneRecord(rec);
+        next.state.marks = change(Array.isArray(next.state.marks) ? next.state.marks : []);
+        return next;
+      };
+      const inMemory = () => {
+        const hit = memPieces.get(pieceId);
+        if (!hit) return null;
+        const next = apply(hit);
+        memPieces.set(pieceId, next);
+        if (row) memLogs.push({ ...row, seq: memSeq++ });
+        return next;
+      };
+      const db = await openDb();
+      if (!db || useMemory) return inMemory();
+      await hydrateLogs(db);
+      try {
+        const next = await new Promise((resolve, reject) => {
+          let result = null;
+          const tx = db.transaction(["pieces", "logs"], "readwrite");
+          tx.oncomplete = () => resolve(result);
+          tx.onerror = () => reject(tx.error || new Error("IndexedDB transaction failed"));
+          tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
+          const store = tx.objectStore("pieces");
+          const get = store.get(pieceId);
+          get.onerror = () => reject(get.error || new Error("pieces get failed"));
+          get.onsuccess = () => {
+            if (!get.result) return;
+            result = apply(get.result);
+            store.put(result);
+            if (row) tx.objectStore("logs").add(row);
+          };
+        });
+        if (next) {
+          memPieces.set(pieceId, cloneRecord(next));
+          if (row) memLogs.push({ ...row, seq: memSeq++ });
+        }
+        return next;
+      } catch (err) {
+        switchToMemory(err?.name || err?.message || "ошибка записи");
+        return inMemory();
+      }
+    }
+
     async function putPiece(record) {
       return savePieceAndLog(record, null);
     }
@@ -554,6 +602,7 @@
       savePieceAndLog,
       insertUniquePieceAndLog,
       importUniquePiece,
+      patchMarks,
       getAllLogs,
     };
   })();
@@ -1435,6 +1484,7 @@
   }
 
   let pressTimer = null;
+  let pressStart = null;
   let swallowClick = false;
 
   function renderWorkspace() {
@@ -1580,11 +1630,18 @@
         clearTimeout(pressTimer);
         pressTimer = null;
         if (!ev || ev.pointerType !== "touch") return;
+        pressStart = { x: ev.clientX, y: ev.clientY };
         pressTimer = setTimeout(() => {
           pressTimer = null;
           swallowClick = true;
           addMark(timelineTime(blk, s, ev));
         }, LONG_PRESS_MS);
+      };
+      blk.onpointermove = (ev) => {
+        if (pressTimer && pressStart && Math.hypot(ev.clientX - pressStart.x, ev.clientY - pressStart.y) > LONG_PRESS_SLOP_PX) {
+          clearTimeout(pressTimer);
+          pressTimer = null;
+        }
       };
       blk.onpointerup = () => {
         clearTimeout(pressTimer);
@@ -2178,13 +2235,27 @@
         return null;
       }
       const { state, detail, mark } = resp.result;
+      let rec = stored;
+      let view = detail;
       if (!samePieceState(latest, state)) {
-        const rec = { id: state.id, state, detail, updatedAt: stored ? stored.updatedAt : new Date().toISOString() };
-        await Storage.savePieceAndLog(rec, { action: cmd, value: mark, piece_id: pieceId });
+        const change = (marks) => {
+          if (cmd === "mark_add") return marks.some((m) => m.id === mark.id) ? marks : [...marks, mark];
+          if (cmd === "mark_edit") return marks.map((m) => (m.id === mark.id ? mark : m));
+          return marks.filter((m) => m.id !== mark.id);
+        };
+        rec = await Storage.patchMarks(pieceId, change, { action: cmd, value: mark, piece_id: pieceId });
+        if (!rec) return null;
+        if (!samePieceState(rec.state, state)) {
+          try {
+            view = (await callPy("snapshot", { state: rec.state })).result.detail;
+          } catch (err) {
+            showError(err, pieceId);
+          }
+        }
       }
       if (appState.currentId === pieceId) {
-        appState.currentState = state;
-        appState.current = detail;
+        appState.currentState = rec.state;
+        appState.current = { ...appState.current, marks: view.marks };
         if (onDone) onDone(mark);
         if (!appState.navPending) renderMarks();
       }
@@ -2192,12 +2263,20 @@
     });
   }
 
+  let markSeq = 0;
+
+  function newMarkId() {
+    return `m${Math.random().toString(16).slice(2, 10).padEnd(8, "0")}`;
+  }
+
   function addMark(t) {
     if (!appState.currentId || appState.navPending || !appState.current) return Promise.resolve(null);
-    const at = Math.round(Math.max(0, Math.min(appState.current.length, Number(t) || 0)) * 1000) / 1000;
+    const args = { t: Math.max(0, Math.min(appState.current.length, Number(t) || 0)), id: newMarkId() };
+    if (appState.current.rev) args.rev = appState.current.rev;
+    const seq = ++markSeq;
     return finishMarkEdit(true).then(() =>
-      markRequest("mark_add", { t: at }, (mark) => {
-        appState.markEdit = { id: mark.id, fresh: true, guitar: mark.guitar, text: mark.text };
+      markRequest("mark_add", args, (mark) => {
+        if (seq === markSeq) appState.markEdit = { id: mark.id, fresh: true, guitar: mark.guitar, text: mark.text };
       })
     );
   }
@@ -2230,9 +2309,18 @@
   }
 
   function openMark(m) {
-    Sampler.seek(m.from_sec, false);
-    appState.markEdit = { id: m.id, fresh: false, guitar: m.guitar, text: m.text };
-    renderMarks();
+    const go = () => {
+      const cur = findMark(m.id);
+      if (!cur) return;
+      Sampler.seek(cur.from_sec, false);
+      appState.markEdit = { id: cur.id, fresh: false, guitar: cur.guitar, text: cur.text };
+      renderMarks();
+    };
+    if (!appState.markEdit) {
+      go();
+      return Promise.resolve();
+    }
+    return finishMarkEdit(true).then(go);
   }
 
   function timelineTime(blk, s, ev) {
@@ -2247,6 +2335,7 @@
     const box = document.createElement("div");
     box.id = "markEditor";
     box.className = "mark-editor";
+    box.dataset.markId = m.id;
     box.setAttribute("role", "group");
     box.setAttribute("aria-label", `Отметка ${m.bar}:${m.sixteenth}`);
     const guitars = [];
@@ -2329,7 +2418,10 @@
       const listen = document.createElement("button");
       listen.className = "mark-audition";
       listen.textContent = "Послушать место";
-      listen.onclick = () => Sampler.playRange(m.from_sec, m.to_sec);
+      listen.disabled = m.can_audition === false;
+      listen.onclick = () => {
+        if (m.can_audition !== false) Sampler.playRange(m.from_sec, m.to_sec);
+      };
       row.appendChild(open);
       row.appendChild(listen);
       list.appendChild(row);
@@ -2369,7 +2461,8 @@
 
   function isTextTarget(t) {
     const tag = t && t.tagName ? String(t.tagName).toUpperCase() : "";
-    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || Boolean(t && t.isContentEditable);
+    if (tag === "INPUT") return TEXT_INPUT_TYPES.includes(String(t.type || "").toLowerCase());
+    return tag === "TEXTAREA" || Boolean(t && t.isContentEditable);
   }
 
   document.addEventListener("keydown", (ev) => {
@@ -2385,6 +2478,7 @@
   });
 
   async function selectPiece(id) {
+    if (appState.markEdit) await finishMarkEdit(true);
     if (appState.pendingSliders.length) await flushPendingSliders();
     if (appState.currentId && pieceQueues.has(appState.currentId)) await waitForPieceQueue(appState.currentId);
     const seq = ++appState.navSeq;
@@ -2424,6 +2518,7 @@
   async function createNewPiece() {
     const raw = document.getElementById("seedInput").value.trim();
     const seed = raw === "" ? null : parseInt(raw, 10);
+    if (appState.markEdit) await finishMarkEdit(true);
     if (appState.pendingSliders.length) await flushPendingSliders();
     const seq = ++appState.navSeq;
     appState.navPending = true;
@@ -2486,7 +2581,14 @@
         const st = item.state || item;
         if (!st || !st.recipe) continue;
         const { result: snap } = await callPy("import_state", { state: st });
-        const { id: importedId } = await Storage.importUniquePiece(snap, item.updatedAt);
+        const { id: importedId, status } = await Storage.importUniquePiece(snap, item.updatedAt);
+        if (status === "inserted" && (snap.state.marks || []).length) {
+          await Storage.appendLog({
+            action: "mark_import",
+            value: { ids: snap.state.marks.map((m) => m.id) },
+            piece_id: importedId,
+          });
+        }
         if (!firstId) firstId = importedId;
       }
       appState.pieces = await Storage.listPieces();

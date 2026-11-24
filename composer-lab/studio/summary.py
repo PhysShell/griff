@@ -42,7 +42,7 @@ def summarize(out_dir):
 
     groups = {}
     for hpath, fallback_key in _collect_log_files(out_dir):
-        for line in hpath.read_text(encoding="utf-8").splitlines():
+        for line in hpath.read_text(encoding="utf-8").split("\n"):
             if not line.strip():
                 continue
             ev = json.loads(line)
@@ -58,7 +58,9 @@ def summarize(out_dir):
         for ev in groups[pid]:
             act = ev.get("action")
             val = ev.get("value")
-            if act in ("mark_add", "mark_delete") and isinstance(val, dict):
+            if act == "mark_import" and isinstance(val, dict):
+                mark_ids.update(val.get("ids") or [])
+            elif act in ("mark_add", "mark_delete") and isinstance(val, dict):
                 (mark_ids.add if act == "mark_add" else mark_ids.discard)(val.get("id"))
             if act == "reroll":
                 rerolls_so_far += 1

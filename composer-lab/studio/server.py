@@ -6,6 +6,12 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+    import fcntl
+
 from studio.engine import StudioStore
 from studio.render import default_render, fake_render
 
@@ -231,9 +237,43 @@ def _make_handler(store):
     return StudioHandler
 
 
+class DirLock:
+    def __init__(self, path):
+        self._file = open(path, "a+b")
+        try:
+            if msvcrt:
+                self._file.seek(0)
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self._file.close()
+            raise RuntimeError("Каталог пьес уже занят другим сервером Studio; запустите сервер с другим --out.") from None
+
+    def release(self):
+        self._file.close()
+
+
+class StudioServer(ThreadingHTTPServer):
+    dir_lock = None
+
+    def server_close(self):
+        super().server_close()
+        if self.dir_lock:
+            self.dir_lock.release()
+            self.dir_lock = None
+
+
 def create_server(out_dir, host="127.0.0.1", port=8765, render_fn=None):
     store = StudioStore(out_dir, render_fn=render_fn or default_render)
-    return ThreadingHTTPServer((host, port), _make_handler(store))
+    lock = DirLock(store.out_dir / ".studio.lock")
+    try:
+        srv = StudioServer((host, port), _make_handler(store))
+    except BaseException:
+        lock.release()
+        raise
+    srv.dir_lock = lock
+    return srv
 
 
 def main(argv=None):
