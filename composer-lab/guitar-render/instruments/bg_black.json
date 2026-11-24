@@ -1,0 +1,21 @@
+{
+ "id": "bg_black",
+ "backend": "sfizz",
+ "title": "Karoryfer Black And Green Guitars v1.000, black Hofner Club, keyswitch program",
+ "license": "CC0-1.0",
+ "library_dir": "black-and-green",
+ "sfz": "Programs/02-black_keyswitch.sfz",
+ "keyswitch": {"sustain": 36, "staccato": 37},
+ "articulation_map": {"pm": "staccato", "dead": "staccato", "hammer": "sustain", "pull": "sustain", "slide": "sustain", "tap": "sustain"},
+ "approximations": {
+  "pm": "no palm-mute samples; staccato samples stand in",
+  "dead": "no dead-note samples; staccato samples stand in",
+  "hammer": "no legato samples on this guitar; picked attack",
+  "pull": "no legato samples on this guitar; picked attack",
+  "slide": "no slide samples; picked attack",
+  "tap": "no tap samples; ordinary pick attack"
+ },
+ "uniform_bend_range": false,
+ "playable": [40, 86],
+ "di_channel": "left"
+}

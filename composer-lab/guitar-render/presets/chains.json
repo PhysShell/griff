@@ -1,0 +1,98 @@
+{
+ "_doc": "Per-stem processing chains. di_peak_dbfs sets one gain for the whole DI track before the amp (never per note). Stages run in order; any stage can be switched off with \"on\": false. send_* feed the shared stereo delay/reverb buses.",
+ "SWAN-CLEAN": {
+  "intent": "Clean arpeggios. No clean amp capture was fetched, so this is the Friedman channel 1 capture driven 18 dB below the crunch setting (edge of break-up), not a dedicated clean amp.",
+  "di_peak_dbfs": -9,
+  "stages": [
+   {"type": "nam", "model": "SB50-Ch1-Trans-DI", "size": 1.0, "input_db": -18},
+   {"type": "ir", "ir": "V30-2x12"},
+   {"type": "hpf", "hz": 90},
+   {"type": "lpf", "hz": 10000},
+   {"type": "comp", "threshold_db": -20, "ratio": 2.5, "attack_ms": 8, "release_ms": 120}
+  ],
+  "send_delay_db": -16, "send_reverb_db": -14
+ },
+ "SWAN-CRUNCH": {
+  "intent": "Crunchy lead. Friedman channel 1 at nominal drive, 2x12 V30 cabinet.",
+  "di_peak_dbfs": -9,
+  "stages": [
+   {"type": "nam", "model": "SB50-Ch1-Trans-DI", "size": 1.0, "input_db": 0},
+   {"type": "ir", "ir": "V30-2x12"},
+   {"type": "hpf", "hz": 90},
+   {"type": "lpf", "hz": 9000},
+   {"type": "peak", "hz": 2500, "gain_db": 1.5, "q": 1.0}
+  ],
+  "send_delay_db": -20, "send_reverb_db": -18
+ },
+ "SWAN-HEAVY": {
+  "intent": "Palm-muted riffs. Friedman channel 2 (higher gain) pushed 6 dB, V30 cabinet, tight low end, no extra compression.",
+  "di_peak_dbfs": -9,
+  "stages": [
+   {"type": "hpf", "hz": 70},
+   {"type": "nam", "model": "SB50-Ch2-Trans-DI", "size": 1.0, "input_db": 6},
+   {"type": "ir", "ir": "V30-2x12"},
+   {"type": "hpf", "hz": 90},
+   {"type": "lpf", "hz": 8500},
+   {"type": "peak", "hz": 400, "gain_db": -2, "q": 1.2}
+  ],
+  "send_delay_db": null, "send_reverb_db": -24
+ },
+ "SWAN-TEXTURE": {
+  "intent": "Ambient layer: edge-of-break-up Friedman ch1, chorus, tempo-synced dotted-eighth delay and a larger reverb send.",
+  "di_peak_dbfs": -9,
+  "stages": [
+   {"type": "nam", "model": "SB50-Ch1-Trans-DI", "size": 1.0, "input_db": -12},
+   {"type": "ir", "ir": "V30-2x12"},
+   {"type": "hpf", "hz": 120},
+   {"type": "lpf", "hz": 9000},
+   {"type": "chorus", "rate_hz": 0.8, "depth": 0.2, "mix": 0.35, "on": true},
+   {"type": "phaser", "rate_hz": 0.5, "mix": 0.3, "on": false}
+  ],
+  "send_delay_db": -8, "send_reverb_db": -8
+ },
+ "ALT-HEAVY-LITE": {
+  "intent": "A/B: SWAN-HEAVY with the A2-Lite network of the same capture.",
+  "di_peak_dbfs": -9,
+  "stages": [
+   {"type": "hpf", "hz": 70},
+   {"type": "nam", "model": "SB50-Ch2-Trans-DI", "size": 0.0, "input_db": 6},
+   {"type": "ir", "ir": "V30-2x12"},
+   {"type": "hpf", "hz": 90},
+   {"type": "lpf", "hz": 8500},
+   {"type": "peak", "hz": 400, "gain_db": -2, "q": 1.2}
+  ],
+  "send_delay_db": null, "send_reverb_db": -24
+ },
+ "ALT-HEAVY-WAVESHAPER": {
+  "intent": "A/B: generic pedalboard Distortion (tanh waveshaper) in place of the NAM amp, same cabinet IR.",
+  "di_peak_dbfs": -9,
+  "stages": [
+   {"type": "hpf", "hz": 70},
+   {"type": "peak", "hz": 800, "gain_db": 6, "q": 0.7},
+   {"type": "distortion", "drive_db": 26},
+   {"type": "ir", "ir": "V30-2x12"},
+   {"type": "hpf", "hz": 90},
+   {"type": "lpf", "hz": 8500}
+  ],
+  "send_delay_db": null, "send_reverb_db": -24
+ },
+ "ALT-HEAVY-IRONHEART": {
+  "intent": "A/B: SWAN-HEAVY with the Laney Ironheart 2x12 IR instead of the V30 IR.",
+  "di_peak_dbfs": -9,
+  "stages": [
+   {"type": "hpf", "hz": 70},
+   {"type": "nam", "model": "SB50-Ch2-Trans-DI", "size": 1.0, "input_db": 6},
+   {"type": "ir", "ir": "Ironheart-2x12"},
+   {"type": "hpf", "hz": 90},
+   {"type": "lpf", "hz": 8500},
+   {"type": "peak", "hz": 400, "gain_db": -2, "q": 1.2}
+  ],
+  "send_delay_db": null, "send_reverb_db": -24
+ },
+ "DI-ONLY": {
+  "intent": "No processing; for checks.",
+  "di_peak_dbfs": -9,
+  "stages": [],
+  "send_delay_db": null, "send_reverb_db": null
+ }
+}

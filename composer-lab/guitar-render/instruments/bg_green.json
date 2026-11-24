@@ -1,0 +1,20 @@
+{
+ "id": "bg_green",
+ "backend": "sfizz",
+ "title": "Karoryfer Black And Green Guitars v1.000, green Gretsch Anniversary, keyswitch program",
+ "license": "CC0-1.0",
+ "library_dir": "black-and-green",
+ "sfz": "Programs/01-green_keyswitch.sfz",
+ "keyswitch": {"sustain": 36, "staccato": 37, "legato": 38},
+ "articulation_map": {"pm": "staccato", "dead": "staccato", "hammer": "legato", "pull": "legato", "slide": "legato", "tap": "sustain"},
+ "approximations": {
+  "pm": "no palm-mute samples; staccato samples stand in",
+  "dead": "no dead-note samples; staccato samples stand in",
+  "pull": "no pull-off samples; hammer-on samples stand in",
+  "slide": "no slide samples; hammer-on samples stand in for the arrival note, no audible glide",
+  "tap": "no tap samples; ordinary pick attack"
+ },
+ "uniform_bend_range": false,
+ "playable": [40, 86],
+ "di_channel": "left"
+}

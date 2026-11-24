@@ -1,0 +1,14 @@
+{
+ "id": "test_sine",
+ "backend": "sfizz",
+ "title": "sfizz built-in *sine generator; for engine latency and timing checks only",
+ "license": "n/a",
+ "library_dir": "test",
+ "sfz": "sine.sfz",
+ "keyswitch": {"sustain": 36, "staccato": 37, "legato": 38},
+ "articulation_map": {},
+ "approximations": {},
+ "uniform_bend_range": true,
+ "playable": [0, 127],
+ "di_channel": "left"
+}

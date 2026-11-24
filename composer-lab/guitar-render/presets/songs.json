@@ -1,0 +1,13 @@
+{
+ "_doc": "Role assignment by what each stem plays (see PROBE.md), not by track number.",
+ "v8_002": {
+  "stems": {
+   "guitar1": {"role": "lead melody (single notes, slides, pull-offs)", "preset": "SWAN-CRUNCH", "instrument": "bg_green", "pan": -0.55, "gain_db": 0},
+   "guitar2": {"role": "arpeggios and chords (up to 6 voices)", "preset": "SWAN-CLEAN", "instrument": "bg_black", "pan": 0.55, "gain_db": 0},
+   "guitar3": {"role": "palm-muted low riff of guitar 2 in the B section", "preset": "SWAN-HEAVY", "instrument": "bg_black", "pan": 0.55, "gain_db": -2}
+  },
+  "delay_note": 0.75,
+  "reverb": {"room_size": 0.45, "damping": 0.5, "width": 1.0},
+  "tail_seconds": 3.0
+ }
+}

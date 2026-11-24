@@ -1,0 +1,29 @@
+<!-- DRAFT, NOT RUN. Windows Sandbox job for the Unirock backend; needs the owner's go.
+     @SANDBOX_IN@: read-only folder with the portable Unirock folder, a Python embeddable distribution
+     with pedalboard unpacked, render_unirock.py and the stem MIDI files.
+     @SANDBOX_OUT@: new, empty folder; the only writable path back to the host. -->
+<Configuration>
+  <Networking>Disable</Networking>
+  <vGPU>Disable</vGPU>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Disable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Enable</ProtectedClient>
+  <MemoryInMB>8192</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>@SANDBOX_IN@</HostFolder>
+      <SandboxFolder>C:\job</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>@SANDBOX_OUT@</HostFolder>
+      <SandboxFolder>C:\out</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>cmd /c C:\job\python\python.exe -I C:\job\render_unirock.py C:\job C:\out &gt; C:\out\console.txt 2&gt;&amp;1 &amp; shutdown /s /t 5</Command>
+  </LogonCommand>
+</Configuration>

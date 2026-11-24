@@ -1,0 +1,19 @@
+{
+ "id": "unirock",
+ "backend": "unirock-vst3",
+ "title": "Pro2Max Unirock HumStrat 1.0.0 (portable VST3) - mapping only; not executed in GUITAR-RENDER-01",
+ "license": "proprietary freeware; audio output free to use; samples must not be extracted",
+ "keyswitch": {"sustain": 24, "pm": 25, "dead": 26, "nat_harm": 27, "pinch_harm": 28, "slide_up": 29, "slide_down": 30, "vibrato": 31, "legato_slide": 32},
+ "pickup_keyswitch": {"bridge": 12, "bridge_middle": 13, "middle": 14, "middle_neck": 15, "neck": 16},
+ "articulation_map": {"pm": "pm", "dead": "dead", "hammer": "legato_slide", "pull": "legato_slide", "slide": "legato_slide", "tap": "sustain"},
+ "approximations": {
+  "hammer": "no hammer-on keyswitch; Legato Slide (overlap-driven) is the nearest documented control",
+  "pull": "no pull-off keyswitch; Legato Slide (overlap-driven) is the nearest documented control",
+  "tap": "no tap keyswitch"
+ },
+ "overlap_driven": ["legato_slide"],
+ "uniform_bend_range": true,
+ "bend_range_semitones": 2,
+ "playable": [33, 100],
+ "di_channel": "left"
+}
