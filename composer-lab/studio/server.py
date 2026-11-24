@@ -33,10 +33,12 @@ def _make_handler(store):
         def log_message(self, fmt, *args):
             return
 
-        def _send_json(self, code, obj):
+        def _send_json(self, code, obj, download_name=None):
             body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            if download_name:
+                self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
@@ -125,6 +127,9 @@ def _make_handler(store):
                 if path == "/api/pieces":
                     self._send_json(HTTPStatus.OK, {"pieces": store.list_pieces()})
                     return
+                if path == "/api/marks.json":
+                    self._send_json(HTTPStatus.OK, store.all_marks_export(), download_name="marks.json")
+                    return
                 parts = [p for p in path.split("/") if p]
                 if len(parts) == 3 and parts[:2] == ["api", "piece"]:
                     self._send_json(HTTPStatus.OK, store.get_piece(parts[2]))
@@ -145,6 +150,9 @@ def _make_handler(store):
                             p, "application/vnd.recordare.musicxml+xml; charset=utf-8",
                             download_name=f"{pid}.musicxml",
                         )
+                        return
+                    if res == "marks.json":
+                        self._send_json(HTTPStatus.OK, store.marks_export(pid), download_name=f"{pid}.marks.json")
                         return
                     if res == "piece.tab.txt":
                         p = store.file_path(pid, "piece.tab.txt", log_export=True)
@@ -186,6 +194,23 @@ def _make_handler(store):
                         if "value" not in body:
                             raise ValueError("value is required")
                         self._send_json(HTTPStatus.OK, store.set_option(pid, name, body["value"]))
+                        return
+                    if action == "mark_add":
+                        if "t" not in body:
+                            raise ValueError("t is required")
+                        self._send_json(
+                            HTTPStatus.OK,
+                            store.add_mark(pid, body["t"], body.get("guitar", "both"), body.get("text", "")),
+                        )
+                        return
+                    if action == "mark_edit":
+                        self._send_json(
+                            HTTPStatus.OK,
+                            store.edit_mark(pid, _text_field(body, "id"), body.get("guitar"), body.get("text")),
+                        )
+                        return
+                    if action == "mark_delete":
+                        self._send_json(HTTPStatus.OK, store.delete_mark(pid, _text_field(body, "id")))
                         return
                     if action == "undo":
                         self._send_json(HTTPStatus.OK, store.undo(pid))

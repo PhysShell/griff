@@ -1,7 +1,9 @@
 """Pure recipe operations and filesystem-backed store for Studio."""
 import argparse
+import bisect
 import copy
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -11,6 +13,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import composer
@@ -79,6 +82,9 @@ VALID_INTRO_BARS = ("auto", 1, 2, 4, 8)
 VALID_SQUARE_REPEAT = (1, 2)
 HISTORY_LIMIT = 50
 PIECE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+MARK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+MARK_TEXT_MAX = 80
+VALID_MARK_GUITARS = ("lead", "rhythm", "both")
 
 
 def default_options():
@@ -366,7 +372,7 @@ def piece_sections(piece):
     return spans
 
 
-def piece_detail(piece_id, recipe, piece, undo_stack=(), redo_stack=()):
+def piece_detail(piece_id, recipe, piece, undo_stack=(), redo_stack=(), marks=()):
     rec = _ensure_studio(recipe)
     st = rec["studio"]
     salts = st["salts"]
@@ -409,7 +415,192 @@ def piece_detail(piece_id, recipe, piece, undo_stack=(), redo_stack=()):
         "sections": sections,
         "whole_layers": whole_layers,
         "options": dict(st["options"]),
+        "rev": recipe_rev(rec),
+        "marks": marks_view(rec, piece, marks),
         **history_labels(recipe, list(undo_stack), list(redo_stack)),
+    }
+
+
+def recipe_rev(recipe):
+    raw = json.dumps(_ensure_studio(recipe), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("ascii")).hexdigest()[:12]
+
+
+def _bar_index(piece, t16):
+    starts = [c["start"] for c in piece["chords"]]
+    return max(0, bisect.bisect_right(starts, t16) - 1)
+
+
+def _bar_span(piece, i):
+    chords = piece["chords"]
+    end = chords[i + 1]["start"] if i + 1 < len(chords) else piece["total16"]
+    return chords[i]["start"], end
+
+
+def _clamped_t16(piece, t):
+    return max(0.0, min(t * piece["tempo"] / 15.0 + 1e-6, piece["total16"] - 1e-6))
+
+
+def bar_position(piece, t):
+    t16 = _clamped_t16(piece, t)
+    i = _bar_index(piece, t16)
+    start, end = _bar_span(piece, i)
+    return {"bar": i + 1, "sixteenth": min(int(t16 - start) + 1, end - start)}
+
+
+def mark_notes(piece, t):
+    t16 = t * piece["tempo"] / 15.0
+    lo, hi = t16 - 1, t16 + 1
+    out = []
+    for guitar, g in ((1, "g1"), (2, "g2")):
+        for n in piece["parts"][g]:
+            if n["start"] <= hi and n["start"] + n["dur"] > lo:
+                out.append({
+                    "guitar": guitar,
+                    "pitch": int(n["pitch"]),
+                    "start": n["start"],
+                    "dur": n["dur"],
+                    "string": n.get("string"),
+                    "fret": n.get("fret"),
+                    "tech": list(n.get("tech", [])),
+                })
+    out.sort(key=lambda n: (n["start"], n["guitar"], n["pitch"]))
+    return out
+
+
+def _mark_guitar(value):
+    if value not in VALID_MARK_GUITARS:
+        raise ValueError(f"invalid guitar: {value}")
+    return value
+
+
+def _mark_text(value):
+    _require_text(value, "text")
+    if len(value) > MARK_TEXT_MAX:
+        raise ValueError(f"text is longer than {MARK_TEXT_MAX} characters")
+    return value
+
+
+def make_mark(recipe, piece, t, guitar="both", text=""):
+    num = _number(t, "t")
+    if not 0 <= num <= piece["total16"] * 15.0 / piece["tempo"]:
+        raise ValueError("t is outside the piece")
+    pos = bar_position(piece, num)
+    sec = piece["chords"][_bar_index(piece, _clamped_t16(piece, num))]["sec"]
+    return {
+        "id": "m" + uuid.uuid4().hex[:8],
+        "t": round(float(num), 3),
+        "bar": pos["bar"],
+        "sixteenth": pos["sixteenth"],
+        "section": sec,
+        "section_label": SECTION_LABELS.get(sec, sec),
+        "guitar": _mark_guitar(guitar),
+        "text": _mark_text(text),
+        "notes": mark_notes(piece, num),
+        "rev": recipe_rev(recipe),
+    }
+
+
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _parse_mark(raw):
+    if not isinstance(raw, dict):
+        raise ValueError("mark must be an object")
+    mid = raw.get("id")
+    if not isinstance(mid, str) or not MARK_ID_RE.match(mid):
+        raise ValueError("invalid mark id")
+    if not _is_int(raw.get("bar")) or raw["bar"] < 1 or not _is_int(raw.get("sixteenth")) or raw["sixteenth"] < 1:
+        raise ValueError("invalid mark position")
+    if _number(raw.get("t"), "mark.t") < 0:
+        raise ValueError("invalid mark time")
+    for key in ("section", "section_label", "rev"):
+        _require_text(raw.get(key), f"mark.{key}")
+    notes = raw.get("notes")
+    if not isinstance(notes, list) or any(not isinstance(n, dict) for n in notes):
+        raise ValueError("invalid mark notes")
+    return {
+        "id": mid,
+        "t": raw["t"],
+        "bar": raw["bar"],
+        "sixteenth": raw["sixteenth"],
+        "section": raw["section"],
+        "section_label": raw["section_label"],
+        "guitar": _mark_guitar(raw.get("guitar")),
+        "text": _mark_text(raw.get("text")),
+        "notes": copy.deepcopy(notes),
+        "rev": raw["rev"],
+    }
+
+
+def parse_marks(raw):
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("marks must be a list")
+    marks = [_parse_mark(m) for m in raw]
+    if len({m["id"] for m in marks}) != len(marks):
+        raise ValueError("duplicate mark id")
+    return marks
+
+
+def apply_mark_add(recipe, piece, marks, t, guitar="both", text=""):
+    mark = make_mark(recipe, piece, t, guitar, text)
+    return list(marks) + [mark], mark, True
+
+
+def _mark_index(marks, mark_id):
+    i = next((k for k, m in enumerate(marks) if m["id"] == mark_id), None)
+    if i is None:
+        raise KeyError(f"unknown mark id: {mark_id}")
+    return i
+
+
+def apply_mark_edit(recipe, piece, marks, mark_id, guitar=None, text=None):
+    i = _mark_index(marks, mark_id)
+    mark = dict(marks[i])
+    if guitar is not None:
+        mark["guitar"] = _mark_guitar(guitar)
+    if text is not None:
+        mark["text"] = _mark_text(text)
+    if mark == marks[i]:
+        return list(marks), marks[i], False
+    out = list(marks)
+    out[i] = mark
+    return out, mark, True
+
+
+def apply_mark_delete(recipe, piece, marks, mark_id):
+    i = _mark_index(marks, mark_id)
+    return list(marks[:i]) + list(marks[i + 1:]), marks[i], True
+
+
+def marks_view(recipe, piece, marks):
+    rev = recipe_rev(recipe)
+    sec = 15.0 / piece["tempo"]
+    length = piece["total16"] * sec
+    out = []
+    for m in marks:
+        start, end = _bar_span(piece, _bar_index(piece, _clamped_t16(piece, m["t"])))
+        bar_sec = (end - start) * sec
+        view = dict(m)
+        view["stale"] = m["rev"] != rev
+        view["from_sec"] = round(max(0.0, m["t"] - bar_sec), 2)
+        view["to_sec"] = round(min(length, m["t"] + bar_sec), 2)
+        out.append(view)
+    return out
+
+
+def marks_export(piece_id, recipe, piece, marks):
+    rev = recipe_rev(recipe)
+    return {
+        "version": 1,
+        "id": piece_id,
+        "seed": recipe["seed"],
+        "rev": rev,
+        "recipe": recipe,
+        "marks": [{**m, "stale": m["rev"] != rev} for m in marks],
     }
 
 
@@ -522,6 +713,17 @@ class StudioStore:
         with self._history_lock, path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    def _read_marks(self, pdir):
+        path = self._inside(pdir, "marks.json")
+        if not path.exists():
+            return []
+        return parse_marks(json.loads(path.read_text(encoding="utf-8")))
+
+    def _write_marks(self, pdir, marks):
+        tmp = self._inside(pdir, "marks.json.tmp")
+        tmp.write_text(json.dumps(marks, ensure_ascii=False), encoding="utf-8")
+        _replace(tmp, pdir / "marks.json")
+
     def _build(self, pdir, recipe):
         stage = Path(tempfile.mkdtemp(prefix=".stage-", dir=pdir))
         try:
@@ -616,22 +818,25 @@ class StudioStore:
         pdir = self._piece_dir(piece_id)
         rec = self._read_recipe(pdir)
         piece = composer.compose(rec)
-        return piece_detail(piece_id, rec, piece, self._read_undo(pdir), self._read_redo(pdir))
+        return piece_detail(
+            piece_id, rec, piece, self._read_undo(pdir), self._read_redo(pdir), self._read_marks(pdir)
+        )
 
     def _change(self, piece_id, change, log):
         pdir = self._piece_dir(piece_id)
         with self._write_lock(piece_id):
             old_rec = self._read_recipe(pdir)
             base_rec = _ensure_studio(old_rec)
+            marks = self._read_marks(pdir)
             new_rec = change(old_rec)
             if new_rec == base_rec:
                 piece = composer.compose(old_rec)
-                return piece_detail(piece_id, old_rec, piece, self._read_undo(pdir), self._read_redo(pdir))
+                return piece_detail(piece_id, old_rec, piece, self._read_undo(pdir), self._read_redo(pdir), marks)
             stack = self._read_undo(pdir) + [old_rec]
             piece, stage, reuse = self._build(pdir, new_rec)
             self._publish(pdir, stage, reuse, stack)
             log(pdir, new_rec)
-            return piece_detail(piece_id, new_rec, piece, stack[-HISTORY_LIMIT:])
+            return piece_detail(piece_id, new_rec, piece, stack[-HISTORY_LIMIT:], (), marks)
 
     def reroll(self, piece_id, layer, section):
         def log(pdir, rec):
@@ -661,14 +866,15 @@ class StudioStore:
             stack = self._read_undo(pdir)
             cur_rec = self._read_recipe(pdir)
             redo = self._read_redo(pdir)
+            marks = self._read_marks(pdir)
             if not stack:
-                return piece_detail(piece_id, cur_rec, composer.compose(cur_rec), [], redo)
+                return piece_detail(piece_id, cur_rec, composer.compose(cur_rec), [], redo, marks)
             prev_rec = stack.pop()
             redo = redo + [cur_rec]
             piece, stage, reuse = self._build(pdir, prev_rec)
             self._publish(pdir, stage, reuse, stack, redo)
             self._log_history(pdir, "undo")
-            return piece_detail(piece_id, prev_rec, piece, stack, redo[-HISTORY_LIMIT:])
+            return piece_detail(piece_id, prev_rec, piece, stack, redo[-HISTORY_LIMIT:], marks)
 
     def redo(self, piece_id):
         pdir = self._piece_dir(piece_id)
@@ -676,14 +882,59 @@ class StudioStore:
             redo = self._read_redo(pdir)
             cur_rec = self._read_recipe(pdir)
             stack = self._read_undo(pdir)
+            marks = self._read_marks(pdir)
             if not redo:
-                return piece_detail(piece_id, cur_rec, composer.compose(cur_rec), stack, [])
+                return piece_detail(piece_id, cur_rec, composer.compose(cur_rec), stack, [], marks)
             next_rec = redo.pop()
             stack = stack + [cur_rec]
             piece, stage, reuse = self._build(pdir, next_rec)
             self._publish(pdir, stage, reuse, stack, redo)
             self._log_history(pdir, "redo")
-            return piece_detail(piece_id, next_rec, piece, stack[-HISTORY_LIMIT:], redo)
+            return piece_detail(piece_id, next_rec, piece, stack[-HISTORY_LIMIT:], redo, marks)
+
+    def _mark_change(self, piece_id, action, change):
+        pdir = self._piece_dir(piece_id)
+        with self._write_lock(piece_id):
+            rec = self._read_recipe(pdir)
+            piece = composer.compose(rec)
+            marks, mark, changed = change(rec, piece, self._read_marks(pdir))
+            if changed:
+                self._write_marks(pdir, marks)
+                self._log_history(pdir, action, value=mark)
+            det = piece_detail(piece_id, rec, piece, self._read_undo(pdir), self._read_redo(pdir), marks)
+            return {**det, "mark": mark}
+
+    def add_mark(self, piece_id, t, guitar="both", text=""):
+        return self._mark_change(
+            piece_id, "mark_add", lambda rec, piece, marks: apply_mark_add(rec, piece, marks, t, guitar, text)
+        )
+
+    def edit_mark(self, piece_id, mark_id, guitar=None, text=None):
+        return self._mark_change(
+            piece_id,
+            "mark_edit",
+            lambda rec, piece, marks: apply_mark_edit(rec, piece, marks, mark_id, guitar, text),
+        )
+
+    def delete_mark(self, piece_id, mark_id):
+        return self._mark_change(
+            piece_id, "mark_delete", lambda rec, piece, marks: apply_mark_delete(rec, piece, marks, mark_id)
+        )
+
+    def marks_export(self, piece_id):
+        pdir = self._piece_dir(piece_id)
+        rec = self._read_recipe(pdir)
+        return marks_export(piece_id, rec, composer.compose(rec), self._read_marks(pdir))
+
+    def all_marks_export(self):
+        pieces = []
+        for pdir in sorted(self.out_dir.iterdir(), key=lambda p: p.name):
+            try:
+                if pdir.is_dir() and PIECE_ID_RE.match(pdir.name) and (pdir / "recipe.json").exists():
+                    pieces.append(self.marks_export(pdir.name))
+            except (KeyError, OSError, ValueError):
+                continue
+        return {"version": 1, "pieces": pieces}
 
     def file_path(self, piece_id, filename, log_export=False):
         pdir = self._piece_dir(piece_id)

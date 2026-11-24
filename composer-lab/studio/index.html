@@ -138,6 +138,49 @@
     overflow: hidden;
     transition: transform 0.1s ease, outline 0.1s ease;
   }
+  .timeline .sec-block { -webkit-touch-callout: none; user-select: none; }
+  .mark-bar { margin-top: 10px; }
+  .mark-track { position: relative; height: 24px; margin-top: 6px; border-top: 1px solid var(--border); }
+  .mark-flag {
+    position: absolute;
+    top: 3px;
+    width: 14px;
+    height: 20px;
+    min-width: 0;
+    margin-left: -2px;
+    padding: 0;
+    border: none;
+    border-left: 2px solid var(--text);
+    border-radius: 0 4px 4px 0;
+    background: var(--warn);
+  }
+  .mark-flag.stale { background: var(--muted); opacity: 0.5; }
+  .marks-box { margin-top: 12px; }
+  .marks-hint { font-size: 0.78rem; color: var(--muted); margin: 6px 0; }
+  .marks-title { margin: 0 0 8px 0; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
+  .mark-list { display: flex; flex-direction: column; gap: 6px; }
+  .mark-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .mark-row .mark-open { flex: 1 1 200px; justify-content: flex-start; text-align: left; }
+  .mark-row.stale .mark-open { opacity: 0.5; }
+  .mark-editor {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 8px;
+    margin-bottom: 8px;
+    border: 1px solid var(--warn);
+    border-radius: 6px;
+  }
+  .mark-editor input[type="text"] {
+    flex: 1 1 180px;
+    min-width: 0;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 9px;
+  }
   .sec-block:hover { transform: translateY(-1px); outline: 1px solid #fff; }
   .sec-block.playing { outline: 2px solid #fff; }
   .sec-block .name { font-size: 0.82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -259,6 +302,7 @@
       </div>
     </div>
     <div id="pieceList" class="piece-list"></div>
+    <a class="btn" id="allMarksBtn" href="/api/marks.json" download>Скачать отметки всех пьес</a>
   </aside>
   <main id="workspace">
     <div id="errorBanner" class="load-banner" role="alert" hidden>
@@ -272,6 +316,13 @@
 <script>
 const SHORT_SECTION_LABELS = { intro: "Вст.", A: "A", A2: "A2", B: "B", A3: "Кульм.", end: "Конц." };
 const SLIDER_DEBOUNCE_MS = 600;
+const LONG_PRESS_MS = 500;
+const MARK_TEXT_MAX = 80;
+const MARK_GUITARS = [["lead", "Соло"], ["rhythm", "Ритм"], ["both", "Обе"]];
+const MARK_GUITAR_LABELS = { lead: "соло", rhythm: "ритм", both: "обе" };
+const MARK_HINT = "Отметьте место, где звучит не по-человечески: кнопка «Тут не так», клавиша M или Shift+клик по таймлайну. Музыку это не меняет.";
+let pressTimer = null;
+let swallowClick = false;
 const ERROR_BANNER_HTML = `<div id="errorBanner" class="load-banner" role="alert" hidden>
       <span id="errorText"></span>
       <button id="errorCloseBtn" class="banner-retry" aria-label="Закрыть сообщение об ошибке">Закрыть</button>
@@ -296,7 +347,7 @@ const KEY_MODES = [
   ["aeolian", "натуральный минор"],
   ["locrian", "локрийский"],
 ];
-const state = { pieces: [], current: null, currentId: null, busyCount: 0, chipCount: 0, error: "", navSeq: 0, editSeq: 0, pendingSliders: [] };
+const state = { pieces: [], current: null, currentId: null, busyCount: 0, chipCount: 0, error: "", navSeq: 0, editSeq: 0, pendingSliders: [], markEdit: null, auditionEnd: null };
 
 function setChip(delta) {
   state.chipCount = Math.max(0, state.chipCount + delta);
@@ -382,6 +433,7 @@ function renderWorkspace(preserveTime = null) {
     return;
   }
 
+  state.auditionEnd = null;
   const audioUrl = `/api/piece/${encodeURIComponent(d.id)}/audio.mp3?t=${Date.now()}`;
   const total = Math.max(1, d.length);
 
@@ -400,6 +452,17 @@ function renderWorkspace(preserveTime = null) {
       </div>
       <audio id="player" controls src="${audioUrl}"></audio>
       <div id="timeline" class="timeline"></div>
+      <div class="row mark-bar">
+        <button id="markBtn" title="Отметить место (клавиша M)" aria-keyshortcuts="M">Тут не так</button>
+      </div>
+      <div id="markTrack" class="mark-track"></div>
+      <div class="marks-box">
+        <div id="marksTitle" class="marks-title"></div>
+        <div id="markEditorHost"></div>
+        <div id="markList" class="mark-list"></div>
+        <div id="marksHint" class="marks-hint"></div>
+        <a class="btn" id="marksDlBtn" download>Скачать отметки</a>
+      </div>
     </div>
 
     <div class="card">
@@ -457,14 +520,53 @@ function renderWorkspace(preserveTime = null) {
     timeEl.textContent = `${s.start_sec.toFixed(1)}–${s.end_sec.toFixed(1)} с`;
     blk.appendChild(nameEl);
     blk.appendChild(timeEl);
-    blk.onclick = () => {
+    blk.onclick = (ev) => {
+      if (swallowClick) {
+        swallowClick = false;
+        return;
+      }
+      if (ev && ev.shiftKey) {
+        addMark(timelineTime(blk, s, ev));
+        return;
+      }
+      state.auditionEnd = null;
       player.currentTime = s.start_sec;
       player.play().catch(() => {});
     };
+    blk.onpointerdown = (ev) => {
+      swallowClick = false;
+      clearTimeout(pressTimer);
+      pressTimer = null;
+      if (!ev || ev.pointerType !== "touch") return;
+      pressTimer = setTimeout(() => {
+        pressTimer = null;
+        swallowClick = true;
+        addMark(timelineTime(blk, s, ev));
+      }, LONG_PRESS_MS);
+    };
+    blk.onpointerup = () => {
+      clearTimeout(pressTimer);
+      pressTimer = null;
+    };
+    blk.onpointercancel = blk.onpointerup;
+    blk.oncontextmenu = (ev) => {
+      if (swallowClick || pressTimer) ev.preventDefault();
+    };
     tl.appendChild(blk);
   }
+  document.getElementById("markBtn").onclick = () => addMark(player.currentTime);
+  document.getElementById("marksDlBtn").href = `/api/piece/${encodeURIComponent(d.id)}/marks.json`;
+  document.getElementById("marksHint").textContent = MARK_HINT;
+  renderMarks();
+  player.addEventListener("pause", () => {
+    state.auditionEnd = null;
+  });
   player.addEventListener("timeupdate", () => {
     const t = player.currentTime;
+    if (state.auditionEnd !== null && t >= state.auditionEnd) {
+      state.auditionEnd = null;
+      player.pause();
+    }
     for (const blk of tl.children) {
       const a = Number(blk.dataset.start), b = Number(blk.dataset.end);
       blk.classList.toggle("playing", t >= a && t < b);
@@ -811,6 +913,209 @@ function renderWorkspace(preserveTime = null) {
   }
 }
 
+function markSummary(m) {
+  const who = MARK_GUITAR_LABELS[m.guitar] || m.guitar;
+  return `${m.bar}:${m.sixteenth} · ${who}${m.text ? ` · ${m.text}` : ""}${m.stale ? " (до изменения)" : ""}`;
+}
+
+function findMark(id) {
+  return ((state.current && state.current.marks) || []).find((m) => m.id === id) || null;
+}
+
+async function markRequest(action, body, onDone) {
+  const pieceId = state.currentId;
+  if (!pieceId) return null;
+  let res;
+  try {
+    res = await api(`/api/piece/${encodeURIComponent(pieceId)}/${action}`, { method: "POST", body: JSON.stringify(body) });
+  } catch (err) {
+    showError(err, pieceId);
+    return null;
+  }
+  if (state.currentId === pieceId && state.current && state.current.id === pieceId) {
+    state.current = Object.assign({}, state.current, { marks: res.marks, rev: res.rev });
+    if (onDone) onDone(res.mark);
+    renderMarks();
+  }
+  return res.mark;
+}
+
+function addMark(t) {
+  if (!state.current) return Promise.resolve(null);
+  const at = Math.round(Math.max(0, Math.min(state.current.length, Number(t) || 0)) * 1000) / 1000;
+  return finishMarkEdit(true).then(() =>
+    markRequest("mark_add", { t: at }, (mark) => {
+      state.markEdit = { id: mark.id, fresh: true, guitar: mark.guitar, text: mark.text };
+    })
+  );
+}
+
+async function finishMarkEdit(commit) {
+  const ed = state.markEdit;
+  if (!ed) return;
+  const text = ed.input ? ed.input.value : ed.text;
+  const mark = findMark(ed.id);
+  state.markEdit = null;
+  if (commit && mark && (ed.guitar !== mark.guitar || text !== mark.text)) {
+    await markRequest("mark_edit", { id: ed.id, guitar: ed.guitar, text });
+  } else {
+    renderMarks();
+  }
+}
+
+function dropMark(id) {
+  state.markEdit = null;
+  return markRequest("mark_delete", { id });
+}
+
+function cancelMarkEdit() {
+  const ed = state.markEdit;
+  if (!ed) return Promise.resolve();
+  if (ed.fresh) return dropMark(ed.id);
+  state.markEdit = null;
+  renderMarks();
+  return Promise.resolve();
+}
+
+function openMark(m) {
+  const player = document.getElementById("player");
+  state.auditionEnd = null;
+  player.currentTime = m.from_sec;
+  state.markEdit = { id: m.id, fresh: false, guitar: m.guitar, text: m.text };
+  renderMarks();
+}
+
+function auditionMark(m) {
+  const player = document.getElementById("player");
+  player.currentTime = m.from_sec;
+  state.auditionEnd = m.to_sec;
+  player.play().catch(() => {});
+}
+
+function timelineTime(blk, s, ev) {
+  const r = blk.getBoundingClientRect ? blk.getBoundingClientRect() : null;
+  if (!r || !r.width || !ev || typeof ev.clientX !== "number") return s.start_sec;
+  const frac = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+  return s.start_sec + frac * (s.end_sec - s.start_sec);
+}
+
+function makeMarkEditor(m) {
+  const ed = state.markEdit;
+  const box = document.createElement("div");
+  box.id = "markEditor";
+  box.className = "mark-editor";
+  box.setAttribute("role", "group");
+  box.setAttribute("aria-label", `Отметка ${m.bar}:${m.sixteenth}`);
+  const guitars = [];
+  for (const [val, txt] of MARK_GUITARS) {
+    const b = document.createElement("button");
+    b.dataset.markGuitar = val;
+    b.textContent = txt;
+    guitars.push([val, b]);
+    b.onclick = () => {
+      ed.guitar = val;
+      for (const [v, other] of guitars) {
+        other.className = v === val ? "active" : "";
+        other.setAttribute("aria-pressed", v === val ? "true" : "false");
+      }
+    };
+    box.appendChild(b);
+  }
+  for (const [v, b] of guitars) {
+    b.className = v === ed.guitar ? "active" : "";
+    b.setAttribute("aria-pressed", v === ed.guitar ? "true" : "false");
+  }
+  const input = document.createElement("input");
+  input.id = "markText";
+  input.type = "text";
+  input.value = ed.text;
+  input.setAttribute("maxlength", String(MARK_TEXT_MAX));
+  input.setAttribute("aria-label", "Что не так");
+  input.setAttribute("placeholder", "Что не так (необязательно)");
+  ed.input = input;
+  input.oninput = () => {
+    ed.text = input.value;
+  };
+  input.onkeydown = (ev) => {
+    if (ev.key === "Enter") finishMarkEdit(true);
+  };
+  const done = document.createElement("button");
+  done.id = "markDone";
+  done.className = "primary";
+  done.textContent = "Готово";
+  done.onclick = () => finishMarkEdit(true);
+  const del = document.createElement("button");
+  del.id = "markDelete";
+  del.textContent = "Удалить";
+  del.onclick = () => dropMark(m.id);
+  box.appendChild(input);
+  box.appendChild(done);
+  box.appendChild(del);
+  return box;
+}
+
+function renderMarks() {
+  const d = state.current;
+  const title = document.getElementById("marksTitle");
+  if (!d || !title) return;
+  const marks = d.marks || [];
+  const total = Math.max(1, d.length);
+  title.textContent = `Отметки (${marks.length})`;
+
+  const track = document.getElementById("markTrack");
+  track.innerHTML = "";
+  const list = document.getElementById("markList");
+  list.innerHTML = "";
+  for (const m of marks) {
+    const flag = document.createElement("button");
+    flag.className = `mark-flag${m.stale ? " stale" : ""}`;
+    flag.dataset.markId = m.id;
+    flag.style.left = `${Number(((m.t / total) * 100).toFixed(2))}%`;
+    flag.title = markSummary(m);
+    flag.setAttribute("aria-label", `Отметка ${markSummary(m)}`);
+    flag.onclick = () => openMark(m);
+    track.appendChild(flag);
+
+    const row = document.createElement("div");
+    row.className = `mark-row${m.stale ? " stale" : ""}`;
+    row.dataset.markId = m.id;
+    const open = document.createElement("button");
+    open.className = "mark-open";
+    open.textContent = markSummary(m);
+    open.onclick = () => openMark(m);
+    const listen = document.createElement("button");
+    listen.className = "mark-audition";
+    listen.textContent = "Послушать место";
+    listen.onclick = () => auditionMark(m);
+    row.appendChild(open);
+    row.appendChild(listen);
+    list.appendChild(row);
+  }
+
+  const host = document.getElementById("markEditorHost");
+  host.innerHTML = "";
+  const editing = state.markEdit && findMark(state.markEdit.id);
+  if (editing) host.appendChild(makeMarkEditor(editing));
+  else state.markEdit = null;
+}
+
+function isTextTarget(t) {
+  const tag = t && t.tagName ? String(t.tagName).toUpperCase() : "";
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || Boolean(t && t.isContentEditable);
+}
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") {
+    if (state.markEdit) cancelMarkEdit();
+    return;
+  }
+  if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+  if (ev.code !== "KeyM" && String(ev.key).toLowerCase() !== "m") return;
+  if (isTextTarget(ev.target) || !state.current) return;
+  ev.preventDefault();
+  addMark(document.getElementById("player").currentTime);
+});
+
 function makeLayerControl(pieceId, l) {
   const row = document.createElement("div");
   row.className = "layer-row";
@@ -911,7 +1216,10 @@ async function selectPiece(id) {
     renderWorkspace();
     return;
   }
-  if (!state.current || state.current.id !== det.id) state.error = "";
+  if (!state.current || state.current.id !== det.id) {
+    state.error = "";
+    state.markEdit = null;
+  }
   state.current = det;
   renderList();
   renderWorkspace();
@@ -932,6 +1240,7 @@ document.getElementById("newBtn").onclick = async () => {
   }
   if (seq === state.navSeq) {
     state.error = "";
+    state.markEdit = null;
     state.current = det;
     state.currentId = det.id;
     renderWorkspace();

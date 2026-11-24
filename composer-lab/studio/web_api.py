@@ -127,18 +127,23 @@ def _redo_stack(state):
     return _validate_history(state, "redo")
 
 
-def _state(pid, rec, undo_stack, redo_stack):
-    return {"id": pid, "recipe": rec, "undo": undo_stack, "redo": redo_stack}
+def _marks(state):
+    return engine.parse_marks(state.get("marks"))
+
+
+def _state(pid, rec, undo_stack, redo_stack, marks):
+    return {"id": pid, "recipe": rec, "undo": undo_stack, "redo": redo_stack, "marks": marks}
 
 
 def _apply_change(state, fn):
     pid, old_rec, undo_stack = _validate_state(state)
     base_rec = engine._ensure_studio(old_rec)
     new_rec = fn(old_rec)
+    marks = _marks(state)
     if new_rec == base_rec:
-        return _state(pid, old_rec, undo_stack, _redo_stack(state))
+        return _state(pid, old_rec, undo_stack, _redo_stack(state), marks)
     next_undo = (undo_stack + [old_rec])[-UNDO_LIMIT:]
-    return _state(pid, new_rec, next_undo, [])
+    return _state(pid, new_rec, next_undo, [], marks)
 
 
 def new_piece(seed=None):
@@ -147,7 +152,7 @@ def new_piece(seed=None):
     ):
         raise ValueError("seed must be a non-negative integer or null")
     rec = engine.new_recipe(seed)
-    return _state(f"piece_{rec['seed']}", rec, [], [])
+    return _state(f"piece_{rec['seed']}", rec, [], [], [])
 
 
 def reroll(state, layer, section):
@@ -165,19 +170,21 @@ def option(state, name, value):
 def undo(state):
     pid, rec, undo_stack = _validate_state(state)
     redo_stack = _redo_stack(state)
+    marks = _marks(state)
     if not undo_stack:
-        return _state(pid, rec, [], redo_stack)
+        return _state(pid, rec, [], redo_stack, marks)
     prev_rec = undo_stack.pop()
-    return _state(pid, prev_rec, undo_stack, (redo_stack + [rec])[-UNDO_LIMIT:])
+    return _state(pid, prev_rec, undo_stack, (redo_stack + [rec])[-UNDO_LIMIT:], marks)
 
 
 def redo(state):
     pid, rec, undo_stack = _validate_state(state)
     redo_stack = _redo_stack(state)
+    marks = _marks(state)
     if not redo_stack:
-        return _state(pid, rec, undo_stack, [])
+        return _state(pid, rec, undo_stack, [], marks)
     next_rec = redo_stack.pop()
-    return _state(pid, next_rec, (undo_stack + [rec])[-UNDO_LIMIT:], redo_stack)
+    return _state(pid, next_rec, (undo_stack + [rec])[-UNDO_LIMIT:], redo_stack, marks)
 
 
 def _events_from_piece(piece):
@@ -200,7 +207,7 @@ def _events_from_piece(piece):
 def detail(state):
     pid, rec, undo_stack = _validate_state(state)
     piece = composer.compose(rec)
-    return engine.piece_detail(pid, rec, piece, undo_stack, _redo_stack(state))
+    return engine.piece_detail(pid, rec, piece, undo_stack, _redo_stack(state), _marks(state))
 
 
 def events(state):
@@ -212,10 +219,11 @@ def events(state):
 def snapshot(state):
     pid, rec, undo_stack = _validate_state(state)
     redo_stack = _redo_stack(state)
+    marks = _marks(state)
     piece = composer.compose(rec)
     return {
-        "state": _state(pid, rec, undo_stack, redo_stack),
-        "detail": engine.piece_detail(pid, rec, piece, undo_stack, redo_stack),
+        "state": _state(pid, rec, undo_stack, redo_stack, marks),
+        "detail": engine.piece_detail(pid, rec, piece, undo_stack, redo_stack, marks),
         "events": _events_from_piece(piece),
     }
 
@@ -229,6 +237,37 @@ def import_state(state):
             except Exception as exc:
                 raise ValueError(f"state.{key}[{i}] is not a usable recipe: {exc}") from exc
     return snap
+
+
+def _mark_result(state, change):
+    pid, rec, undo_stack = _validate_state(state)
+    redo_stack = _redo_stack(state)
+    piece = composer.compose(rec)
+    marks, mark, _ = change(rec, piece, _marks(state))
+    return {
+        "state": _state(pid, rec, undo_stack, redo_stack, marks),
+        "detail": engine.piece_detail(pid, rec, piece, undo_stack, redo_stack, marks),
+        "mark": mark,
+    }
+
+
+def mark_add(state, t, guitar="both", text=""):
+    return _mark_result(state, lambda rec, piece, marks: engine.apply_mark_add(rec, piece, marks, t, guitar, text))
+
+
+def mark_edit(state, mark_id, guitar=None, text=None):
+    return _mark_result(
+        state, lambda rec, piece, marks: engine.apply_mark_edit(rec, piece, marks, mark_id, guitar, text)
+    )
+
+
+def mark_delete(state, mark_id):
+    return _mark_result(state, lambda rec, piece, marks: engine.apply_mark_delete(rec, piece, marks, mark_id))
+
+
+def export_marks(state):
+    pid, rec, _ = _validate_state(state)
+    return engine.marks_export(pid, rec, composer.compose(rec), _marks(state))
 
 
 def export_midi(state):
@@ -289,4 +328,18 @@ def handle_json(req_json):
         return json.dumps(export_musicxml(payload["state"]), ensure_ascii=False)
     if cmd == "export_tab":
         return json.dumps(export_tab(payload["state"]), ensure_ascii=False)
+    if cmd == "mark_add":
+        return json.dumps(
+            mark_add(payload["state"], payload["t"], payload.get("guitar", "both"), payload.get("text", "")),
+            ensure_ascii=False,
+        )
+    if cmd == "mark_edit":
+        return json.dumps(
+            mark_edit(payload["state"], payload["id"], payload.get("guitar"), payload.get("text")),
+            ensure_ascii=False,
+        )
+    if cmd == "mark_delete":
+        return json.dumps(mark_delete(payload["state"], payload["id"]), ensure_ascii=False)
+    if cmd == "export_marks":
+        return json.dumps(export_marks(payload["state"]), ensure_ascii=False)
     raise ValueError(f"unknown command: {cmd}")

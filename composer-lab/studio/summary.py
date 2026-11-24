@@ -24,6 +24,7 @@ def summarize(out_dir):
     rerolls_per_layer = Counter()
     rerolls_per_target = Counter()
     options_used = Counter()
+    marks_per_piece = {}
     rerolls_before_first_export = []
     pieces_total = 0
     pieces_exported = 0
@@ -36,6 +37,7 @@ def summarize(out_dir):
             "rerolls_per_target": {},
             "rerolls_before_first_export": [],
             "options_used": {},
+            "marks_per_piece": {},
         }
 
     groups = {}
@@ -52,8 +54,12 @@ def summarize(out_dir):
         pieces_total += 1
         rerolls_so_far = 0
         exported = False
+        mark_ids = set()
         for ev in groups[pid]:
             act = ev.get("action")
+            val = ev.get("value")
+            if act in ("mark_add", "mark_delete") and isinstance(val, dict):
+                (mark_ids.add if act == "mark_add" else mark_ids.discard)(val.get("id"))
             if act == "reroll":
                 rerolls_so_far += 1
                 layer = ev.get("layer") or "?"
@@ -70,6 +76,7 @@ def summarize(out_dir):
                 exported = True
                 pieces_exported += 1
                 rerolls_before_first_export.append(rerolls_so_far)
+        marks_per_piece[pid] = len(mark_ids)
 
     return {
         "pieces_total": pieces_total,
@@ -78,6 +85,7 @@ def summarize(out_dir):
         "rerolls_per_target": dict(rerolls_per_target),
         "rerolls_before_first_export": rerolls_before_first_export,
         "options_used": dict(options_used),
+        "marks_per_piece": marks_per_piece,
     }
 
 
@@ -96,6 +104,9 @@ def format_summary(stats):
     for k, v in sorted(stats["options_used"].items(), key=lambda kv: (-kv[1], kv[0])):
         if "=" in k:
             lines.append(f"  {k}: {v}")
+    lines.append("Marks per piece:")
+    for k, v in sorted(stats["marks_per_piece"].items()):
+        lines.append(f"  {k}: {v}")
     return "\n".join(lines)
 
 

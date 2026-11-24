@@ -227,6 +227,49 @@
     overflow: hidden;
     transition: transform 0.1s ease, outline 0.1s ease;
   }
+  .timeline .sec-block { -webkit-touch-callout: none; user-select: none; }
+  .mark-bar { margin-top: 10px; }
+  .mark-track { position: relative; height: 24px; margin-top: 6px; border-top: 1px solid var(--border); }
+  .mark-flag {
+    position: absolute;
+    top: 3px;
+    width: 14px;
+    height: 20px;
+    min-width: 0;
+    margin-left: -2px;
+    padding: 0;
+    border: none;
+    border-left: 2px solid var(--text);
+    border-radius: 0 4px 4px 0;
+    background: var(--warn);
+  }
+  .mark-flag.stale { background: var(--muted); opacity: 0.5; }
+  .marks-box { margin-top: 12px; }
+  .marks-hint { font-size: 0.78rem; color: var(--muted); margin: 6px 0; }
+  .marks-title { margin: 0 0 8px 0; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
+  .mark-list { display: flex; flex-direction: column; gap: 6px; }
+  .mark-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .mark-row .mark-open { flex: 1 1 200px; justify-content: flex-start; text-align: left; }
+  .mark-row.stale .mark-open { opacity: 0.5; }
+  .mark-editor {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 8px;
+    margin-bottom: 8px;
+    border: 1px solid var(--warn);
+    border-radius: 6px;
+  }
+  .mark-editor input[type="text"] {
+    flex: 1 1 180px;
+    min-width: 0;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 9px;
+  }
   .sec-block:hover { transform: translateY(-1px); outline: 1px solid #fff; }
   .sec-block.playing { outline: 2px solid #fff; }
   .sec-block .name { font-size: 0.82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -389,6 +432,7 @@
     <div class="side-tools">
       <button id="logBtn">Скачать журнал</button>
       <button id="exportPiecesBtn">Экспорт пьес</button>
+      <button id="exportMarksAllBtn">Скачать отметки всех пьес</button>
       <button id="importPiecesBtn">Импорт пьес</button>
       <input id="importPiecesInput" type="file" accept="application/json,.json" hidden>
     </div>
