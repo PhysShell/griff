@@ -13,8 +13,8 @@ Audio and third-party files: `_griff_out/guitar-render-01/` (outside git).
   onsets, up to 6 voices); guitar3 = the palm-muted low riff of guitar 2 in the B section (52 notes, 16.2-22.1 s).
 - Articulations: MIDI gives notes, PM (track name, composer-lab exports PM notes to their own track);
   MusicXML gives string/fret, hammer-on, pull-off, slide, tap, dead (`notehead x`). 359 of 365 MIDI notes
-  were matched to a MusicXML note by (part, onset, pitch); the 6 unmatched are the final chord, which the
-  MusicXML writer does not emit. MusicXML marks only the start of a P.M. run, so PM is taken from MIDI.
+  were matched to a MusicXML note by (part, onset, pitch); the 6 unmatched are the two final chords at tick 30240,
+  which were not found in the MusicXML (not investigated further). MusicXML marks only the start of a P.M. run, so PM is taken from MIDI.
 - Separate-file input: splitting v8_002 into three MIDI files and running `prepare.py` with three `--input`
   gives byte-identical stem MIDI to the single type-1 file.
 - Griff reuse: Griff's MIDI import (`core/src/midi.rs`) is Rust and keeps one tempo per bar (#224), and
@@ -25,7 +25,7 @@ Audio and third-party files: `_griff_out/guitar-render-01/` (outside git).
 
 ### A: Unirock HumStrat (P0 only, not executed)
 
-See the report; facts:
+Facts:
 - `Pro2Max_Unirock_HumStrat_1.0.0_Portable.zip` 1,716,916,418 B, SHA-256
   `36611f8b4fcd19b5d0d82486094dd891b0d3a0e72122e559892c7ae18d845253`; zip test passes; 339 entries:
   the VST3 bundle, `SampleLibrary/` (327 WAV, 1.70 GB), README.md, README_PORTABLE.txt, LICENSE,
@@ -148,5 +148,5 @@ Articulation mapping (`plan.json` -> `mapping_logs`):
   WAV/MP3 plus a manifest fits #218 (offline analysis) better than any cockpit playback path.
 - A C# Griff tool could call NAudio.Nam directly (managed, no native code); it would still need the DI
   from an external sampler.
-- Gaps found on the way: composer-lab's MusicXML writer drops the final chord and notes with fractional
-  onsets, and writes only the start of a P.M. run; Griff's MIDI import drops mid-bar tempo changes (#224).
+- Gaps found on the way: the final chords at tick 30240 are not in composer-lab's MusicXML, the writer skips
+  notes with fractional onsets (by its code), and it writes only the start of a P.M. run; Griff's MIDI import drops mid-bar tempo changes (#224).
