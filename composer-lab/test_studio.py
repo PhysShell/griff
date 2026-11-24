@@ -1245,7 +1245,7 @@ const pending = {};
 function el() {
   return { classList: { toggle() {}, add() {}, remove() {} }, style: {}, dataset: {}, children: [],
     appendChild(c) { this.children.push(c); }, addEventListener() {}, set innerHTML(v) {},
-    get innerHTML() { return ""; }, set onclick(v) {}, value: "", currentTime: 0,
+    get innerHTML() { return this._html || ""; }, set onclick(v) {}, value: "", currentTime: 0,
     play() { return Promise.resolve(); } };
 }
 const ctx = {
@@ -1327,48 +1327,278 @@ class TestStudioPage(unittest.TestCase):
         self.assertEqual(out["afterMutate"], "b")
         self.assertEqual(out["latestSeed"], 2)
 
-    def test_active_auto_button_switches_to_manual_and_mute_hint_lists_sections(self):
-        import subprocess
 
-        html = studio_server.INDEX_HTML.read_text(encoding="utf-8")
-        self.assertIn("в секциях A, A2, A3 и B; применяется сразу.", html)
+class TestRedoStore(unittest.TestCase):
+    def _store(self, d):
+        return studio_engine.StudioStore(d, render_fn=studio_render.fake_render)
 
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("node is not available")
-        script = r"""
+    def _history(self, store, pid):
+        path = store._piece_dir(pid) / "history.jsonl"
+        return [json.loads(x)["action"] for x in path.read_text(encoding="utf-8").splitlines() if x]
+
+    def test_undo_then_redo_restores_recipe_and_swaps_stacks(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            store.reroll(pid, "comp", "A")
+            r1 = json.loads((pdir / "recipe.json").read_text(encoding="utf-8"))
+            store.set_option(pid, "mute_share", 0.3)
+            r2 = json.loads((pdir / "recipe.json").read_text(encoding="utf-8"))
+
+            det = store.undo(pid)
+            self.assertTrue(det["can_redo"])
+            self.assertEqual(det["redo_label"], "глухие ноты 0.3")
+            self.assertEqual(det["undo_label"], "перегенерация «Куплет A · ритм-гитара»")
+            self.assertEqual(store._read_redo(pdir), [r2])
+            self.assertEqual(json.loads((pdir / "recipe.json").read_text(encoding="utf-8")), r1)
+
+            det = store.redo(pid)
+            self.assertEqual(json.loads((pdir / "recipe.json").read_text(encoding="utf-8")), r2)
+            self.assertFalse(det["can_redo"])
+            self.assertTrue(det["can_undo"])
+            self.assertEqual(det["undo_label"], "глухие ноты 0.3")
+            self.assertEqual(store._read_redo(pdir), [])
+            self.assertEqual(len(store._read_undo(pdir)), 2)
+            self.assertFalse(store.get_piece(pid)["can_redo"])
+            self.assertEqual(self._history(store, pid)[-2:], ["undo", "redo"])
+
+    def test_new_change_clears_redo_and_noop_keeps_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            store.reroll(pid, "comp", "A")
+            store.undo(pid)
+            self.assertEqual(len(store._read_redo(pdir)), 1)
+
+            det = store.set_option(pid, "intro_bars", "auto")
+            self.assertTrue(det["can_redo"])
+            self.assertEqual(len(store._read_redo(pdir)), 1)
+
+            det = store.set_option(pid, "mute_share", 0.5)
+            self.assertFalse(det["can_redo"])
+            self.assertEqual(store._read_redo(pdir), [])
+            self.assertFalse(store.get_piece(pid)["can_redo"])
+
+            store.undo(pid)
+            self.assertTrue(store.get_piece(pid)["can_redo"])
+            store.set_lock(pid, "b", "B", True)
+            self.assertFalse(store.get_piece(pid)["can_redo"])
+
+    def test_redo_and_undo_on_empty_stacks_are_noops_and_not_logged(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            before = (pdir / "recipe.json").read_bytes()
+            det = store.redo(pid)
+            self.assertFalse(det["can_redo"])
+            self.assertFalse(det["can_undo"])
+            store.undo(pid)
+            self.assertEqual((pdir / "recipe.json").read_bytes(), before)
+            self.assertEqual(self._history(store, pid), ["new"])
+
+    def test_redo_chain_follows_every_undone_step(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            recipes = [json.loads((pdir / "recipe.json").read_text(encoding="utf-8"))]
+            for _ in range(3):
+                store.reroll(pid, "comp", "A")
+                recipes.append(json.loads((pdir / "recipe.json").read_text(encoding="utf-8")))
+            for _ in range(3):
+                store.undo(pid)
+            self.assertEqual(len(store._read_redo(pdir)), 3)
+            for expected in recipes[1:]:
+                store.redo(pid)
+                self.assertEqual(json.loads((pdir / "recipe.json").read_text(encoding="utf-8")), expected)
+            self.assertFalse(store.get_piece(pid)["can_redo"])
+
+    def test_failed_redo_keeps_both_stacks(self):
+        with tempfile.TemporaryDirectory() as d:
+            calls = {"n": 0}
+
+            def flaky(mid, mp3):
+                calls["n"] += 1
+                if calls["n"] == 4:
+                    raise RuntimeError("render failed")
+                studio_render.fake_render(mid, mp3)
+
+            store = studio_engine.StudioStore(d, render_fn=flaky)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            store.reroll(pid, "comp", "A")
+            store.undo(pid)
+            redo_before = store._read_redo(pdir)
+            undo_before = store._read_undo(pdir)
+            with self.assertRaises(RuntimeError):
+                store.redo(pid)
+            self.assertEqual(store._read_redo(pdir), redo_before)
+            self.assertEqual(store._read_undo(pdir), undo_before)
+            store.redo(pid)
+            self.assertFalse(store.get_piece(pid)["can_redo"])
+
+    def test_unchanged_lock_requests_keep_history_and_redo(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            store.set_lock(pid, "comp", "A", True)
+            store.set_lock(pid, "b", "B", True)
+            store.set_option(pid, "mute_share", 0.3)
+            store.undo(pid)
+            before = snapshot_files(pdir)
+            for layer, section, locked in (("comp", "A", True), ("ending", "end", False)):
+                det = store.set_lock(pid, layer, section, locked)
+                self.assertTrue(det["can_redo"])
+                self.assertEqual(snapshot_files(pdir), before)
+            self.assertNotIn("locked_riffs", json.loads(before["recipe.json"])["studio"])
+
+    def test_failed_undo_and_redo_leave_the_revision_intact_and_retryable(self):
+        for action in ("undo", "redo"):
+            with tempfile.TemporaryDirectory() as d:
+                store = self._store(d)
+                pid = store.create_piece(801000)["id"]
+                pdir = store._piece_dir(pid)
+                store.reroll(pid, "comp", "A")
+                store.reroll(pid, "texture", "A")
+                if action == "redo":
+                    store.undo(pid)
+                before = snapshot_files(pdir)
+                before.pop("history.jsonl")
+                original = store._write_redo
+
+                def broken(*args, **kwargs):
+                    raise PermissionError("denied")
+
+                store._write_redo = broken
+                with self.assertRaises(PermissionError):
+                    getattr(store, action)(pid)
+                store._write_redo = original
+                after = snapshot_files(pdir)
+                after.pop("history.jsonl")
+                self.assertEqual(after, before)
+                self.assertEqual(self._history(store, pid).count(action), 0)
+                getattr(store, action)(pid)
+                self.assertEqual(self._history(store, pid).count(action), 1)
+
+    def test_failed_backup_leaves_no_stage_folder_and_no_changes(self):
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            before = snapshot_files(pdir)
+            names = sorted(p.name for p in pdir.iterdir())
+            with mock.patch.object(studio_engine.shutil, "copy2", side_effect=OSError("disk")):
+                with self.assertRaises(OSError):
+                    store.reroll(pid, "comp", "A")
+            self.assertEqual(sorted(p.name for p in pdir.iterdir()), names)
+            self.assertEqual(snapshot_files(pdir), before)
+            store.reroll(pid, "comp", "A")
+
+    def test_history_stacks_are_bounded_to_50(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            for _ in range(51):
+                store.reroll(pid, "comp", "A")
+            self.assertEqual(len(store._read_undo(pdir)), 50)
+            for _ in range(51):
+                store.undo(pid)
+            self.assertEqual(len(store._read_redo(pdir)), 50)
+            self.assertEqual(len(store._read_undo(pdir)), 0)
+
+    def test_redo_endpoint_and_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = studio_server.create_server(d, host="127.0.0.1", port=0, render_fn=studio_render.fake_render)
+            port = srv.server_address[1]
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            base = f"http://127.0.0.1:{port}"
+
+            def post(path, body=None):
+                req = urllib.request.Request(
+                    base + path, data=json.dumps(body or {}).encode("utf-8"), method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        return resp.status, json.loads(resp.read())
+                except urllib.error.HTTPError as err:
+                    return err.code, json.loads(err.read())
+
+            try:
+                st, det = post("/api/new", {"seed": 801000})
+                pid = det["id"]
+                self.assertFalse(det["can_redo"])
+                post(f"/api/piece/{pid}/reroll", {"layer": "comp", "section": "A"})
+                st, det = post(f"/api/piece/{pid}/undo")
+                self.assertTrue(det["can_redo"])
+                st, det = post(f"/api/piece/{pid}/redo")
+                self.assertEqual(st, 200)
+                self.assertFalse(det["can_redo"])
+                comp = next(
+                    layer for s in det["sections"] if s["section"] == "A"
+                    for layer in s["layers"] if layer["layer"] == "comp"
+                )
+                self.assertEqual(comp["salt"], 1)
+                st, det = post(f"/api/piece/{pid}/redo")
+                self.assertEqual(st, 200)
+                self.assertFalse(det["can_redo"])
+                self.assertEqual(post("/api/piece/missing/redo")[0], 404)
+                self.assertEqual(post("/api/piece/bad%20id/redo")[0], 404)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+                t.join(timeout=5)
+
+
+PAGE_PRELUDE = r"""
 const fs = require("fs"), vm = require("vm");
 const html = fs.readFileSync(process.argv[2], "utf8");
 const script = html.split("<script>")[1].split("</script>")[0];
 const calls = [];
+const alerts = [];
 const ids = new Map();
+const STATIC = ["workspace", "pieceList", "busy", "newBtn", "seedInput", "statusChip"];
 function makeEl(tag) {
   const el = {
     tagName: tag, id: "", className: "", value: "", textContent: "", title: "", type: "",
-    min: "", max: "", step: "", disabled: false, href: "", download: "",
-    style: {}, dataset: {}, children: [],
+    min: "", max: "", step: "", disabled: false, hidden: false, href: "", download: "",
+    style: {}, dataset: {}, children: [], _attrs: {},
     classList: {
       set: new Set(),
       toggle(k, f) { if (f === undefined) { if (this.set.has(k)) this.set.delete(k); else this.set.add(k); } else if (f) this.set.add(k); else this.set.delete(k); },
       add(...ks) { ks.forEach((k) => this.set.add(k)); },
       remove(...ks) { ks.forEach((k) => this.set.delete(k)); },
+      contains(k) { return this.set.has(k); },
     },
     appendChild(c) { this.children.push(c); return c; },
+    setAttribute(k, v) { this._attrs[k] = String(v); },
+    getAttribute(k) { return k in this._attrs ? this._attrs[k] : null; },
+    removeAttribute(k) { delete this._attrs[k]; },
     addEventListener() {},
-    set innerHTML(v) { this.children = []; if (this.id === "workspace") { for (const k of Array.from(ids.keys())) { if (!["workspace", "pieceList", "busy", "newBtn", "seedInput"].includes(k)) ids.delete(k); } } },
-    get innerHTML() { return ""; },
+    set innerHTML(v) { this._html = v; this.children = []; if (this.id === "workspace") { for (const k of Array.from(ids.keys())) { if (!STATIC.includes(k)) ids.delete(k); } } },
+    get innerHTML() { return this._html || ""; },
   };
   return el;
 }
-for (const id of ["workspace", "pieceList", "busy", "newBtn", "seedInput"]) {
+for (const id of STATIC) {
   const e = makeEl("div");
   e.id = id;
   ids.set(id, e);
 }
+let respond = (url, body) => ({ pieces: [], id: "p1", seed: 1, meter: "4/4", mode: "lydian", key: "E", tempo: 140, length: 10, sections: [], whole_layers: [], options: { octave_share: 0.5 }, can_undo: true });
 const ctx = {
   document: {
     getElementById: (id) => {
       if (!ids.has(id)) {
+        if (!html.includes('id="' + id + '"')) throw new Error("no element in the page markup: " + id);
         const e = makeEl("div");
         e.id = id;
         ids.set(id, e);
@@ -1379,40 +1609,436 @@ const ctx = {
     createElement: (tag) => makeEl(tag),
   },
   fetch: async (url, opts) => {
-    calls.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });
-    return { ok: true, json: async () => ({ pieces: [], id: "p1", seed: 1, meter: "4/4", mode: "lydian", key: "E", tempo: 140, length: 10, sections: [], whole_layers: [], options: { octave_share: 0.5 }, can_undo: true }) };
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    calls.push({ url, body });
+    const out = await respond(url, body);
+    if (out && out.__error) return { ok: false, statusText: "err", json: async () => ({ error: out.__error }) };
+    return { ok: true, json: async () => out };
   },
-  alert() {}, console, Date, Math, Number, String, Promise, encodeURIComponent, parseInt, parseFloat,
+  alert(msg) { alerts.push(String(msg)); },
+  console, Date, Math, Number, String, Promise, encodeURIComponent, parseInt, parseFloat, setTimeout, clearTimeout, Array, Object, JSON,
 };
 vm.createContext(ctx);
 vm.runInContext(script, ctx);
-function findAutoBtn(node) {
-  if (node.dataset && node.dataset.option === "octave_share" && node.dataset.value === "auto") return node;
-  for (const c of node.children || []) { const f = findAutoBtn(c); if (f) return f; }
-  return null;
+const run = (code) => vm.runInContext(code, ctx);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function walk(node, pred, out = []) {
+  if (pred(node)) out.push(node);
+  for (const c of node.children || []) walk(c, pred, out);
+  return out;
 }
-(async () => {
-  vm.runInContext('state.current = { id: "p1", seed: 1, meter: "4/4", mode: "lydian", key: "E", tempo: 140, length: 10, sections: [], whole_layers: [], options: { octave_share: null }, can_undo: false }; renderWorkspace();', ctx);
-  const auto1 = findAutoBtn(ids.get("workspace"));
-  auto1.onclick();
-  await new Promise((r) => setTimeout(r, 10));
-  vm.runInContext('state.current.options.octave_share = 0.5; renderWorkspace();', ctx);
-  const auto2 = findAutoBtn(ids.get("workspace"));
-  auto2.onclick();
-  await new Promise((r) => setTimeout(r, 10));
-  console.log(JSON.stringify(calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body)));
-})();
+const root = () => ids.get("workspace");
+const findAll = (pred) => walk(root(), pred);
+const find = (pred) => findAll(pred)[0];
+const piece = (extra) => Object.assign({ id: "p1", seed: 1, meter: "4/4", mode: "lydian", key: "E", tempo: 140, length: 10, sections: [], whole_layers: [], options: { octave_share: null, mute_share: 0 }, can_undo: false, can_redo: false, undo_label: null, redo_label: null }, extra || {});
+const show = (extra) => { ctx.__p = piece(extra); run("state.current = __p; state.currentId = __p.id; renderWorkspace();"); };
 """
-        script = "const vm = require('vm');\n" + script.replace("const fs = require(\"fs\"), vm = require(\"vm\");", "const fs = require(\"fs\");")
-        with tempfile.TemporaryDirectory() as d:
-            harness = Path(d) / "opt_harness.js"
-            harness.write_text(script, encoding="utf-8")
-            res = subprocess.run(
-                [node, str(harness), str(studio_server.INDEX_HTML)], capture_output=True, text=True, timeout=60
-            )
-        self.assertEqual(res.returncode, 0, res.stderr)
-        sent = json.loads(res.stdout.strip().splitlines()[-1])
-        self.assertEqual(sent, [{"name": "octave_share", "value": 0.5}, {"name": "octave_share", "value": None}])
+
+
+def _run_page(body_js, timeout=60):
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        raise unittest.SkipTest("node is not available")
+    with tempfile.TemporaryDirectory() as d:
+        harness = Path(d) / "page_harness.js"
+        harness.write_text(PAGE_PRELUDE + "\n(async () => {\n" + body_js + "\n})().then(() => process.exit(0), (e) => { console.error(e); process.exit(1); });\n", encoding="utf-8")
+        res = subprocess.run(
+            [node, str(harness), str(studio_server.INDEX_HTML)],
+            capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+        )
+    if res.returncode != 0:
+        raise AssertionError(res.stderr)
+    return json.loads(res.stdout.strip().splitlines()[-1])
+
+
+class TestStudioPageControls(unittest.TestCase):
+    def setUp(self):
+        self.html = studio_server.INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_piece_wide_note_and_rerolls_only_hint(self):
+        self.assertIn("Параметры действуют на всю пьесу, в том числе на закреплённые секции.", self.html)
+        self.assertIn(
+            "Эти параметры действуют только при следующей перегенерации ритм-гитары "
+            "(«Перегенерировать ритм-гитару» или «Перегенерировать всё незакреплённое»).",
+            self.html,
+        )
+        self.assertRegex(
+            self.html,
+            r'<summary>Дополнительно</summary>\s*<div class="advanced-note">[^<]*</div>\s*<div class="options-grid" id="advancedGrid">',
+        )
+        self.assertRegex(
+            self.html,
+            r'<h2>Параметры пьесы</h2>\s*<div class="params-note">[^<]*</div>\s*<div class="options-grid" id="optionsGrid">',
+        )
+
+    def test_plain_labels_without_internal_names(self):
+        for bad in ("(b_lead)", "(trailing_rest)", "--notail", "Вкл (есть пауза)", "Выкл (", "Удвоенно (как сейчас)"):
+            self.assertNotIn(bad, self.html)
+        for good in (
+            "Соло в середине B",
+            "Медленнее (удвоенные длительности)",
+            "В темпе рифа",
+            "Без соло",
+            "Пауза в конце такта",
+            "Без паузы",
+            "Сколько раз перегенерировали",
+            "Номер пьесы (seed), необязательно",
+            "Глухие удары перед акцентами (только в октавных тактах, при перегенерации)",
+        ):
+            self.assertIn(good, self.html)
+        self.assertNotIn("Глухие перед акцентами в октавах", self.html)
+        self.assertRegex(self.html, r'<label[^>]*for="seedInput"')
+
+    def test_lock_toggle_choice_groups_and_zero_badge(self):
+        self.assertIn("🔒 Закреплено", self.html)
+        self.assertIn("Слой закреплён", self.html)
+        self.assertIn("aria-pressed", self.html)
+        out = _run_page("""
+const layer = (locked, salt) => ({ layer: "comp", section: "A", label: "Перегенерировать ритм-гитару", salt, locked });
+const mk = (l) => run("makeLayerControl('p1', " + JSON.stringify(l) + ")");
+const open = mk(layer(false, 0));
+const closed = mk(layer(true, 2));
+const info = (row) => ({
+  lockText: row.children[1].textContent, lockTitle: row.children[1].title,
+  pressed: row.children[1].getAttribute("aria-pressed"),
+  rerollTitle: row.children[0].title, rerollDisabled: row.children[0].disabled,
+  badge: walk(row, (e) => e.className === "salt-badge").map((b) => ({ hidden: b.hidden, title: b.title, text: b.textContent })),
+});
+show({ options: { octave_share: null, mute_share: 0, trailing_rest: true, b_lead: "augmented", intro_bars: "auto", square_repeat: 1 } });
+const tail = findAll((e) => e.dataset && e.dataset.option === "trailing_rest").map((b) => [b.textContent, b.getAttribute("aria-pressed")]);
+const bl = findAll((e) => e.dataset && e.dataset.option === "b_lead").map((b) => [b.textContent, b.getAttribute("aria-pressed")]);
+console.log(JSON.stringify({ open: info(open), closed: info(closed), tail, bl }));
+""")
+        self.assertEqual(out["open"]["lockText"], "Закрепить")
+        self.assertEqual(out["open"]["pressed"], "false")
+        self.assertEqual(out["open"]["rerollTitle"], "")
+        self.assertEqual(out["open"]["badge"], [{"hidden": True, "title": "Сколько раз перегенерировали", "text": "#0"}])
+        self.assertEqual(out["closed"]["lockText"], "🔒 Закреплено")
+        self.assertEqual(out["closed"]["lockTitle"], "Открепить")
+        self.assertEqual(out["closed"]["pressed"], "true")
+        self.assertEqual(out["closed"]["rerollTitle"], "Слой закреплён")
+        self.assertTrue(out["closed"]["rerollDisabled"])
+        self.assertFalse(out["closed"]["badge"][0]["hidden"])
+        self.assertEqual(out["tail"], [["Пауза в конце такта", "true"], ["Без паузы", "false"]])
+        self.assertEqual(
+            out["bl"],
+            [["Медленнее (удвоенные длительности)", "true"], ["В темпе рифа", "false"], ["Без соло", "false"]],
+        )
+
+    def test_octave_switch_selected_button_does_nothing(self):
+        self.assertIn("в секциях A, A2, «Кульминация» и B; применяется сразу.", self.html)
+        out = _run_page("""
+show({ options: { octave_share: null, mute_share: 0 } });
+const btn = (v) => find((e) => e.dataset && e.dataset.option === "octave_share" && e.dataset.value === v && e.tagName === "button");
+const first = { auto: btn("auto").textContent, manual: btn("manual").textContent, aut: btn("auto").getAttribute("aria-pressed"), man: btn("manual").getAttribute("aria-pressed") };
+btn("auto").onclick();
+await sleep(10);
+const afterAuto = calls.filter((c) => c.url.endsWith("/option")).length;
+btn("manual").onclick();
+await sleep(10);
+show({ options: { octave_share: 0.5, mute_share: 0 } });
+btn("manual").onclick();
+await sleep(10);
+btn("auto").onclick();
+await sleep(10);
+console.log(JSON.stringify({ first, afterAuto, sent: calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body) }));
+""")
+        self.assertEqual(out["first"], {"auto": "Авто", "manual": "Вручную", "aut": "true", "man": "false"})
+        self.assertEqual(out["afterAuto"], 0)
+        self.assertEqual(out["sent"], [{"name": "octave_share", "value": 0.5}, {"name": "octave_share", "value": None}])
+
+    def test_slider_sends_once_per_gesture(self):
+        out = _run_page("""
+show();
+const slider = () => find((e) => e.dataset && e.dataset.option === "mute_share" && e.type === "range");
+const count = () => calls.filter((c) => c.url.endsWith("/option")).length;
+for (const v of ["0.05", "0.1", "0.15"]) { slider().value = v; slider().oninput(); await sleep(100); }
+const early = count();
+await sleep(650);
+const afterKeys = calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body);
+slider().onpointerdown();
+for (const v of ["0.2", "0.4", "0.6"]) { slider().value = v; slider().oninput(); }
+await sleep(700);
+const during = count();
+slider().onpointerup();
+await sleep(50);
+await sleep(700);
+console.log(JSON.stringify({ early, afterKeys, during, total: count(), last: calls.filter((c) => c.url.endsWith("/option")).pop().body }));
+""")
+        self.assertEqual(out["early"], 0)
+        self.assertEqual(out["afterKeys"], [{"name": "mute_share", "value": 0.15}])
+        self.assertEqual(out["during"], 1)
+        self.assertEqual(out["total"], 2)
+        self.assertEqual(out["last"], {"name": "mute_share", "value": 0.6})
+
+    def test_sliders_are_named_and_valued_for_assistive_tech(self):
+        out = _run_page("""
+show();
+const sliders = findAll((e) => e.type === "range");
+const mute = sliders.find((e) => e.dataset.option === "mute_share");
+mute.value = "0.35";
+mute.oninput();
+console.log(JSON.stringify({
+  n: sliders.length,
+  named: sliders.every((e) => (e.getAttribute("aria-label") || "").length > 0),
+  valued: sliders.every((e) => (e.getAttribute("aria-valuetext") || "").length > 0),
+  muteText: mute.getAttribute("aria-valuetext"),
+  octaveText: sliders.find((e) => e.dataset.option === "octave_share").getAttribute("aria-valuetext"),
+}));
+""")
+        self.assertEqual(out["n"], 6)
+        self.assertTrue(out["named"])
+        self.assertTrue(out["valued"])
+        self.assertEqual(out["muteText"], "0.35")
+        self.assertEqual(out["octaveText"], "авто")
+        self.assertRegex(self.html, r'id="statusChip"[^>]*role="status"|role="status"[^>]*id="statusChip"')
+
+    def test_status_chip_and_pressed_control_while_a_request_runs(self):
+        out = _run_page("""
+show();
+let release;
+respond = () => new Promise((resolve) => { release = () => resolve(piece()); });
+const btn = (v) => find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === v);
+const b4 = btn("4");
+b4.onclick();
+await sleep(10);
+const during = { chip: ids.get("statusChip").textContent, disabled: b4.disabled };
+release();
+await sleep(20);
+console.log(JSON.stringify({ during, after: ids.get("statusChip").textContent }));
+""")
+        self.assertEqual(out["during"], {"chip": "Пересчёт…", "disabled": True})
+        self.assertEqual(out["after"], "")
+
+    def test_errors_use_a_dismissible_banner_not_alert(self):
+        self.assertNotRegex(self.html, r"\balert\s*\(")
+        out = _run_page("""
+show();
+respond = () => ({ __error: "boom" });
+find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "4").onclick();
+await sleep(20);
+const shown = { hidden: ids.get("errorBanner").hidden, text: ids.get("errorText").textContent };
+ids.get("errorCloseBtn").onclick();
+console.log(JSON.stringify({ shown, alerts, hiddenAfter: ids.get("errorBanner").hidden, textAfter: ids.get("errorText").textContent }));
+""")
+        self.assertFalse(out["shown"]["hidden"])
+        self.assertIn("boom", out["shown"]["text"])
+        self.assertEqual(out["alerts"], [])
+        self.assertTrue(out["hiddenAfter"])
+        self.assertEqual(out["textAfter"], "")
+
+    def test_undo_flushes_a_pending_slider_edit_first(self):
+        out = _run_page("""
+show({ can_undo: true, undo_label: "длина вступления 8" });
+const slider = find((e) => e.dataset && e.dataset.option === "mute_share" && e.type === "range");
+slider.value = "0.35";
+slider.oninput();
+ids.get("undoBtn").onclick();
+await sleep(50);
+await sleep(700);
+console.log(JSON.stringify({ urls: calls.map((c) => c.url.replace("/api/piece/p1/", "")).filter((u) => !u.includes("pieces")) }));
+""")
+        self.assertEqual(out["urls"], ["option", "undo"])
+
+    def test_switching_pieces_flushes_a_pending_slider_edit_whatever_the_latency(self):
+        out = _run_page("""
+show();
+run("state.pieces = " + JSON.stringify([{ id: "p1", seed: 1 }, { id: "p2", seed: 2 }]));
+respond = async (url, body) => {
+  if (url.endsWith("/api/piece/p2")) { await sleep(700); return piece({ id: "p2", seed: 2 }); }
+  if (url.endsWith("/api/pieces")) return { pieces: [] };
+  return piece();
+};
+const slider = find((e) => e.dataset && e.dataset.option === "mute_share" && e.type === "range");
+slider.value = "0.35";
+slider.oninput();
+run("selectPiece('p2')");
+await sleep(900);
+const sent = calls.filter((c) => c.url.endsWith("/option") || c.url.endsWith("/api/piece/p2")).map((c) => c.url);
+console.log(JSON.stringify({ first: calls.find((c) => c.url.endsWith("/option")), sent, currentId: run("state.currentId"), shown: run("state.current.id") }));
+""")
+        self.assertEqual(out["first"], {"url": "/api/piece/p1/option", "body": {"name": "mute_share", "value": 0.35}})
+        self.assertEqual(out["sent"], ["/api/piece/p1/option", "/api/piece/p2"])
+        self.assertEqual(out["currentId"], "p2")
+        self.assertEqual(out["shown"], "p2")
+
+    def test_failed_follow_up_request_still_shows_the_saved_state(self):
+        out = _run_page("""
+show();
+respond = (url) => {
+  if (url.endsWith("/api/pieces")) return { __error: "list failed" };
+  return piece({ options: { octave_share: null, mute_share: 0, intro_bars: 4, square_repeat: 1, b_lead: "augmented", trailing_rest: true } });
+};
+find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "4").onclick();
+await sleep(30);
+const b4 = find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "4");
+const next = find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "1");
+console.log(JSON.stringify({ pressed: b4.getAttribute("aria-pressed"), disabled: [b4.disabled, next.disabled], hidden: ids.get("errorBanner").hidden, text: ids.get("errorText").textContent }));
+""")
+        self.assertEqual(out["pressed"], "true")
+        self.assertEqual(out["disabled"], [False, False])
+        self.assertFalse(out["hidden"])
+        self.assertIn("list failed", out["text"])
+
+    def test_failed_piece_switch_redisplays_the_current_piece(self):
+        out = _run_page("""
+show();
+run("state.pieces = " + JSON.stringify([{ id: "p1", seed: 1 }, { id: "p2", seed: 2 }]));
+respond = async (url) => {
+  if (url.endsWith("/api/piece/p2")) return { __error: "no p2" };
+  if (url.endsWith("/api/pieces")) return { pieces: [] };
+  await sleep(40);
+  return piece({ options: { octave_share: null, mute_share: 0, intro_bars: 4, square_repeat: 1, b_lead: "augmented", trailing_rest: true } });
+};
+find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "4").onclick();
+await sleep(10);
+run("selectPiece('p2')");
+await sleep(200);
+const b4 = find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "4");
+console.log(JSON.stringify({ currentId: run("state.currentId"), pressed: b4.getAttribute("aria-pressed"), stuck: findAll((e) => e.tagName === "button" && e.disabled && !["undoBtn", "redoBtn"].includes(e.id) && e.className !== "reroll-btn").length, hidden: ids.get("errorBanner").hidden }));
+""")
+        self.assertEqual(out["currentId"], "p1")
+        self.assertEqual(out["pressed"], "true")
+        self.assertEqual(out["stuck"], 0)
+        self.assertFalse(out["hidden"])
+
+    def test_rejected_slider_edit_restores_saved_value_and_pressed_state(self):
+        out = _run_page("""
+show({ options: { octave_share: null, mute_share: 0 } });
+respond = () => ({ __error: "rejected" });
+const slider = () => find((e) => e.dataset && e.dataset.option === "octave_share" && e.type === "range");
+const btn = (v) => find((e) => e.dataset && e.dataset.option === "octave_share" && e.dataset.value === v && e.tagName === "button");
+slider().value = "0.75";
+slider().onpointerdown();
+slider().oninput();
+slider().onpointerup();
+await sleep(30);
+const afterFail = { auto: btn("auto").getAttribute("aria-pressed"), manual: btn("manual").getAttribute("aria-pressed"), disabled: slider().disabled };
+respond = () => piece({ options: { octave_share: 0.5, mute_share: 0 } });
+calls.length = 0;
+btn("manual").onclick();
+await sleep(30);
+console.log(JSON.stringify({ afterFail, retried: calls.filter((c) => c.url.endsWith("/option")).length }));
+""")
+        self.assertEqual(out["afterFail"], {"auto": "true", "manual": "false", "disabled": False})
+        self.assertEqual(out["retried"], 1)
+
+    def test_error_banner_does_not_follow_the_user_to_another_piece(self):
+        out = _run_page("""
+show();
+run("state.pieces = " + JSON.stringify([{ id: "p1", seed: 1 }, { id: "p2", seed: 2 }]));
+respond = () => ({ __error: "boom" });
+find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "4").onclick();
+await sleep(30);
+const shown = ids.get("errorBanner").hidden;
+respond = (url) => url.endsWith("/api/pieces") ? { pieces: [] } : piece({ id: "p2", seed: 2 });
+await run("selectPiece('p2')");
+console.log(JSON.stringify({ shown, hiddenAfter: ids.get("errorBanner").hidden, text: ids.get("errorText").textContent }));
+""")
+        self.assertFalse(out["shown"])
+        self.assertTrue(out["hiddenAfter"])
+        self.assertEqual(out["text"], "")
+
+    def test_selected_piece_is_current_and_labels_are_plain_russian(self):
+        self.assertIn("в секциях A, A2, «Кульминация» и B", self.html)
+        out = _run_page("""
+run("state.pieces = " + JSON.stringify([{ id: "p1", seed: 1, meter: "4/4", key: "E", mode: "mixolydian", tempo: 120, length: 10 }, { id: "p2", seed: 2, meter: "4/4", key: "A", mode: "aeolian", tempo: 120, length: 10 }]));
+show({ mode: "mixolydian" });
+run("renderList()");
+const items = ids.get("pieceList").children;
+console.log(JSON.stringify({ cur: items.map((b) => b.getAttribute("aria-current")), text: items.map((b) => b.innerHTML) }));
+""")
+        self.assertEqual(out["cur"], ["true", None])
+        self.assertIn("миксолидийский", out["text"][0])
+        self.assertIn("минор (эолийский)", out["text"][1])
+
+    def test_banner_markup_is_in_the_production_page(self):
+        self.assertRegex(
+            self.html,
+            r'<main id="workspace">\s*<div id="errorBanner"[^>]*role="alert"[^>]*hidden>\s*<span id="errorText"></span>\s*<button id="errorCloseBtn"',
+        )
+
+    def test_every_pending_slider_is_flushed_in_the_order_it_was_moved(self):
+        out = _run_page("""
+show({ can_undo: true, undo_label: "длина вступления 8" });
+const slider = (n) => find((e) => e.dataset && e.dataset.option === n && e.type === "range");
+slider("mute_share").value = "0.35";
+slider("mute_share").oninput();
+await sleep(100);
+slider("octave_piece").value = "0.5";
+slider("octave_piece").oninput();
+await sleep(50);
+ids.get("undoBtn").onclick();
+await sleep(100);
+await sleep(700);
+console.log(JSON.stringify({ sent: calls.filter((c) => !c.url.endsWith("/api/pieces")).map((c) => c.url.replace("/api/piece/p1/", "") + (c.body && c.body.name ? ":" + c.body.name : "")) }));
+""")
+        self.assertEqual(out["sent"], ["option:mute_share", "option:octave_piece", "undo"])
+
+    def test_superseded_edit_that_saved_is_shown_after_a_later_edit_fails(self):
+        out = _run_page("""
+show();
+const opts = (extra) => Object.assign({ octave_share: null, mute_share: 0, intro_bars: "auto", square_repeat: 1, b_lead: "augmented", trailing_rest: true }, extra);
+let saved = opts({});
+respond = async (url, body) => {
+  if (url.endsWith("/option") && body.name === "intro_bars") { await sleep(40); saved = opts({ intro_bars: 4 }); return piece({ options: saved }); }
+  if (url.endsWith("/option")) { await sleep(80); return { __error: "rejected" }; }
+  if (url.endsWith("/api/pieces")) return { pieces: [] };
+  return piece({ options: saved });
+};
+find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "4").onclick();
+await sleep(5);
+find((e) => e.dataset && e.dataset.option === "square_repeat" && e.dataset.value === "2").onclick();
+await sleep(250);
+const b4 = find((e) => e.dataset && e.dataset.option === "intro_bars" && e.dataset.value === "4");
+console.log(JSON.stringify({ pressed: b4.getAttribute("aria-pressed"), hidden: ids.get("errorBanner").hidden }));
+""")
+        self.assertEqual(out["pressed"], "true")
+        self.assertFalse(out["hidden"])
+
+    def test_undo_names_the_action_and_redo_posts_to_the_redo_endpoint(self):
+        out = _run_page("""
+show({ can_undo: true, undo_label: "глухие ноты 0.3", can_redo: true, redo_label: "перегенерация «Куплет A · ритм-гитара»" });
+const undo = ids.get("undoBtn"), redo = ids.get("redoBtn");
+const info = { undoTitle: undo.title, undoHint: walk(undo, (e) => e.className === "btn-hint").map((e) => e.textContent), redoTitle: redo.title, redoDisabled: redo.disabled, redoText: redo.textContent };
+redo.onclick();
+await sleep(10);
+show();
+const off = { undoTitle: ids.get("undoBtn").title, redoDisabled: ids.get("redoBtn").disabled };
+console.log(JSON.stringify({ info, off, urls: calls.map((c) => c.url) }));
+""")
+        self.assertEqual(out["info"]["undoTitle"], "Отменить: глухие ноты 0.3")
+        self.assertEqual(out["info"]["undoHint"], [": глухие ноты 0.3"])
+        self.assertEqual(out["info"]["redoTitle"], "Вернуть: перегенерация «Куплет A · ритм-гитара»")
+        self.assertFalse(out["info"]["redoDisabled"])
+        self.assertTrue(out["info"]["redoText"].startswith("Вернуть"))
+        self.assertIn("/api/piece/p1/redo", out["urls"])
+        self.assertTrue(out["off"]["redoDisabled"])
+        self.assertEqual(out["off"]["undoTitle"], "Отменить")
+
+    def test_timeline_short_labels_for_narrow_screens(self):
+        for short in ("Вст.", "Кульм.", "Конц."):
+            self.assertIn(short, self.html)
+        self.assertRegex(self.html, r"@media \(max-width: 520px\)[\s\S]*\.name-short")
+        out = _run_page("""
+show({ length: 10, sections: [
+  { section: "intro", label: "Вступление", start_sec: 0, end_sec: 2, layers: [] },
+  { section: "A3", label: "Кульминация", start_sec: 2, end_sec: 10, layers: [] },
+] });
+const blocks = findAll((e) => e.className && e.className.startsWith("sec-block"));
+console.log(JSON.stringify(blocks.map((b) => ({
+  title: b.title, aria: b.getAttribute("aria-label"),
+  short: walk(b, (e) => e.className === "name-short").map((e) => e.textContent),
+  full: walk(b, (e) => e.className === "name-full").map((e) => e.textContent),
+}))));
+""")
+        self.assertEqual([b["title"] for b in out], ["Вступление", "Кульминация"])
+        self.assertEqual([b["short"] for b in out], [["Вст."], ["Кульм."]])
+        self.assertEqual([b["full"] for b in out], [["Вступление"], ["Кульминация"]])
+        for b in out:
+            self.assertTrue(b["aria"].startswith(b["title"]))
 
 
 class TestStudioControls(unittest.TestCase):
@@ -1949,14 +2575,14 @@ class TestStudioControls(unittest.TestCase):
                     html = resp.read().decode("utf-8")
                 for label in (
                     "Глухие ноты (доля ударов ритм-гитары)",
-                    "Глушит долю ударов ритм-гитары в секциях A, A2, A3 и B; применяется сразу.",
+                    "Глушит долю ударов ритм-гитары в секциях A, A2, «Кульминация» и B; применяется сразу.",
                     "Октавные аккорды (доля тактов)",
                     "Длина вступления (тактов)",
                     "Повтор квадрата в куплетах",
                     "Дополнительно",
                     "Вероятность октав при перегенерации ритма",
                     "Октавы шестнадцатыми (при перегенерации)",
-                    "Глухие перед акцентами в октавах (при перегенерации)",
+                    "Глухие удары перед акцентами (только в октавных тактах, при перегенерации)",
                 ):
                     self.assertIn(label, html)
 

@@ -6,14 +6,29 @@
   const DB_VERSION = 1;
   const SAMPLES_BASE = "./samples/";
   const KNOWN_SECTIONS = new Set(["intro", "A", "A2", "B", "A3", "end"]);
+  const SHORT_SECTION_LABELS = { intro: "Вст.", A: "A", A2: "A2", B: "B", A3: "Кульм.", end: "Конц." };
+  const SLIDER_DEBOUNCE_MS = 600;
+  const MODE_LABELS = {
+    ionian: "мажор (ионийский)",
+    aeolian: "минор (эолийский)",
+    dorian: "дорийский",
+    phrygian: "фригийский",
+    lydian: "лидийский",
+    mixolydian: "миксолидийский",
+    locrian: "локрийский",
+  };
+  const modeLabel = (mode) => MODE_LABELS[mode] || mode;
 
   const appState = {
+    pendingSliders: [],
     pieces: [],
     current: null,
     currentId: null,
     currentState: null,
     currentEvents: [],
     busyCount: 0,
+    chipCount: 0,
+    errorText: "",
     navSeq: 0,
     navPending: false,
     pendingNavId: null,
@@ -57,8 +72,8 @@
 
   function samePieceState(a, b) {
     if (!a || !b) return false;
-    return JSON.stringify(canonicalValue({ recipe: a.recipe, undo: a.undo || [] })) ===
-      JSON.stringify(canonicalValue({ recipe: b.recipe, undo: b.undo || [] }));
+    return JSON.stringify(canonicalValue({ recipe: a.recipe, undo: a.undo || [], redo: a.redo || [] })) ===
+      JSON.stringify(canonicalValue({ recipe: b.recipe, undo: b.undo || [], redo: b.redo || [] }));
   }
 
   function cloneRecord(rec) {
@@ -633,6 +648,40 @@
     appState.busyCount = Math.max(0, appState.busyCount + delta);
     const badge = document.getElementById("busy");
     if (badge) badge.classList.toggle("show", appState.busyCount > 0);
+  }
+
+  function setChip(delta) {
+    appState.chipCount = Math.max(0, appState.chipCount + delta);
+    const chip = document.getElementById("statusChip");
+    if (chip) chip.textContent = appState.chipCount > 0 ? "Пересчёт…" : "";
+  }
+
+  function paintError() {
+    const banner = document.getElementById("errorBanner");
+    if (!banner) return;
+    const text = document.getElementById("errorText");
+    banner.hidden = !appState.errorText;
+    if (text) text.textContent = appState.errorText;
+  }
+
+  function showError(err, pieceId) {
+    const msg = err && err.message ? err.message : String(err || "");
+    let where = "";
+    if (pieceId && pieceId !== appState.currentId) {
+      const p = appState.pieces.find((x) => x.id === pieceId);
+      where = ` (пьеса #${p ? (p.detail || p).seed : pieceId})`;
+    }
+    appState.errorText = `Ошибка${where}: ${msg}`;
+    paintError();
+  }
+
+  async function flushPendingSliders() {
+    for (const flush of appState.pendingSliders.splice(0)) await flush();
+  }
+
+  function dropPendingSlider(flush) {
+    const i = appState.pendingSliders.indexOf(flush);
+    if (i >= 0) appState.pendingSliders.splice(i, 1);
   }
 
   async function callPy(cmd, payload = {}) {
@@ -1223,6 +1272,7 @@
     if (curEl) curEl.textContent = `${fmtClock(t)} / ${fmtClock(dur)}`;
     if (seekEl && !seekEl.dataset.dragging) {
       seekEl.value = String(Math.min(dur, t));
+      if (curEl) seekEl.setAttribute("aria-valuetext", curEl.textContent);
     }
     if (tl) {
       for (const blk of tl.children) {
@@ -1237,6 +1287,7 @@
     const main = document.getElementById("workspace");
     if (!main) return;
     for (const el of main.querySelectorAll("button, input")) {
+      if (el.id === "errorCloseBtn") continue;
       if (disabled) {
         if (el.dataset.wasDisabled === undefined) {
           el.dataset.wasDisabled = el.disabled ? "1" : "0";
@@ -1257,13 +1308,15 @@
     for (const p of appState.pieces) {
       const d = p.detail || p;
       const btn = document.createElement("button");
-      btn.className = "piece-item" + (appState.current && appState.current.id === p.id ? " selected" : "");
+      const selected = Boolean(appState.current && appState.current.id === p.id);
+      btn.className = "piece-item" + (selected ? " selected" : "");
+      if (selected) btn.setAttribute("aria-current", "true");
 
       const top = document.createElement("div");
       const strong = document.createElement("strong");
       strong.textContent = `#${d.seed}`;
       top.appendChild(strong);
-      top.appendChild(document.createTextNode(` · ${d.meter} · ${d.key} ${d.mode}`));
+      top.appendChild(document.createTextNode(` · ${d.meter} · ${d.key} ${modeLabel(d.mode)}`));
 
       const meta = document.createElement("div");
       meta.className = "piece-meta";
@@ -1284,11 +1337,14 @@
     btn.dataset.layer = l.layer;
     btn.dataset.section = l.section;
     btn.disabled = Boolean(l.locked);
+    if (l.locked) btn.title = "Слой закреплён";
 
     const lbl = document.createElement("span");
     lbl.textContent = l.label;
     const badge = document.createElement("span");
     badge.className = "salt-badge";
+    badge.title = "Сколько раз перегенерировали";
+    badge.hidden = !(l.salt > 0);
     badge.textContent = `#${l.salt}`;
     btn.appendChild(lbl);
     btn.appendChild(badge);
@@ -1303,19 +1359,22 @@
           const salts = snap.state.recipe.studio.salts || {};
           const salt = whole ? { ...salts } : salts[`${l.layer}@${l.section}`] || 0;
           return { action: "reroll", layer: l.layer, section: l.section, salt };
-        }
+        },
+        btn
       );
 
     const lockBtn = document.createElement("button");
     lockBtn.className = l.locked ? "locked" : "";
     lockBtn.title = l.locked ? "Открепить" : "Закрепить";
-    lockBtn.textContent = l.locked ? "Закр." : "Откр.";
+    lockBtn.textContent = l.locked ? "🔒 Закреплено" : "Закрепить";
+    lockBtn.setAttribute("aria-pressed", l.locked ? "true" : "false");
     lockBtn.onclick = () =>
       runMutation(
         "lock",
         { layer: l.layer, section: l.section, locked: !l.locked },
         pieceId,
-        () => ({ action: "lock", layer: l.layer, section: l.section, value: !l.locked })
+        () => ({ action: "lock", layer: l.layer, section: l.section, value: !l.locked }),
+        lockBtn
       );
 
     row.appendChild(btn);
@@ -1338,14 +1397,17 @@
         const content = cmd === "export_midi" ? base64ToBytes(result) : result;
         downloadBlob(filename(pid), mime, content);
         await Storage.appendLog({ action: "export", value: logVal, piece_id: pid });
-      });
+      }).catch((err) => showError(err, appState.currentId));
     return btn;
   }
 
   function renderWorkspace() {
     const main = document.getElementById("workspace");
     if (!main) return;
-    main.textContent = "";
+    for (const c of Array.from(main.children)) {
+      if (c.id !== "errorBanner") c.remove();
+    }
+    paintError();
     const d = appState.current;
     if (!d) {
       const empty = document.createElement("div");
@@ -1369,18 +1431,29 @@
     const strongTitle = document.createElement("strong");
     strongTitle.textContent = `Пьеса #${d.seed}`;
     titleEl.appendChild(strongTitle);
-    titleEl.appendChild(document.createTextNode(` · ${d.meter} · ${d.key} ${d.mode} · ${d.tempo} BPM · ${d.length} с`));
+    titleEl.appendChild(document.createTextNode(` · ${d.meter} · ${d.key} ${modeLabel(d.mode)} · ${d.tempo} BPM · ${d.length} с`));
 
     const actionRow = document.createElement("div");
     actionRow.className = "row";
 
-    const undoBtn = document.createElement("button");
-    undoBtn.id = "undoBtn";
-    undoBtn.textContent = "Отменить";
-    undoBtn.disabled = !d.can_undo;
-    undoBtn.onclick = () => runMutation("undo", {}, d.id, () => ({ action: "undo" }));
+    function makeHistoryButton(id, verb, enabled, label, cmd) {
+      const btn = document.createElement("button");
+      btn.id = id;
+      btn.textContent = verb;
+      btn.title = enabled && label ? `${verb}: ${label}` : verb;
+      if (enabled && label) {
+        const hint = document.createElement("span");
+        hint.className = "btn-hint";
+        hint.textContent = `: ${label}`;
+        btn.appendChild(hint);
+      }
+      btn.disabled = !enabled;
+      btn.onclick = () => runMutation(cmd, {}, d.id, () => ({ action: cmd }), btn);
+      return btn;
+    }
 
-    actionRow.appendChild(undoBtn);
+    actionRow.appendChild(makeHistoryButton("undoBtn", "Отменить", d.can_undo, d.undo_label, "undo"));
+    actionRow.appendChild(makeHistoryButton("redoBtn", "Вернуть", d.can_redo, d.redo_label, "redo"));
     actionRow.appendChild(makeExportButton("dlMidiBtn", "Скачать MIDI", "export_midi", (id) => `${id}.mid`, "audio/midi", "piece.mid"));
     actionRow.appendChild(makeExportButton("dlMxmlBtn", "Скачать табы (MusicXML)", "export_musicxml", (id) => `${id}.musicxml`, "application/vnd.recordare.musicxml+xml;charset=utf-8", "piece.musicxml"));
     actionRow.appendChild(makeExportButton("dlTabBtn", "ASCII-таб", "export_tab", (id) => `${id}.tab.txt`, "text/plain;charset=utf-8", "piece.tab.txt"));
@@ -1410,12 +1483,12 @@
     seekBar.max = String(d.length);
     seekBar.step = "0.05";
     seekBar.value = "0";
-    if (typeof seekBar.setAttribute === "function") {
-      seekBar.setAttribute("aria-label", "Позиция воспроизведения");
-    }
+    seekBar.setAttribute("aria-label", "Позиция воспроизведения");
+    seekBar.setAttribute("aria-valuetext", curTime.textContent);
     seekBar.oninput = () => {
       seekBar.dataset.dragging = "1";
       curTime.textContent = `${fmtClock(Number(seekBar.value))} / ${fmtClock(d.length)}`;
+      seekBar.setAttribute("aria-valuetext", curTime.textContent);
     };
     seekBar.onchange = () => {
       delete seekBar.dataset.dragging;
@@ -1438,10 +1511,19 @@
       blk.style.flexGrow = String(dur / total);
       blk.dataset.start = String(s.start_sec);
       blk.dataset.end = String(s.end_sec);
+      blk.title = s.label;
+      blk.setAttribute("aria-label", `${s.label}, ${s.start_sec.toFixed(1)}–${s.end_sec.toFixed(1)} с`);
 
       const nameEl = document.createElement("div");
       nameEl.className = "name";
-      nameEl.textContent = s.label;
+      const fullEl = document.createElement("span");
+      fullEl.className = "name-full";
+      fullEl.textContent = s.label;
+      const shortEl = document.createElement("span");
+      shortEl.className = "name-short";
+      shortEl.textContent = SHORT_SECTION_LABELS[s.section] || s.label;
+      nameEl.appendChild(fullEl);
+      nameEl.appendChild(shortEl);
 
       const timeEl = document.createElement("div");
       timeEl.className = "time";
@@ -1483,7 +1565,8 @@
           layer: "all",
           section: "all",
           salt: { ...(snap.state.recipe.studio.salts || {}) },
-        })
+        }),
+        allBtn
       );
     wholeRow.appendChild(allBtn);
     wholeCard.appendChild(wholeH2);
@@ -1527,6 +1610,9 @@
     optCard.className = "card";
     const optH2 = document.createElement("h2");
     optH2.textContent = "Параметры пьесы";
+    const optNote = document.createElement("div");
+    optNote.className = "params-note";
+    optNote.textContent = "Параметры действуют на всю пьесу, в том числе на закреплённые секции.";
     const oGrid = document.createElement("div");
     oGrid.id = "optionsGrid";
     oGrid.className = "options-grid";
@@ -1534,10 +1620,15 @@
     advDetails.className = "advanced-options";
     const advSummary = document.createElement("summary");
     advSummary.textContent = "Дополнительно";
+    const advNote = document.createElement("div");
+    advNote.className = "advanced-note";
+    advNote.textContent =
+      "Эти параметры действуют только при следующей перегенерации ритм-гитары («Перегенерировать ритм-гитару» или «Перегенерировать всё незакреплённое»).";
     const advGrid = document.createElement("div");
     advGrid.id = "advancedGrid";
     advGrid.className = "options-grid";
     advDetails.appendChild(advSummary);
+    advDetails.appendChild(advNote);
     advDetails.appendChild(advGrid);
     const opts = d.options;
 
@@ -1548,13 +1639,69 @@
       parent.appendChild(h);
     }
 
-    function sendOption(name, value) {
+    function sendOption(name, value, ctl) {
       return runMutation(
         "option",
         { name, value },
         d.id,
-        (snap) => ({ action: "option", value: { [name]: snap.detail.options[name] } })
+        (snap) => ({ action: "option", value: { [name]: snap.detail.options[name] } }),
+        ctl
       );
+    }
+
+    function bindSliderCommit(inp, onMove, commit) {
+      let timer = null;
+      let dragging = false;
+      let dirty = false;
+      const cancel = () => {
+        clearTimeout(timer);
+        timer = null;
+        dirty = false;
+        dropPendingSlider(flush);
+      };
+      const flush = () => {
+        clearTimeout(timer);
+        timer = null;
+        dropPendingSlider(flush);
+        if (!dirty) return undefined;
+        dirty = false;
+        return commit();
+      };
+      inp.oninput = () => {
+        dirty = true;
+        if (!appState.pendingSliders.includes(flush)) appState.pendingSliders.push(flush);
+        onMove();
+        clearTimeout(timer);
+        timer = dragging ? null : setTimeout(flush, SLIDER_DEBOUNCE_MS);
+      };
+      inp.onpointerdown = () => {
+        dragging = true;
+        clearTimeout(timer);
+        timer = null;
+      };
+      inp.onpointerup = () => {
+        dragging = false;
+        flush();
+      };
+      inp.onpointercancel = inp.onpointerup;
+      inp.onchange = () => {
+        if (!dragging) return;
+        dragging = false;
+        flush();
+      };
+      return cancel;
+    }
+
+    function makeSliderInput(name, label, min, max, step, value) {
+      const inp = document.createElement("input");
+      inp.type = "range";
+      inp.dataset.option = name;
+      inp.min = String(min);
+      inp.max = String(max);
+      inp.step = String(step);
+      inp.value = String(value);
+      inp.setAttribute("aria-label", label);
+      return inp;
     }
 
     function addSliderControl(grid, name, label, min, max, step, hint) {
@@ -1568,24 +1715,49 @@
       labelSpan.textContent = label;
       head.appendChild(labelSpan);
       head.appendChild(valText);
-      const inp = document.createElement("input");
-      inp.type = "range";
-      inp.dataset.option = name;
-      inp.min = String(min);
-      inp.max = String(max);
-      inp.step = String(step);
-      inp.value = String(opts[name] ?? 0);
-      inp.oninput = () => {
-        valText.textContent = inp.value;
-      };
-      inp.onchange = () => {
-        const num = step === 1 ? parseInt(inp.value, 10) : parseFloat(inp.value);
-        sendOption(name, num);
-      };
+      const inp = makeSliderInput(name, label, min, max, step, opts[name] ?? 0);
+      inp.setAttribute("aria-valuetext", valText.textContent);
+      bindSliderCommit(
+        inp,
+        () => {
+          valText.textContent = inp.value;
+          inp.setAttribute("aria-valuetext", inp.value);
+        },
+        () => sendOption(name, step === 1 ? parseInt(inp.value, 10) : parseFloat(inp.value), inp)
+      );
       wrap.appendChild(head);
       wrap.appendChild(inp);
       if (hint) addOptionHint(wrap, hint);
       grid.appendChild(wrap);
+    }
+
+    function addChoiceGroup(grid, title, name, choices, current, hint) {
+      const box = document.createElement("div");
+      const titleEl = document.createElement("div");
+      titleEl.className = "piece-meta";
+      titleEl.style.marginBottom = "6px";
+      titleEl.textContent = title;
+      const row = document.createElement("div");
+      row.className = "row";
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", title);
+      for (const [val, txt] of choices) {
+        const selected = current === val;
+        const b = document.createElement("button");
+        b.className = selected ? "active" : "";
+        b.dataset.option = name;
+        b.dataset.value = String(val);
+        b.textContent = txt;
+        b.setAttribute("aria-pressed", selected ? "true" : "false");
+        b.onclick = () => {
+          if (!selected) sendOption(name, val, b);
+        };
+        row.appendChild(b);
+      }
+      box.appendChild(titleEl);
+      box.appendChild(row);
+      if (hint) addOptionHint(box, hint);
+      grid.appendChild(box);
     }
 
     addSliderControl(
@@ -1595,144 +1767,121 @@
       0,
       1,
       0.05,
-      "Глушит долю ударов ритм-гитары в секциях A, A2, A3 и B; применяется сразу."
+      "Глушит долю ударов ритм-гитары в секциях A, A2, «Кульминация» и B; применяется сразу."
     );
 
     {
+      const label = "Октавные аккорды (доля тактов)";
       const wrap = document.createElement("div");
       wrap.className = "slider-row";
-      const isAuto = opts.octave_share === null || opts.octave_share === undefined;
+      let auto = opts.octave_share === null || opts.octave_share === undefined;
       const valText = document.createElement("span");
-      valText.textContent = isAuto ? "авто" : String(opts.octave_share);
+      valText.textContent = auto ? "авто" : String(opts.octave_share);
       const head = document.createElement("div");
       head.className = "slider-head";
       const lbl = document.createElement("span");
-      lbl.textContent = "Октавные аккорды (доля тактов)";
+      lbl.textContent = label;
       head.appendChild(lbl);
       head.appendChild(valText);
       const row = document.createElement("div");
       row.className = "row";
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", label);
       const autoBtn = document.createElement("button");
-      autoBtn.className = isAuto ? "active" : "";
       autoBtn.dataset.option = "octave_share";
       autoBtn.dataset.value = "auto";
       autoBtn.textContent = "Авто";
-      const inp = document.createElement("input");
-      inp.type = "range";
-      inp.dataset.option = "octave_share";
-      inp.min = "0";
-      inp.max = "1";
-      inp.step = "0.05";
-      inp.value = isAuto ? "0.5" : String(opts.octave_share);
-      inp.className = isAuto ? "slider-dim" : "";
+      const manualBtn = document.createElement("button");
+      manualBtn.dataset.option = "octave_share";
+      manualBtn.dataset.value = "manual";
+      manualBtn.textContent = "Вручную";
+      const inp = makeSliderInput("octave_share", label, 0, 1, 0.05, auto ? 0.5 : opts.octave_share);
       inp.style.flex = "1 1 120px";
-      autoBtn.onclick = () => sendOption("octave_share", isAuto ? parseFloat(inp.value) : null);
-      inp.oninput = () => {
-        inp.classList.remove("slider-dim");
-        valText.textContent = inp.value;
+      const paint = () => {
+        autoBtn.className = auto ? "active" : "";
+        manualBtn.className = auto ? "" : "active";
+        autoBtn.setAttribute("aria-pressed", auto ? "true" : "false");
+        manualBtn.setAttribute("aria-pressed", auto ? "false" : "true");
+        inp.className = auto ? "slider-dim" : "";
+        valText.textContent = auto ? "авто" : inp.value;
+        inp.setAttribute("aria-valuetext", valText.textContent);
       };
-      inp.onchange = () => sendOption("octave_share", parseFloat(inp.value));
+      paint();
+      const cancelSlider = bindSliderCommit(
+        inp,
+        () => {
+          auto = false;
+          paint();
+        },
+        () => sendOption("octave_share", parseFloat(inp.value), inp)
+      );
+      autoBtn.onclick = () => {
+        if (auto) return;
+        cancelSlider();
+        sendOption("octave_share", null, autoBtn);
+      };
+      manualBtn.onclick = () => {
+        if (!auto) return;
+        sendOption("octave_share", parseFloat(inp.value), manualBtn);
+      };
       row.appendChild(autoBtn);
+      row.appendChild(manualBtn);
       row.appendChild(inp);
       wrap.appendChild(head);
       wrap.appendChild(row);
-      addOptionHint(wrap, "Доля тактов A и A2 с октавами («Авто» — как в пьесе); применяется сразу.");
+      addOptionHint(
+        wrap,
+        "Доля тактов A и A2 с октавами. «Авто» — как сложилось в пьесе; если сдвинуть ползунок, включится «Вручную». Применяется сразу."
+      );
       oGrid.appendChild(wrap);
     }
 
-    {
-      const box = document.createElement("div");
-      const title = document.createElement("div");
-      title.className = "piece-meta";
-      title.style.marginBottom = "6px";
-      title.textContent = "Длина вступления (тактов)";
-      const row = document.createElement("div");
-      row.className = "row";
-      const cur = opts.intro_bars ?? "auto";
-      for (const [val, txt] of [["auto", "Авто"], [1, "1"], [2, "2"], [4, "4"], [8, "8"]]) {
-        const b = document.createElement("button");
-        b.className = cur === val ? "active" : "";
-        b.dataset.option = "intro_bars";
-        b.dataset.value = String(val);
-        b.textContent = txt;
-        b.onclick = () => sendOption("intro_bars", val);
-        row.appendChild(b);
-      }
-      box.appendChild(title);
-      box.appendChild(row);
-      addOptionHint(box, "Меняет число тактов вступления по аккордам A; применяется сразу.");
-      oGrid.appendChild(box);
-    }
-
-    {
-      const box = document.createElement("div");
-      const title = document.createElement("div");
-      title.className = "piece-meta";
-      title.style.marginBottom = "6px";
-      title.textContent = "Повтор квадрата в куплетах";
-      const row = document.createElement("div");
-      row.className = "row";
-      const cur = opts.square_repeat ?? 1;
-      for (const [val, txt] of [[1, "1× (4 такта)"], [2, "2× (8 тактов)"]]) {
-        const b = document.createElement("button");
-        b.className = cur === val ? "active" : "";
-        b.dataset.option = "square_repeat";
-        b.dataset.value = String(val);
-        b.textContent = txt;
-        b.onclick = () => sendOption("square_repeat", val);
-        row.appendChild(b);
-      }
-      box.appendChild(title);
-      box.appendChild(row);
-      addOptionHint(box, "Повторяет 4-тактовый квадрат куплетов A и A2 дважды подряд; применяется сразу.");
-      oGrid.appendChild(box);
-    }
-
-    const bBox = document.createElement("div");
-    const bTitle = document.createElement("div");
-    bTitle.className = "piece-meta";
-    bTitle.style.marginBottom = "6px";
-    bTitle.textContent = "Соло в середине B (b_lead)";
-    const bRow = document.createElement("div");
-    bRow.className = "row";
-    for (const [val, txt] of [
-      ["augmented", "Удвоенно (как сейчас)"],
-      ["same_speed", "В темпе рифа"],
-      ["rest", "Без соло"],
-    ]) {
-      const b = document.createElement("button");
-      b.className = opts.b_lead === val ? "active" : "";
-      b.textContent = txt;
-      b.onclick = () => sendOption("b_lead", val);
-      bRow.appendChild(b);
-    }
-    bBox.appendChild(bTitle);
-    bBox.appendChild(bRow);
-    oGrid.appendChild(bBox);
-
-    const tBox = document.createElement("div");
-    const tTitle = document.createElement("div");
-    tTitle.className = "piece-meta";
-    tTitle.style.marginBottom = "6px";
-    tTitle.textContent = "Пауза в конце риф-такта (trailing_rest)";
-    const tBtn = document.createElement("button");
-    tBtn.className = opts.trailing_rest ? "active" : "";
-    tBtn.textContent = opts.trailing_rest ? "Вкл (есть пауза)" : "Выкл (--notail)";
-    tBtn.onclick = () => sendOption("trailing_rest", !opts.trailing_rest);
-    tBox.appendChild(tTitle);
-    tBox.appendChild(tBtn);
-    oGrid.appendChild(tBox);
+    addChoiceGroup(
+      oGrid,
+      "Длина вступления (тактов)",
+      "intro_bars",
+      [["auto", "Авто"], [1, "1"], [2, "2"], [4, "4"], [8, "8"]],
+      opts.intro_bars ?? "auto",
+      "Меняет число тактов вступления по аккордам A; применяется сразу."
+    );
+    addChoiceGroup(
+      oGrid,
+      "Повтор квадрата в куплетах",
+      "square_repeat",
+      [[1, "1× (4 такта)"], [2, "2× (8 тактов)"]],
+      opts.square_repeat ?? 1,
+      "Повторяет 4-тактовый квадрат куплетов A и A2 дважды подряд; применяется сразу."
+    );
+    addChoiceGroup(
+      oGrid,
+      "Соло в середине B",
+      "b_lead",
+      [
+        ["augmented", "Медленнее (удвоенные длительности)"],
+        ["same_speed", "В темпе рифа"],
+        ["rest", "Без соло"],
+      ],
+      opts.b_lead
+    );
+    addChoiceGroup(
+      oGrid,
+      "Конец такта в рифе",
+      "trailing_rest",
+      [[true, "Пауза в конце такта"], [false, "Без паузы"]],
+      Boolean(opts.trailing_rest)
+    );
 
     for (const [name, label, min, max, step] of [
       ["octave_piece", "Вероятность октав при перегенерации ритма", 0, 1, 0.05],
       ["octave_sixteenths", "Октавы шестнадцатыми (при перегенерации)", 0, 1, 0.05],
-      ["dead_notes", "Глухие перед акцентами в октавах (при перегенерации)", 0, 1, 0.05],
+      ["dead_notes", "Глухие удары перед акцентами (только в октавных тактах, при перегенерации)", 0, 1, 0.05],
       ["slide_max", "Макс. слайд октав в ладах (при перегенерации)", 0, 12, 1],
     ]) {
       addSliderControl(advGrid, name, label, min, max, step, null);
     }
 
     optCard.appendChild(optH2);
+    optCard.appendChild(optNote);
     optCard.appendChild(oGrid);
     optCard.appendChild(advDetails);
     main.appendChild(optCard);
@@ -1764,23 +1913,38 @@
     }
   }
 
-  function commitDisplayedPiece(snap, preserveAudioPos = false) {
-    appState.navPending = false;
-    appState.pendingNavId = null;
+  function applyDisplayedState(snap, preserveAudioPos) {
     appState.currentId = snap.state.id;
     appState.currentState = snap.state;
     appState.current = snap.detail;
     appState.currentEvents = snap.events;
     Sampler.setPiece(snap.events, snap.detail.length, preserveAudioPos);
+  }
+
+  function commitDisplayedPiece(snap, preserveAudioPos = false) {
+    if (appState.currentId !== snap.state.id) appState.errorText = "";
+    appState.navPending = false;
+    appState.pendingNavId = null;
+    applyDisplayedState(snap, preserveAudioPos);
     renderList();
     renderWorkspace();
   }
 
-  function runMutation(cmd, payloadArgs, pieceId, logBuilder) {
-    if (!pieceId) return Promise.resolve();
+  async function runMutation(cmd, payloadArgs, pieceId, logBuilder, ctl) {
+    if (!pieceId) return;
     if (appState.navPending && appState.pendingNavId !== pieceId) {
-      return Promise.resolve();
+      return;
     }
+    if (ctl) ctl.disabled = true;
+    try {
+      if (appState.pendingSliders.length) await flushPendingSliders();
+      await queueMutation(cmd, payloadArgs, pieceId, logBuilder);
+    } finally {
+      if (ctl) ctl.disabled = false;
+    }
+  }
+
+  function queueMutation(cmd, payloadArgs, pieceId, logBuilder) {
     return enqueueForPiece(pieceId, async () => {
       if (appState.navPending && appState.pendingNavId !== pieceId) {
         return;
@@ -1789,12 +1953,17 @@
       const latestState = (stored && stored.state) || (appState.currentId === pieceId ? appState.currentState : null);
       if (!latestState) return;
 
+      const tracked = appState.currentId === pieceId;
+      if (tracked) setChip(1);
       let resp;
       try {
         resp = await callPy(cmd, { ...payloadArgs, state: latestState });
       } catch (err) {
-        alert(err.message);
+        showError(err, pieceId);
+        if (appState.currentId === pieceId && !appState.navPending) renderWorkspace();
         return;
+      } finally {
+        if (tracked) setChip(-1);
       }
       const { result: snap, elapsedMs } = resp;
       if (samePieceState(latestState, snap.state)) {
@@ -1819,12 +1988,15 @@
       if (appState.currentId === pieceId && !appState.navPending) {
         commitDisplayedPiece(snap, true);
       } else {
+        if (appState.currentId === pieceId) applyDisplayedState(snap, true);
         renderList();
       }
     });
   }
 
   async function selectPiece(id) {
+    if (appState.pendingSliders.length) await flushPendingSliders();
+    if (appState.currentId && pieceQueues.has(appState.currentId)) await waitForPieceQueue(appState.currentId);
     const seq = ++appState.navSeq;
     appState.navPending = true;
     appState.pendingNavId = id;
@@ -1849,8 +2021,9 @@
       if (seq === appState.navSeq) {
         appState.navPending = false;
         appState.pendingNavId = null;
-        setWorkspaceDisabled(false);
-        alert(err.message);
+        showError(err, id);
+        renderList();
+        renderWorkspace();
       }
       return;
     }
@@ -1861,6 +2034,7 @@
   async function createNewPiece() {
     const raw = document.getElementById("seedInput").value.trim();
     const seed = raw === "" ? null : parseInt(raw, 10);
+    if (appState.pendingSliders.length) await flushPendingSliders();
     const seq = ++appState.navSeq;
     appState.navPending = true;
     appState.pendingNavId = null;
@@ -1875,7 +2049,7 @@
         appState.pendingNavId = null;
         setWorkspaceDisabled(false);
       }
-      alert(err.message);
+      showError(err);
       return;
     }
 
@@ -1921,7 +2095,7 @@
       for (const item of items) {
         const st = item.state || item;
         if (!st || !st.recipe) continue;
-        const { result: snap } = await callPy("snapshot", { state: st });
+        const { result: snap } = await callPy("import_state", { state: st });
         const { id: importedId } = await Storage.importUniquePiece(snap, item.updatedAt);
         if (!firstId) firstId = importedId;
       }
@@ -1929,7 +2103,7 @@
       renderList();
       if (firstId) await selectPiece(firstId);
     } catch (err) {
-      alert(err.message || String(err));
+      showError(err);
     }
   }
 
@@ -1941,6 +2115,10 @@
   };
 
   document.getElementById("newBtn").onclick = createNewPiece;
+  document.getElementById("errorCloseBtn").onclick = () => {
+    appState.errorText = "";
+    paintError();
+  };
   document.getElementById("logBtn").onclick = downloadHistoryLog;
   document.getElementById("exportPiecesBtn").onclick = exportAllPieces;
   const importInput = document.getElementById("importPiecesInput");

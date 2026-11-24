@@ -16,6 +16,7 @@
     --accent-dim: #254b75;
     --warn: #e09f3e;
     --ok: #52b788;
+    --err: #e05a67;
   }
   * { box-sizing: border-box; }
   body {
@@ -140,6 +141,7 @@
   .sec-block:hover { transform: translateY(-1px); outline: 1px solid #fff; }
   .sec-block.playing { outline: 2px solid #fff; }
   .sec-block .name { font-size: 0.82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sec-block .name-short { display: none; }
   .sec-block .time { font-size: 0.72rem; opacity: 0.9; }
   .sec-intro { background: #2d4f6c; }
   .sec-A { background: #2d6a4f; }
@@ -186,12 +188,54 @@
     font-size: 0.88rem;
   }
   .slider-head { display: flex; justify-content: space-between; color: var(--muted); }
-  .option-hint { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+  .option-hint, .params-note, .advanced-note { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+  .params-note, .advanced-note { margin: 0 0 10px 0; }
+  .salt-badge[hidden] { display: none; }
+  .btn-hint { font-weight: 400; color: var(--muted); }
+  .field-label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; }
+  .load-banner {
+    background: #36171c;
+    border: 1px solid var(--err);
+    color: #f8b4bb;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.82rem;
+    overflow-wrap: anywhere;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .load-banner[hidden] { display: none; }
+  .banner-retry { min-height: 40px; padding: 6px 10px; font-size: 0.8rem; }
+  .status-chip {
+    position: fixed;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    z-index: 20;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: #3a2d12;
+    color: var(--warn);
+    border: 1px solid var(--warn);
+    font-size: 0.9rem;
+    pointer-events: none;
+  }
+  .status-chip:empty { display: none; }
   .slider-dim { opacity: 0.55; }
   .advanced-options { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
   .advanced-options summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; font-weight: 600; margin-bottom: 10px; }
   input[type="range"] { width: 100%; }
   .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  @media (max-width: 520px) {
+    .sec-block { min-width: 48px; flex: 1 1 48px; padding: 8px 4px; }
+    .sec-block .name-full { display: none; }
+    .sec-block .name-short { display: inline; }
+    .sec-block .time { font-size: 0.65rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .btn-hint { display: none; }
+  }
   @media (max-width: 780px) {
     .layout { grid-template-columns: 1fr; }
     aside { border-right: none; border-bottom: 1px solid var(--border); }
@@ -207,18 +251,76 @@
       <h1>Griff Studio</h1>
       <span id="busy" class="busy">Рендер...</span>
     </div>
-    <div class="row">
-      <button id="newBtn" class="primary">Новая пьеса</button>
-      <input id="seedInput" type="number" placeholder="seed (опц.)">
+    <div>
+      <label class="field-label" for="seedInput">Номер пьесы (seed), необязательно</label>
+      <div class="row">
+        <button id="newBtn" class="primary">Новая пьеса</button>
+        <input id="seedInput" type="number" placeholder="например, 801000">
+      </div>
     </div>
     <div id="pieceList" class="piece-list"></div>
   </aside>
   <main id="workspace">
+    <div id="errorBanner" class="load-banner" role="alert" hidden>
+      <span id="errorText"></span>
+      <button id="errorCloseBtn" class="banner-retry" aria-label="Закрыть сообщение об ошибке">Закрыть</button>
+    </div>
     <div class="empty">Нажмите «Новая пьеса» или выберите готовую из списка.</div>
   </main>
 </div>
+<div id="statusChip" class="status-chip" role="status"></div>
 <script>
-const state = { pieces: [], current: null, currentId: null, busyCount: 0, navSeq: 0, editSeq: 0 };
+const SHORT_SECTION_LABELS = { intro: "Вст.", A: "A", A2: "A2", B: "B", A3: "Кульм.", end: "Конц." };
+const SLIDER_DEBOUNCE_MS = 600;
+const ERROR_BANNER_HTML = `<div id="errorBanner" class="load-banner" role="alert" hidden>
+      <span id="errorText"></span>
+      <button id="errorCloseBtn" class="banner-retry" aria-label="Закрыть сообщение об ошибке">Закрыть</button>
+    </div>`;
+const MODE_LABELS = {
+  ionian: "мажор (ионийский)",
+  aeolian: "минор (эолийский)",
+  dorian: "дорийский",
+  phrygian: "фригийский",
+  lydian: "лидийский",
+  mixolydian: "миксолидийский",
+  locrian: "локрийский",
+};
+const modeLabel = (mode) => MODE_LABELS[mode] || mode;
+const state = { pieces: [], current: null, currentId: null, busyCount: 0, chipCount: 0, error: "", navSeq: 0, editSeq: 0, pendingSliders: [] };
+
+function setChip(delta) {
+  state.chipCount = Math.max(0, state.chipCount + delta);
+  document.getElementById("statusChip").textContent = state.chipCount > 0 ? "Пересчёт…" : "";
+}
+
+function paintError() {
+  const banner = document.getElementById("errorBanner");
+  banner.hidden = !state.error;
+  document.getElementById("errorText").textContent = state.error;
+  document.getElementById("errorCloseBtn").onclick = () => {
+    state.error = "";
+    paintError();
+  };
+}
+
+function showError(err, pieceId) {
+  let where = "";
+  if (pieceId && pieceId !== state.currentId) {
+    const p = state.pieces.find((x) => x.id === pieceId);
+    where = ` (пьеса #${p ? p.seed : pieceId})`;
+  }
+  state.error = `Ошибка${where}: ${err && err.message ? err.message : err}`;
+  paintError();
+}
+
+function dropPending(flush) {
+  const i = state.pendingSliders.indexOf(flush);
+  if (i >= 0) state.pendingSliders.splice(i, 1);
+}
+
+async function settlePending() {
+  for (const flush of state.pendingSliders.splice(0)) await flush();
+}
 
 function setBusy(delta) {
   state.busyCount = Math.max(0, state.busyCount + delta);
@@ -251,8 +353,10 @@ function renderList() {
   el.innerHTML = "";
   for (const p of state.pieces) {
     const btn = document.createElement("button");
-    btn.className = "piece-item" + (state.current && state.current.id === p.id ? " selected" : "");
-    btn.innerHTML = `<div><strong>#${p.seed}</strong> · ${p.meter} · ${p.key} ${p.mode}</div>
+    const selected = Boolean(state.current && state.current.id === p.id);
+    btn.className = "piece-item" + (selected ? " selected" : "");
+    if (selected) btn.setAttribute("aria-current", "true");
+    btn.innerHTML = `<div><strong>#${p.seed}</strong> · ${p.meter} · ${p.key} ${modeLabel(p.mode)}</div>
       <div class="piece-meta">${p.tempo} BPM · ${p.length} с</div>`;
     btn.onclick = () => selectPiece(p.id);
     el.appendChild(btn);
@@ -263,21 +367,23 @@ function renderWorkspace(preserveTime = null) {
   const main = document.getElementById("workspace");
   const d = state.current;
   if (!d) {
-    main.innerHTML = '<div class="empty">Нажмите «Новая пьеса» или выберите готовую из списка.</div>';
+    main.innerHTML = ERROR_BANNER_HTML + '<div class="empty">Нажмите «Новая пьеса» или выберите готовую из списка.</div>';
+    paintError();
     return;
   }
 
   const audioUrl = `/api/piece/${encodeURIComponent(d.id)}/audio.mp3?t=${Date.now()}`;
   const total = Math.max(1, d.length);
 
-  main.innerHTML = `
+  main.innerHTML = `${ERROR_BANNER_HTML}
     <div class="card">
       <div class="header-bar">
         <div>
-          <strong>Пьеса #${d.seed}</strong> · ${d.meter} · ${d.key} ${d.mode} · ${d.tempo} BPM · ${d.length} с
+          <strong>Пьеса #${d.seed}</strong> · ${d.meter} · ${d.key} ${modeLabel(d.mode)} · ${d.tempo} BPM · ${d.length} с
         </div>
         <div class="row">
-          <button id="undoBtn" ${d.can_undo ? "" : "disabled"}>Отменить</button>
+          <button id="undoBtn"></button>
+          <button id="redoBtn"></button>
           <a class="btn" href="/api/piece/${encodeURIComponent(d.id)}/piece.mid" download>Скачать MIDI</a>
           <a class="btn" href="/api/piece/${encodeURIComponent(d.id)}/piece.musicxml" download>Скачать табы (MusicXML)</a>
         </div>
@@ -298,14 +404,17 @@ function renderWorkspace(preserveTime = null) {
 
     <div class="card">
       <h2>Параметры пьесы</h2>
+      <div class="params-note">Параметры действуют на всю пьесу, в том числе на закреплённые секции.</div>
       <div class="options-grid" id="optionsGrid"></div>
       <details class="advanced-options">
         <summary>Дополнительно</summary>
+        <div class="advanced-note">Эти параметры действуют только при следующей перегенерации ритм-гитары («Перегенерировать ритм-гитару» или «Перегенерировать всё незакреплённое»).</div>
         <div class="options-grid" id="advancedGrid"></div>
       </details>
     </div>
   `;
 
+  paintError();
   const player = document.getElementById("player");
   if (preserveTime !== null) {
     player.addEventListener("loadedmetadata", () => {
@@ -321,7 +430,23 @@ function renderWorkspace(preserveTime = null) {
     blk.style.flexGrow = String(dur / total);
     blk.dataset.start = String(s.start_sec);
     blk.dataset.end = String(s.end_sec);
-    blk.innerHTML = `<div class="name">${s.label}</div><div class="time">${s.start_sec.toFixed(1)}–${s.end_sec.toFixed(1)} с</div>`;
+    blk.title = s.label;
+    blk.setAttribute("aria-label", `${s.label}, ${s.start_sec.toFixed(1)}–${s.end_sec.toFixed(1)} с`);
+    const nameEl = document.createElement("div");
+    nameEl.className = "name";
+    const fullEl = document.createElement("span");
+    fullEl.className = "name-full";
+    fullEl.textContent = s.label;
+    const shortEl = document.createElement("span");
+    shortEl.className = "name-short";
+    shortEl.textContent = SHORT_SECTION_LABELS[s.section] || s.label;
+    nameEl.appendChild(fullEl);
+    nameEl.appendChild(shortEl);
+    const timeEl = document.createElement("div");
+    timeEl.className = "time";
+    timeEl.textContent = `${s.start_sec.toFixed(1)}–${s.end_sec.toFixed(1)} с`;
+    blk.appendChild(nameEl);
+    blk.appendChild(timeEl);
     blk.onclick = () => {
       player.currentTime = s.start_sec;
       player.play().catch(() => {});
@@ -336,7 +461,20 @@ function renderWorkspace(preserveTime = null) {
     }
   });
 
-  document.getElementById("undoBtn").onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/undo`, {}, d.id);
+  function setupHistoryButton(btn, verb, enabled, label, action) {
+    btn.textContent = verb;
+    btn.title = enabled && label ? `${verb}: ${label}` : verb;
+    if (enabled && label) {
+      const hint = document.createElement("span");
+      hint.className = "btn-hint";
+      hint.textContent = `: ${label}`;
+      btn.appendChild(hint);
+    }
+    btn.disabled = !enabled;
+    btn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/${action}`, {}, d.id, btn);
+  }
+  setupHistoryButton(document.getElementById("undoBtn"), "Отменить", d.can_undo, d.undo_label, "undo");
+  setupHistoryButton(document.getElementById("redoBtn"), "Вернуть", d.can_redo, d.redo_label, "redo");
 
   const wholeRow = document.getElementById("wholeRow");
   for (const l of d.whole_layers) {
@@ -345,7 +483,7 @@ function renderWorkspace(preserveTime = null) {
   const allBtn = document.createElement("button");
   allBtn.className = "primary";
   allBtn.textContent = "Перегенерировать всё незакреплённое";
-  allBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/reroll`, { layer: "all", section: "all" }, d.id);
+  allBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/reroll`, { layer: "all", section: "all" }, d.id, allBtn);
   wholeRow.appendChild(allBtn);
 
   const sGrid = document.getElementById("sectionsGrid");
@@ -368,173 +506,246 @@ function renderWorkspace(preserveTime = null) {
   const advGrid = document.getElementById("advancedGrid");
   const opts = d.options;
 
-  function addHint(parent, text) {
+  function addOptionHint(parent, text) {
     const h = document.createElement("div");
     h.className = "option-hint";
     h.textContent = text;
     parent.appendChild(h);
   }
 
-  function addSlider(grid, name, label, min, max, step, hint) {
-    const wrap = document.createElement("div");
-    wrap.className = "slider-row";
-    const valText = document.createElement("span");
-    valText.textContent = String(opts[name] ?? 0);
-    const head = document.createElement("div");
-    head.className = "slider-head";
-    const lbl = document.createElement("span");
-    lbl.textContent = label;
-    head.appendChild(lbl);
-    head.appendChild(valText);
+  function sendOption(name, value, ctl) {
+    return mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name, value }, d.id, ctl);
+  }
+
+  function bindSliderCommit(inp, onMove, commit) {
+    let timer = null;
+    let dragging = false;
+    let dirty = false;
+    const cancel = () => {
+      clearTimeout(timer);
+      timer = null;
+      dirty = false;
+      dropPending(flush);
+    };
+    const flush = () => {
+      clearTimeout(timer);
+      timer = null;
+      dropPending(flush);
+      if (!dirty) return undefined;
+      dirty = false;
+      return commit();
+    };
+    inp.oninput = () => {
+      dirty = true;
+      if (!state.pendingSliders.includes(flush)) state.pendingSliders.push(flush);
+      onMove();
+      clearTimeout(timer);
+      timer = dragging ? null : setTimeout(flush, SLIDER_DEBOUNCE_MS);
+    };
+    inp.onpointerdown = () => {
+      dragging = true;
+      clearTimeout(timer);
+      timer = null;
+    };
+    inp.onpointerup = () => {
+      dragging = false;
+      flush();
+    };
+    inp.onpointercancel = inp.onpointerup;
+    inp.onchange = () => {
+      if (!dragging) return;
+      dragging = false;
+      flush();
+    };
+    return cancel;
+  }
+
+  function makeSliderInput(name, label, min, max, step, value) {
     const inp = document.createElement("input");
     inp.type = "range";
     inp.dataset.option = name;
     inp.min = String(min);
     inp.max = String(max);
     inp.step = String(step);
-    inp.value = String(opts[name] ?? 0);
-    inp.oninput = () => { valText.textContent = inp.value; };
-    inp.onchange = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, {
-      name,
-      value: step === 1 ? parseInt(inp.value, 10) : parseFloat(inp.value),
-    }, d.id);
+    inp.value = String(value);
+    inp.setAttribute("aria-label", label);
+    return inp;
+  }
+
+  function addSliderControl(grid, name, label, min, max, step, hint) {
+    const wrap = document.createElement("div");
+    wrap.className = "slider-row";
+    const valText = document.createElement("span");
+    valText.textContent = String(opts[name] ?? 0);
+    const head = document.createElement("div");
+    head.className = "slider-head";
+    const labelSpan = document.createElement("span");
+    labelSpan.textContent = label;
+    head.appendChild(labelSpan);
+    head.appendChild(valText);
+    const inp = makeSliderInput(name, label, min, max, step, opts[name] ?? 0);
+    inp.setAttribute("aria-valuetext", valText.textContent);
+    bindSliderCommit(
+      inp,
+      () => {
+        valText.textContent = inp.value;
+        inp.setAttribute("aria-valuetext", inp.value);
+      },
+      () => sendOption(name, step === 1 ? parseInt(inp.value, 10) : parseFloat(inp.value), inp)
+    );
     wrap.appendChild(head);
     wrap.appendChild(inp);
-    if (hint) addHint(wrap, hint);
+    if (hint) addOptionHint(wrap, hint);
     grid.appendChild(wrap);
   }
 
-  addSlider(
+  function addChoiceGroup(grid, title, name, choices, current, hint) {
+    const box = document.createElement("div");
+    const titleEl = document.createElement("div");
+    titleEl.className = "piece-meta";
+    titleEl.style.marginBottom = "6px";
+    titleEl.textContent = title;
+    const row = document.createElement("div");
+    row.className = "row";
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", title);
+    for (const [val, txt] of choices) {
+      const selected = current === val;
+      const b = document.createElement("button");
+      b.className = selected ? "active" : "";
+      b.dataset.option = name;
+      b.dataset.value = String(val);
+      b.textContent = txt;
+      b.setAttribute("aria-pressed", selected ? "true" : "false");
+      b.onclick = () => {
+        if (!selected) sendOption(name, val, b);
+      };
+      row.appendChild(b);
+    }
+    box.appendChild(titleEl);
+    box.appendChild(row);
+    if (hint) addOptionHint(box, hint);
+    grid.appendChild(box);
+  }
+
+  addSliderControl(
     oGrid,
     "mute_share",
     "Глухие ноты (доля ударов ритм-гитары)",
-    0, 1, 0.05,
-    "Глушит долю ударов ритм-гитары в секциях A, A2, A3 и B; применяется сразу."
+    0,
+    1,
+    0.05,
+    "Глушит долю ударов ритм-гитары в секциях A, A2, «Кульминация» и B; применяется сразу."
   );
 
   {
+    const label = "Октавные аккорды (доля тактов)";
     const wrap = document.createElement("div");
     wrap.className = "slider-row";
-    const isAuto = opts.octave_share === null || opts.octave_share === undefined;
+    let auto = opts.octave_share === null || opts.octave_share === undefined;
     const valText = document.createElement("span");
-    valText.textContent = isAuto ? "авто" : String(opts.octave_share);
+    valText.textContent = auto ? "авто" : String(opts.octave_share);
     const head = document.createElement("div");
     head.className = "slider-head";
     const lbl = document.createElement("span");
-    lbl.textContent = "Октавные аккорды (доля тактов)";
+    lbl.textContent = label;
     head.appendChild(lbl);
     head.appendChild(valText);
     const row = document.createElement("div");
     row.className = "row";
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", label);
     const autoBtn = document.createElement("button");
-    autoBtn.className = isAuto ? "active" : "";
     autoBtn.dataset.option = "octave_share";
     autoBtn.dataset.value = "auto";
     autoBtn.textContent = "Авто";
-    const inp = document.createElement("input");
-    inp.type = "range";
-    inp.dataset.option = "octave_share";
-    inp.min = "0";
-    inp.max = "1";
-    inp.step = "0.05";
-    inp.value = isAuto ? "0.5" : String(opts.octave_share);
-    inp.className = isAuto ? "slider-dim" : "";
-    inp.style.flex = "1";
-    autoBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "octave_share", value: isAuto ? parseFloat(inp.value) : null }, d.id);
-    inp.oninput = () => {
-      inp.classList.remove("slider-dim");
-      valText.textContent = inp.value;
+    const manualBtn = document.createElement("button");
+    manualBtn.dataset.option = "octave_share";
+    manualBtn.dataset.value = "manual";
+    manualBtn.textContent = "Вручную";
+    const inp = makeSliderInput("octave_share", label, 0, 1, 0.05, auto ? 0.5 : opts.octave_share);
+    inp.style.flex = "1 1 120px";
+    const paint = () => {
+      autoBtn.className = auto ? "active" : "";
+      manualBtn.className = auto ? "" : "active";
+      autoBtn.setAttribute("aria-pressed", auto ? "true" : "false");
+      manualBtn.setAttribute("aria-pressed", auto ? "false" : "true");
+      inp.className = auto ? "slider-dim" : "";
+      valText.textContent = auto ? "авто" : inp.value;
+      inp.setAttribute("aria-valuetext", valText.textContent);
     };
-    inp.onchange = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, {
-      name: "octave_share",
-      value: parseFloat(inp.value),
-    }, d.id);
+    paint();
+    const cancelSlider = bindSliderCommit(
+      inp,
+      () => {
+        auto = false;
+        paint();
+      },
+      () => sendOption("octave_share", parseFloat(inp.value), inp)
+    );
+    autoBtn.onclick = () => {
+      if (auto) return;
+      cancelSlider();
+      sendOption("octave_share", null, autoBtn);
+    };
+    manualBtn.onclick = () => {
+      if (!auto) return;
+      sendOption("octave_share", parseFloat(inp.value), manualBtn);
+    };
     row.appendChild(autoBtn);
+    row.appendChild(manualBtn);
     row.appendChild(inp);
     wrap.appendChild(head);
     wrap.appendChild(row);
-    addHint(wrap, "Доля тактов A и A2 с октавами («Авто» — как в пьесе); применяется сразу.");
+    addOptionHint(
+      wrap,
+      "Доля тактов A и A2 с октавами. «Авто» — как сложилось в пьесе; если сдвинуть ползунок, включится «Вручную». Применяется сразу."
+    );
     oGrid.appendChild(wrap);
   }
 
-  {
-    const box = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "piece-meta";
-    title.style.marginBottom = "6px";
-    title.textContent = "Длина вступления (тактов)";
-    const row = document.createElement("div");
-    row.className = "row";
-    const cur = opts.intro_bars ?? "auto";
-    for (const [val, txt] of [["auto", "Авто"], [1, "1"], [2, "2"], [4, "4"], [8, "8"]]) {
-      const b = document.createElement("button");
-      b.className = cur === val ? "active" : "";
-      b.dataset.option = "intro_bars";
-      b.dataset.value = String(val);
-      b.textContent = txt;
-      b.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "intro_bars", value: val }, d.id);
-      row.appendChild(b);
-    }
-    box.appendChild(title);
-    box.appendChild(row);
-    addHint(box, "Меняет число тактов вступления по аккордам A; применяется сразу.");
-    oGrid.appendChild(box);
-  }
-
-  {
-    const box = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "piece-meta";
-    title.style.marginBottom = "6px";
-    title.textContent = "Повтор квадрата в куплетах";
-    const row = document.createElement("div");
-    row.className = "row";
-    const cur = opts.square_repeat ?? 1;
-    for (const [val, txt] of [[1, "1× (4 такта)"], [2, "2× (8 тактов)"]]) {
-      const b = document.createElement("button");
-      b.className = cur === val ? "active" : "";
-      b.dataset.option = "square_repeat";
-      b.dataset.value = String(val);
-      b.textContent = txt;
-      b.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "square_repeat", value: val }, d.id);
-      row.appendChild(b);
-    }
-    box.appendChild(title);
-    box.appendChild(row);
-    addHint(box, "Повторяет 4-тактовый квадрат куплетов A и A2 дважды подряд; применяется сразу.");
-    oGrid.appendChild(box);
-  }
-
-  const bBox = document.createElement("div");
-  bBox.innerHTML = `<div class="piece-meta" style="margin-bottom:6px">Соло в середине B (b_lead)</div>`;
-  const bRow = document.createElement("div");
-  bRow.className = "row";
-  for (const [val, txt] of [["augmented", "Удвоенно (как сейчас)"], ["same_speed", "В темпе рифа"], ["rest", "Без соло"]]) {
-    const b = document.createElement("button");
-    b.className = opts.b_lead === val ? "active" : "";
-    b.textContent = txt;
-    b.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "b_lead", value: val }, d.id);
-    bRow.appendChild(b);
-  }
-  bBox.appendChild(bRow);
-  oGrid.appendChild(bBox);
-
-  const tBox = document.createElement("div");
-  tBox.innerHTML = `<div class="piece-meta" style="margin-bottom:6px">Пауза в конце риф-такта (trailing_rest)</div>`;
-  const tBtn = document.createElement("button");
-  tBtn.className = opts.trailing_rest ? "active" : "";
-  tBtn.textContent = opts.trailing_rest ? "Вкл (есть пауза)" : "Выкл (--notail)";
-  tBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(d.id)}/option`, { name: "trailing_rest", value: !opts.trailing_rest }, d.id);
-  tBox.appendChild(tBtn);
-  oGrid.appendChild(tBox);
+  addChoiceGroup(
+    oGrid,
+    "Длина вступления (тактов)",
+    "intro_bars",
+    [["auto", "Авто"], [1, "1"], [2, "2"], [4, "4"], [8, "8"]],
+    opts.intro_bars ?? "auto",
+    "Меняет число тактов вступления по аккордам A; применяется сразу."
+  );
+  addChoiceGroup(
+    oGrid,
+    "Повтор квадрата в куплетах",
+    "square_repeat",
+    [[1, "1× (4 такта)"], [2, "2× (8 тактов)"]],
+    opts.square_repeat ?? 1,
+    "Повторяет 4-тактовый квадрат куплетов A и A2 дважды подряд; применяется сразу."
+  );
+  addChoiceGroup(
+    oGrid,
+    "Соло в середине B",
+    "b_lead",
+    [
+      ["augmented", "Медленнее (удвоенные длительности)"],
+      ["same_speed", "В темпе рифа"],
+      ["rest", "Без соло"],
+    ],
+    opts.b_lead
+  );
+  addChoiceGroup(
+    oGrid,
+    "Конец такта в рифе",
+    "trailing_rest",
+    [[true, "Пауза в конце такта"], [false, "Без паузы"]],
+    Boolean(opts.trailing_rest)
+  );
 
   for (const [name, label, min, max, step] of [
     ["octave_piece", "Вероятность октав при перегенерации ритма", 0, 1, 0.05],
     ["octave_sixteenths", "Октавы шестнадцатыми (при перегенерации)", 0, 1, 0.05],
-    ["dead_notes", "Глухие перед акцентами в октавах (при перегенерации)", 0, 1, 0.05],
+    ["dead_notes", "Глухие удары перед акцентами (только в октавных тактах, при перегенерации)", 0, 1, 0.05],
     ["slide_max", "Макс. слайд октав в ладах (при перегенерации)", 0, 12, 1],
   ]) {
-    addSlider(advGrid, name, label, min, max, step, null);
+    addSliderControl(advGrid, name, label, min, max, step, null);
   }
 }
 
@@ -544,38 +755,67 @@ function makeLayerControl(pieceId, l) {
   const btn = document.createElement("button");
   btn.className = "reroll-btn";
   btn.disabled = l.locked;
-  btn.innerHTML = `<span>${l.label}</span><span class="salt-badge">#${l.salt}</span>`;
-  btn.onclick = () => mutate(`/api/piece/${encodeURIComponent(pieceId)}/reroll`, { layer: l.layer, section: l.section }, pieceId);
+  if (l.locked) btn.title = "Слой закреплён";
+  const lbl = document.createElement("span");
+  lbl.textContent = l.label;
+  const badge = document.createElement("span");
+  badge.className = "salt-badge";
+  badge.title = "Сколько раз перегенерировали";
+  badge.hidden = !(l.salt > 0);
+  badge.textContent = `#${l.salt}`;
+  btn.appendChild(lbl);
+  btn.appendChild(badge);
+  btn.onclick = () => mutate(`/api/piece/${encodeURIComponent(pieceId)}/reroll`, { layer: l.layer, section: l.section }, pieceId, btn);
 
   const lockBtn = document.createElement("button");
   lockBtn.className = l.locked ? "locked" : "";
   lockBtn.title = l.locked ? "Открепить" : "Закрепить";
-  lockBtn.textContent = l.locked ? "Закр." : "Откр.";
+  lockBtn.textContent = l.locked ? "🔒 Закреплено" : "Закрепить";
+  lockBtn.setAttribute("aria-pressed", l.locked ? "true" : "false");
   lockBtn.onclick = () => mutate(`/api/piece/${encodeURIComponent(pieceId)}/lock`, {
     layer: l.layer,
     section: l.section,
     locked: !l.locked,
-  }, pieceId);
+  }, pieceId, lockBtn);
   row.appendChild(btn);
   row.appendChild(lockBtn);
   return row;
 }
 
-async function mutate(url, body, pieceId) {
+async function mutate(url, body, pieceId, ctl) {
+  if (ctl) ctl.disabled = true;
+  if (state.pendingSliders.length) await settlePending();
   const player = document.getElementById("player");
   const pos = player ? player.currentTime : null;
   const seq = ++state.editSeq;
+  setChip(1);
   let det;
   try {
     det = await api(url, { method: "POST", body: JSON.stringify(body) });
   } catch (err) {
-    alert(err.message);
+    showError(err, pieceId);
+    if (state.currentId === pieceId && state.current) {
+      let saved = null;
+      try {
+        saved = await api(`/api/piece/${encodeURIComponent(pieceId)}`);
+      } catch (_) {}
+      if (seq === state.editSeq && state.current.id === pieceId) {
+        if (saved) state.current = saved;
+        if (state.currentId === pieceId) renderWorkspace(pos);
+      }
+    }
     return;
+  } finally {
+    setChip(-1);
   }
   const fresh = () => seq === state.editSeq && state.currentId === pieceId;
-  if (fresh()) state.current = det;
-  await refreshList();
+  if (seq === state.editSeq && state.current && state.current.id === pieceId) state.current = det;
   if (fresh()) renderWorkspace(pos);
+  try {
+    await refreshList();
+  } catch (err) {
+    showError(err);
+  }
 }
 
 async function refreshList() {
@@ -586,17 +826,30 @@ async function refreshList() {
 
 async function selectPiece(id) {
   const seq = ++state.navSeq;
+  if (state.pendingSliders.length) await settlePending();
+  if (seq !== state.navSeq) return;
   const edits = state.editSeq;
   state.currentId = id;
   let det;
   try {
     det = await api(`/api/piece/${encodeURIComponent(id)}`);
   } catch (err) {
-    if (seq === state.navSeq) state.currentId = state.current ? state.current.id : null;
-    alert(err.message);
+    if (seq === state.navSeq) {
+      state.currentId = state.current ? state.current.id : null;
+      showError(err, id);
+      renderList();
+      renderWorkspace();
+    }
     return;
   }
-  if (seq !== state.navSeq || edits !== state.editSeq) return;
+  if (seq !== state.navSeq) return;
+  if (edits !== state.editSeq) {
+    state.currentId = state.current ? state.current.id : null;
+    renderList();
+    renderWorkspace();
+    return;
+  }
+  if (!state.current || state.current.id !== det.id) state.error = "";
   state.current = det;
   renderList();
   renderWorkspace();
@@ -606,21 +859,29 @@ document.getElementById("newBtn").onclick = async () => {
   const raw = document.getElementById("seedInput").value.trim();
   const seed = raw === "" ? null : parseInt(raw, 10);
   const seq = ++state.navSeq;
+  if (state.pendingSliders.length) await settlePending();
+  if (seq !== state.navSeq) return;
   let det;
   try {
     det = await api("/api/new", { method: "POST", body: JSON.stringify({ seed }) });
   } catch (err) {
-    alert(err.message);
+    showError(err);
     return;
   }
   if (seq === state.navSeq) {
+    state.error = "";
     state.current = det;
     state.currentId = det.id;
+    renderWorkspace();
   }
-  await refreshList();
-  if (seq === state.navSeq) renderWorkspace();
+  try {
+    await refreshList();
+  } catch (err) {
+    showError(err);
+  }
 };
 
+paintError();
 refreshList().then(() => {
   if (state.pieces.length > 0 && !state.current && !state.currentId) {
     selectPiece(state.pieces[0].id);

@@ -52,8 +52,92 @@ function makeFakeState(seed = 801000, overrides = {}) {
     id: `piece_${seed}`,
     recipe,
     undo: [],
+    redo: [],
     ...overrides,
   };
+}
+
+function describeFakeChange(prevRec, curRec) {
+  const po = (prevRec && prevRec.studio && prevRec.studio.options) || {};
+  const co = (curRec && curRec.studio && curRec.studio.options) || {};
+  const fmtNum = (v) => String(Number(v));
+  for (const k of [
+    "mute_share",
+    "octave_share",
+    "intro_bars",
+    "square_repeat",
+    "b_lead",
+    "trailing_rest",
+    "octave_piece",
+    "octave_sixteenths",
+    "dead_notes",
+    "slide_max",
+  ]) {
+    if (po[k] !== co[k]) {
+      const v = co[k];
+      if (k === "mute_share") return `глухие ноты ${fmtNum(v)}`;
+      if (k === "octave_share") return v === null || v === undefined ? "октавные аккорды: авто" : `октавные аккорды ${fmtNum(v)}`;
+      if (k === "intro_bars") return v === "auto" ? "длина вступления: авто" : `длина вступления: ${v}`;
+      if (k === "square_repeat") return `повтор квадрата: ${v}×`;
+      if (k === "b_lead") {
+        return {
+          augmented: "соло в середине B: медленнее",
+          same_speed: "соло в середине B: в темпе рифа",
+          rest: "соло в середине B: без соло",
+        }[v] || `соло в середине B: ${v}`;
+      }
+      if (k === "trailing_rest") return v ? "пауза в конце такта" : "без паузы в конце такта";
+      if (k === "octave_piece") return `вероятность октав ${fmtNum(v)}`;
+      if (k === "octave_sixteenths") return `октавы шестнадцатыми ${fmtNum(v)}`;
+      if (k === "dead_notes") return `глухие перед акцентами ${fmtNum(v)}`;
+      if (k === "slide_max") return `макс. слайд октав ${v}`;
+    }
+  }
+  const secLabels = {
+    intro: "Вступление",
+    A: "Куплет A",
+    A2: "Куплет A2",
+    B: "Середина B",
+    A3: "Кульминация",
+    end: "Концовка",
+  };
+  const layerLabels = {
+    comp: "ритм-гитара",
+    texture: "фактура",
+    lead_rhythm: "риф",
+    b: "вариант середины",
+    intro: "вступление",
+    ending: "концовка",
+    tempo: "темп",
+  };
+  const formatTarget = (layer, section) => {
+    if (section === "all") return `«${layerLabels[layer] || layer}»`;
+    if ((section === "intro" && layer === "intro") || (section === "end" && layer === "ending")) {
+      return `«${secLabels[section] || section}»`;
+    }
+    return `«${secLabels[section] || section} · ${layerLabels[layer] || layer}»`;
+  };
+  const pl = new Set((prevRec && prevRec.studio && prevRec.studio.locks) || []);
+  const cl = new Set((curRec && curRec.studio && curRec.studio.locks) || []);
+  const added = [...cl].filter((k) => !pl.has(k));
+  const removed = [...pl].filter((k) => !cl.has(k));
+  if (added.length === 1 && removed.length === 0) {
+    const [l, s] = added[0].split("@");
+    return `закрепление ${formatTarget(l, s)}`;
+  }
+  if (removed.length === 1 && added.length === 0) {
+    const [l, s] = removed[0].split("@");
+    return `открепление ${formatTarget(l, s)}`;
+  }
+  const ps = (prevRec && prevRec.studio && prevRec.studio.salts) || {};
+  const cs = (curRec && curRec.studio && curRec.studio.salts) || {};
+  const changedSalts = Object.keys({ ...ps, ...cs }).filter((k) => Number(ps[k] || 0) !== Number(cs[k] || 0));
+  if (changedSalts.length > 1) return "перегенерация всего незакреплённого";
+  if (changedSalts.length === 1) {
+    const [l, s] = changedSalts[0].split("@");
+    return `перегенерация ${formatTarget(l, s)}`;
+  }
+  return "последнее изменение";
 }
 
 function buildDetailFromState(st, sectionLabels = {}) {
@@ -111,6 +195,8 @@ function buildDetailFromState(st, sectionLabels = {}) {
       layers,
     };
   });
+  const undo = Array.isArray(st.undo) ? st.undo : [];
+  const redo = Array.isArray(st.redo) ? st.redo : [];
   return {
     id: st.id,
     seed: rec.seed,
@@ -148,7 +234,10 @@ function buildDetailFromState(st, sectionLabels = {}) {
       dead_notes: opts.dead_notes ?? 0.2,
       slide_max: opts.slide_max ?? 5,
     },
-    can_undo: Array.isArray(st.undo) && st.undo.length > 0,
+    can_undo: undo.length > 0,
+    can_redo: redo.length > 0,
+    undo_label: undo.length > 0 ? describeFakeChange(undo[undo.length - 1], rec) : null,
+    redo_label: redo.length > 0 ? describeFakeChange(rec, redo[redo.length - 1]) : null,
   };
 }
 
@@ -219,9 +308,67 @@ class StubElement {
     this.files = [];
     this._textContent = "";
     this._innerHTML = "";
+    this._attrs = new Map();
+    this._listeners = new Map();
     this.onclick = null;
     this.onchange = null;
     this.oninput = null;
+    this.onpointerdown = null;
+    this.onpointerup = null;
+    this.onpointercancel = null;
+    this.onkeydown = null;
+    this.onblur = null;
+  }
+
+  setAttribute(name, val) {
+    const k = String(name);
+    const v = String(val ?? "");
+    this._attrs.set(k, v);
+    if (k === "id") this.id = v;
+    if (k === "title") this.title = v;
+    if (k === "type") this.type = v;
+  }
+  getAttribute(name) {
+    const k = String(name);
+    if (this._attrs.has(k)) return this._attrs.get(k);
+    if (k === "id" && this.id) return this.id;
+    if (k === "title" && this.title) return this.title;
+    if (k === "type" && this.type) return this.type;
+    return null;
+  }
+  hasAttribute(name) {
+    return this._attrs.has(String(name));
+  }
+  removeAttribute(name) {
+    this._attrs.delete(String(name));
+  }
+  addEventListener(type, fn) {
+    const t = String(type);
+    if (!this._listeners.has(t)) this._listeners.set(t, []);
+    this._listeners.get(t).push(fn);
+  }
+  removeEventListener(type, fn) {
+    const t = String(type);
+    const arr = this._listeners.get(t);
+    if (arr) this._listeners.set(t, arr.filter((f) => f !== fn));
+  }
+  dispatchEvent(ev) {
+    const event = ev || { type: "" };
+    if (!event.target) event.target = this;
+    const h = this["on" + event.type];
+    if (typeof h === "function") h(event);
+    for (const fn of [...(this._listeners.get(event.type) || [])]) fn(event);
+  }
+  get firstChild() {
+    return this.children[0] || null;
+  }
+  insertBefore(child, ref) {
+    if (!child) return child;
+    child.parentNode = this;
+    const idx = ref ? this.children.indexOf(ref) : -1;
+    if (idx === -1) this.children.push(child);
+    else this.children.splice(idx, 0, child);
+    return child;
   }
 
   get className() {
@@ -350,29 +497,24 @@ function createAppHarness(options = {}) {
     resumeBehavior,
     audioInitialState,
     idbFailNextWrite: null,
+    failNextWorkerCall: null,
     idbUnavailable: Boolean(options.idbUnavailable),
     sectionLabels,
   };
 
   // DOM setup
   const root = new StubElement("body", env, "body");
-  const staticIds = [
-    ["h1", "title"],
-    ["span", "busy"],
-    ["div", "loadBanner"],
-    ["div", "storageBanner"],
-    ["div", "audioBanner"],
-    ["button", "newBtn"],
-    ["input", "seedInput"],
-    ["div", "pieceList"],
-    ["button", "logBtn"],
-    ["button", "exportPiecesBtn"],
-    ["button", "importPiecesBtn"],
-    ["input", "importPiecesInput"],
-    ["main", "workspace"],
-  ];
-  for (const [tag, id] of staticIds) {
-    root.appendChild(new StubElement(tag, env, id));
+  const productionHtml = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
+  const nested = { errorBanner: "workspace", errorText: "errorBanner", errorCloseBtn: "errorBanner" };
+  const staticEls = new Map();
+  for (const m of productionHtml.split("<body")[1].matchAll(/<(\w+)\b([^>]*?\bid="([^"]+)"[^>]*)>/g)) {
+    const [, tag, attrs, id] = m;
+    const el = new StubElement(tag, env, id);
+    if (/(^|\s)hidden(\s|=|$)/.test(attrs)) el.hidden = true;
+    const role = /\brole="([^"]*)"/.exec(attrs);
+    if (role) el.setAttribute("role", role[1]);
+    staticEls.set(id, el);
+    (staticEls.get(nested[id]) || root).appendChild(el);
   }
 
   const documentStub = {
@@ -572,7 +714,7 @@ function createAppHarness(options = {}) {
         events: eventsForState ? eventsForState(st) : defaultFakeEvents(st),
       };
     }
-    if (cmd === "snapshot") {
+    if (cmd === "snapshot" || cmd === "import_state") {
       const st = deepClone(payload.state);
       return {
         state: st,
@@ -580,18 +722,18 @@ function createAppHarness(options = {}) {
         events: eventsForState ? eventsForState(st) : defaultFakeEvents(st),
       };
     }
+    const respond = (nextSt) => ({
+      state: nextSt,
+      detail: buildDetailFromState(nextSt, env.sectionLabels),
+      events: eventsForState ? eventsForState(nextSt) : defaultFakeEvents(nextSt),
+    });
+    const pushUndo = (oldSt) => [...(oldSt.undo || []), deepClone(oldSt.recipe)].slice(-50);
     if (cmd === "reroll") {
       const oldSt = deepClone(payload.state);
       const nextRec = deepClone(oldSt.recipe);
       const key = `${payload.layer}@${payload.section}`;
       nextRec.studio.salts[key] = (nextRec.studio.salts[key] || 0) + 1;
-      const nextUndo = [...(oldSt.undo || []), deepClone(oldSt.recipe)].slice(-50);
-      const nextSt = { id: oldSt.id, recipe: nextRec, undo: nextUndo };
-      return {
-        state: nextSt,
-        detail: buildDetailFromState(nextSt, env.sectionLabels),
-        events: eventsForState ? eventsForState(nextSt) : defaultFakeEvents(nextSt),
-      };
+      return respond({ id: oldSt.id, recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
     }
     if (cmd === "lock") {
       const oldSt = deepClone(payload.state);
@@ -601,44 +743,38 @@ function createAppHarness(options = {}) {
       if (payload.locked) locks.add(key);
       else locks.delete(key);
       nextRec.studio.locks = Array.from(locks);
-      const nextUndo = [...(oldSt.undo || []), deepClone(oldSt.recipe)].slice(-50);
-      const nextSt = { id: oldSt.id, recipe: nextRec, undo: nextUndo };
-      return {
-        state: nextSt,
-        detail: buildDetailFromState(nextSt, env.sectionLabels),
-        events: eventsForState ? eventsForState(nextSt) : defaultFakeEvents(nextSt),
-      };
+      return respond({ id: oldSt.id, recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
     }
     if (cmd === "option") {
       const oldSt = deepClone(payload.state);
       const nextRec = deepClone(oldSt.recipe);
       nextRec.studio.options[payload.name] = payload.value;
       if (JSON.stringify(nextRec) === JSON.stringify(oldSt.recipe)) {
-        const sameSt = { id: oldSt.id, recipe: oldSt.recipe, undo: [...(oldSt.undo || [])] };
-        return {
-          state: sameSt,
-          detail: buildDetailFromState(sameSt, env.sectionLabels),
-          events: eventsForState ? eventsForState(sameSt) : defaultFakeEvents(sameSt),
-        };
+        return respond({ id: oldSt.id, recipe: oldSt.recipe, undo: [...(oldSt.undo || [])], redo: [...(oldSt.redo || [])] });
       }
-      const nextUndo = [...(oldSt.undo || []), deepClone(oldSt.recipe)].slice(-50);
-      const nextSt = { id: oldSt.id, recipe: nextRec, undo: nextUndo };
-      return {
-        state: nextSt,
-        detail: buildDetailFromState(nextSt, env.sectionLabels),
-        events: eventsForState ? eventsForState(nextSt) : defaultFakeEvents(nextSt),
-      };
+      return respond({ id: oldSt.id, recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
     }
     if (cmd === "undo") {
       const oldSt = deepClone(payload.state);
       const undo = [...(oldSt.undo || [])];
-      const rec = undo.length ? undo.pop() : oldSt.recipe;
-      const nextSt = { id: oldSt.id, recipe: rec, undo };
-      return {
-        state: nextSt,
-        detail: buildDetailFromState(nextSt, env.sectionLabels),
-        events: eventsForState ? eventsForState(nextSt) : defaultFakeEvents(nextSt),
-      };
+      let redo = [...(oldSt.redo || [])];
+      let rec = oldSt.recipe;
+      if (undo.length) {
+        redo = [...redo, deepClone(oldSt.recipe)].slice(-50);
+        rec = undo.pop();
+      }
+      return respond({ id: oldSt.id, recipe: rec, undo, redo });
+    }
+    if (cmd === "redo") {
+      const oldSt = deepClone(payload.state);
+      const redo = [...(oldSt.redo || [])];
+      let undo = [...(oldSt.undo || [])];
+      let rec = oldSt.recipe;
+      if (redo.length) {
+        undo = pushUndo(oldSt);
+        rec = redo.pop();
+      }
+      return respond({ id: oldSt.id, recipe: rec, undo, redo });
     }
     if (cmd === "export_midi") {
       const salt = payload.state?.recipe?.studio?.salts?.["comp@A"] || 0;
@@ -697,6 +833,12 @@ function createAppHarness(options = {}) {
         };
         if (env.autoRunWorkerCalls) {
           queueMicrotask(() => {
+            if (env.failNextWorkerCall) {
+              const errMsg = env.failNextWorkerCall;
+              env.failNextWorkerCall = null;
+              entry.reject(errMsg);
+              return;
+            }
             try {
               entry.resolve(runFakePy(msg.cmd, msg.payload));
             } catch (e) {

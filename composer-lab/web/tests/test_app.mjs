@@ -1,9 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createAppHarness, makeFakeState, buildDetailFromState } from "./harness.js";
 
+const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function dragSlider(el, value) {
+  el.value = String(value);
+  el.onpointerdown();
+  el.oninput();
+  el.onpointerup();
+}
+
+function findButton(env, pred) {
+  return env.document.getElementById("workspace").querySelectorAll("button").find(pred);
+}
+
+function findSlider(env, name) {
+  return env.document.getElementById("workspace").querySelectorAll("input").find((el) => el.dataset.option === name);
+}
+
 async function bootWithPiece(options = {}) {
-  const st = makeFakeState(801000);
+  const st = makeFakeState(801000, options.stateOverrides || {});
   const rec = {
     id: st.id,
     state: st,
@@ -22,15 +42,15 @@ test("Finding 1: rapid edits are queued per piece and export waits for preceding
   const env = await bootWithPiece({ autoRunWorkerCalls: true });
   env.autoRunWorkerCalls = false;
 
-  const compButtons = env.document
+  const rerollButtons = env.document
     .getElementById("workspace")
     .querySelectorAll(".reroll-btn")
-    .filter((b) => b.dataset.layer === "comp" && b.dataset.section === "A");
-  assert.equal(compButtons.length, 1);
+    .filter((b) => (b.dataset.layer === "comp" && b.dataset.section === "A") || b.dataset.layer === "tempo");
+  assert.equal(rerollButtons.length, 2);
 
-  // Trigger two rapid comp@A rerolls before any worker reply completes, plus an export
-  compButtons[0].click();
-  compButtons[0].click();
+  // Two rapid rerolls of different controls before any worker reply completes, plus an export
+  rerollButtons[0].click();
+  rerollButtons[1].click();
   env.document.getElementById("dlMidiBtn").click();
   await env.flushMicrotasks(6);
 
@@ -46,11 +66,12 @@ test("Finding 1: rapid edits are queued per piece and export waits for preceding
   }
 
   const saved = env.indexedDB._pieces.get("piece_801000");
-  assert.equal(saved.state.recipe.studio.salts["comp@A"], 2, "two rapid rerolls must reach salt 2");
+  assert.equal(saved.state.recipe.studio.salts["comp@A"], 1);
+  assert.equal(saved.state.recipe.studio.salts["tempo@all"], 1);
   assert.equal(saved.state.undo.length, 2, "two rapid rerolls must keep 2 undo entries");
   const rerollLogs = env.indexedDB._logs.filter((l) => l.action === "reroll");
   assert.equal(rerollLogs.length, 2);
-  assert.equal(exportedSalt, 2, "export must wait for both preceding edits");
+  assert.equal(exportedSalt, 1, "export must wait for both preceding edits");
 });
 
 test("Finding 2: selecting B while A is visible disables A and commits currentId + state together", async () => {
@@ -371,7 +392,7 @@ test("Studio controls send option immediately without reroll, refresh UI, and hi
   for (const lbl of [
     "Вероятность октав при перегенерации ритма",
     "Октавы шестнадцатыми (при перегенерации)",
-    "Глухие перед акцентами в октавах (при перегенерации)",
+    "Глухие удары перед акцентами (только в октавных тактах, при перегенерации)",
   ]) {
     assert.ok(adv[0].textContent.includes(lbl), `missing renamed advanced dose label: ${lbl}`);
   }
@@ -387,8 +408,7 @@ test("Studio controls send option immediately without reroll, refresh UI, and hi
     .querySelectorAll("input")
     .find((el) => el.dataset.option === "mute_share");
   assert.ok(muteSlider, "mute_share slider must exist");
-  muteSlider.value = "0.6";
-  muteSlider.onchange();
+  dragSlider(muteSlider, 0.6);
   await env.flushAll(15);
 
   // 2. octave_share slider then Авто button
@@ -397,8 +417,7 @@ test("Studio controls send option immediately without reroll, refresh UI, and hi
     .querySelectorAll("input")
     .find((el) => el.dataset.option === "octave_share");
   assert.ok(octSlider, "octave_share slider must exist");
-  octSlider.value = "0.8";
-  octSlider.onchange();
+  dragSlider(octSlider, 0.8);
   await env.flushAll(15);
 
   const octAutoBtn = env.document
@@ -450,68 +469,20 @@ test("Studio controls send option immediately without reroll, refresh UI, and hi
   assert.match(env.document.getElementById("workspace").textContent, /24 с/);
 });
 
-test("Active Auto button switches to displayed manual value without wasting undo, and mute hint names A, A2, A3, B", async () => {
-  const env = await bootWithPiece();
-  env.workerMessages.length = 0;
-
-  const ws = env.document.getElementById("workspace");
-  const hints = ws.querySelectorAll(".option-hint");
-  assert.match(hints[0].textContent, /A,\s*A2,\s*A3\s+и\s+B/);
-
-  const octAutoBtn1 = ws
-    .querySelectorAll("button")
-    .find((el) => el.dataset.option === "octave_share" && el.dataset.value === "auto");
-  assert.ok(octAutoBtn1);
-  assert.equal(octAutoBtn1.classList.contains("active"), true);
-  octAutoBtn1.click();
-  await env.flushAll(15);
-
-  let saved = env.indexedDB._pieces.get("piece_801000");
-  assert.equal(saved.state.recipe.studio.options.octave_share, 0.5);
-  assert.equal(saved.state.undo.length, 1);
-
-  const octSlider2 = env.document
-    .getElementById("workspace")
-    .querySelectorAll("input")
-    .find((el) => el.dataset.option === "octave_share");
-  assert.equal(octSlider2.classList.contains("slider-dim"), false);
-
-  const octAutoBtn2 = env.document
-    .getElementById("workspace")
-    .querySelectorAll("button")
-    .find((el) => el.dataset.option === "octave_share" && el.dataset.value === "auto");
-  assert.equal(octAutoBtn2.classList.contains("active"), false);
-  octAutoBtn2.click();
-  await env.flushAll(15);
-
-  saved = env.indexedDB._pieces.get("piece_801000");
-  assert.equal(saved.state.recipe.studio.options.octave_share, null);
-  assert.equal(saved.state.undo.length, 2);
-
-  const optCalls = env.workerMessages
-    .filter((m) => m.type === "call" && m.cmd === "option")
-    .map((m) => [m.payload.name, m.payload.value]);
-  assert.deepEqual(optCalls, [
-    ["octave_share", 0.5],
-    ["octave_share", null],
-  ]);
-});
-
 test("Re-clicking already active options does not push undo or append option logs", async () => {
   const env = await bootWithPiece();
 
   const ws = env.document.getElementById("workspace");
   const introAuto = ws.querySelectorAll("button").find((el) => el.dataset.option === "intro_bars" && el.dataset.value === "auto");
   const sq1 = ws.querySelectorAll("button").find((el) => el.dataset.option === "square_repeat" && el.dataset.value === "1");
-  const bLeadAug = ws.querySelectorAll("button").find((el) => el.textContent === "Удвоенно (как сейчас)");
+  const bLeadAug = ws.querySelectorAll("button").find((el) => el.textContent === "Медленнее (удвоенные длительности)");
   const muteSlider = ws.querySelectorAll("input").find((el) => el.dataset.option === "mute_share");
   assert.ok(introAuto && sq1 && bLeadAug && muteSlider);
 
   introAuto.click();
   sq1.click();
   bLeadAug.click();
-  muteSlider.value = "0";
-  muteSlider.onchange();
+  dragSlider(muteSlider, 0);
   await env.flushAll(20);
 
   let saved = env.indexedDB._pieces.get("piece_801000");
@@ -540,4 +511,594 @@ test("Re-clicking already active options does not push undo or append option log
   saved = env.indexedDB._pieces.get("piece_801000");
   assert.equal(saved.state.undo.length, 1);
   assert.equal(env.indexedDB._logs.filter((l) => l.action === "option").length, 1);
+});
+
+test("Octave share is a two-button switch: selected button does nothing, Вручную applies the shown slider value", async () => {
+  const env = await bootWithPiece();
+  env.workerMessages.length = 0;
+
+  const ws = env.document.getElementById("workspace");
+  const hints = ws.querySelectorAll(".option-hint");
+  assert.match(hints[0].textContent, /A,\s*A2,\s*«Кульминация»\s+и\s+B/);
+
+  const autoBtn = () => findButton(env, (el) => el.dataset.option === "octave_share" && el.dataset.value === "auto");
+  const manualBtn = () => findButton(env, (el) => el.dataset.option === "octave_share" && el.dataset.value === "manual");
+  assert.equal(autoBtn().textContent, "Авто");
+  assert.equal(manualBtn().textContent, "Вручную");
+  assert.equal(autoBtn().getAttribute("aria-pressed"), "true");
+  assert.equal(manualBtn().getAttribute("aria-pressed"), "false");
+  assert.equal(findSlider(env, "octave_share").classList.contains("slider-dim"), true, "slider is dimmed in Авто");
+  assert.match(
+    ws.querySelectorAll(".option-hint").find((h) => /Вручную/.test(h.textContent)).textContent,
+    /ползунок/,
+    "hint says that moving the slider switches to manual",
+  );
+
+  autoBtn().click();
+  await env.flushAll(15);
+  assert.equal(env.workerMessages.filter((m) => m.type === "call").length, 0, "selected Авто sends nothing");
+  assert.equal(env.indexedDB._pieces.get("piece_801000").state.undo.length, 0);
+
+  manualBtn().click();
+  await env.flushAll(15);
+  let saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.recipe.studio.options.octave_share, 0.5);
+  assert.equal(saved.state.undo.length, 1);
+  assert.equal(autoBtn().getAttribute("aria-pressed"), "false");
+  assert.equal(manualBtn().getAttribute("aria-pressed"), "true");
+  assert.equal(findSlider(env, "octave_share").classList.contains("slider-dim"), false);
+
+  manualBtn().click();
+  await env.flushAll(15);
+  assert.equal(env.indexedDB._pieces.get("piece_801000").state.undo.length, 1, "selected Вручную sends nothing");
+
+  autoBtn().click();
+  await env.flushAll(15);
+  saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.recipe.studio.options.octave_share, null);
+  assert.equal(saved.state.undo.length, 2);
+
+  const optCalls = env.workerMessages
+    .filter((m) => m.type === "call" && m.cmd === "option")
+    .map((m) => [m.payload.name, m.payload.value]);
+  assert.deepEqual(optCalls, [
+    ["octave_share", 0.5],
+    ["octave_share", null],
+  ]);
+});
+
+test("Moving the octave slider while in Авто switches to manual with the slider value", async () => {
+  const env = await bootWithPiece();
+  env.workerMessages.length = 0;
+  dragSlider(findSlider(env, "octave_share"), 0.7);
+  await env.flushAll(15);
+  const optCalls = env.workerMessages.filter((m) => m.type === "call" && m.cmd === "option");
+  assert.equal(optCalls.length, 1);
+  assert.deepEqual([optCalls[0].payload.name, optCalls[0].payload.value], ["octave_share", 0.7]);
+  const manual = findButton(env, (el) => el.dataset.option === "octave_share" && el.dataset.value === "manual");
+  assert.equal(manual.getAttribute("aria-pressed"), "true");
+});
+
+test("Item 2 and 4: piece-wide note under Параметры пьесы and re-roll-only hint in Дополнительно", async () => {
+  const env = await bootWithPiece();
+  const text = env.document.getElementById("workspace").textContent;
+  assert.ok(text.includes("Параметры действуют на всю пьесу, в том числе на закреплённые секции."));
+  const adv = env.document.getElementById("workspace").querySelectorAll("details")[0];
+  assert.ok(
+    adv.textContent.includes(
+      "Эти параметры действуют только при следующей перегенерации ритм-гитары («Перегенерировать ритм-гитару» или «Перегенерировать всё незакреплённое»).",
+    ),
+  );
+  const note = adv.querySelectorAll(".advanced-note");
+  assert.equal(note.length, 1);
+  assert.equal(adv.children[1], note[0], "hint is the first line inside Дополнительно, right after the summary");
+});
+
+test("Item 3: lock button shows action and state, trailing rest is a two-button choice, locked re-roll has a title", async () => {
+  const st = makeFakeState(801000);
+  st.recipe.studio.locks = ["comp@A"];
+  const env = createAppHarness({
+    initialPieces: [{ id: st.id, state: st, detail: buildDetailFromState(st), updatedAt: "2026-11-23T00:00:00.000Z" }],
+  });
+  await env.flushAll(20);
+  const ws = env.document.getElementById("workspace");
+  const rows = ws.querySelectorAll(".layer-row");
+  const compRow = rows.find((r) => r.children[0].dataset.layer === "comp");
+  const [reroll, lock] = compRow.children;
+  assert.equal(reroll.disabled, true);
+  assert.equal(reroll.title, "Слой закреплён");
+  assert.equal(lock.textContent, "🔒 Закреплено");
+  assert.equal(lock.title, "Открепить");
+  assert.equal(lock.getAttribute("aria-pressed"), "true");
+  const tempoRow = rows.find((r) => r.children[0].dataset.layer === "tempo");
+  assert.equal(tempoRow.children[1].textContent, "Закрепить");
+  assert.equal(tempoRow.children[1].getAttribute("aria-pressed"), "false");
+  assert.equal(tempoRow.children[0].title, "", "enabled re-roll has no locked title");
+
+  env.workerMessages.length = 0;
+  const withTail = findButton(env, (b) => b.dataset.option === "trailing_rest" && b.dataset.value === "true");
+  const noTail = findButton(env, (b) => b.dataset.option === "trailing_rest" && b.dataset.value === "false");
+  assert.equal(withTail.textContent, "Пауза в конце такта");
+  assert.equal(noTail.textContent, "Без паузы");
+  assert.equal(withTail.getAttribute("aria-pressed"), "true");
+  assert.equal(noTail.getAttribute("aria-pressed"), "false");
+  withTail.click();
+  await env.flushAll(10);
+  assert.equal(env.workerMessages.filter((m) => m.type === "call").length, 0, "selected choice sends nothing");
+  noTail.click();
+  await env.flushAll(15);
+  const calls = env.workerMessages.filter((m) => m.type === "call" && m.cmd === "option");
+  assert.deepEqual([calls[0].payload.name, calls[0].payload.value], ["trailing_rest", false]);
+  const noTail2 = findButton(env, (b) => b.dataset.option === "trailing_rest" && b.dataset.value === "false");
+  assert.equal(noTail2.getAttribute("aria-pressed"), "true");
+});
+
+test("Item 5: three keyboard steps give one option request after 600 ms of quiet, one undo entry", async () => {
+  const env = await bootWithPiece();
+  env.workerMessages.length = 0;
+  const slider = findSlider(env, "mute_share");
+  for (const v of ["0.05", "0.1", "0.15"]) {
+    slider.value = v;
+    slider.oninput();
+    if (slider.onchange) slider.onchange();
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await env.flushAll(10);
+  assert.equal(env.workerMessages.filter((m) => m.type === "call").length, 0, "nothing sent before the debounce elapses");
+  await new Promise((r) => setTimeout(r, 650));
+  await env.flushAll(20);
+  const calls = env.workerMessages.filter((m) => m.type === "call" && m.cmd === "option");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.value, 0.15);
+  assert.equal(env.indexedDB._pieces.get("piece_801000").state.undo.length, 1);
+});
+
+test("Item 5: a pointer drag sends once on release and nothing more after the debounce", async () => {
+  const env = await bootWithPiece();
+  env.workerMessages.length = 0;
+  const slider = findSlider(env, "mute_share");
+  slider.onpointerdown();
+  for (const v of ["0.2", "0.4", "0.6"]) {
+    slider.value = v;
+    slider.oninput();
+  }
+  await new Promise((r) => setTimeout(r, 700));
+  await env.flushAll(10);
+  assert.equal(env.workerMessages.filter((m) => m.type === "call").length, 0, "no request while the pointer is down");
+  slider.onpointerup();
+  if (slider.onchange) slider.onchange();
+  await env.flushAll(20);
+  await new Promise((r) => setTimeout(r, 700));
+  await env.flushAll(10);
+  const calls = env.workerMessages.filter((m) => m.type === "call" && m.cmd === "option");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.value, 0.6);
+});
+
+test("Item 6: status chip shows Пересчёт… while a request runs and the pressed control is disabled", async () => {
+  const env = await bootWithPiece();
+  const chip = env.document.getElementById("statusChip");
+  assert.equal(chip.textContent, "");
+  env.autoRunWorkerCalls = false;
+  const btn = findButton(env, (b) => b.dataset.layer === "comp" && b.dataset.section === "A");
+  btn.click();
+  await env.flushAll(10);
+  assert.equal(chip.textContent, "Пересчёт…");
+  assert.equal(btn.disabled, true, "pressed control is disabled while the request runs");
+  const call = env.pendingWorkerCalls.shift();
+  call.resolve(env.runFakePy(call.msg.cmd, call.msg.payload));
+  await env.flushAll(15);
+  assert.equal(chip.textContent, "");
+  const fresh = findButton(env, (b) => b.dataset.layer === "comp" && b.dataset.section === "A");
+  assert.equal(fresh.disabled, false);
+});
+
+test("Item 6: status chip is cleared and the control re-enabled after a failed request", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  const btn = findButton(env, (b) => b.dataset.layer === "comp" && b.dataset.section === "A");
+  btn.click();
+  await env.flushAll(10);
+  env.pendingWorkerCalls.shift().reject("boom");
+  await env.flushAll(15);
+  assert.equal(env.document.getElementById("statusChip").textContent, "");
+  assert.equal(btn.disabled, false);
+});
+
+test("Item 7: errors show a dismissible inline banner and never call alert", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  assert.equal(env.document.getElementById("errorBanner").hidden, true);
+  const btn = findButton(env, (b) => b.dataset.layer === "comp" && b.dataset.section === "A");
+  btn.click();
+  await env.flushAll(10);
+  env.pendingWorkerCalls.shift().reject("boom");
+  await env.flushAll(15);
+  assert.equal(env.document.getElementById("errorBanner").hidden, false);
+  assert.match(env.document.getElementById("errorText").textContent, /boom/);
+  assert.equal(env.alerts.length, 0);
+  env.document.getElementById("errorCloseBtn").click();
+  assert.equal(env.document.getElementById("errorBanner").hidden, true);
+  assert.equal(env.document.getElementById("errorText").textContent, "");
+});
+
+test("Item 7: new piece and import failures use the banner too", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  env.document.getElementById("newBtn").click();
+  await env.flushAll(10);
+  env.pendingWorkerCalls.shift().reject("new failed");
+  await env.flushAll(15);
+  assert.match(env.document.getElementById("errorText").textContent, /new failed/);
+  assert.equal(env.document.getElementById("errorBanner").hidden, false);
+  env.document.getElementById("errorCloseBtn").click();
+  const impInput = env.document.getElementById("importPiecesInput");
+  impInput.files = [{ text: async () => "{not json" }];
+  await impInput.onchange();
+  await env.flushAll(10);
+  assert.equal(env.document.getElementById("errorBanner").hidden, false);
+  assert.equal(env.alerts.length, 0);
+});
+
+test("Item 7: app source does not use alert()", () => {
+  const src = fs.readFileSync(path.join(WEB_DIR, "app.js"), "utf8");
+  assert.equal(/\balert\s*\(/.test(src), false);
+});
+
+test("Item 8: undo title names the action, redo restores the undone state and a new change clears it", async () => {
+  const env = await bootWithPiece();
+  const undo = () => env.document.getElementById("undoBtn");
+  const redo = () => env.document.getElementById("redoBtn");
+  assert.equal(undo().disabled, true);
+  assert.equal(redo().disabled, true);
+  assert.equal(redo().textContent.startsWith("Вернуть"), true);
+
+  dragSlider(findSlider(env, "mute_share"), 0.3);
+  await env.flushAll(15);
+  assert.equal(undo().title, "Отменить: глухие ноты 0.3");
+  assert.ok(undo().textContent.includes("Отменить"));
+  assert.ok(undo().textContent.includes("глухие ноты 0.3"));
+
+  findButton(env, (b) => b.dataset.layer === "comp" && b.dataset.section === "A").click();
+  await env.flushAll(15);
+  assert.equal(undo().title, "Отменить: перегенерация «Куплет A · ритм-гитара»");
+
+  undo().click();
+  await env.flushAll(15);
+  let saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.recipe.studio.salts["comp@A"] || 0, 0);
+  assert.equal(saved.state.redo.length, 1);
+  assert.equal(redo().disabled, false);
+  assert.equal(redo().title, "Вернуть: перегенерация «Куплет A · ритм-гитара»");
+  assert.equal(undo().title, "Отменить: глухие ноты 0.3");
+
+  redo().click();
+  await env.flushAll(15);
+  saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.recipe.studio.salts["comp@A"], 1);
+  assert.equal(saved.state.redo.length, 0);
+  assert.equal(redo().disabled, true);
+  assert.equal(undo().title, "Отменить: перегенерация «Куплет A · ритм-гитара»");
+  assert.deepEqual(
+    env.indexedDB._logs.filter((l) => l.action === "undo" || l.action === "redo").map((l) => l.action),
+    ["undo", "redo"],
+  );
+
+  undo().click();
+  await env.flushAll(15);
+  assert.equal(redo().disabled, false);
+  dragSlider(findSlider(env, "mute_share"), 0.9);
+  await env.flushAll(15);
+  saved = env.indexedDB._pieces.get("piece_801000");
+  assert.equal(saved.state.redo.length, 0, "a new change clears the redo stack");
+  assert.equal(redo().disabled, true);
+});
+
+test("Item 9: plain labels, hidden zero badge, titled badge, no internal names", async () => {
+  const env = await bootWithPiece();
+  const text = env.document.getElementById("workspace").textContent;
+  assert.ok(text.includes("Соло в середине B"));
+  for (const bad of ["b_lead", "trailing_rest", "--notail"]) {
+    assert.equal(text.includes(bad), false, bad);
+  }
+  for (const t of ["Медленнее (удвоенные длительности)", "В темпе рифа", "Без соло"]) {
+    assert.ok(findButton(env, (b) => b.textContent === t), t);
+  }
+  for (const b of env.document.getElementById("workspace").querySelectorAll(".salt-badge")) {
+    assert.equal(b.title, "Сколько раз перегенерировали");
+    assert.equal(b.hidden, true, "badge is hidden at 0");
+  }
+  findButton(env, (b) => b.dataset.layer === "comp" && b.dataset.section === "A").click();
+  await env.flushAll(15);
+  const badges = env.document.getElementById("workspace").querySelectorAll(".salt-badge");
+  assert.equal(badges.filter((b) => !b.hidden).length, 1);
+  assert.equal(badges.find((b) => !b.hidden).textContent, "#1");
+  const html = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
+  assert.ok(html.includes("Номер пьесы (seed), необязательно"));
+  assert.match(html, /<label[^>]*for="seedInput"/);
+});
+
+test("Item 11: timeline blocks have short labels for narrow screens and the full name in title and aria-label", async () => {
+  const env = await bootWithPiece();
+  const tl = env.document.getElementById("timeline");
+  const shortByFull = { "Вступление": "Вст.", "Куплет A": "A", "Середина B": "B", "Концовка": "Конц." };
+  assert.equal(tl.children.length, 4);
+  for (const blk of tl.children) {
+    const full = blk.title;
+    assert.ok(shortByFull[full], full);
+    assert.equal(blk.getAttribute("aria-label").startsWith(full), true);
+    assert.equal(blk.querySelectorAll(".name-short")[0].textContent, shortByFull[full]);
+    assert.equal(blk.querySelectorAll(".name-full")[0].textContent, full);
+  }
+  const html = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
+  assert.match(html, /@media \(max-width: 520px\)[\s\S]*\.name-short/);
+});
+
+test("Item 12: sliders have names and values for assistive tech, choice groups use aria-pressed, chip is a status region", async () => {
+  const env = await bootWithPiece();
+  const ws = env.document.getElementById("workspace");
+  const sliders = ws.querySelectorAll("input");
+  assert.ok(sliders.length >= 7);
+  for (const el of sliders) {
+    assert.ok((el.getAttribute("aria-label") || "").length > 0, `slider ${el.dataset.option || el.id} needs a name`);
+    assert.ok((el.getAttribute("aria-valuetext") || "").length > 0, `slider ${el.dataset.option || el.id} needs valuetext`);
+  }
+  const mute = findSlider(env, "mute_share");
+  mute.value = "0.35";
+  mute.oninput();
+  assert.equal(mute.getAttribute("aria-valuetext"), "0.35");
+  assert.equal(findSlider(env, "octave_share").getAttribute("aria-valuetext"), "авто");
+  for (const opt of ["intro_bars", "square_repeat", "b_lead", "trailing_rest", "octave_share"]) {
+    const group = ws.querySelectorAll("button").filter((b) => b.dataset.option === opt);
+    assert.ok(group.length >= 2, opt);
+    for (const b of group) assert.ok(["true", "false"].includes(b.getAttribute("aria-pressed")), `${opt} ${b.textContent}`);
+    assert.equal(group.filter((b) => b.getAttribute("aria-pressed") === "true").length, 1, opt);
+  }
+  const html = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
+  assert.match(html, /id="statusChip"[^>]*role="status"|role="status"[^>]*id="statusChip"/);
+});
+
+async function bootTwoPieces(options = {}) {
+  const stA = makeFakeState(801000);
+  const stB = makeFakeState(802000);
+  const env = createAppHarness({
+    initialPieces: [
+      { id: stA.id, state: stA, detail: buildDetailFromState(stA), updatedAt: "2026-11-23T00:00:02.000Z" },
+      { id: stB.id, state: stB, detail: buildDetailFromState(stB), updatedAt: "2026-11-23T00:00:01.000Z" },
+    ],
+    ...options,
+  });
+  await env.flushAll(20);
+  return env;
+}
+
+async function resolveAll(env, limit = 20) {
+  for (let i = 0; i < limit && env.pendingWorkerCalls.length > 0; i++) {
+    const call = env.pendingWorkerCalls.shift();
+    call.resolve(env.runFakePy(call.msg.cmd, call.msg.payload));
+    await env.flushAll(10);
+  }
+}
+
+const pieceItems = (env) => env.document.getElementById("pieceList").querySelectorAll(".piece-item");
+
+test("Review 1: undo during a pending slider debounce commits the slider edit first and stays redoable", async () => {
+  const env = await bootWithPiece();
+  findButton(env, (b) => b.dataset.option === "intro_bars" && b.dataset.value === "8").click();
+  await env.flushAll(15);
+  env.workerMessages.length = 0;
+  const slider = findSlider(env, "mute_share");
+  slider.value = "0.35";
+  slider.oninput();
+  env.document.getElementById("undoBtn").click();
+  await env.flushAll(20);
+  await new Promise((r) => setTimeout(r, 700));
+  await env.flushAll(15);
+  const cmds = env.workerMessages.filter((m) => m.type === "call").map((m) => m.cmd);
+  assert.deepEqual(cmds, ["option", "undo"]);
+  const saved = env.indexedDB._pieces.get("piece_801000").state;
+  assert.equal(saved.recipe.studio.options.mute_share, 0, "undo reverted the slider edit");
+  assert.equal(saved.recipe.studio.options.intro_bars, 8);
+  assert.equal(saved.redo.length, 1, "the undone state stays redoable");
+  assert.equal(env.document.getElementById("redoBtn").disabled, false);
+});
+
+test("Review 6: switching pieces during a slider debounce saves the edit on its own piece whatever the latency", async () => {
+  const env = await bootTwoPieces();
+  env.autoRunWorkerCalls = false;
+  const slider = findSlider(env, "mute_share");
+  slider.value = "0.35";
+  slider.oninput();
+  pieceItems(env)[1].click();
+  await env.flushAll(10);
+  await new Promise((r) => setTimeout(r, 700));
+  await env.flushAll(10);
+  const first = env.pendingWorkerCalls[0];
+  assert.equal(first.msg.cmd, "option");
+  assert.equal(first.msg.payload.state.id, "piece_801000");
+  assert.equal(first.msg.payload.value, 0.35);
+  await resolveAll(env);
+  assert.equal(env.indexedDB._pieces.get("piece_801000").state.recipe.studio.options.mute_share, 0.35);
+  assert.equal(env.window.__studioDebug.getCurrentId(), "piece_802000");
+  assert.match(env.document.getElementById("workspace").textContent, /#802000/);
+});
+
+test("Review 7: a failed piece switch redisplays the saved state of the current piece with controls enabled", async () => {
+  const env = await bootTwoPieces();
+  env.autoRunWorkerCalls = false;
+  findButton(env, (b) => b.dataset.option === "intro_bars" && b.dataset.value === "4").click();
+  await env.flushAll(10);
+  pieceItems(env)[1].click();
+  await env.flushAll(10);
+  await resolveAll(env, 1);
+  await env.flushAll(10);
+  const snap = env.pendingWorkerCalls.shift();
+  assert.equal(snap.msg.cmd, "snapshot");
+  snap.reject("snapshot failed");
+  await env.flushAll(15);
+  assert.equal(env.window.__studioDebug.getCurrentId(), "piece_801000");
+  assert.equal(findButton(env, (b) => b.dataset.option === "intro_bars" && b.dataset.value === "4").getAttribute("aria-pressed"), "true");
+  const ws = env.document.getElementById("workspace");
+  const stuck = ws.querySelectorAll("button, input").filter((b) => b.disabled && !["undoBtn", "redoBtn"].includes(b.id) && !b.classList.contains("reroll-btn"));
+  assert.equal(stuck.length, 0);
+  assert.equal(env.document.getElementById("errorBanner").hidden, false);
+});
+
+test("Review 8: a rejected slider edit restores the saved value and the pressed state", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  dragSlider(findSlider(env, "octave_share"), 0.75);
+  await env.flushAll(10);
+  env.pendingWorkerCalls.shift().reject("rejected");
+  await env.flushAll(15);
+  const auto = findButton(env, (b) => b.dataset.option === "octave_share" && b.dataset.value === "auto");
+  const manual = findButton(env, (b) => b.dataset.option === "octave_share" && b.dataset.value === "manual");
+  assert.equal(auto.getAttribute("aria-pressed"), "true");
+  assert.equal(manual.getAttribute("aria-pressed"), "false");
+  assert.equal(findSlider(env, "octave_share").disabled, false);
+  env.workerMessages.length = 0;
+  manual.click();
+  await env.flushAll(10);
+  assert.equal(env.workerMessages.filter((m) => m.type === "call" && m.cmd === "option").length, 1, "retry sends a request");
+});
+
+test("Review 9: re-roll-all is disabled while running and export failures reach the banner", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  const all = env.document.getElementById("rerollAllBtn");
+  all.click();
+  await env.flushAll(10);
+  assert.equal(all.disabled, true);
+  all.click();
+  await env.flushAll(10);
+  assert.equal(env.pendingWorkerCalls.filter((c) => c.msg.cmd === "reroll").length, 1);
+  await resolveAll(env);
+
+  env.autoRunWorkerCalls = true;
+  env.failNextWorkerCall = "export boom";
+  env.document.getElementById("dlMidiBtn").click();
+  await env.flushAll(20);
+  assert.equal(env.document.getElementById("errorBanner").hidden, false);
+  assert.match(env.document.getElementById("errorText").textContent, /export boom/);
+});
+
+test("Review 10: an error from one piece does not stay above another piece", async () => {
+  const env = await bootTwoPieces();
+  env.autoRunWorkerCalls = false;
+  findButton(env, (b) => b.dataset.layer === "comp" && b.dataset.section === "A").click();
+  await env.flushAll(10);
+  env.pendingWorkerCalls.shift().reject("boom");
+  await env.flushAll(15);
+  assert.equal(env.document.getElementById("errorBanner").hidden, false);
+  pieceItems(env)[1].click();
+  await env.flushAll(10);
+  await resolveAll(env);
+  assert.match(env.document.getElementById("workspace").textContent, /#802000/);
+  assert.equal(env.document.getElementById("errorBanner").hidden, true);
+});
+
+test("Review 11: the selected piece is marked for assistive tech, the mute hint names sections like the timeline, modes are Russian", async () => {
+  const env = await bootTwoPieces();
+  const items = pieceItems(env);
+  assert.equal(items[0].getAttribute("aria-current"), "true");
+  assert.notEqual(items[1].getAttribute("aria-current"), "true");
+  assert.ok(items[0].textContent.includes("лидийский"));
+  assert.equal(items[0].textContent.includes("lydian"), false);
+  const ws = env.document.getElementById("workspace");
+  assert.ok(ws.textContent.includes("в секциях A, A2, «Кульминация» и B"));
+  assert.equal(ws.textContent.includes("A3"), false);
+  assert.ok(ws.querySelectorAll(".piece-title")[0].textContent.includes("лидийский"));
+  items[1].click();
+  await env.flushAll(15);
+  assert.equal(pieceItems(env)[1].getAttribute("aria-current"), "true");
+  assert.notEqual(pieceItems(env)[0].getAttribute("aria-current"), "true");
+});
+
+test("Review 12: a backup differing only in the redo stack is imported as a separate piece", async () => {
+  const env = await bootWithPiece({ autoRunWorkerCalls: true });
+  const local = env.indexedDB._pieces.get("piece_801000");
+  local.state.redo = [makeFakeState(801000).recipe];
+  const imported = JSON.parse(JSON.stringify(local.state));
+  imported.redo = [];
+  const impInput = env.document.getElementById("importPiecesInput");
+  impInput.files = [{ text: async () => JSON.stringify({ version: 1, pieces: [{ id: "piece_801000", state: imported }] }) }];
+  await impInput.onchange();
+  await env.flushAll(20);
+  assert.equal(env.indexedDB._pieces.get("piece_801000").state.redo.length, 1);
+  const added = env.indexedDB._pieces.get("piece_801000_2");
+  assert.ok(added, "redo-only difference must not be treated as a duplicate");
+  assert.equal(added.state.redo.length, 0);
+});
+
+test("Review 12: the error banner is part of the production markup and dismisses", async () => {
+  const html = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
+  assert.match(html, /<main id="workspace">\s*<div id="errorBanner"[^>]*role="alert"[^>]*hidden>\s*<span id="errorText"><\/span>\s*<button id="errorCloseBtn"/);
+  const env = await bootWithPiece();
+  assert.equal(env.document.getElementById("errorBanner").parentNode.id, "workspace");
+  assert.equal(env.document.getElementById("errorBanner").hidden, true);
+});
+
+test("Review 4: import uses the validating command for undo and redo entries", async () => {
+  const env = await bootWithPiece({ autoRunWorkerCalls: true });
+  const st = makeFakeState(803000);
+  const impInput = env.document.getElementById("importPiecesInput");
+  impInput.files = [{ text: async () => JSON.stringify({ version: 1, pieces: [{ id: st.id, state: st }] }) }];
+  env.workerMessages.length = 0;
+  await impInput.onchange();
+  await env.flushAll(20);
+  const cmds = env.workerMessages.filter((m) => m.type === "call").map((m) => m.cmd);
+  assert.equal(cmds[0], "import_state");
+  assert.equal(cmds.includes("snapshot") && cmds.indexOf("snapshot") < cmds.indexOf("import_state"), false);
+});
+
+test("Review N1: a new piece during a slider debounce saves the edit on the current piece first", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  const slider = findSlider(env, "mute_share");
+  slider.value = "0.35";
+  slider.oninput();
+  env.document.getElementById("newBtn").click();
+  await env.flushAll(10);
+  await new Promise((r) => setTimeout(r, 700));
+  await env.flushAll(10);
+  assert.equal(env.pendingWorkerCalls[0].msg.cmd, "option");
+  assert.equal(env.pendingWorkerCalls[0].msg.payload.state.id, "piece_801000");
+  await resolveAll(env);
+  assert.equal(env.indexedDB._pieces.get("piece_801000").state.recipe.studio.options.mute_share, 0.35);
+});
+
+test("Review N3: a pressed control is disabled while its request waits in the queue", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  findButton(env, (b) => b.dataset.layer === "comp" && b.dataset.section === "A").click();
+  await env.flushAll(10);
+  const all = env.document.getElementById("rerollAllBtn");
+  all.click();
+  assert.equal(all.disabled, true);
+  all.click();
+  await env.flushAll(10);
+  await resolveAll(env);
+  const alls = env.workerMessages.filter((m) => m.type === "call" && m.payload.layer === "all");
+  assert.equal(alls.length, 1);
+});
+
+test("Review N4: every pending slider is flushed in the order it was moved", async () => {
+  const env = await bootWithPiece();
+  findButton(env, (b) => b.dataset.option === "intro_bars" && b.dataset.value === "8").click();
+  await env.flushAll(15);
+  env.workerMessages.length = 0;
+  const mute = findSlider(env, "mute_share");
+  mute.value = "0.35";
+  mute.oninput();
+  await new Promise((r) => setTimeout(r, 300));
+  const dose = findSlider(env, "octave_piece");
+  dose.value = "0.5";
+  dose.oninput();
+  await new Promise((r) => setTimeout(r, 250));
+  env.document.getElementById("undoBtn").click();
+  await env.flushAll(20);
+  await new Promise((r) => setTimeout(r, 700));
+  await env.flushAll(15);
+  const sent = env.workerMessages.filter((m) => m.type === "call").map((m) => (m.cmd === "option" ? m.payload.name : m.cmd));
+  assert.deepEqual(sent, ["mute_share", "octave_piece", "undo"]);
 });

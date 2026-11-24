@@ -92,6 +92,13 @@ def _validate_recipe(rec):
     return copy.deepcopy(rec)
 
 
+def _validate_history(state, key):
+    raw = state.get(key, [])
+    if not isinstance(raw, list):
+        raise ValueError(f"state.{key} must be a list")
+    return [_validate_recipe(entry) for entry in raw][-UNDO_LIMIT:]
+
+
 def _validate_state(state):
     if not isinstance(state, dict) or not isinstance(state.get("recipe"), dict):
         raise ValueError("state must be an object with a recipe")
@@ -107,14 +114,22 @@ def _validate_state(state):
     return pid, rec, undo_stack
 
 
+def _redo_stack(state):
+    return _validate_history(state, "redo")
+
+
+def _state(pid, rec, undo_stack, redo_stack):
+    return {"id": pid, "recipe": rec, "undo": undo_stack, "redo": redo_stack}
+
+
 def _apply_change(state, fn):
     pid, old_rec, undo_stack = _validate_state(state)
     base_rec = engine._ensure_studio(old_rec)
     new_rec = fn(old_rec)
     if new_rec == base_rec:
-        return {"id": pid, "recipe": old_rec, "undo": undo_stack}
+        return _state(pid, old_rec, undo_stack, _redo_stack(state))
     next_undo = (undo_stack + [old_rec])[-UNDO_LIMIT:]
-    return {"id": pid, "recipe": new_rec, "undo": next_undo}
+    return _state(pid, new_rec, next_undo, [])
 
 
 def new_piece(seed=None):
@@ -123,7 +138,7 @@ def new_piece(seed=None):
     ):
         raise ValueError("seed must be a non-negative integer or null")
     rec = engine.new_recipe(seed)
-    return {"id": f"piece_{rec['seed']}", "recipe": rec, "undo": []}
+    return _state(f"piece_{rec['seed']}", rec, [], [])
 
 
 def reroll(state, layer, section):
@@ -140,10 +155,20 @@ def option(state, name, value):
 
 def undo(state):
     pid, rec, undo_stack = _validate_state(state)
+    redo_stack = _redo_stack(state)
     if not undo_stack:
-        return {"id": pid, "recipe": rec, "undo": []}
+        return _state(pid, rec, [], redo_stack)
     prev_rec = undo_stack.pop()
-    return {"id": pid, "recipe": prev_rec, "undo": undo_stack}
+    return _state(pid, prev_rec, undo_stack, (redo_stack + [rec])[-UNDO_LIMIT:])
+
+
+def redo(state):
+    pid, rec, undo_stack = _validate_state(state)
+    redo_stack = _redo_stack(state)
+    if not redo_stack:
+        return _state(pid, rec, undo_stack, [])
+    next_rec = redo_stack.pop()
+    return _state(pid, next_rec, (undo_stack + [rec])[-UNDO_LIMIT:], redo_stack)
 
 
 def _events_from_piece(piece):
@@ -166,7 +191,7 @@ def _events_from_piece(piece):
 def detail(state):
     pid, rec, undo_stack = _validate_state(state)
     piece = composer.compose(rec)
-    return engine.piece_detail(pid, rec, piece, can_undo=bool(undo_stack))
+    return engine.piece_detail(pid, rec, piece, undo_stack, _redo_stack(state))
 
 
 def events(state):
@@ -177,12 +202,24 @@ def events(state):
 
 def snapshot(state):
     pid, rec, undo_stack = _validate_state(state)
+    redo_stack = _redo_stack(state)
     piece = composer.compose(rec)
     return {
-        "state": {"id": pid, "recipe": rec, "undo": undo_stack},
-        "detail": engine.piece_detail(pid, rec, piece, can_undo=bool(undo_stack)),
+        "state": _state(pid, rec, undo_stack, redo_stack),
+        "detail": engine.piece_detail(pid, rec, piece, undo_stack, redo_stack),
         "events": _events_from_piece(piece),
     }
+
+
+def import_state(state):
+    snap = snapshot(state)
+    for key in ("undo", "redo"):
+        for i, entry in enumerate(snap["state"][key]):
+            try:
+                composer.compose(entry)
+            except Exception as exc:
+                raise ValueError(f"state.{key}[{i}] is not a usable recipe: {exc}") from exc
+    return snap
 
 
 def export_midi(state):
@@ -227,8 +264,12 @@ def handle_json(req_json):
         )
     if cmd == "undo":
         return json.dumps(snapshot(undo(payload["state"])), ensure_ascii=False)
+    if cmd == "redo":
+        return json.dumps(snapshot(redo(payload["state"])), ensure_ascii=False)
     if cmd == "snapshot":
         return json.dumps(snapshot(payload["state"]), ensure_ascii=False)
+    if cmd == "import_state":
+        return json.dumps(import_state(payload["state"]), ensure_ascii=False)
     if cmd == "detail":
         return json.dumps(detail(payload["state"]), ensure_ascii=False)
     if cmd == "events":

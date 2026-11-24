@@ -489,5 +489,198 @@ class TestReviewFixesPython(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "KEEP-XML")
 
 
+class TestRedo(unittest.TestCase):
+    def setUp(self):
+        if web_api is None:
+            self.fail("studio.web_api is not implemented yet")
+
+    @staticmethod
+    def _rt(obj):
+        return json.loads(json.dumps(obj))
+
+    def test_new_piece_has_empty_redo(self):
+        st = web_api.new_piece(801000)
+        self.assertEqual(st["redo"], [])
+        det = web_api.detail(st)
+        self.assertFalse(det["can_redo"])
+        self.assertIsNone(det["redo_label"])
+        self.assertIsNone(det["undo_label"])
+
+    def test_undo_then_redo_restores_the_undone_state(self):
+        st0 = web_api.new_piece(801000)
+        st1 = web_api.reroll(st0, "comp", "A")
+        st2 = web_api.option(st1, "mute_share", 0.3)
+        undone = web_api.undo(st2)
+        self.assertEqual(undone["recipe"], st1["recipe"])
+        self.assertEqual(undone["redo"], [st2["recipe"]])
+        self.assertTrue(web_api.detail(undone)["can_redo"])
+
+        redone = web_api.redo(self._rt(undone))
+        self.assertEqual(redone["recipe"], st2["recipe"])
+        self.assertEqual(redone["undo"], st2["undo"])
+        self.assertEqual(redone["redo"], [])
+        self.assertFalse(web_api.detail(redone)["can_redo"])
+
+    def test_multiple_undos_redo_in_reverse_order(self):
+        st = web_api.new_piece(801000)
+        recipes = [st["recipe"]]
+        for _ in range(3):
+            st = web_api.reroll(st, "comp", "A")
+            recipes.append(st["recipe"])
+        for _ in range(3):
+            st = web_api.undo(st)
+        self.assertEqual(st["recipe"], recipes[0])
+        self.assertEqual(len(st["redo"]), 3)
+        for expected in recipes[1:]:
+            st = web_api.redo(st)
+            self.assertEqual(st["recipe"], expected)
+        self.assertEqual(st["redo"], [])
+
+    def test_new_change_clears_redo_but_a_noop_change_does_not(self):
+        st = web_api.new_piece(801000)
+        st = web_api.reroll(st, "comp", "A")
+        st = web_api.undo(st)
+        self.assertEqual(len(st["redo"]), 1)
+
+        same = web_api.option(st, "intro_bars", "auto")
+        self.assertEqual(same["redo"], st["redo"])
+        self.assertEqual(same["undo"], st["undo"])
+
+        self.assertEqual(web_api.option(st, "mute_share", 0.5)["redo"], [])
+        self.assertEqual(web_api.reroll(st, "comp", "A")["redo"], [])
+        self.assertEqual(web_api.lock(st, "b", "B", True)["redo"], [])
+
+    def test_undo_and_redo_on_empty_stacks_are_noops(self):
+        st = web_api.new_piece(801000)
+        self.assertEqual(web_api.undo(st), st)
+        self.assertEqual(web_api.redo(st), st)
+        st = web_api.undo(web_api.reroll(st, "comp", "A"))
+        again = web_api.undo(st)
+        self.assertEqual(again["recipe"], st["recipe"])
+        self.assertEqual(again["redo"], st["redo"])
+
+    def test_redo_stack_is_bounded_to_50(self):
+        st = web_api.new_piece(801000)
+        for _ in range(60):
+            st = web_api.reroll(st, "comp", "A")
+        for _ in range(50):
+            st = web_api.undo(st)
+        self.assertEqual(len(st["redo"]), 50)
+        self.assertEqual(st["recipe"]["studio"]["salts"]["comp@A"], 10)
+
+        oversized = copy.deepcopy(st)
+        extra = []
+        for n in range(1, 61):
+            rec = copy.deepcopy(st["recipe"])
+            rec["studio"]["salts"]["comp@A"] = 100 + n
+            extra.append(rec)
+        oversized["redo"] = extra
+        snap = web_api.snapshot(oversized)
+        self.assertEqual(len(snap["state"]["redo"]), 50)
+        self.assertEqual(snap["state"]["redo"][0]["studio"]["salts"]["comp@A"], 111)
+        self.assertEqual(snap["state"]["redo"][-1]["studio"]["salts"]["comp@A"], 160)
+
+    def test_unchanged_lock_requests_keep_history_and_redo(self):
+        st = web_api.new_piece(801000)
+        st = web_api.lock(st, "comp", "A", True)
+        st = web_api.lock(st, "b", "B", True)
+        st = web_api.option(st, "mute_share", 0.3)
+        st = web_api.undo(st)
+        self.assertTrue(st["redo"])
+        for layer, section, locked in (("comp", "A", True), ("ending", "end", False), ("comp", "A2", False)):
+            again = web_api.lock(self._rt(st), layer, section, locked)
+            self.assertEqual(again["recipe"], st["recipe"])
+            self.assertEqual(again["undo"], st["undo"])
+            self.assertEqual(again["redo"], st["redo"])
+        self.assertNotIn("locked_riffs", st["recipe"]["studio"])
+
+    def test_import_state_rejects_unusable_history_entries(self):
+        st = web_api.undo(web_api.reroll(web_api.new_piece(801000), "comp", "A"))
+        st = web_api.reroll(st, "comp", "A")
+        st = web_api.undo(web_api.reroll(st, "texture", "A"))
+        self.assertEqual(web_api.import_state(self._rt(st))["state"]["redo"], st["redo"])
+        for key in ("undo", "redo"):
+            broken = self._rt(st)
+            del broken[key][-1]["intent"]["grouping"]
+            with self.assertRaisesRegex(ValueError, key):
+                web_api.import_state(broken)
+        out = json.loads(web_api.handle_json(json.dumps({"cmd": "import_state", "payload": {"state": st}})))
+        self.assertEqual(out["state"]["redo"], st["redo"])
+
+    def test_undo_stack_is_bounded_to_50(self):
+        st = web_api.new_piece(801000)
+        for _ in range(60):
+            st = web_api.reroll(st, "comp", "A")
+        self.assertEqual(len(st["undo"]), 50)
+
+    def test_redo_entries_are_validated_and_state_without_redo_is_accepted(self):
+        st = web_api.new_piece(801000)
+        for bad in ([{"not": "a recipe"}], ["bad"], "nope"):
+            broken = copy.deepcopy(st)
+            broken["redo"] = bad
+            with self.assertRaises(ValueError):
+                web_api.snapshot(broken)
+        legacy = {"id": st["id"], "recipe": st["recipe"], "undo": []}
+        self.assertEqual(web_api.snapshot(legacy)["state"]["redo"], [])
+        self.assertEqual(web_api.redo(legacy)["redo"], [])
+
+    def test_handle_json_redo_and_snapshot_carry_redo(self):
+        st = web_api.undo(web_api.reroll(web_api.new_piece(801000), "comp", "A"))
+        out = json.loads(web_api.handle_json(json.dumps({"cmd": "redo", "payload": {"state": st}})))
+        self.assertEqual(out["state"]["recipe"]["studio"]["salts"]["comp@A"], 1)
+        self.assertEqual(out["state"]["redo"], [])
+        self.assertTrue(out["detail"]["can_undo"])
+        self.assertFalse(out["detail"]["can_redo"])
+        snap = json.loads(web_api.handle_json(json.dumps({"cmd": "snapshot", "payload": {"state": st}})))
+        self.assertEqual(snap["state"]["redo"], st["redo"])
+        self.assertTrue(snap["detail"]["can_redo"])
+
+    def test_matches_the_server_store_sequence(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = studio_engine.StudioStore(d, render_fn=studio_render.fake_render)
+            pid = store.create_piece(801000)["id"]
+            store.reroll(pid, "comp", "A")
+            store.set_option(pid, "b_lead", "rest")
+            store.undo(pid)
+            store.undo(pid)
+            store.redo(pid)
+
+            st = web_api.new_piece(801000)
+            st = web_api.reroll(st, "comp", "A")
+            st = web_api.option(st, "b_lead", "rest")
+            st = web_api.undo(web_api.undo(st))
+            st = web_api.redo(st)
+            pdir = store._piece_dir(pid)
+            self.assertEqual(st["recipe"], json.loads((pdir / "recipe.json").read_text(encoding="utf-8")))
+            self.assertEqual(st["redo"], json.loads((pdir / "redo.json").read_text(encoding="utf-8")))
+
+    def test_labels_name_the_last_action(self):
+        st = web_api.new_piece(801000)
+        st = web_api.option(st, "mute_share", 0.3)
+        self.assertEqual(web_api.detail(st)["undo_label"], "глухие ноты 0.3")
+        st = web_api.reroll(st, "comp", "A")
+        self.assertEqual(web_api.detail(st)["undo_label"], "перегенерация «Куплет A · ритм-гитара»")
+        st = web_api.reroll(st, "lead_rhythm", "all")
+        self.assertEqual(web_api.detail(st)["undo_label"], "перегенерация «Вся пьеса · новый риф»")
+        st = web_api.lock(st, "comp", "A", True)
+        self.assertEqual(web_api.detail(st)["undo_label"], "закрепление «Куплет A · ритм-гитара»")
+        st = web_api.lock(st, "comp", "A", False)
+        self.assertEqual(web_api.detail(st)["undo_label"], "снятие закрепления «Куплет A · ритм-гитара»")
+        st = web_api.reroll(st, "all", "all")
+        self.assertEqual(web_api.detail(st)["undo_label"], "перегенерация всего незакреплённого")
+        st = web_api.option(st, "trailing_rest", False)
+        self.assertEqual(web_api.detail(st)["undo_label"], "без паузы в конце такта")
+        st = web_api.option(st, "b_lead", "rest")
+        self.assertEqual(web_api.detail(st)["undo_label"], "соло в середине B: без соло")
+        st = web_api.option(st, "octave_share", 0.4)
+        st = web_api.option(st, "octave_share", None)
+        self.assertEqual(web_api.detail(st)["undo_label"], "доля октав: авто")
+
+        undone = web_api.undo(st)
+        self.assertEqual(web_api.detail(undone)["redo_label"], "доля октав: авто")
+        self.assertEqual(web_api.detail(undone)["undo_label"], "доля октав 0.4")
+        self.assertIsNone(web_api.detail(web_api.redo(undone))["redo_label"])
+
+
 if __name__ == "__main__":
     unittest.main()
