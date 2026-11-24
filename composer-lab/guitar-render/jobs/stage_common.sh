@@ -3,10 +3,10 @@ export PATH=/run/current-system/sw/bin:/run/wrappers/bin
 NIXPKGS=github:NixOS/nixpkgs/26ef669cffa904b6f6832ab57b77892a37c1a671
 OUT_WIN=/mnt/c/Users/f.shelipov/source/repos/_griff_out/guitar-render-01
 EXP=/mnt/c/Users/f.shelipov/source/repos/_guitar-render-wt/composer-lab/guitar-render
-SFIZZ=$(nix build --no-link --print-out-paths $NIXPKGS#sfizz)
+SFIZZ=$(nix build --no-link --print-out-paths $NIXPKGS#sfizz.out)
 DOTNET=$(nix build --no-link --print-out-paths $NIXPKGS#dotnet-runtime_9.unwrapped 2>/dev/null || true)
 [ -n "$DOTNET" ] || DOTNET=/nix/store/9hmkr5l6qgzm2whhf4gz1n9ppvrix6sb-dotnet-runtime-9.0.15
-SOX=$(nix build --no-link --print-out-paths $NIXPKGS#sox)
+SOX=$(nix build --no-link --print-out-paths $NIXPKGS#sox.out)
 FLUIDSYNTH=$(nix build --no-link --print-out-paths $NIXPKGS#fluidsynth.out)
 stage_payload() {  # $1 job dir
   local j=$1
