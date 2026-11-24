@@ -94,7 +94,11 @@ def _validate_recipe(rec):
                 sm = opts["slide_max"]
                 if not _is_int(sm) or not 0 <= sm <= 12:
                     raise ValueError("invalid studio.options.slide_max")
-    return copy.deepcopy(rec)
+    rec = copy.deepcopy(rec)
+    opts = (rec.get("studio") or {}).get("options") or {}
+    if opts.get("key") == {"tonic": intent["tonic"], "mode": intent["mode"]}:
+        opts["key"] = None
+    return rec
 
 
 def _validate_history(state, key):

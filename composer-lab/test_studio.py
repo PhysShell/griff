@@ -2718,15 +2718,46 @@ KEY_TARGETS = (
     ("B", "phrygian"), ("C#", "mixolydian"), ("D", "lydian"),
 )
 KEY_SEEDS = [s * 1000 for s in range(801, 831)]
-KEY_STATS = {"notes": 0, "m9": 0, "dropped": 0, "folded": 0, "pieces": 0, "pieces_m9": 0, "pieces_folded": 0, "chromatic": 0}
+KEY_STATS = collections.Counter()
+
+ORACLE_SCALES = {
+    "ionian": (0, 2, 4, 5, 7, 9, 11), "dorian": (0, 2, 3, 5, 7, 9, 10), "phrygian": (0, 1, 3, 5, 7, 8, 10),
+    "lydian": (0, 2, 4, 6, 7, 9, 11), "mixolydian": (0, 2, 4, 5, 7, 9, 10), "aeolian": (0, 2, 3, 5, 7, 8, 10),
+    "locrian": (0, 1, 3, 5, 6, 8, 10),
+}
+ORACLE_PC = {"E": 4, "F#": 6, "A": 9, "B": 11, "D": 2, "G": 7, "C#": 1}
 
 
-def map_pitch(p, old, new):
-    old_base, old_scale = 48 + composer.TONICS[old[0]], composer.SCALES[old[1]]
-    new_base, new_scale = 48 + composer.TONICS[new[0]], composer.SCALES[new[1]]
-    octave, rel = divmod(p - old_base, 12)
-    i = max(j for j in range(7) if old_scale[j] <= rel)
-    return new_base + 12 * octave + new_scale[i] + (rel - old_scale[i]), rel != old_scale[i]
+def oracle_pitch(p, old, new, shift):
+    t_old = 48 + ORACLE_PC[old[0]]
+    octave, r = divmod(p - t_old, 12)
+    scale = ORACLE_SCALES[old[1]]
+    idx = max(i for i, x in enumerate(scale) if x <= r)
+    new_scale = ORACLE_SCALES[new[1]]
+    gap = (new_scale[idx + 1] if idx < 6 else 12) - new_scale[idx]
+    return t_old + shift + 12 * octave + new_scale[idx] + min(r - scale[idx], gap - 1)
+
+
+def oracle_shift(old, new, ref):
+    diff = (ORACLE_PC[new[0]] - ORACLE_PC[old[0]]) % 12
+    if diff != 6:
+        return diff if diff < 6 else diff - 12
+    mean = sum(ref) / len(ref)
+    return min((-6, 6), key=lambda s: (round(abs(sum(oracle_pitch(p, old, new, s) for p in ref) / len(ref) - mean), 6),
+                                       abs(sum(oracle_pitch(p, old, new, s) for p in ref) / len(ref) - 63)))
+
+
+def map_notes(pitches, old, new, ref=None):
+    parts = {"g1": [{"pitch": p, "start": i, "dur": 1} for i, p in enumerate(pitches)], "g2": []}
+    chords = [{"start": 0, "sec": "A"}]
+    rep = composer.apply_key_to_parts(
+        parts, chords, len(pitches), composer.Theory(composer.TONICS[old[0]], old[1]),
+        composer.Theory(composer.TONICS[new[0]], new[1]), ref or pitches)
+    return [n["pitch"] for n in parts["g1"]], rep
+
+
+def sign(x):
+    return (x > 0) - (x < 0)
 
 
 def keyed(seed, tonic, mode, **opts):
@@ -2736,15 +2767,15 @@ def keyed(seed, tonic, mode, **opts):
     return rec, studio_engine.set_option(rec, "key", {"tonic": tonic, "mode": mode})
 
 
-def sign(x):
-    return (x > 0) - (x < 0)
+def notes_at(piece, g, start):
+    return [n for n in piece["parts"][g] if n["start"] == start]
 
 
 class TestStudioKey(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         if KEY_STATS["pieces"]:
-            print(f"\nkey change: {KEY_STATS}", file=sys.stderr)
+            print(f"\nkey change: {dict(KEY_STATS)}", file=sys.stderr)
 
     def assert_playable(self, p, ctx):
         for g, notes in p["parts"].items():
@@ -2752,13 +2783,24 @@ class TestStudioKey(unittest.TestCase):
                 self.assertTrue(40 <= n["pitch"] <= 88, (ctx, g, n))
                 self.assertTrue(0 <= n["fret"] <= fretboard.MAX_FRET, (ctx, g, n))
                 self.assertEqual(fretboard.OPEN[n["string"]] + n["fret"], n["pitch"], (ctx, g, n))
+            seen = {}
+            for n in notes:
+                self.assertNotIn((n["start"], n["string"]), seen, (ctx, g, n))
+                seen[(n["start"], n["string"])] = n
             line = [n for n in notes if not n.get("chordtone") and not n.get("dyad")
                     and not (n.get("fixed") and "preset_tech" not in n)]
             for prev, n in zip(line, line[1:]):
                 if {"hammer", "pull", "slide"} & set(n["tech"]):
                     self.assertEqual(prev["string"], n["string"], (ctx, g, n))
+                if {"hammer", "pull"} & set(n["tech"]):
+                    self.assertGreaterEqual(prev["start"] + prev["dur"], n["start"] - 0.01, (ctx, g, prev, n))
                 if "hammer" in n["tech"]:
                     self.assertGreater(n["fret"], prev["fret"], (ctx, g, n))
+                if "tap" in n["tech"] and not n.get("fixed"):
+                    self.assertTrue(n["fret"] > 0, (ctx, g, n))
+            for prev, n in zip(notes, notes[1:]):
+                if "tap" in prev["tech"] and n["string"] == prev["string"] and n["fret"] > 0 and not n.get("fixed"):
+                    self.assertGreater(prev["fret"], n["fret"], (ctx, g, prev, n))
             last = {}
             for n in sorted((x for x in notes if x.get("dyad")), key=lambda x: x["start"]):
                 if "slide" in n["tech"]:
@@ -2783,6 +2825,15 @@ class TestStudioKey(unittest.TestCase):
                 total = sum(int(n.findtext("duration")) for n in m.iter("note") if n.find("chord") is None)
                 self.assertEqual(total, num * 16 // den, (ctx, part.get("id"), m.get("number")))
 
+    def assert_no_minor_ninth(self, p, ctx):
+        for x, y in (("g1", "g2"), ("g2", "g1")):
+            for n in p["parts"][x]:
+                if "dead" in n["tech"]:
+                    continue
+                for m in p["parts"][y]:
+                    if "dead" not in m["tech"] and m["start"] <= n["start"] < m["start"] + m["dur"]:
+                        self.assertFalse(composer.minor_ninth(n["pitch"], m["pitch"]), (ctx, n, m))
+
     def test_unset_key_is_byte_identical_and_own_key_is_unset(self):
         rng = random.Random(20261123)
         rand_seeds = rng.sample(range(1000, 999999), 20)
@@ -2800,101 +2851,184 @@ class TestStudioKey(unittest.TestCase):
             there = studio_engine.set_option(rec, "key", {"tonic": "D", "mode": "locrian"})
             self.assertEqual(midi_sha256(composer.compose(studio_engine.set_option(there, "key", None))), base, seed)
 
+    def test_hand_checked_degree_mapping(self):
+        cases = (
+            ((("E", "ionian"), ("E", "phrygian")), (64, 68, 71, 66, 65), (64, 67, 71, 65, 64)),
+            ((("A", "aeolian"), ("D", "aeolian")), (69, 72), (74, 77)),
+            ((("E", "ionian"), ("E", "locrian")), (71,), (70,)),
+            ((("D", "locrian"), ("D", "ionian")), (56,), (57,)),
+            ((("A", "phrygian"), ("A", "aeolian")), (58,), (59,)),
+            ((("G", "mixolydian"), ("C#", "ionian")), (77,), (72,)),
+            ((("G", "mixolydian"), ("C#", "phrygian")), (59,), (64,)),
+        )
+        for (old, new), src, expected in cases:
+            for p, e in zip(src, expected):
+                got, _ = map_notes([p], old, new)
+                self.assertEqual(got, [e], (old, new, p))
+        merged = map_notes([65, 66], ("E", "ionian"), ("E", "phrygian"))
+        self.assertEqual(merged, ([64, 65], {"runs_moved": 0, "folded": 0, "merged": 1, "revoiced": 0}))
+        wide = map_notes([55, 60, 66, 64, 71, 85], ("E", "ionian"), ("B", "locrian"))[0]
+        self.assertTrue(all(40 <= p <= 86 for p in wide), wide)
+
+    def test_every_mode_pair_matches_the_independent_oracle(self):
+        pitches = list(range(48, 85, 3))
+        for old_tonic in ("E", "A", "D"):
+            for old_mode in composer.KEY_MODES:
+                for new_tonic in composer.TONICS:
+                    for new_mode in composer.KEY_MODES:
+                        old, new = (old_tonic, old_mode), (new_tonic, new_mode)
+                        got, rep = map_notes(pitches, old, new)
+                        shift = oracle_shift(old, new, pitches)
+                        want = [oracle_pitch(p, old, new, shift) for p in pitches]
+                        if rep["runs_moved"] == rep["folded"] == 0:
+                            self.assertEqual(got, want, (old, new))
+                        else:
+                            self.assertTrue(all((a - b) % 12 == 0 for a, b in zip(got, want)), (old, new))
+
+    def test_round_trip_restores_pitches_and_fails_when_mapping_is_a_no_op(self):
+        checked = 0
+        for old in (("E", "ionian"), ("G", "mixolydian"), ("A", "aeolian"), ("D", "dorian")):
+            scale = ORACLE_SCALES[old[1]]
+            src = [p for p in range(50, 80) if (p - 48 - ORACLE_PC[old[0]]) % 12 in scale][::2]
+            for new in (("D", "aeolian"), ("C#", "ionian"), ("E", "phrygian"), ("B", "locrian"), ("G", "lydian")):
+                if new == old:
+                    continue
+                there, _ = map_notes(src, old, new)
+                self.assertNotEqual(there, src, (old, new))
+                back, _ = map_notes(there, new, old)
+                self.assertEqual(back, src, (old, new))
+                checked += 1
+        self.assertEqual(map_notes([67], ("G", "ionian"), ("C#", "ionian"))[0], [61])
+        self.assertEqual(map_notes([61], ("C#", "ionian"), ("G", "ionian"))[0], [67])
+        self.assertGreater(checked, 15)
+
     def test_notes_move_to_the_same_scale_degree_and_nothing_else_changes(self):
         for seed in KEY_SEEDS:
+            rec = studio_engine.new_recipe(seed)
+            trace = {}
+            src = composer.compose(rec, _trace=trace)
+            pre = trace["pre"]
+            ref = [n["pitch"] for g in ("g1", "g2") for n in pre[g]]
+            old = (rec["intent"]["tonic"], rec["intent"]["mode"])
             for tonic, mode in KEY_TARGETS:
-                rec, krec = keyed(seed, tonic, mode)
-                src, dst = composer.compose(rec), composer.compose(krec)
-                old = (rec["intent"]["tonic"], rec["intent"]["mode"])
-                ctx = (seed, tonic, mode)
                 if (tonic, mode) == old:
-                    self.assertEqual(dst["parts"], src["parts"], ctx)
                     continue
+                ktrace = {}
+                krec = studio_engine.set_option(rec, "key", {"tonic": tonic, "mode": mode})
+                dst = composer.compose(krec, _trace=ktrace)
+                ctx = (seed, tonic, mode)
                 rep = dst["report"]["key"]
+                resolved = set(dst["report"]["m9_resolved"])
+                shift = oracle_shift(old, (tonic, mode), ref)
                 KEY_STATS["pieces"] += 1
-                KEY_STATS["pieces_m9"] += rep["m9"] > 0
-                KEY_STATS["m9"] += rep["m9"]
-                KEY_STATS["folded"] += rep["folded"]
-                KEY_STATS["pieces_folded"] += rep["folded"] > 0
+                for name in ("runs_moved", "folded", "merged", "revoiced"):
+                    KEY_STATS[name] += rep[name]
+                KEY_STATS["pieces_with_moved_run"] += rep["runs_moved"] > 0
+                KEY_STATS["pieces_with_folds"] += rep["folded"] > 0
                 self.assertEqual(dst["total16"], src["total16"], ctx)
                 self.assertEqual(dst["chords"], src["chords"], ctx)
-                shifts = collections.Counter()
-                dropped = 0
+                moved_notes = 0
                 for g in ("g1", "g2"):
-                    s_notes, d_notes = src["parts"][g], dst["parts"][g]
-                    pool = {}
-                    for d in d_notes:
-                        pool.setdefault((d["start"], d["vel"]), []).append(d)
-                    matched = []
-                    for n in s_notes:
-                        pitch, chromatic = map_pitch(n["pitch"], old, (tonic, mode))
+                    a_notes, b_notes = pre[g], ktrace["pre"][g]
+                    self.assertEqual(len(a_notes), len(b_notes), ctx)
+                    deltas = []
+                    for a, b in zip(a_notes, b_notes):
+                        self.assertEqual((a["start"], a["dur"], a["vel"]), (b["start"], b["dur"], b["vel"]), (ctx, g, a))
+                        delta = b["pitch"] - oracle_pitch(a["pitch"], old, (tonic, mode), shift)
+                        self.assertEqual(delta % 12, 0, (ctx, g, a, b))
+                        deltas.append(delta)
+                    moved_notes += sum(x != 0 for x in deltas)
+                    for i in range(len(a_notes) - 1):
+                        if deltas[i] == deltas[i + 1] and a_notes[i]["start"] < a_notes[i + 1]["start"]:
+                            self.assertEqual(sign(b_notes[i + 1]["pitch"] - b_notes[i]["pitch"]),
+                                             sign(a_notes[i + 1]["pitch"] - a_notes[i]["pitch"]), (ctx, g, i))
+                if not rep["runs_moved"] and not rep["folded"] and not rep["revoiced"]:
+                    self.assertEqual(moved_notes, 0, ctx)
+                self.assertGreaterEqual(rep["runs_moved"] + rep["folded"] + rep["revoiced"] > 0, moved_notes > 0, ctx)
+                for g in ("g1", "g2"):
+                    pool = collections.Counter((n["start"], n["vel"]) for n in dst["parts"][g])
+                    for n in src["parts"][g]:
                         KEY_STATS["notes"] += 1
-                        KEY_STATS["chromatic"] += chromatic
-                        cands = [d for d in pool.get((n["start"], n["vel"]), [])
-                                 if ((d["pitch"] - pitch) % 12 == 0 if rep["folded"] else d["pitch"] == pitch + rep["shift"])
-                                 and d["dur"] <= n["dur"]]
-                        if not cands:
-                            dropped += 1
-                            matched.append(None)
-                            continue
-                        d = min(cands, key=lambda d: (d["dur"] != n["dur"], abs(d["pitch"] - pitch - rep["shift"])))
-                        pool[(n["start"], n["vel"])].remove(d)
-                        matched.append((d, d["pitch"] - pitch))
-                        shifts[d["pitch"] - pitch] += 1
-                        self.assertEqual({"dead", "pm"} & set(d["tech"]), {"dead", "pm"} & set(n["tech"]), ctx)
-                    self.assertFalse(any(pool.values()), ctx)
-                    if rep["m9"] == 0:
-                        self.assertEqual(len(d_notes), len(s_notes), ctx)
-                        self.assertEqual([m[0]["dur"] for m in matched], [n["dur"] for n in s_notes], ctx)
-                        common = shifts.most_common(1)[0][0]
-                        for (a, b), (ma, mb) in zip(zip(s_notes, s_notes[1:]), zip(matched, matched[1:])):
-                            if ma[1] == common == mb[1]:
-                                self.assertEqual(sign(mb[0]["pitch"] - ma[0]["pitch"]), sign(b["pitch"] - a["pitch"]), (ctx, g, a, b))
-                KEY_STATS["dropped"] += dropped
-                self.assertTrue(all(sh % 12 == 0 for sh in shifts), (ctx, shifts))
-                common = shifts.most_common(1)[0][0]
-                self.assertLessEqual(sum(shifts.values()) - shifts[common], rep["folded"] + dropped, (ctx, shifts))
-                if not rep["folded"]:
-                    self.assertEqual(set(shifts), {common}, ctx)
-                self.assertEqual(common, rep["shift"], ctx)
-                self.assertLessEqual(dropped, 2 * rep["m9"], ctx)
-                self.assert_playable(dst, ctx)
-
-    def test_no_minor_ninth_between_the_guitars_after_mapping(self):
-        for seed in KEY_SEEDS[:12]:
-            for tonic, mode in KEY_TARGETS:
-                p = composer.compose(keyed(seed, tonic, mode)[1])
-                for x, y in (("g1", "g2"), ("g2", "g1")):
-                    for n in p["parts"][x]:
-                        for m in p["parts"][y]:
-                            if m["start"] <= n["start"] < m["start"] + m["dur"]:
-                                self.assertFalse(composer.minor_ninth(n["pitch"], m["pitch"]), (seed, tonic, mode, n, m))
-
-    def test_mapping_to_the_own_key_is_the_identity_and_a_round_trip_restores_pitches(self):
-        round_trips = 0
-        for seed in KEY_SEEDS:
-            rec = studio_engine.new_recipe(seed)
-            piece = composer.compose(rec)
-            own = (rec["intent"]["tonic"], rec["intent"]["mode"])
-            same = copy.deepcopy(piece)
-            composer.apply_key(same, *own)
-            self.assertEqual(same["parts"], piece["parts"], seed)
-            for target in (("D", "aeolian"), ("G", "lydian"), ("B", "ionian"), ("E", "dorian"), ("A", "mixolydian")):
-                there = copy.deepcopy(piece)
-                rep = composer.apply_key(there, *target)
-                if rep["m9"] or rep["folded"]:
-                    continue
-                back = copy.deepcopy(there)
-                rep2 = composer.apply_key(back, *own)
-                if rep2["m9"] or rep2["folded"]:
-                    continue
-                round_trips += 1
+                        if pool[(n["start"], n["vel"])] > 0:
+                            pool[(n["start"], n["vel"])] -= 1
+                        else:
+                            self.assertIn(n["start"], resolved, (ctx, g, n))
+                            self.assertNotIn("dead", n["tech"], (ctx, g, n))
+                            KEY_STATS["dropped"] += 1
                 self.assertEqual(
-                    [[n["pitch"] for n in back["parts"][g]] for g in ("g1", "g2")],
-                    [[n["pitch"] for n in piece["parts"][g]] for g in ("g1", "g2")],
-                    (seed, target),
-                )
-        self.assertGreater(round_trips, 5)
+                    sum("dead" in n["tech"] for g in dst["parts"] for n in dst["parts"][g]),
+                    sum("dead" in n["tech"] for g in src["parts"] for n in src["parts"][g]), ctx)
+                same = [sorted(a["tech"]) == sorted(b["tech"]) for g in ("g1", "g2")
+                        if len(src["parts"][g]) == len(dst["parts"][g])
+                        for a, b in zip(src["parts"][g], dst["parts"][g])]
+                KEY_STATS["tech_differs"] += same.count(False)
+                KEY_STATS["tech_compared"] += len(same)
+                self.assert_playable(dst, ctx)
+                self.assert_no_minor_ninth(dst, ctx)
+
+    def test_runs_move_whole_and_square_copies_decide_alike(self):
+        for seed, tonic, mode in ((801000, "F#", "locrian"), (801000, "D", "aeolian"), (802000, "B", "phrygian")):
+            rec, krec = keyed(seed, tonic, mode, square_repeat=2)
+            p = composer.compose(krec)
+            spans = section_spans(p)
+            a_spans = [(s, e) for sec, s, e in spans if sec == "A"]
+            half = (a_spans[0][1] - a_spans[0][0]) // 2
+            for g in ("g1", "g2"):
+                first = section_notes(p, g, a_spans[0][0], a_spans[0][0] + half)
+                second = section_notes(p, g, a_spans[0][0] + half, a_spans[0][1])
+                self.assertEqual(first, second, (seed, g))
+
+    def test_regression_octave_fold_keeps_descent_and_octave_chord(self):
+        _, krec = keyed(801000, "D", "aeolian")
+        p = composer.compose(krec)
+        a, b = notes_at(p, "g1", 5), notes_at(p, "g1", 6)
+        self.assertTrue(a and b)
+        self.assertGreater(a[0]["pitch"], b[0]["pitch"])
+        rec = studio_engine.set_option(studio_engine.new_recipe(40), "octave_share", 1.0)
+        p = composer.compose(studio_engine.set_option(rec, "key", {"tonic": "C#", "mode": "mixolydian"}))
+        dyads = [n for g in p["parts"] for n in p["parts"][g] if n["start"] == 42 and n.get("dyad")]
+        self.assertEqual(len(dyads), 2)
+        self.assertEqual(abs(dyads[0]["pitch"] - dyads[1]["pitch"]), 12)
+        self.assertNotEqual((dyads[0]["string"], dyads[0]["fret"]), (dyads[1]["string"], dyads[1]["fret"]))
+
+    def test_regression_fingering_never_stacks_or_overlaps_a_string(self):
+        for seed, tonic, mode in ((801000, "F#", "locrian"), (807000, "G", "dorian"), (70, "E", "ionian"),
+                                  (834000, "G", "dorian"), (23, "D", "aeolian")):
+            _, krec = keyed(seed, tonic, mode)
+            p = composer.compose(krec)
+            self.assert_playable(p, (seed, tonic, mode))
+            for g in ("g1", "g2"):
+                by_string = {}
+                for n in sorted(p["parts"][g], key=lambda n: n["start"]):
+                    prev = by_string.get(n["string"])
+                    if prev is not None and prev["start"] < n["start"]:
+                        self.assertLessEqual(prev["start"] + prev["dur"], n["start"], (seed, g, prev, n))
+                    by_string[n["string"]] = n
+
+    def test_regression_locked_intro_keeps_its_register_when_another_section_is_rerolled(self):
+        rec = studio_engine.set_lock(studio_engine.new_recipe(802000), "intro", "intro", True)
+        rec = studio_engine.set_option(rec, "key", {"tonic": "B", "mode": "phrygian"})
+        before = composer.compose(rec)
+        after = composer.compose(studio_engine.reroll(rec, "b", "B"))
+        end = section_spans(before)[0][2]
+        for g in ("g1", "g2"):
+            self.assertEqual(section_notes(before, g, 0, end), section_notes(after, g, 0, end), g)
+
+    def test_regression_dead_strokes_survive_and_legacy_recipes_get_the_minor_ninth_rule(self):
+        _, krec = keyed(801000, "D", "aeolian", mute_share=1.0)
+        p = composer.compose(krec)
+        self.assertTrue(any("dead" in n["tech"] for g in p["parts"] for n in notes_at(p, g, 285)))
+        args = argparse.Namespace(meter=None, mode=None, key=None, tempo=None)
+        legacy = studio_engine._ensure_studio(composer.make_recipe(801000, args))
+        self.assertFalse(legacy.get("fix") or legacy.get("v6"))
+        for tonic, mode in (("F#", "locrian"), ("D", "aeolian")):
+            p = composer.compose(studio_engine.set_option(legacy, "key", {"tonic": tonic, "mode": mode}))
+            self.assert_no_minor_ninth(p, (tonic, mode))
+
+    def test_locking_the_ending_with_a_key_set_does_not_change_the_music(self):
+        rec = studio_engine.set_option(studio_engine.new_recipe(801000), "key", {"tonic": "D", "mode": "aeolian"})
+        locked = studio_engine.set_lock(rec, "ending", "end", True)
+        self.assertEqual(midi_sha256(composer.compose(locked)), midi_sha256(composer.compose(rec)))
 
     def test_key_option_validation_labels_and_history(self):
         rec = studio_engine.new_recipe(801000)
@@ -2949,7 +3083,9 @@ class TestStudioKey(unittest.TestCase):
             _, krec = keyed(seed, tonic, mode, mute_share=rng.choice([0.3, 1.0]),
                             octave_share=rng.choice([None, 1.0]), intro_bars=rng.choice([1, 4]),
                             square_repeat=rng.choice([1, 2]))
-            self.assert_playable(composer.compose(krec), (seed, tonic, mode))
+            p = composer.compose(krec)
+            self.assert_playable(p, (seed, tonic, mode))
+            self.assert_no_minor_ninth(p, (seed, tonic, mode))
 
     def test_server_accepts_and_rejects_key_values_and_page_has_the_controls(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3027,6 +3163,26 @@ console.log(JSON.stringify({ first, second, sent: calls.filter((c) => c.url.ends
              {"name": "key", "value": {"tonic": "D", "mode": "dorian"}},
              {"name": "key", "value": None}],
         )
+
+
+    def test_two_quick_key_clicks_end_in_the_combined_key(self):
+        out = _run_page("""
+show({ key: "E", mode: "lydian", options: { key: null, octave_share: null, mute_share: 0 } });
+let held = [];
+respond = (url, body) => {
+  if (!url.endsWith("/option")) return { pieces: [] };
+  const v = body.value;
+  return new Promise((resolve) => held.push(() => resolve(piece({ key: v.tonic, mode: v.mode, options: { key: v, octave_share: null, mute_share: 0 } }))));
+};
+const click = (o, v) => find((e) => e.dataset && e.dataset.option === o && e.dataset.value === v && e.tagName === "button").onclick();
+click("key_tonic", "D");
+await sleep(20);
+click("key_mode", "aeolian");
+await sleep(20);
+while (held.length) { held.shift()(); await sleep(20); }
+console.log(JSON.stringify({ sent: calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body.value) }));
+""")
+        self.assertEqual(out["sent"], [{"tonic": "D", "mode": "lydian"}, {"tonic": "D", "mode": "aeolian"}])
 
 
 if __name__ == "__main__":

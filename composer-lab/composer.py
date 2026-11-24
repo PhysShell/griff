@@ -713,7 +713,7 @@ def minor_ninth(a, b):
     return abs(a - b) % 12 == 1 and a != b
 
 
-def resolve_minor_ninths(parts, lead, other):
+def resolve_minor_ninths(parts, lead, other, keyed=False):
     """The corpus has many major sevenths between the guitars but almost no
     minor ninths. An accompaniment note sounding a minor ninth or semitone
     against a lead note is cut short before it, or dropped when struck together
@@ -721,6 +721,9 @@ def resolve_minor_ninths(parts, lead, other):
     resolved = []
     keep = []
     for m in sorted(parts[other], key=lambda n: n["start"]):
+        if keyed and "dead" in m["tech"]:
+            keep.append(m)
+            continue
         end = m["start"] + m["dur"]
         hits = [n for n in parts[lead] if m["start"] <= n["start"] < end and minor_ninth(n["pitch"], m["pitch"])]
         under = [n for n in parts[lead] if n["start"] < m["start"] < n["start"] + n["dur"]
@@ -745,6 +748,8 @@ def resolve_minor_ninths(parts, lead, other):
         p = by_string.get(n["string"]) if n.get("dyad") else prev
         legato = {"hammer", "pull", "slide"} & set(n["tech"])
         if legato and (p is None or p["string"] != n["string"] or p["fret"] == n["fret"]
+                       or (keyed and "slide" not in legato
+                           and (p["start"] + p["dur"] < n["start"] - 0.01 or n["start"] - p["start"] > 2))
                        or ("hammer" in legato and n["fret"] < p["fret"])
                        or ("pull" in legato and n["fret"] > p["fret"])):
             n["tech"] = [x for x in n["tech"] if x not in legato]
@@ -754,10 +759,16 @@ def resolve_minor_ninths(parts, lead, other):
     return resolved
 
 
-def _map_degree(pitch, old, new):
+def map_degree(pitch, old, new):
+    """Pitch of the same scale degree in another scale; a chromatic note keeps
+    its offset above the lower degree, squeezed to stay below the next one.
+    Returns (pitch, merged) with merged set when it had to land on the degree."""
     octave, rel = divmod(pitch - old.base, 12)
     i = max(j for j in range(7) if old.scale[j] <= rel)
-    return new.base + 12 * octave + new.scale[i] + rel - old.scale[i]
+    off = rel - old.scale[i]
+    gap = (new.scale[i + 1] if i < 6 else 12) - new.scale[i]
+    merged = off >= gap == 1
+    return new.base + 12 * octave + new.scale[i] + min(off, gap - 1), merged
 
 
 def _place(pitch, near_string, near_fret):
@@ -765,80 +776,119 @@ def _place(pitch, near_string, near_fret):
     return min(cands, key=lambda c: (c[0] != near_string, abs(c[1] - near_fret), c[0]))
 
 
-def apply_key(piece, tonic, mode, lead="g1", fix=True, realize_tempo=None):
-    """Move every note to the same degree of another scale, shifting the whole
-    piece by one common octave offset into the fretboard range, then refinger
-    and re-apply the minor-ninth rule. Legato is kept only where the new
-    fingering still allows it; rhythm and form are untouched."""
-    old, new = piece["theory"], Theory(TONICS[tonic], mode)
-    report = {"m9": 0, "folded": 0, "shift": 0}
-    if old.tonic_pc == new.tonic_pc and old.scale == new.scale:
-        return report
-    parts, other = piece["parts"], "g2" if lead == "g1" else "g1"
-    notes = [n for g in ("g1", "g2") for n in parts[g]]
-    mapped = [_map_degree(n["pitch"], old, new) for n in notes]
-    lo, hi = fretboard.OPEN[0], fretboard.OPEN[5] + fretboard.MAX_FRET
-    mean = sum(n["pitch"] for n in notes) / len(notes)
+def _place_group(group):
+    options = [[(s, n["pitch"] - o) for s, o in enumerate(fretboard.OPEN) if 0 <= n["pitch"] - o <= fretboard.MAX_FRET]
+               for n in group]
+    best = []
 
-    def cost(k):
-        out = sum(not lo <= p + 12 * k <= hi for p in mapped)
-        return out, abs(sum(mapped) / len(mapped) + 12 * k - mean)
+    def walk(i, used, picks, cost):
+        if best and cost >= best[0]:
+            return
+        if i == len(group):
+            fretted = [f for _, f in picks if f]
+            total = cost + 0.5 * (max(fretted) - min(fretted) if fretted else 0)
+            if not best or total < best[0]:
+                best[:] = [total, list(picks)]
+            return
+        near_s, near_f = group[i]["fixed"]
+        for s, f in options[i]:
+            if s not in used:
+                walk(i + 1, used | {s}, picks + [(s, f)], cost + 3 * (s != near_s) + 0.1 * abs(f - near_f))
 
-    k = min(range(-5, 6), key=cost)
-    for n, p in zip(notes, mapped):
-        p += 12 * k
-        while p > hi:
-            p -= 12
-            report["folded"] += 1
-        while p < lo:
-            p += 12
-            report["folded"] += 1
-        n["pitch"] = p
-    report["shift"] = 12 * k
-    sec16 = 15 / (realize_tempo or piece["tempo"]) if fix else None
-    runs = _section_runs(piece["chords"], piece["total16"])
+    walk(0, frozenset(), [], 0.0)
+    return best[1] if best else None
+
+
+def _key_octave(old, new, ref):
+    d = new.tonic_pc - old.tonic_pc
+    near = (d + 6) % 12 - 6
+    options = [near] if near != -6 else [-6, 6]
+    mean = sum(ref) / len(ref)
+
+    def drift(x):
+        shifted = sum(map_degree(p, old, new)[0] + x - d for p in ref) / len(ref)
+        return round(abs(shifted - mean), 6), abs(shifted - 63)
+
+    return min(options, key=drift) - d
+
+
+def apply_key_to_parts(parts, chords, total16, old, new, ref):
+    """Map the pitches of an unfingered piece into another key before fingering.
+    One tonic shift of at most a tritone for the whole piece; a run of one guitar
+    inside a section leaving the fretboard moves by an octave as a whole, and only
+    when no octave fits the run are single chords or dyads folded."""
+    report = {"runs_moved": 0, "folded": 0, "merged": 0, "revoiced": 0}
+    shift = _key_octave(old, new, ref)
     for g in ("g1", "g2"):
-        legato = {id(n): {"hammer", "pull", "slide", "tap"} & set(n["tech"]) for n in parts[g]}
-        for _sec, _occ, s0, s1 in runs:
-            seg = [n for n in parts[g] if s0 <= n["start"] < s1]
-            line = sorted((n for n in seg if not n.get("fixed") and not n.get("chordtone")),
-                          key=lambda n: (n["start"], n["pitch"]))
-            kept = {id(n): [t for t in n["tech"] if t not in ("hammer", "pull", "slide", "tap")] for n in line}
-            fretboard.realize_line(line, allow_tap=(g == "g1"), sec16=sec16)
-            for n in line:
-                n["tech"] = kept[id(n)] + [t for t in n["tech"] if t in legato[id(n)]]
-            for n in seg:
-                if n.get("fixed"):
-                    n["string"], n["fret"] = _place(n["pitch"], *n["fixed"])
-                    n["fixed"] = (n["string"], n["fret"])
-                elif n.get("chordtone"):
-                    base = next((m for m in line if m["start"] == n["start"]), None)
-                    n["string"], n["fret"] = _place(
-                        n["pitch"], min(base["string"] + 1, 5) if base else 1, base["fret"] if base else 0)
-        _keep_playable_legato(parts[g])
-    if fix:
-        report["m9"] = len(resolve_minor_ninths(parts, lead, other))
-    _validate_octave_slides(parts)
-    if any(n.get("_muted") for n in parts[other]):
-        _strip_legato_from_dead(parts[other])
-    piece["theory"] = new
+        for n in parts[g]:
+            n["pitch"], merged = map_degree(n["pitch"], old, new)
+            n["pitch"] += shift
+            report["merged"] += merged
+    lo, hi = fretboard.OPEN[0], fretboard.OPEN[5] + fretboard.MAX_FRET
+    bar_starts = [c["start"] for c in chords]
+
+    def bar_of(n):
+        return max(s for s in bar_starts if s <= n["start"])
+
+    def tap_triad(n):
+        return n.get("fixed") and not n.get("dyad") and "preset_tech" in n
+
+    def fits(group, k):
+        return all(lo <= n["pitch"] + 12 * k <= hi for n in group)
+
+    def move(group, k):
+        for n in group:
+            n["pitch"] += 12 * k
+
+    for g in ("g1", "g2"):
+        for _sec, _occ, s0, s1 in _section_runs(chords, total16):
+            run = [n for n in parts[g] if s0 <= n["start"] < s1]
+            if fits(run, 0):
+                continue
+            high = max(n["pitch"] for n in run) > hi
+            order = (-1, 1, -2, 2) if high else (1, -1, 2, -2)
+            k = next((k for k in order if fits(run, k)), None)
+            if k is not None:
+                move(run, k)
+                report["runs_moved"] += 1
+                continue
+            groups = {}
+            for n in run:
+                groups.setdefault(("tap", bar_of(n), n["fixed"][0]) if tap_triad(n) else n["start"], []).append(n)
+            for group in groups.values():
+                if not fits(group, 0):
+                    k = next((k for k in order if fits(group, k)), 0)
+                    move(group, k)
+                    report["folded"] += len(group)
+    for g in ("g1", "g2"):
+        by_start = {}
+        for n in parts[g]:
+            if n.get("fixed"):
+                by_start.setdefault(n["start"], []).append(n)
+        for group in by_start.values():
+            pos = _place_group(group)
+            for n in sorted(group, key=lambda n: n["pitch"]):
+                if pos is not None or n["pitch"] + 12 > fretboard.OPEN[5] + fretboard.MAX_FRET:
+                    continue
+                n["pitch"] += 12
+                report["revoiced"] += 1
+                pos = _place_group(group)
+            for n, p in zip(group, pos or [_place(n["pitch"], *n["fixed"]) for n in group]):
+                n["fixed"] = p
+        triads = sorted((n for n in parts[g] if tap_triad(n)), key=lambda n: n["start"])
+        for prev, n in zip([None] + triads, triads):
+            leg = {"hammer", "pull"} & set(n["preset_tech"])
+            if leg and (prev is None or prev["fixed"][0] != n["fixed"][0] or n["start"] - prev["start"] > 2
+                        or ("hammer" in leg and n["fixed"][1] <= prev["fixed"][1])
+                        or ("pull" in leg and n["fixed"][1] >= prev["fixed"][1])):
+                n["preset_tech"] = [t for t in n["preset_tech"] if t not in leg]
+        for n in triads:
+            if "tap" in n["preset_tech"]:
+                nxt = next((m for m in triads if n["start"] < m["start"] <= n["start"] + 2
+                            and m["fixed"][0] == n["fixed"][0] and "pull" in m["preset_tech"]), None)
+                if nxt is not None and nxt["fixed"][1] >= n["fixed"][1]:
+                    n["preset_tech"] = [t for t in n["preset_tech"] if t != "tap"]
     return report
-
-
-def _keep_playable_legato(notes):
-    line = [n for n in notes if _is_line_note(n)]
-    for prev, n in zip(line, line[1:]):
-        leg = {"hammer", "pull", "slide"} & set(n["tech"])
-        if leg and (prev["string"] != n["string"] or prev["fret"] == n["fret"] or "dead" in prev["tech"]
-                    or ("hammer" in leg and n["fret"] < prev["fret"]) or ("pull" in leg and n["fret"] > prev["fret"])):
-            n["tech"] = [t for t in n["tech"] if t not in leg]
-    for n in notes:
-        if "tap" in n["tech"] and n.get("fixed"):
-            for m in notes:
-                if (n["start"] < m["start"] <= n["start"] + 2 and m["string"] == n["string"]
-                        and "pull" in m["tech"] and m["fret"] >= n["fret"]):
-                    n["tech"] = [t for t in n["tech"] if t != "tap"]
-                    break
 
 
 def apply_rests_and_pushes(parts, lead, other, form, spans, plan):
@@ -1941,6 +1991,13 @@ def compose(recipe, _trace=None):
                 opts = [p for p in range(n["pitch"] - 9, n["pitch"] + 10)
                         if (p - th.tonic_pc) % 12 in th.scale and 40 <= p <= 86]
                 n["pitch"] = crng.choice(opts)
+    key_report = None
+    if st_cfg is not None and st_cfg["key"]:
+        new_th = Theory(TONICS[st_cfg["key"]["tonic"]], st_cfg["key"]["mode"])
+        if (new_th.tonic_pc, new_th.scale) != (th.tonic_pc, th.scale):
+            ref = [n["pitch"] for g in ("g1", "g2") for n in st_cfg["base"]["pre"][g]]
+            key_report = apply_key_to_parts(parts, chords, t, th, new_th, ref)
+            th = new_th
     for g in ("g1", "g2"):
         for n in parts[g]:
             while n["pitch"] > 86:
@@ -2012,10 +2069,15 @@ def compose(recipe, _trace=None):
             for g in ("g1", "g2"):
                 out_parts[g].extend(sec_parts[g])
         parts = out_parts
-        if fix:
-            report["m9_resolved"] = resolve_minor_ninths(parts, lead, other)
+        keyed = key_report is not None
+        if keyed and st_cfg["mute_share"] > 0.0:
+            _apply_mute_share(parts, other, chords, t, recipe["seed"], st_cfg["mute_share"])
+        if fix or keyed:
+            report["m9_resolved"] = resolve_minor_ninths(parts, lead, other, keyed=keyed)
+        if keyed:
+            _strip_legato_from_dead(parts[other])
         _validate_octave_slides(parts)
-        if st_cfg["mute_share"] > 0.0:
+        if not keyed and st_cfg["mute_share"] > 0.0:
             _apply_mute_share(parts, other, chords, t, recipe["seed"], st_cfg["mute_share"])
         if st_cfg["square_repeat"] > 1:
             t = _apply_square_repeat(
@@ -2052,13 +2114,11 @@ def compose(recipe, _trace=None):
         _trace["spans"] = [
             [sec, st0, starts[k + 1][1] if k + 1 < len(starts) else t] for k, (sec, st0) in enumerate(starts)
         ]
-    piece = {"tempo": tempo, "meters": meters, "parts": parts,
-             "chords": chords,
-             "total16": t, "report": report, "theory": th}
-    if st_cfg is not None and st_cfg["key"]:
-        report["key"] = apply_key(piece, st_cfg["key"]["tonic"], st_cfg["key"]["mode"],
-                                  lead=lead, fix=fix, realize_tempo=realize_tempo)
-    return piece
+    if key_report is not None:
+        report["key"] = key_report
+    return {"tempo": tempo, "meters": meters, "parts": parts,
+            "chords": chords,
+            "total16": t, "report": report, "theory": th}
 
 
 def plan_skeleton(rng, intent):

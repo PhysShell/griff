@@ -1186,3 +1186,19 @@ test("Key: a pending slider is flushed before the key change", async () => {
   const sent = env.workerMessages.filter((m) => m.type === "call").map((m) => (m.cmd === "option" ? m.payload.name : m.cmd));
   assert.deepEqual(sent, ["mute_share", "key"]);
 });
+
+test("Key: two quick clicks, tonic then mode, end in the combined key", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  env.workerMessages.length = 0;
+  keyButton(env, "key_tonic", "D").click();
+  await env.flushAll(10);
+  keyButton(env, "key_mode", "aeolian").click();
+  await env.flushAll(10);
+  await resolveAll(env);
+  await env.flushAll(15);
+  assert.deepEqual(keyCalls(env), [{ tonic: "D", mode: "lydian" }, { tonic: "D", mode: "aeolian" }]);
+  const saved = env.indexedDB._pieces.get("piece_801000").state;
+  assert.deepEqual(saved.recipe.studio.options.key, { tonic: "D", mode: "aeolian" });
+  assert.match(env.document.getElementById("workspace").textContent, /D минор \(эолийский\)/);
+});

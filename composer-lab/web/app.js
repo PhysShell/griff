@@ -1774,6 +1774,16 @@
       grid.appendChild(box);
     }
 
+    function sendKey(patch, ctl) {
+      const pending = appState.keyPending && appState.keyPending.id === d.id ? appState.keyPending.value : null;
+      const next = Object.assign({}, pending || { tonic: d.key, mode: d.mode }, patch);
+      appState.keyPending = { id: d.id, value: next };
+      appState.keyBusy = (appState.keyBusy || 0) + 1;
+      return Promise.resolve(sendOption("key", next, ctl)).finally(() => {
+        if (--appState.keyBusy === 0) appState.keyPending = null;
+      });
+    }
+
     function addKeyControl(grid) {
       const title = "Тональность";
       const box = document.createElement("div");
@@ -1784,11 +1794,11 @@
       box.appendChild(titleEl);
       box.appendChild(
         makeChoiceRow(`${title}: основной тон`, "key_tonic", KEY_TONICS.map((t) => [t, t]), d.key, (t, b) =>
-          sendOption("key", { tonic: t, mode: d.mode }, b)
+          sendKey({ tonic: t }, b)
         )
       );
       box.appendChild(
-        makeChoiceRow(`${title}: лад`, "key_mode", KEY_MODES, d.mode, (m, b) => sendOption("key", { tonic: d.key, mode: m }, b))
+        makeChoiceRow(`${title}: лад`, "key_mode", KEY_MODES, d.mode, (m, b) => sendKey({ mode: m }, b))
       );
       box.appendChild(
         makeChoiceRow(`${title}: как в пьесе`, "key", [["auto", "Как в пьесе"]], opts.key ? null : "auto", (v, b) =>

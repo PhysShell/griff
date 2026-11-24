@@ -259,7 +259,9 @@ def set_lock(recipe, layer, section, locked):
             riffs.pop(key, None)
         elif key not in riffs:
             trace = {}
-            composer.compose(rec, _trace=trace)
+            unkeyed = copy.deepcopy(rec)
+            unkeyed["studio"]["options"]["key"] = None
+            composer.compose(unkeyed, _trace=trace)
             riffs[key] = json.loads(json.dumps(trace["riff"].get("A3") or trace["riff"].get("A") or []))
     return rec
 

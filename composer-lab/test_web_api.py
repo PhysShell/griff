@@ -362,6 +362,20 @@ class TestWebApiKey(unittest.TestCase):
         self.assertIsNone(web_api.detail(legacy)["options"]["key"])
 
 
+    def test_import_turns_an_explicit_own_key_into_unset(self):
+        st = web_api.new_piece(801000)
+        det = web_api.detail(st)
+        explicit = copy.deepcopy(st)
+        explicit["recipe"]["studio"]["options"]["key"] = {"tonic": det["key"], "mode": det["mode"]}
+        explicit["undo"] = [copy.deepcopy(explicit["recipe"])]
+        snap = web_api.import_state(explicit)
+        self.assertIsNone(snap["state"]["recipe"]["studio"]["options"]["key"])
+        self.assertIsNone(snap["detail"]["options"]["key"])
+        self.assertIsNone(snap["state"]["undo"][0]["studio"]["options"]["key"])
+        same = web_api.option(snap["state"], "key", None)
+        self.assertEqual(len(same["undo"]), 1)
+
+
 class TestReviewFixesPython(unittest.TestCase):
     def _load_check_site(self):
         path = Path(__file__).resolve().parent / "web" / "check_site.py"
