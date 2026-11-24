@@ -85,6 +85,11 @@ def _validate_recipe(rec):
                     v = opts[k]
                     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0.0 <= float(v) <= 1.0:
                         raise ValueError(f"invalid studio.options.{k}")
+            if "key" in opts:
+                try:
+                    engine.parse_key(opts["key"])
+                except ValueError:
+                    raise ValueError("invalid studio.options.key") from None
             if "slide_max" in opts:
                 sm = opts["slide_max"]
                 if not _is_int(sm) or not 0 <= sm <= 12:

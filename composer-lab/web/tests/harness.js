@@ -44,6 +44,7 @@ function makeFakeState(seed = 801000, overrides = {}) {
         octave_sixteenths: 0.3,
         dead_notes: 0.2,
         slide_max: 5,
+        key: null,
       },
       comp_doses: {},
     },
@@ -72,9 +73,14 @@ function describeFakeChange(prevRec, curRec) {
     "octave_sixteenths",
     "dead_notes",
     "slide_max",
+    "key",
   ]) {
-    if (po[k] !== co[k]) {
+    if (JSON.stringify(po[k] ?? null) !== JSON.stringify(co[k] ?? null)) {
       const v = co[k];
+      if (k === "key") {
+        const modes = { ionian: "мажор", dorian: "дорийский", phrygian: "фригийский", lydian: "лидийский", mixolydian: "миксолидийский", aeolian: "натуральный минор", locrian: "локрийский" };
+        return v ? `тональность: ${v.tonic} ${modes[v.mode]}` : "тональность: как в пьесе";
+      }
       if (k === "mute_share") return `глухие ноты ${fmtNum(v)}`;
       if (k === "octave_share") return v === null || v === undefined ? "октавные аккорды: авто" : `октавные аккорды ${fmtNum(v)}`;
       if (k === "intro_bars") return v === "auto" ? "длина вступления: авто" : `длина вступления: ${v}`;
@@ -201,8 +207,8 @@ function buildDetailFromState(st, sectionLabels = {}) {
     id: st.id,
     seed: rec.seed,
     meter: rec.intent.meter,
-    mode: rec.intent.mode,
-    key: rec.intent.tonic,
+    mode: opts.key ? opts.key.mode : rec.intent.mode,
+    key: opts.key ? opts.key.tonic : rec.intent.tonic,
     tempo: rec.intent.tempo,
     length: Math.max(2, cursor),
     sections,
@@ -233,6 +239,7 @@ function buildDetailFromState(st, sectionLabels = {}) {
       octave_sixteenths: opts.octave_sixteenths ?? 0.3,
       dead_notes: opts.dead_notes ?? 0.2,
       slide_max: opts.slide_max ?? 5,
+      key: opts.key ?? null,
     },
     can_undo: undo.length > 0,
     can_redo: redo.length > 0,
