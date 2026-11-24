@@ -648,6 +648,8 @@ def check_marks(recipe, piece, marks):
 def apply_mark_add(recipe, piece, marks, t, guitar="both", text="", mark_id=None, rev=None, history=()):
     existing = next((m for m in marks if m["id"] == mark_id), None) if mark_id is not None else None
     if existing is not None:
+        if make_mark(recipe, piece, t, guitar, text, mark_id, rev, history) != existing:
+            raise ValueError("Идентификатор отметки уже занят другой отметкой")
         return list(marks), existing, False
     if len(marks) >= MARK_MAX_COUNT:
         raise ValueError(f"Отметок должно быть не больше {MARK_MAX_COUNT}")
@@ -836,7 +838,16 @@ class StudioStore:
         path = self._inside(pdir, "marks.json")
         if not path.exists():
             return []
-        return parse_marks(json.loads(path.read_text(encoding="utf-8")))
+        try:
+            return parse_marks(json.loads(path.read_text(encoding="utf-8")))
+        except ValueError:
+            n = 1
+            while (pdir / f"marks.json.corrupt-{n}").exists():
+                n += 1
+            aside = self._inside(pdir, f"marks.json.corrupt-{n}")
+            _replace(path, aside)
+            self._log_history(pdir, "marks_corrupt", value={"file": aside.name})
+            return []
 
     def _write_marks(self, pdir, marks):
         target = self._inside(pdir, "marks.json")
@@ -1031,10 +1042,16 @@ class StudioStore:
                 try:
                     self._log_history(pdir, action, value=mark)
                 except BaseException:
-                    if existed:
-                        self._write_marks(pdir, old_marks)
-                    else:
-                        (pdir / "marks.json").unlink(missing_ok=True)
+                    try:
+                        if existed:
+                            self._write_marks(pdir, old_marks)
+                        else:
+                            (pdir / "marks.json").unlink(missing_ok=True)
+                    except Exception:
+                        try:
+                            self._log_history(pdir, "mark_rollback_failed", value=mark)
+                        except Exception:
+                            pass
                     raise
             det = piece_detail(piece_id, rec, piece, self._read_undo(pdir), self._read_redo(pdir), marks)
             return {**det, "mark": mark}

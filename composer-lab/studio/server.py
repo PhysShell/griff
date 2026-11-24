@@ -3,6 +3,7 @@ import argparse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -206,7 +207,10 @@ def _make_handler(store):
                             raise ValueError("t is required")
                         self._send_json(
                             HTTPStatus.OK,
-                            store.add_mark(pid, body["t"], body.get("guitar", "both"), body.get("text", "")),
+                            store.add_mark(
+                                pid, body["t"], body.get("guitar", "both"), body.get("text", ""),
+                                body.get("id"), body.get("rev"),
+                            ),
                         )
                         return
                     if action == "mark_edit":
@@ -291,7 +295,11 @@ def main(argv=None):
     else:
         rfn = default_render
 
-    srv = create_server(args.out, host="127.0.0.1", port=args.port, render_fn=rfn)
+    try:
+        srv = create_server(args.out, host="127.0.0.1", port=args.port, render_fn=rfn)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     print(f"Studio listening on http://127.0.0.1:{srv.server_address[1]} (out={args.out})", flush=True)
     try:
         srv.serve_forever()
@@ -302,4 +310,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

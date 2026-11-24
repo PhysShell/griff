@@ -4223,5 +4223,130 @@ console.log(JSON.stringify(out));
         self.assertEqual(out["movedAdds"], 0)
 
 
+class TestStudioMarksRound2(unittest.TestCase):
+    def _store(self, d):
+        return studio_engine.StudioStore(d, render_fn=studio_render.fake_render)
+
+    def _rows(self, store, pid):
+        path = store._piece_dir(pid) / "history.jsonl"
+        return [json.loads(x) for x in path.read_text(encoding="utf-8").split("\n") if x]
+
+    def test_http_handler_passes_the_client_id_and_revision(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = studio_server.create_server(d, host="127.0.0.1", port=0, render_fn=studio_render.fake_render)
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+            def post(path, body):
+                req = urllib.request.Request(
+                    base + path, data=json.dumps(body).encode("utf-8"), method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        return resp.status, json.loads(resp.read())
+                except urllib.error.HTTPError as err:
+                    return err.code, json.loads(err.read())
+
+            try:
+                _, det = post("/api/new", {"seed": 801000})
+                pid, rev0 = det["id"], det["rev"]
+                st, one = post(f"/api/piece/{pid}/mark_add", {"t": 4.0, "id": "mhttp001"})
+                st2, two = post(f"/api/piece/{pid}/mark_add", {"t": 4.0, "id": "mhttp001"})
+                self.assertEqual((st, st2), (200, 200))
+                self.assertEqual(one["mark"]["id"], "mhttp001")
+                self.assertEqual(two["mark"], one["mark"])
+                self.assertEqual([m["id"] for m in two["marks"]], ["mhttp001"])
+                post(f"/api/piece/{pid}/reroll", {"layer": "tempo", "section": "all"})
+                st, old = post(f"/api/piece/{pid}/mark_add", {"t": 5.0, "id": "mhttp002", "rev": rev0})
+                self.assertEqual(st, 200)
+                self.assertEqual(old["mark"]["rev"], rev0)
+                self.assertTrue(next(m for m in old["marks"] if m["id"] == "mhttp002")["stale"])
+                self.assertEqual(post(f"/api/piece/{pid}/mark_add", {"t": 5.0, "rev": "zz"})[0], 400)
+                self.assertEqual(post(f"/api/piece/{pid}/mark_add", {"t": 5.0, "id": "bad id"})[0], 400)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+                t.join(timeout=5)
+
+    def test_same_id_with_other_content_is_refused_and_logs_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            store.add_mark(pid, 4.0, "lead", "а", mark_id="mdup0001")
+            rows = len(self._rows(store, pid))
+            for args in ((6.0, "lead", "а"), (4.0, "rhythm", "а"), (4.0, "lead", "б")):
+                with self.assertRaisesRegex(ValueError, "[А-Яа-я]"):
+                    store.add_mark(pid, *args, mark_id="mdup0001")
+            same = store.add_mark(pid, 4.0, "lead", "а", mark_id="mdup0001")
+            self.assertEqual(len(same["marks"]), 1)
+            self.assertEqual(len(self._rows(store, pid)), rows)
+            self.assertEqual(store.get_piece(pid)["marks"][0]["text"], "а")
+
+    def test_failed_rollback_raises_the_log_error_and_leaves_an_explaining_row(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            store.add_mark(pid, 3.0, mark_id="mfirst01")
+            real_log, real_write = store._log_history, store._write_marks
+            writes = []
+
+            def log(pdir, action, **kw):
+                if action == "mark_add":
+                    raise OSError("log failed")
+                return real_log(pdir, action, **kw)
+
+            def write(pdir, marks):
+                writes.append(len(marks))
+                if len(writes) > 1:
+                    raise PermissionError("rollback failed")
+                return real_write(pdir, marks)
+
+            store._log_history, store._write_marks = log, write
+            with self.assertRaisesRegex(OSError, "log failed"):
+                store.add_mark(pid, 4.0, mark_id="mroll001")
+            store._log_history, store._write_marks = real_log, real_write
+            row = self._rows(store, pid)[-1]
+            self.assertEqual(row["action"], "mark_rollback_failed")
+            self.assertEqual(row["value"]["id"], "mroll001")
+
+    def test_corrupt_marks_json_is_kept_aside_and_the_piece_still_opens(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            pid = store.create_piece(801000)["id"]
+            pdir = store._piece_dir(pid)
+            (pdir / "marks.json").write_bytes(b"{not json")
+            det = store.get_piece(pid)
+            self.assertEqual(det["marks"], [])
+            self.assertEqual((pdir / "marks.json.corrupt-1").read_bytes(), b"{not json")
+            self.assertFalse((pdir / "marks.json").exists())
+            self.assertEqual(self._rows(store, pid)[-1]["action"], "marks_corrupt")
+            (pdir / "marks.json").write_text('[{"id": "x"}]', encoding="utf-8")
+            self.assertEqual(store.get_piece(pid)["marks"], [])
+            self.assertTrue((pdir / "marks.json.corrupt-2").exists())
+            self.assertEqual(len(store.add_mark(pid, 4.0)["marks"]), 1)
+            self.assertEqual(len(store.get_piece(pid)["marks"]), 1)
+
+    def test_second_server_prints_one_russian_line_and_exits_with_an_error(self):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as d:
+            first = studio_server.create_server(d, host="127.0.0.1", port=0, render_fn=studio_render.fake_render)
+            try:
+                res = subprocess.run(
+                    [sys.executable, "-m", "studio.server", "--out", d, "--port", "0", "--fake-render"],
+                    capture_output=True, timeout=60, cwd=str(Path(__file__).resolve().parent),
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                )
+            finally:
+                first.server_close()
+        err = res.stderr.decode("utf-8", "replace")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(len(err.strip().splitlines()), 1)
+        self.assertRegex(err, "[А-Яа-я]")
+
+
 if __name__ == "__main__":
     unittest.main()
