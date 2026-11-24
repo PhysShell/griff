@@ -7,7 +7,7 @@ SFIZZ=$(nix build --no-link --print-out-paths $NIXPKGS#sfizz)
 DOTNET=$(nix build --no-link --print-out-paths $NIXPKGS#dotnet-runtime_9.unwrapped 2>/dev/null || true)
 [ -n "$DOTNET" ] || DOTNET=/nix/store/9hmkr5l6qgzm2whhf4gz1n9ppvrix6sb-dotnet-runtime-9.0.15
 SOX=$(nix build --no-link --print-out-paths $NIXPKGS#sox)
-FLUIDSYNTH=$(nix build --no-link --print-out-paths $NIXPKGS#fluidsynth)
+FLUIDSYNTH=$(nix build --no-link --print-out-paths $NIXPKGS#fluidsynth.out)
 stage_payload() {  # $1 job dir
   local j=$1
   mkdir -p "$j"
@@ -15,6 +15,11 @@ stage_payload() {  # $1 job dir
     tar -C /nix/store -cf "$HOME/gr01/nixextra.tar" "$(basename "$SFIZZ")" "$(basename "$DOTNET")" "$(basename "$SOX")"
   fi
   cp "$HOME/gr01/nixextra.tar" "$j/"
+  if [ ! -f "$HOME/gr01/fluid.tar" ]; then
+    nix path-info -r "$FLUIDSYNTH" "$SOX" | sort -u | grep -v -- "-glibc-2" | xargs -n1 basename > "$HOME/gr01/fluid.list"
+    tar -C /nix/store -cf "$HOME/gr01/fluid.tar" -T "$HOME/gr01/fluid.list"
+  fi
+  cp "$HOME/gr01/fluid.tar" "$j/"
   printf 'SFIZZ=%s\nDOTNET=%s\nSOX=%s\nFLUIDSYNTH_STORE=%s\n' "$(basename "$SFIZZ")" "$(basename "$DOTNET")" "$(basename "$SOX")" "$FLUIDSYNTH" > "$j/nixextra.env"
   cp "$HOME/auditbox-jobs/gr01-wheels-out/wheels.tar" "$j/"
   cp -r "$OUT_WIN/bin/namrender" "$j/namrender"

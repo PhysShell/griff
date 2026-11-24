@@ -30,8 +30,8 @@ def main():
         notes.append({"on": on, "off": on + dur, "pitch": pitch, "vel": vel, "tag": tag})
 
     def switch(t, name):
-        ev.append((max(0, t - 1), 0, bytes([0x90, ks[name], 100])))
-        ev.append((max(0, t - 1), 1, bytes([0x80, ks[name], 0])))
+        ev.append((max(0, t - 2), 0, bytes([0x90, ks[name], 100])))
+        ev.append((max(0, t - 2) + 1, 1, bytes([0x80, ks[name], 0])))
 
     bar = 4 * q
     for p in (40, 47, 52):

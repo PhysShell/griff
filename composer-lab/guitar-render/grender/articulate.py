@@ -45,9 +45,9 @@ def stem_events(stem, inst, mode, ppq, meters, channel=0, ks_channel=None):
             log["unsupported_on_instrument"][art] = log["unsupported_on_instrument"].get(art, 0) + 1
             art = "sustain"
         if art != current:
-            kt = max(0, on - 1)
+            kt = max(0, on - 2)
             events.append((kt, 0, bytes([0x90 | ksch, ks[art], 100])))
-            events.append((kt, 1, bytes([0x80 | ksch, ks[art], 0])))
+            events.append((kt + 1, 1, bytes([0x80 | ksch, ks[art], 0])))
             log["keyswitches"] += 1
             current = art
         strum = 0

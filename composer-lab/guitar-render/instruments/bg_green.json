@@ -5,8 +5,19 @@
  "license": "CC0-1.0",
  "library_dir": "black-and-green",
  "sfz": "Programs/01-green_keyswitch.sfz",
- "keyswitch": {"sustain": 36, "staccato": 37, "legato": 38},
- "articulation_map": {"pm": "staccato", "dead": "staccato", "hammer": "legato", "pull": "legato", "slide": "legato", "tap": "sustain"},
+ "keyswitch": {
+  "sustain": 36,
+  "staccato": 37,
+  "legato": 38
+ },
+ "articulation_map": {
+  "pm": "staccato",
+  "dead": "staccato",
+  "hammer": "legato",
+  "pull": "legato",
+  "slide": "legato",
+  "tap": "sustain"
+ },
  "approximations": {
   "pm": "no palm-mute samples; staccato samples stand in",
   "dead": "no dead-note samples; staccato samples stand in",
@@ -15,6 +26,11 @@
   "tap": "no tap samples; ordinary pick attack"
  },
  "uniform_bend_range": false,
- "playable": [40, 86],
- "di_channel": "left"
+ "playable": [
+  40,
+  86
+ ],
+ "di_channel": "left",
+ "di_advance_ms": 21,
+ "di_advance_note": "measured in the green-guitar smoke test: the steepest attack rise is 21-22 ms after the MIDI note-on for every note; sfizz itself adds none (sine test). Assumed the same for the black guitar (same library, not measured separately)."
 }

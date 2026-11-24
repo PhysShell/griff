@@ -92,12 +92,14 @@ def render_di(stem, plan, tmp, timings):
     mono = x[:, 0] if ch == "left" or x.shape[1] == 1 else x.mean(axis=1)
     n = plan["total_frames"]
     raw_frames = len(mono)
+    adv = int(round(stem["instrument"].get("di_advance_ms", 0) * SR / 1000))
+    mono = mono[adv:]
     mono = mono[:n] if len(mono) >= n else np.pad(mono, (0, n - len(mono)))
     timings[f"sfizz_{stem['id']}"] = {"seconds": round(dt, 3), "rtf": round(dt / (n / SR), 4),
                                       "child_maxrss_mb_cumulative": child_maxrss_mb()}
     lr_diff = float(np.max(np.abs(x[:, 0] - x[:, 1]))) if x.shape[1] == 2 else None
     return mono.astype(np.float32), {"sfizz_subtype": info.subtype, "sfizz_channels": x.shape[1],
-                                     "sfizz_frames": raw_frames, "padded_or_trimmed_to": n,
+                                     "sfizz_frames": raw_frames, "padded_or_trimmed_to": n, "advanced_samples": adv,
                                      "left_right_max_abs_difference": lr_diff,
                                      "stdout_tail": p.stdout[-300:]}
 

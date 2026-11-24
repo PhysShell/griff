@@ -4,7 +4,9 @@ set -euo pipefail
 mkdir -p "$HOME/nx"
 tar -xf nixextra.tar -C "$HOME/nx"
 export SFIZZ_RENDER="$HOME/nx/$SFIZZ/bin/sfizz_render"
-export SOX_BIN="$HOME/nx/$SOX/bin/sox" FLUIDSYNTH_BIN="$FLUIDSYNTH_STORE/bin/fluidsynth"
+mkdir -p "$HOME/fl"; tar -xf fluid.tar -C "$HOME/fl"
+export FLUIDSYNTH_BIN="$HOME/fl/$(basename "$FLUIDSYNTH_STORE")/bin/fluidsynth" SOX_BIN="$HOME/fl/$SOX/bin/sox"
+export FLUID_LD_LIBRARY_PATH=$(find "$HOME/fl" -maxdepth 2 -name lib -type d | paste -sd:)
 export DOTNET_BIN="$HOME/nx/$DOTNET/share/dotnet/dotnet"
 [ -x "$DOTNET_BIN" ] || DOTNET_BIN=$(find "$HOME/nx/$DOTNET" -name dotnet -type f -perm -u+x | head -1)
 export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_LTTng=0 DOTNET_NOLOGO=1
