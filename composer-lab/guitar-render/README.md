@@ -38,6 +38,15 @@ NAM captures, IRs, NuGet packages, the built `namrender`, renders).
    `guitars.mix.wav` (PCM24 48 kHz stereo), `guitars.mix.mp3`, `render-manifest.json`, `render.log`.
    A prep dir with `extra.sh` runs extra guest commands (FluidSynth baseline, A/B clips via `make_clips.py`).
 
+One command for a Studio export (2 guitars, or 2 guitars plus the palm-mute track), Windows PowerShell:
+
+```
+.\render_piece.ps1 -Mid piece.mid [-MusicXml piece.musicxml] [-Variant best|heavy|clean|crunch|texture] [-Mode strict|expressive]
+```
+
+It runs `prepare.py` and `jobs/render_job.sh` (through WSL) and copies the result to
+`_griff_out/guitar-render-01/out/mine/<piece>__<variant>__<mode>/`; `GUITAR_RENDER_ROOT` overrides that root.
+
 One-off jobs: `jobs/fetch_wheels.sh` (auditbox fetch mode, Python wheels), `jobs/probe.sh` (tool probe).
 
 ## Files
