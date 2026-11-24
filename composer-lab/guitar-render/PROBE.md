@@ -62,8 +62,9 @@ Facts:
   33 slide in, 34 slide out; playable 35-86 (7-string range). Mapping in `instruments/sg_ksop.json`:
   sustain 26, palm mute 29, dead 23, hammer/pull/tap 30, slides 31/32 by direction from the MusicXML slide start.
   Samples are stereo doubled takes (left and right differ); the DI takes the left channel.
-  Attack: 23-30 ms after note-on in the first smoke test; after a 25 ms DI advance most clear notes sit
-  within -2..+11 ms (the detector is crude on repeated notes).
+  Attack: 23-30 ms after note-on in the first smoke test; after a 25 ms DI advance the palm-mute and
+  sustain notes of the smoke test sit at -2..+11 ms, the legato arrival and the final note at -17/-14 ms;
+  values on repeated and overlapping notes are not usable (crude detector).
 - Also used (and used first, while Standard Guitar was blocked): Karoryfer Black And Green Guitars v1.000 (CC0, GitHub release of sfzinstruments, listed in the
   owner's task as an alternative): a green Gretsch Anniversary and a black Hofner Club, mono 44.1 kHz 24-bit
   DI samples. Keyswitches: green 36 twang / 37 staccato / 38 hammer-on; black 36 twang / 37 staccato /
