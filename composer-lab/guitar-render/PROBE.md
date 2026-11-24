@@ -13,7 +13,7 @@ Audio and third-party files: `_griff_out/guitar-render-01/` (outside git).
   onsets, up to 6 voices); guitar3 = the palm-muted low riff of guitar 2 in the B section (52 notes, 16.2-22.1 s).
 - Articulations: MIDI gives notes, PM (track name, composer-lab exports PM notes to their own track);
   MusicXML gives string/fret, hammer-on, pull-off, slide, tap, dead (`notehead x`). 359 of 365 MIDI notes
-  were matched to a MusicXML note by (part, onset, pitch); the 6 unmatched are the two final chords at tick 30240,
+  were matched to a MusicXML note by (part, onset, pitch); the 6 unmatched are the final chords of both guitars at tick 30240,
   which were not found in the MusicXML (not investigated further). MusicXML marks only the start of a P.M. run, so PM is taken from MIDI.
 - Separate-file input: splitting v8_002 into three MIDI files and running `prepare.py` with three `--input`
   gives byte-identical stem MIDI to the single type-1 file.
