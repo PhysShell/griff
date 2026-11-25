@@ -111,6 +111,8 @@ python -m studio.summary out_studio
 доступен как `POST /api/piece/{id}/redo`; в журнал `history.jsonl` пишется
 действие `redo`. Оба стека ограничены 50 шагами.
 
+Отметки «Тут не так» (кнопка, клавиша `M`, Shift+клик по таймлайну) хранятся в `marks.json` в папке пьесы (в Studio Web — в состоянии пьесы) и не меняют музыку, `undo.json` и `redo.json`; в журнал пишутся `mark_add`, `mark_edit`, `mark_delete`. «Скачать отметки» отдаёт `marks.json` с seed, рецептом и отметками (`GET /api/piece/{id}/marks.json`, все пьесы — `GET /api/marks.json`). Подробности — `STUDIO-MARKS-SPEC.md`. Каталог пьес сервера блокируется файлом `.studio.lock`: второй сервер на том же `--out` не запускается (отказ с сообщением), поэтому отметки и журнал пишет один процесс.
+
 ## Studio Web
 
 Static browser version of Studio (`composer-lab/web/`): runs the Python generator directly in the browser via Pyodide (`v0.27.7` from `cdn.jsdelivr.net`) inside a Web Worker and plays pieces with a Web Audio multi-velocity MP3 sampler (`web/samples/`, rendered from FreePats EGuitarFSBS clean). Pieces and usage logs are stored in IndexedDB with JSON export/import and `history.jsonl` download (`studio/summary.py` compatible).

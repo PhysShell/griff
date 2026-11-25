@@ -10,6 +10,14 @@ function deepClone(v) {
   return v === undefined ? undefined : JSON.parse(JSON.stringify(v));
 }
 
+function fakeRev(rec) {
+  return JSON.stringify((rec.studio && rec.studio.salts) || {});
+}
+
+function keepMarks(st) {
+  return Array.isArray(st.marks) ? { marks: st.marks } : {};
+}
+
 function makeFakeState(seed = 801000, overrides = {}) {
   const recipe = {
     seed,
@@ -203,15 +211,26 @@ function buildDetailFromState(st, sectionLabels = {}) {
   });
   const undo = Array.isArray(st.undo) ? st.undo : [];
   const redo = Array.isArray(st.redo) ? st.redo : [];
+  const length = Math.max(2, cursor);
+  const rev = fakeRev(rec);
+  const marks = (Array.isArray(st.marks) ? st.marks : []).map((m) => ({
+    ...m,
+    stale: m.rev !== rev,
+    from_sec: Math.min(length, Math.max(0, m.t - 2)),
+    to_sec: Math.min(length, m.t + 2),
+    can_audition: m.t <= length,
+  }));
   return {
     id: st.id,
+    rev,
+    marks,
     seed: rec.seed,
     meter: rec.intent.meter,
     mode: opts.key ? opts.key.mode : rec.intent.mode,
     key: opts.key ? opts.key.tonic : rec.intent.tonic,
     own_key: { tonic: rec.intent.tonic, mode: rec.intent.mode },
     tempo: rec.intent.tempo,
-    length: Math.max(2, cursor),
+    length,
     sections,
     whole_layers: [
       {
@@ -508,6 +527,13 @@ function createAppHarness(options = {}) {
     failNextWorkerCall: null,
     idbUnavailable: Boolean(options.idbUnavailable),
     sectionLabels,
+    markSeq: 0,
+    docListeners: [],
+    press(ev) {
+      const event = { preventDefault() {}, target: { tagName: "BODY" }, ...ev };
+      for (const fn of [...env.docListeners]) fn(event);
+      return event;
+    },
   };
 
   // DOM setup
@@ -529,6 +555,9 @@ function createAppHarness(options = {}) {
     body: root,
     createElement(tag) {
       return new StubElement(tag, env);
+    },
+    addEventListener(type, fn) {
+      if (type === "keydown") env.docListeners.push(fn);
     },
     createTextNode(text) {
       const el = new StubElement("#text", env);
@@ -730,6 +759,43 @@ function createAppHarness(options = {}) {
         events: eventsForState ? eventsForState(st) : defaultFakeEvents(st),
       };
     }
+    if (cmd === "mark_add" || cmd === "mark_edit" || cmd === "mark_delete") {
+      const st = deepClone(payload.state);
+      const marks = Array.isArray(st.marks) ? st.marks : [];
+      let mark;
+      if (cmd === "mark_add") {
+        mark = {
+          id: payload.id || `m${++env.markSeq}`,
+          t: payload.t,
+          bar: 1 + Math.floor(payload.t / 2),
+          sixteenth: 1,
+          section: "A",
+          section_label: "Куплет A",
+          guitar: payload.guitar || "both",
+          text: payload.text || "",
+          notes: [],
+          rev: payload.rev || fakeRev(st.recipe),
+        };
+        if (!marks.some((m) => m.id === mark.id)) marks.push(mark);
+      } else {
+        const i = marks.findIndex((m) => m.id === payload.id);
+        if (i < 0) throw new Error(`unknown mark id: ${payload.id}`);
+        if (cmd === "mark_edit") {
+          if (payload.guitar !== undefined && payload.guitar !== null) marks[i].guitar = payload.guitar;
+          if (payload.text !== undefined && payload.text !== null) marks[i].text = payload.text;
+          mark = marks[i];
+        } else {
+          [mark] = marks.splice(i, 1);
+        }
+      }
+      st.marks = marks;
+      return { state: st, detail: buildDetailFromState(st, env.sectionLabels), mark: deepClone(mark) };
+    }
+    if (cmd === "export_marks") {
+      const st = payload.state;
+      const detail = buildDetailFromState(st, env.sectionLabels);
+      return { version: 1, id: st.id, seed: st.recipe.seed, rev: detail.rev, recipe: st.recipe, marks: detail.marks };
+    }
     const respond = (nextSt) => ({
       state: nextSt,
       detail: buildDetailFromState(nextSt, env.sectionLabels),
@@ -741,7 +807,7 @@ function createAppHarness(options = {}) {
       const nextRec = deepClone(oldSt.recipe);
       const key = `${payload.layer}@${payload.section}`;
       nextRec.studio.salts[key] = (nextRec.studio.salts[key] || 0) + 1;
-      return respond({ id: oldSt.id, recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
+      return respond({ id: oldSt.id, ...keepMarks(oldSt), recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
     }
     if (cmd === "lock") {
       const oldSt = deepClone(payload.state);
@@ -751,16 +817,16 @@ function createAppHarness(options = {}) {
       if (payload.locked) locks.add(key);
       else locks.delete(key);
       nextRec.studio.locks = Array.from(locks);
-      return respond({ id: oldSt.id, recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
+      return respond({ id: oldSt.id, ...keepMarks(oldSt), recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
     }
     if (cmd === "option") {
       const oldSt = deepClone(payload.state);
       const nextRec = deepClone(oldSt.recipe);
       nextRec.studio.options[payload.name] = payload.value;
       if (JSON.stringify(nextRec) === JSON.stringify(oldSt.recipe)) {
-        return respond({ id: oldSt.id, recipe: oldSt.recipe, undo: [...(oldSt.undo || [])], redo: [...(oldSt.redo || [])] });
+        return respond({ id: oldSt.id, ...keepMarks(oldSt), recipe: oldSt.recipe, undo: [...(oldSt.undo || [])], redo: [...(oldSt.redo || [])] });
       }
-      return respond({ id: oldSt.id, recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
+      return respond({ id: oldSt.id, ...keepMarks(oldSt), recipe: nextRec, undo: pushUndo(oldSt), redo: [] });
     }
     if (cmd === "undo") {
       const oldSt = deepClone(payload.state);
@@ -771,7 +837,7 @@ function createAppHarness(options = {}) {
         redo = [...redo, deepClone(oldSt.recipe)].slice(-50);
         rec = undo.pop();
       }
-      return respond({ id: oldSt.id, recipe: rec, undo, redo });
+      return respond({ id: oldSt.id, ...keepMarks(oldSt), recipe: rec, undo, redo });
     }
     if (cmd === "redo") {
       const oldSt = deepClone(payload.state);
@@ -782,7 +848,7 @@ function createAppHarness(options = {}) {
         undo = pushUndo(oldSt);
         rec = redo.pop();
       }
-      return respond({ id: oldSt.id, recipe: rec, undo, redo });
+      return respond({ id: oldSt.id, ...keepMarks(oldSt), recipe: rec, undo, redo });
     }
     if (cmd === "export_midi") {
       const salt = payload.state?.recipe?.studio?.salts?.["comp@A"] || 0;

@@ -755,5 +755,200 @@ class TestRedo(unittest.TestCase):
         self.assertIsNone(web_api.detail(web_api.redo(undone))["redo_label"])
 
 
+class TestWebApiMarks(unittest.TestCase):
+    def setUp(self):
+        if web_api is None:
+            self.fail("studio.web_api is not implemented yet")
+
+    @staticmethod
+    def _rt(obj):
+        return json.loads(json.dumps(obj))
+
+    def test_new_piece_and_legacy_state_have_no_marks(self):
+        st = web_api.new_piece(801000)
+        self.assertEqual(st["marks"], [])
+        self.assertEqual(web_api.detail(st)["marks"], [])
+        legacy = {k: v for k, v in st.items() if k != "marks"}
+        snap = web_api.snapshot(legacy)
+        self.assertEqual(snap["state"]["marks"], [])
+        self.assertEqual(snap["detail"]["marks"], [])
+        self.assertEqual(web_api.import_state(legacy)["state"]["marks"], [])
+
+    def test_marks_leave_the_music_and_both_stacks_alone(self):
+        st = web_api.new_piece(801000)
+        st = web_api.reroll(st, "comp", "A")
+        st = web_api.reroll(st, "texture", "A")
+        st = web_api.undo(st)
+        midi = web_api.export_midi(st)
+        before = {k: self._rt(st[k]) for k in ("id", "recipe", "undo", "redo")}
+        self.assertEqual(len(before["redo"]), 1)
+
+        res = web_api.mark_add(st, 4.0, "rhythm", "кривая нота")
+        mark = res["mark"]
+        self.assertEqual([m["id"] for m in res["state"]["marks"]], [mark["id"]])
+        self.assertEqual([m["id"] for m in res["detail"]["marks"]], [mark["id"]])
+        res = web_api.mark_edit(res["state"], mark["id"], guitar="lead", text="лишняя пауза")
+        self.assertEqual((res["mark"]["guitar"], res["mark"]["text"]), ("lead", "лишняя пауза"))
+        res = web_api.mark_add(res["state"], 9.0)
+        res = web_api.mark_delete(res["state"], mark["id"])
+        self.assertEqual(len(res["state"]["marks"]), 1)
+        after = res["state"]
+        self.assertEqual({k: after[k] for k in ("id", "recipe", "undo", "redo")}, before)
+        self.assertEqual(web_api.export_midi(after), midi)
+        self.assertTrue(res["detail"]["can_redo"])
+        redone = web_api.redo(after)
+        self.assertEqual(redone["marks"], after["marks"])
+
+    def test_marks_survive_every_music_change_and_stay_in_the_state(self):
+        st = web_api.mark_add(web_api.new_piece(801000), 4.0)["state"]
+        ids = [m["id"] for m in st["marks"]]
+        for step in (
+            lambda s: web_api.reroll(s, "comp", "A"),
+            lambda s: web_api.lock(s, "b", "B", True),
+            lambda s: web_api.option(s, "mute_share", 0.3),
+            lambda s: web_api.undo(s),
+            lambda s: web_api.redo(s),
+            lambda s: web_api.snapshot(s)["state"],
+        ):
+            st = step(st)
+            self.assertEqual([m["id"] for m in st["marks"]], ids)
+
+    def test_state_json_and_import_round_trip_marks(self):
+        st = web_api.mark_add(web_api.new_piece(801022), 21.4, "lead", "пауза")["state"]
+        st = web_api.reroll(st, "comp", "A")
+        wire = self._rt(st)
+        snap = web_api.import_state(wire)
+        self.assertEqual(snap["state"]["marks"], st["marks"])
+        self.assertEqual(snap["detail"]["marks"][0]["stale"], True)
+        again = json.loads(web_api.handle_json(json.dumps({"cmd": "snapshot", "payload": {"state": wire}})))
+        self.assertEqual(again["state"]["marks"], st["marks"])
+
+    def test_stale_after_reroll_and_fresh_after_undo(self):
+        st = web_api.mark_add(web_api.new_piece(801000), 4.0)["state"]
+        self.assertFalse(web_api.detail(st)["marks"][0]["stale"])
+        st = web_api.reroll(st, "comp", "A")
+        self.assertTrue(web_api.detail(st)["marks"][0]["stale"])
+        st = web_api.undo(st)
+        self.assertFalse(web_api.detail(st)["marks"][0]["stale"])
+
+    def test_invalid_marks_and_requests_are_rejected(self):
+        st = web_api.new_piece(801000)
+        for args in (("x",), (4.0, "bass"), (4.0, "both", "я" * 81), (-1.0,), (9999.0,)):
+            with self.assertRaises(ValueError):
+                web_api.mark_add(st, *args)
+        mark = web_api.mark_add(st, 4.0)["mark"]
+        with_mark = web_api.mark_add(st, 4.0)["state"]
+        with self.assertRaises(KeyError):
+            web_api.mark_edit(with_mark, "nope", text="x")
+        with self.assertRaises(KeyError):
+            web_api.mark_delete(with_mark, "nope")
+        bad = self._rt(with_mark)
+        bad["marks"][0]["guitar"] = "bass"
+        with self.assertRaises(ValueError):
+            web_api.snapshot(bad)
+        bad = self._rt(with_mark)
+        bad["marks"] = {"not": "a list"}
+        with self.assertRaises(ValueError):
+            web_api.snapshot(bad)
+        self.assertTrue(mark["id"])
+
+    def test_handle_json_commands_and_export(self):
+        st = web_api.new_piece(801000)
+
+        def call(cmd, **payload):
+            return json.loads(web_api.handle_json(json.dumps({"cmd": cmd, "payload": payload})))
+
+        res = call("mark_add", state=st, t=4.0, guitar="lead", text="а")
+        mid = res["mark"]["id"]
+        res = call("mark_edit", state=res["state"], id=mid, text="б")
+        self.assertEqual(res["mark"]["text"], "б")
+        exported = call("export_marks", state=res["state"])
+        self.assertEqual(exported["seed"], 801000)
+        self.assertEqual(exported["id"], st["id"])
+        self.assertEqual(exported["recipe"], st["recipe"])
+        self.assertEqual([m["text"] for m in exported["marks"]], ["б"])
+        res = call("mark_delete", state=res["state"], id=mid)
+        self.assertEqual(res["mark"]["id"], mid)
+        self.assertEqual(res["state"]["marks"], [])
+
+
+class TestWebApiMarksReview(unittest.TestCase):
+    def setUp(self):
+        if web_api is None:
+            self.fail("studio.web_api is not implemented yet")
+
+    @staticmethod
+    def _rt(obj):
+        return json.loads(json.dumps(obj))
+
+    def _with_mark(self, seed=801000):
+        st = web_api.mark_add(web_api.new_piece(seed), 4.0, "lead", "т")["state"]
+        return self._rt(st)
+
+    def test_malformed_imported_marks_are_rejected_with_a_russian_message(self):
+        def broken(change):
+            st = self._with_mark()
+            change(st["marks"])
+            return st
+
+        cases = {
+            "notes": lambda m: m[0].update(notes=[{}]),
+            "note type": lambda m: m[0].update(notes=[{"guitar": "1", "pitch": 60, "start": 0, "dur": 1, "string": 1, "fret": 0, "tech": []}]),
+            "time": lambda m: m[0].update(t=1000),
+            "negative time": lambda m: m[0].update(t=-1),
+            "bar": lambda m: m[0].update(bar=m[0]["bar"] + 1),
+            "sixteenth": lambda m: m[0].update(sixteenth=m[0]["sixteenth"] % 16 + 1),
+            "guitar": lambda m: m[0].update(guitar="bass"),
+            "text": lambda m: m[0].update(text="я" * 81),
+            "too many notes": lambda m: m[0].update(notes=[
+                {"guitar": 1, "pitch": 60, "start": 0, "dur": 1, "string": 1, "fret": 0, "tech": []}] * 65),
+            "too many marks": lambda m: m.extend(
+                [dict(m[0], id=f"x{i}") for i in range(200)]),
+            "duplicate id": lambda m: m.append(dict(m[0])),
+        }
+        for name, change in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(ValueError, "[А-Яа-я]"):
+                    web_api.import_state(broken(change))
+        good = self._with_mark()
+        good["marks"][0]["notes"] = [
+            {"guitar": 2, "pitch": 60, "start": 0, "dur": 2, "string": None, "fret": None, "tech": ["pm"]}
+        ] * 64
+        self.assertEqual(len(web_api.import_state(good)["state"]["marks"][0]["notes"]), 64)
+
+    def test_stale_imported_marks_keep_their_time_but_still_get_a_bounded_audition(self):
+        st = self._with_mark()
+        st["marks"][0]["rev"] = "0" * 12
+        st["marks"][0]["t"] = 1000
+        marks = web_api.import_state(st)["detail"]["marks"]
+        self.assertTrue(marks[0]["stale"])
+        self.assertFalse(marks[0]["can_audition"])
+        self.assertLessEqual(marks[0]["from_sec"], marks[0]["to_sec"])
+
+    def test_added_mark_keeps_a_client_id_and_the_audible_revision(self):
+        st = web_api.new_piece(801000)
+        rev0 = web_api.detail(st)["rev"]
+        st = web_api.reroll(st, "tempo", "all")
+        res = web_api.mark_add(st, 10.0, "both", "", "mclient1", rev0)
+        self.assertEqual(res["mark"]["id"], "mclient1")
+        self.assertEqual(res["mark"]["rev"], rev0)
+        self.assertTrue(res["detail"]["marks"][0]["stale"])
+        old_piece = composer.compose(st["undo"][-1])
+        self.assertEqual(res["mark"]["notes"], studio_engine.mark_notes(old_piece, 10.0))
+        again = web_api.mark_add(res["state"], 10.0, "both", "", "mclient1", rev0)
+        self.assertEqual(again["state"]["marks"], res["state"]["marks"])
+        via_json = json.loads(web_api.handle_json(json.dumps(
+            {"cmd": "mark_add", "payload": {"state": res["state"], "t": 3.0, "id": "mjson1", "rev": rev0}})))
+        self.assertEqual(via_json["mark"]["id"], "mjson1")
+
+    def test_zero_and_zero_point_zero_give_the_same_revision_in_the_web_state(self):
+        st = self._with_mark()
+        before = web_api.detail(st)["marks"][0]["stale"]
+        changed = web_api.option(st, "mute_share", 0.5)
+        back = web_api.option(self._rt(changed), "mute_share", 0)
+        self.assertFalse(before)
+        self.assertFalse(web_api.detail(self._rt(back))["marks"][0]["stale"])
+
+
 if __name__ == "__main__":
     unittest.main()

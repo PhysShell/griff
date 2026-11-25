@@ -8,6 +8,14 @@
   const KNOWN_SECTIONS = new Set(["intro", "A", "A2", "B", "A3", "end"]);
   const SHORT_SECTION_LABELS = { intro: "Вст.", A: "A", A2: "A2", B: "B", A3: "Кульм.", end: "Конц." };
   const SLIDER_DEBOUNCE_MS = 600;
+  const LONG_PRESS_MS = 500;
+  const MARK_TEXT_MAX = 80;
+  const TEXT_INPUT_TYPES = ["", "text", "search", "number", "email", "url", "password", "tel"];
+  const LONG_PRESS_SLOP_PX = 10;
+  const MARK_GUITARS = [["lead", "Соло"], ["rhythm", "Ритм"], ["both", "Обе"]];
+  const MARK_GUITAR_LABELS = { lead: "соло", rhythm: "ритм", both: "обе" };
+  const MARK_HINT =
+    "Отметьте место, где звучит не по-человечески: кнопка «Тут не так», клавиша M или Shift+клик по таймлайну. Музыку это не меняет.";
   const MODE_LABELS = {
     ionian: "мажор (ионийский)",
     aeolian: "минор (эолийский)",
@@ -31,6 +39,7 @@
 
   const appState = {
     pendingSliders: [],
+    markEdit: null,
     pieces: [],
     current: null,
     currentId: null,
@@ -82,8 +91,8 @@
 
   function samePieceState(a, b) {
     if (!a || !b) return false;
-    return JSON.stringify(canonicalValue({ recipe: a.recipe, undo: a.undo || [], redo: a.redo || [] })) ===
-      JSON.stringify(canonicalValue({ recipe: b.recipe, undo: b.undo || [], redo: b.redo || [] }));
+    return JSON.stringify(canonicalValue({ recipe: a.recipe, undo: a.undo || [], redo: a.redo || [], marks: a.marks || [] })) ===
+      JSON.stringify(canonicalValue({ recipe: b.recipe, undo: b.undo || [], redo: b.redo || [], marks: b.marks || [] }));
   }
 
   function cloneRecord(rec) {
@@ -282,6 +291,52 @@
         switchToMemory(err?.name || err?.message || "ошибка записи");
         memPieces.set(recCopy.id, recCopy);
         if (row) memLogs.push({ ...row, seq: memSeq++ });
+      }
+    }
+
+    async function patchMarks(pieceId, change, logEntry) {
+      const row = logEntry ? makeLogRow(logEntry) : null;
+      const apply = (rec) => {
+        const next = cloneRecord(rec);
+        next.state.marks = change(Array.isArray(next.state.marks) ? next.state.marks : []);
+        return next;
+      };
+      const inMemory = () => {
+        const hit = memPieces.get(pieceId);
+        if (!hit) return null;
+        const next = apply(hit);
+        memPieces.set(pieceId, next);
+        if (row) memLogs.push({ ...row, seq: memSeq++ });
+        return next;
+      };
+      const db = await openDb();
+      if (!db || useMemory) return inMemory();
+      await hydrateLogs(db);
+      try {
+        const next = await new Promise((resolve, reject) => {
+          let result = null;
+          const tx = db.transaction(["pieces", "logs"], "readwrite");
+          tx.oncomplete = () => resolve(result);
+          tx.onerror = () => reject(tx.error || new Error("IndexedDB transaction failed"));
+          tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
+          const store = tx.objectStore("pieces");
+          const get = store.get(pieceId);
+          get.onerror = () => reject(get.error || new Error("pieces get failed"));
+          get.onsuccess = () => {
+            if (!get.result) return;
+            result = apply(get.result);
+            store.put(result);
+            if (row) tx.objectStore("logs").add(row);
+          };
+        });
+        if (next) {
+          memPieces.set(pieceId, cloneRecord(next));
+          if (row) memLogs.push({ ...row, seq: memSeq++ });
+        }
+        return next;
+      } catch (err) {
+        switchToMemory(err?.name || err?.message || "ошибка записи");
+        return inMemory();
       }
     }
 
@@ -547,6 +602,7 @@
       savePieceAndLog,
       insertUniquePieceAndLog,
       importUniquePiece,
+      patchMarks,
       getAllLogs,
     };
   })();
@@ -730,6 +786,7 @@
     let nextIdx = 0;
     let schedTimer = null;
     let rafId = null;
+    let stopAt = null;
     let audioErrorText = null;
     const activeSources = new Set();
 
@@ -1051,11 +1108,18 @@
       const now = ctx.currentTime;
       const elapsed = now - startCtxTime;
       const horizon = elapsed + 0.22;
-      while (nextIdx < events.length && events[nextIdx].t <= horizon) {
+      while (nextIdx < events.length && events[nextIdx].t <= horizon && (stopAt === null || events[nextIdx].t < stopAt)) {
         const ev = events[nextIdx++];
         if (ev.t >= playOffset - 0.005) {
           scheduleNote(ev, startCtxTime + ev.t, gen);
         }
+      }
+      if (stopAt !== null && elapsed >= stopAt) {
+        const end = stopAt;
+        pause(false);
+        playOffset = end;
+        syncTransportUI(end);
+        return;
       }
       if (elapsed >= duration && activeSources.size === 0) {
         pause(false);
@@ -1146,6 +1210,7 @@
       playGen += 1;
       starting = false;
       playing = false;
+      stopAt = null;
       if (schedTimer) {
         clearInterval(schedTimer);
         schedTimer = null;
@@ -1170,6 +1235,12 @@
       return Promise.resolve(false);
     }
 
+    async function playRange(from, to) {
+      const ok = await seek(from, true);
+      if (ok) stopAt = to;
+      return ok;
+    }
+
     function setPiece(nextEvents, nextDuration, preservePos = false) {
       const wasActive = playing || starting;
       const prevTime = currentTime();
@@ -1190,6 +1261,7 @@
       play,
       pause,
       seek,
+      playRange,
       setPiece,
       isPlaying: () => playing,
       isBusy: () => playing || starting,
@@ -1411,6 +1483,10 @@
     return btn;
   }
 
+  let pressTimer = null;
+  let pressStart = null;
+  let swallowClick = false;
+
   function renderWorkspace() {
     const main = document.getElementById("workspace");
     if (!main) return;
@@ -1541,11 +1617,86 @@
 
       blk.appendChild(nameEl);
       blk.appendChild(timeEl);
-      blk.onclick = () => Sampler.seek(s.start_sec, true);
+      blk.onclick = (ev) => {
+        if (swallowClick) {
+          swallowClick = false;
+          return;
+        }
+        if (ev && ev.shiftKey) addMark(timelineTime(blk, s, ev));
+        else Sampler.seek(s.start_sec, true);
+      };
+      blk.onpointerdown = (ev) => {
+        swallowClick = false;
+        clearTimeout(pressTimer);
+        pressTimer = null;
+        if (!ev || ev.pointerType !== "touch") return;
+        pressStart = { x: ev.clientX, y: ev.clientY };
+        pressTimer = setTimeout(() => {
+          pressTimer = null;
+          swallowClick = true;
+          addMark(timelineTime(blk, s, ev));
+        }, LONG_PRESS_MS);
+      };
+      blk.onpointermove = (ev) => {
+        if (pressTimer && pressStart && Math.hypot(ev.clientX - pressStart.x, ev.clientY - pressStart.y) > LONG_PRESS_SLOP_PX) {
+          clearTimeout(pressTimer);
+          pressTimer = null;
+        }
+      };
+      blk.onpointerup = () => {
+        clearTimeout(pressTimer);
+        pressTimer = null;
+      };
+      blk.onpointercancel = blk.onpointerup;
+      blk.oncontextmenu = (ev) => {
+        if (swallowClick || pressTimer) ev.preventDefault();
+      };
       tl.appendChild(blk);
     }
     playerCard.appendChild(tl);
+
+    const markBar = document.createElement("div");
+    markBar.className = "row mark-bar";
+    const markBtn = document.createElement("button");
+    markBtn.id = "markBtn";
+    markBtn.textContent = "Тут не так";
+    markBtn.title = "Отметить место (клавиша M)";
+    markBtn.setAttribute("aria-keyshortcuts", "M");
+    markBtn.onclick = () => addMark(Sampler.currentTime());
+    markBar.appendChild(markBtn);
+    playerCard.appendChild(markBar);
+
+    const markTrack = document.createElement("div");
+    markTrack.id = "markTrack";
+    markTrack.className = "mark-track";
+    playerCard.appendChild(markTrack);
+
+    const marksBox = document.createElement("div");
+    marksBox.className = "marks-box";
+    const marksTitle = document.createElement("div");
+    marksTitle.id = "marksTitle";
+    marksTitle.className = "marks-title";
+    const editorHost = document.createElement("div");
+    editorHost.id = "markEditorHost";
+    const markList = document.createElement("div");
+    markList.id = "markList";
+    markList.className = "mark-list";
+    const marksHint = document.createElement("div");
+    marksHint.id = "marksHint";
+    marksHint.className = "marks-hint";
+    marksHint.textContent = MARK_HINT;
+    const marksDl = document.createElement("button");
+    marksDl.id = "marksDlBtn";
+    marksDl.textContent = "Скачать отметки";
+    marksDl.onclick = () => exportMarksOf(d.id);
+    marksBox.appendChild(marksTitle);
+    marksBox.appendChild(editorHost);
+    marksBox.appendChild(markList);
+    marksBox.appendChild(marksHint);
+    marksBox.appendChild(marksDl);
+    playerCard.appendChild(marksBox);
     main.appendChild(playerCard);
+    renderMarks();
 
     updatePlayButton();
     syncTransportUI(Sampler.currentTime());
@@ -1984,7 +2135,10 @@
   }
 
   function commitDisplayedPiece(snap, preserveAudioPos = false) {
-    if (appState.currentId !== snap.state.id) appState.errorText = "";
+    if (appState.currentId !== snap.state.id) {
+      appState.errorText = "";
+      appState.markEdit = null;
+    }
     appState.navPending = false;
     appState.pendingNavId = null;
     applyDisplayedState(snap, preserveAudioPos);
@@ -2056,7 +2210,275 @@
     });
   }
 
+  // ------------------------------------------------------------------ marks
+  function markSummary(m) {
+    const who = MARK_GUITAR_LABELS[m.guitar] || m.guitar;
+    return `${m.bar}:${m.sixteenth} · ${who}${m.text ? ` · ${m.text}` : ""}${m.stale ? " (до изменения)" : ""}`;
+  }
+
+  function findMark(id) {
+    return ((appState.current && appState.current.marks) || []).find((m) => m.id === id) || null;
+  }
+
+  function markRequest(cmd, args, onDone) {
+    const pieceId = appState.currentId;
+    if (!pieceId) return Promise.resolve(null);
+    return enqueueForPiece(pieceId, async () => {
+      const stored = await Storage.getPiece(pieceId);
+      const latest = (stored && stored.state) || (appState.currentId === pieceId ? appState.currentState : null);
+      if (!latest) return null;
+      let resp;
+      try {
+        resp = await callPy(cmd, { ...args, state: latest });
+      } catch (err) {
+        showError(err, pieceId);
+        return null;
+      }
+      const { state, detail, mark } = resp.result;
+      let rec = stored;
+      let view = detail;
+      if (!samePieceState(latest, state)) {
+        const change = (marks) => {
+          if (cmd === "mark_add") return marks.some((m) => m.id === mark.id) ? marks : [...marks, mark];
+          if (cmd === "mark_edit") return marks.map((m) => (m.id === mark.id ? mark : m));
+          return marks.filter((m) => m.id !== mark.id);
+        };
+        rec = await Storage.patchMarks(pieceId, change, { action: cmd, value: mark, piece_id: pieceId });
+        if (!rec) return null;
+        if (!samePieceState(rec.state, state)) {
+          try {
+            view = (await callPy("snapshot", { state: rec.state })).result.detail;
+          } catch (err) {
+            showError(err, pieceId);
+          }
+        }
+      }
+      if (appState.currentId === pieceId) {
+        appState.currentState = rec.state;
+        appState.current = { ...appState.current, marks: view.marks };
+        if (onDone) onDone(mark);
+        if (!appState.navPending) renderMarks();
+      }
+      return mark;
+    });
+  }
+
+  let markSeq = 0;
+
+  function newMarkId() {
+    return `m${Math.random().toString(16).slice(2, 10).padEnd(8, "0")}`;
+  }
+
+  function addMark(t) {
+    if (!appState.currentId || appState.navPending || !appState.current) return Promise.resolve(null);
+    const args = { t: Math.max(0, Math.min(appState.current.length, Number(t) || 0)), id: newMarkId() };
+    if (appState.current.rev) args.rev = appState.current.rev;
+    const seq = ++markSeq;
+    return finishMarkEdit(true).then(() =>
+      markRequest("mark_add", args, (mark) => {
+        if (seq === markSeq) appState.markEdit = { id: mark.id, fresh: true, guitar: mark.guitar, text: mark.text };
+      })
+    );
+  }
+
+  async function finishMarkEdit(commit) {
+    const ed = appState.markEdit;
+    if (!ed) return;
+    const text = ed.input ? ed.input.value : ed.text;
+    const mark = findMark(ed.id);
+    appState.markEdit = null;
+    if (commit && mark && (ed.guitar !== mark.guitar || text !== mark.text)) {
+      await markRequest("mark_edit", { id: ed.id, guitar: ed.guitar, text });
+    } else {
+      renderMarks();
+    }
+  }
+
+  function dropMark(id) {
+    appState.markEdit = null;
+    return markRequest("mark_delete", { id });
+  }
+
+  function cancelMarkEdit() {
+    const ed = appState.markEdit;
+    if (!ed) return Promise.resolve();
+    if (ed.fresh) return dropMark(ed.id);
+    appState.markEdit = null;
+    renderMarks();
+    return Promise.resolve();
+  }
+
+  function openMark(m) {
+    const go = () => {
+      const cur = findMark(m.id);
+      if (!cur) return;
+      Sampler.seek(cur.from_sec, false);
+      appState.markEdit = { id: cur.id, fresh: false, guitar: cur.guitar, text: cur.text };
+      renderMarks();
+    };
+    if (!appState.markEdit) {
+      go();
+      return Promise.resolve();
+    }
+    return finishMarkEdit(true).then(go);
+  }
+
+  function timelineTime(blk, s, ev) {
+    const r = blk.getBoundingClientRect ? blk.getBoundingClientRect() : null;
+    if (!r || !r.width || !ev || typeof ev.clientX !== "number") return s.start_sec;
+    const frac = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+    return s.start_sec + frac * (s.end_sec - s.start_sec);
+  }
+
+  function makeMarkEditor(m) {
+    const ed = appState.markEdit;
+    const box = document.createElement("div");
+    box.id = "markEditor";
+    box.className = "mark-editor";
+    box.dataset.markId = m.id;
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", `Отметка ${m.bar}:${m.sixteenth}`);
+    const guitars = [];
+    for (const [val, txt] of MARK_GUITARS) {
+      const b = document.createElement("button");
+      b.dataset.markGuitar = val;
+      b.textContent = txt;
+      guitars.push([val, b]);
+      b.onclick = () => {
+        ed.guitar = val;
+        for (const [v, other] of guitars) {
+          other.className = v === val ? "active" : "";
+          other.setAttribute("aria-pressed", v === val ? "true" : "false");
+        }
+      };
+      box.appendChild(b);
+    }
+    for (const [v, b] of guitars) {
+      b.className = v === ed.guitar ? "active" : "";
+      b.setAttribute("aria-pressed", v === ed.guitar ? "true" : "false");
+    }
+    const input = document.createElement("input");
+    input.id = "markText";
+    input.type = "text";
+    input.value = ed.text;
+    input.setAttribute("maxlength", String(MARK_TEXT_MAX));
+    input.setAttribute("aria-label", "Что не так");
+    input.setAttribute("placeholder", "Что не так (необязательно)");
+    ed.input = input;
+    input.oninput = () => {
+      ed.text = input.value;
+    };
+    input.onkeydown = (ev) => {
+      if (ev.key === "Enter") finishMarkEdit(true);
+    };
+    const done = document.createElement("button");
+    done.id = "markDone";
+    done.className = "primary";
+    done.textContent = "Готово";
+    done.onclick = () => finishMarkEdit(true);
+    const del = document.createElement("button");
+    del.id = "markDelete";
+    del.textContent = "Удалить";
+    del.onclick = () => dropMark(m.id);
+    box.appendChild(input);
+    box.appendChild(done);
+    box.appendChild(del);
+    return box;
+  }
+
+  function renderMarks() {
+    const d = appState.current;
+    const title = document.getElementById("marksTitle");
+    if (!d || !title) return;
+    const marks = d.marks || [];
+    const total = Math.max(1, d.length);
+    title.textContent = `Отметки (${marks.length})`;
+
+    const track = document.getElementById("markTrack");
+    track.textContent = "";
+    const list = document.getElementById("markList");
+    list.textContent = "";
+    for (const m of marks) {
+      const flag = document.createElement("button");
+      flag.className = `mark-flag${m.stale ? " stale" : ""}`;
+      flag.dataset.markId = m.id;
+      flag.style.left = `${Number(((m.t / total) * 100).toFixed(2))}%`;
+      flag.title = markSummary(m);
+      flag.setAttribute("aria-label", `Отметка ${markSummary(m)}`);
+      flag.onclick = () => openMark(m);
+      track.appendChild(flag);
+
+      const row = document.createElement("div");
+      row.className = `mark-row${m.stale ? " stale" : ""}`;
+      row.dataset.markId = m.id;
+      const open = document.createElement("button");
+      open.className = "mark-open";
+      open.textContent = markSummary(m);
+      open.onclick = () => openMark(m);
+      const listen = document.createElement("button");
+      listen.className = "mark-audition";
+      listen.textContent = "Послушать место";
+      listen.disabled = m.can_audition === false;
+      listen.onclick = () => {
+        if (m.can_audition !== false) Sampler.playRange(m.from_sec, m.to_sec);
+      };
+      row.appendChild(open);
+      row.appendChild(listen);
+      list.appendChild(row);
+    }
+
+    const host = document.getElementById("markEditorHost");
+    host.textContent = "";
+    const editing = appState.markEdit && findMark(appState.markEdit.id);
+    if (editing) host.appendChild(makeMarkEditor(editing));
+    else appState.markEdit = null;
+  }
+
+  function exportMarksOf(pieceId) {
+    return enqueueForPiece(pieceId, async () => {
+      const stored = await Storage.getPiece(pieceId);
+      const st = (stored && stored.state) || appState.currentState;
+      if (!st) return;
+      const { result } = await callPy("export_marks", { state: st });
+      downloadBlob(`${pieceId}.marks.json`, "application/json;charset=utf-8", JSON.stringify(result, null, 2));
+    }).catch((err) => showError(err, pieceId));
+  }
+
+  async function exportAllMarks() {
+    try {
+      await waitForAllQueues();
+      const out = [];
+      for (const p of await Storage.listPieces()) {
+        const { result } = await callPy("export_marks", { state: p.state });
+        out.push(result);
+      }
+      const payload = { version: 1, exported_at: new Date().toISOString(), pieces: out };
+      downloadBlob("marks.json", "application/json;charset=utf-8", JSON.stringify(payload, null, 2));
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  function isTextTarget(t) {
+    const tag = t && t.tagName ? String(t.tagName).toUpperCase() : "";
+    if (tag === "INPUT") return TEXT_INPUT_TYPES.includes(String(t.type || "").toLowerCase());
+    return tag === "TEXTAREA" || Boolean(t && t.isContentEditable);
+  }
+
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      if (appState.markEdit) cancelMarkEdit();
+      return;
+    }
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+    if (ev.code !== "KeyM" && String(ev.key).toLowerCase() !== "m") return;
+    if (isTextTarget(ev.target) || !appState.current) return;
+    ev.preventDefault();
+    addMark(Sampler.currentTime());
+  });
+
   async function selectPiece(id) {
+    if (appState.markEdit) await finishMarkEdit(true);
     if (appState.pendingSliders.length) await flushPendingSliders();
     if (appState.currentId && pieceQueues.has(appState.currentId)) await waitForPieceQueue(appState.currentId);
     const seq = ++appState.navSeq;
@@ -2096,6 +2518,7 @@
   async function createNewPiece() {
     const raw = document.getElementById("seedInput").value.trim();
     const seed = raw === "" ? null : parseInt(raw, 10);
+    if (appState.markEdit) await finishMarkEdit(true);
     if (appState.pendingSliders.length) await flushPendingSliders();
     const seq = ++appState.navSeq;
     appState.navPending = true;
@@ -2158,7 +2581,14 @@
         const st = item.state || item;
         if (!st || !st.recipe) continue;
         const { result: snap } = await callPy("import_state", { state: st });
-        const { id: importedId } = await Storage.importUniquePiece(snap, item.updatedAt);
+        const { id: importedId, status } = await Storage.importUniquePiece(snap, item.updatedAt);
+        if (status === "inserted" && (snap.state.marks || []).length) {
+          await Storage.appendLog({
+            action: "mark_import",
+            value: { ids: snap.state.marks.map((m) => m.id) },
+            piece_id: importedId,
+          });
+        }
         if (!firstId) firstId = importedId;
       }
       appState.pieces = await Storage.listPieces();
@@ -2183,6 +2613,7 @@
   };
   document.getElementById("logBtn").onclick = downloadHistoryLog;
   document.getElementById("exportPiecesBtn").onclick = exportAllPieces;
+  document.getElementById("exportMarksAllBtn").onclick = exportAllMarks;
   const importInput = document.getElementById("importPiecesInput");
   document.getElementById("importPiecesBtn").onclick = () => importInput.click();
   importInput.onchange = async () => {

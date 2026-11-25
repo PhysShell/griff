@@ -3,8 +3,15 @@ import argparse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+    import fcntl
 
 from studio.engine import StudioStore
 from studio.render import default_render, fake_render
@@ -33,10 +40,12 @@ def _make_handler(store):
         def log_message(self, fmt, *args):
             return
 
-        def _send_json(self, code, obj):
+        def _send_json(self, code, obj, download_name=None):
             body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            if download_name:
+                self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
@@ -125,6 +134,9 @@ def _make_handler(store):
                 if path == "/api/pieces":
                     self._send_json(HTTPStatus.OK, {"pieces": store.list_pieces()})
                     return
+                if path == "/api/marks.json":
+                    self._send_json(HTTPStatus.OK, store.all_marks_export(), download_name="marks.json")
+                    return
                 parts = [p for p in path.split("/") if p]
                 if len(parts) == 3 and parts[:2] == ["api", "piece"]:
                     self._send_json(HTTPStatus.OK, store.get_piece(parts[2]))
@@ -145,6 +157,9 @@ def _make_handler(store):
                             p, "application/vnd.recordare.musicxml+xml; charset=utf-8",
                             download_name=f"{pid}.musicxml",
                         )
+                        return
+                    if res == "marks.json":
+                        self._send_json(HTTPStatus.OK, store.marks_export(pid), download_name=f"{pid}.marks.json")
                         return
                     if res == "piece.tab.txt":
                         p = store.file_path(pid, "piece.tab.txt", log_export=True)
@@ -187,6 +202,26 @@ def _make_handler(store):
                             raise ValueError("value is required")
                         self._send_json(HTTPStatus.OK, store.set_option(pid, name, body["value"]))
                         return
+                    if action == "mark_add":
+                        if "t" not in body:
+                            raise ValueError("t is required")
+                        self._send_json(
+                            HTTPStatus.OK,
+                            store.add_mark(
+                                pid, body["t"], body.get("guitar", "both"), body.get("text", ""),
+                                body.get("id"), body.get("rev"),
+                            ),
+                        )
+                        return
+                    if action == "mark_edit":
+                        self._send_json(
+                            HTTPStatus.OK,
+                            store.edit_mark(pid, _text_field(body, "id"), body.get("guitar"), body.get("text")),
+                        )
+                        return
+                    if action == "mark_delete":
+                        self._send_json(HTTPStatus.OK, store.delete_mark(pid, _text_field(body, "id")))
+                        return
                     if action == "undo":
                         self._send_json(HTTPStatus.OK, store.undo(pid))
                         return
@@ -206,9 +241,43 @@ def _make_handler(store):
     return StudioHandler
 
 
+class DirLock:
+    def __init__(self, path):
+        self._file = open(path, "a+b")
+        try:
+            if msvcrt:
+                self._file.seek(0)
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self._file.close()
+            raise RuntimeError("Каталог пьес уже занят другим сервером Studio; запустите сервер с другим --out.") from None
+
+    def release(self):
+        self._file.close()
+
+
+class StudioServer(ThreadingHTTPServer):
+    dir_lock = None
+
+    def server_close(self):
+        super().server_close()
+        if self.dir_lock:
+            self.dir_lock.release()
+            self.dir_lock = None
+
+
 def create_server(out_dir, host="127.0.0.1", port=8765, render_fn=None):
     store = StudioStore(out_dir, render_fn=render_fn or default_render)
-    return ThreadingHTTPServer((host, port), _make_handler(store))
+    lock = DirLock(store.out_dir / ".studio.lock")
+    try:
+        srv = StudioServer((host, port), _make_handler(store))
+    except BaseException:
+        lock.release()
+        raise
+    srv.dir_lock = lock
+    return srv
 
 
 def main(argv=None):
@@ -226,7 +295,11 @@ def main(argv=None):
     else:
         rfn = default_render
 
-    srv = create_server(args.out, host="127.0.0.1", port=args.port, render_fn=rfn)
+    try:
+        srv = create_server(args.out, host="127.0.0.1", port=args.port, render_fn=rfn)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     print(f"Studio listening on http://127.0.0.1:{srv.server_address[1]} (out={args.out})", flush=True)
     try:
         srv.serve_forever()
@@ -237,4 +310,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

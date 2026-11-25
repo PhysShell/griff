@@ -1217,3 +1217,461 @@ test("Key: Как в пьесе while a key request is pending does not reuse th
   await env.flushAll(15);
   assert.deepEqual(keyCalls(env), [{ tonic: "D", mode: "lydian" }, null, { tonic: "E", mode: "dorian" }]);
 });
+
+const MARK_HINT = "Отметьте место, где звучит не по-человечески: кнопка «Тут не так», клавиша M или Shift+клик по таймлайну. Музыку это не меняет.";
+const KEY_M = { key: "m", code: "KeyM" };
+
+const byClass = (env, cls) => env.document.getElementById("workspace").querySelectorAll(`.${cls}`);
+const savedMarks = (env) => env.indexedDB._pieces.get("piece_801000").state.marks || [];
+const markLogs = (env) => env.indexedDB._logs.filter((l) => l.action.startsWith("mark_"));
+
+async function bootWithMarks(marks, options = {}) {
+  const st = makeFakeState(801000);
+  st.marks = marks.map((m, i) => ({
+    id: `m${i + 1}`, t: 3, bar: 2, sixteenth: 5, section: "A", section_label: "Куплет A",
+    guitar: "both", text: "", notes: [], rev: JSON.stringify({}), ...m,
+  }));
+  return bootWithPiece({ stateOverrides: st, ...options });
+}
+
+test("Marks: М adds a mark at the playback position without touching undo, redo, playback or the music", async () => {
+  const env = await bootWithPiece({ audioInitialState: "running" });
+  const sampler = env.window.__studioDebug.sampler;
+  await sampler.seek(1.25, true);
+  await env.flushAll(10);
+  assert.equal(sampler.isPlaying(), true);
+  env.audioContexts[0].currentTime = 0.5;
+  const timersBefore = [...env.timers.keys()];
+  const before = JSON.parse(JSON.stringify(env.indexedDB._pieces.get("piece_801000").state));
+
+  env.press(KEY_M);
+  await env.flushAll(30);
+
+  const saved = env.indexedDB._pieces.get("piece_801000").state;
+  assert.equal(saved.marks.length, 1);
+  assert.equal(saved.marks[0].t, 1.75);
+  assert.equal(saved.marks[0].guitar, "both");
+  assert.deepEqual({ recipe: saved.recipe, undo: saved.undo, redo: saved.redo }, { recipe: before.recipe, undo: before.undo, redo: before.redo });
+  assert.equal(sampler.isPlaying(), true, "the mark must not interrupt playback");
+  assert.deepEqual([...env.timers.keys()], timersBefore, "the player must not be restarted");
+  assert.deepEqual(markLogs(env).map((l) => [l.action, l.value.id]), [["mark_add", saved.marks[0].id]]);
+  assert.equal(env.document.getElementById("undoBtn").disabled, true);
+  const cmds = env.workerMessages.filter((m) => m.type === "call").map((m) => m.cmd);
+  assert.deepEqual(cmds.filter((c) => c.startsWith("mark_")), ["mark_add"]);
+});
+
+test("Marks: the button «Тут не так» adds a mark, М is ignored in text fields, with modifiers and without a piece", async () => {
+  const env = await bootWithPiece();
+  const sampler = env.window.__studioDebug.sampler;
+  await sampler.seek(2.0, false);
+  env.document.getElementById("markBtn").click();
+  await env.flushAll(20);
+  assert.deepEqual(savedMarks(env).map((m) => m.t), [2]);
+  assert.equal(env.document.getElementById("markBtn").textContent, "Тут не так");
+
+  for (const ev of [
+    { ...KEY_M, target: { tagName: "INPUT" } },
+    { ...KEY_M, target: { tagName: "TEXTAREA" } },
+    { ...KEY_M, target: { tagName: "DIV", isContentEditable: true } },
+    { ...KEY_M, ctrlKey: true },
+    { ...KEY_M, metaKey: true },
+    { ...KEY_M, altKey: true },
+    { key: "n", code: "KeyN" },
+  ]) {
+    env.press(ev);
+    await env.flushAll(10);
+  }
+  assert.equal(savedMarks(env).length, 1);
+
+  const empty = createAppHarness({});
+  await empty.flushAll(20);
+  empty.press(KEY_M);
+  await empty.flushAll(20);
+  assert.equal(empty.workerMessages.some((m) => m.type === "call" && m.cmd === "mark_add"), false);
+});
+
+test("Marks: Shift+click on the timeline adds a mark at the clicked place, a plain click only seeks", async () => {
+  const env = await bootWithPiece();
+  const sampler = env.window.__studioDebug.sampler;
+  const blk = env.document.getElementById("timeline").children[1];
+  const start = Number(blk.dataset.start);
+  const end = Number(blk.dataset.end);
+  blk.getBoundingClientRect = () => ({ left: 100, width: 200 });
+
+  blk.onclick({ shiftKey: true, clientX: 150 });
+  await env.flushAll(20);
+  assert.deepEqual(savedMarks(env).map((m) => m.t), [start + 0.25 * (end - start)]);
+
+  blk.onclick({ shiftKey: false, clientX: 250 });
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 1);
+  assert.equal(sampler.currentTime(), start);
+  assert.equal(env.document.getElementById("timeline").children.length, 4);
+});
+
+test("Marks: a long press on touch adds a mark and the click after it does not seek", async () => {
+  const env = await bootWithPiece();
+  const sampler = env.window.__studioDebug.sampler;
+  const blk = env.document.getElementById("timeline").children[1];
+  const start = Number(blk.dataset.start);
+  blk.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  blk.onpointerdown({ pointerType: "touch", clientX: 50 });
+  blk.onpointerup({ pointerType: "touch" });
+  await env.flushAll(20);
+  blk.onclick({});
+  assert.equal(savedMarks(env).length, 0, "a short touch is a plain click");
+  assert.equal(sampler.currentTime(), start);
+
+  await sampler.seek(0, false);
+  blk.onpointerdown({ pointerType: "touch", clientX: 50 });
+  await new Promise((r) => setTimeout(r, 650));
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 1);
+  blk.onpointerup({ pointerType: "touch" });
+  blk.onclick({});
+  await env.flushAll(10);
+  assert.equal(sampler.currentTime(), 0, "the click that ends a long press must not seek");
+
+  blk.onpointerdown({ pointerType: "mouse", clientX: 50 });
+  await new Promise((r) => setTimeout(r, 650));
+  await env.flushAll(10);
+  assert.equal(savedMarks(env).length, 1, "a held mouse button is not a long press");
+});
+
+test("Marks: the editor sets guitar and text, Enter and Готово close it, Esc deletes only a just added mark", async () => {
+  const env = await bootWithPiece();
+  env.press(KEY_M);
+  await env.flushAll(20);
+  const editor = () => env.document.getElementById("markEditor");
+  assert.ok(editor(), "an editor opens after a mark is added");
+  assert.equal(editor().tagName, "DIV", "the editor is inline, not a dialog");
+  const guitarBtns = editor().querySelectorAll("button").filter((b) => b.dataset.markGuitar);
+  assert.deepEqual(guitarBtns.map((b) => b.dataset.markGuitar), ["lead", "rhythm", "both"]);
+  assert.equal(guitarBtns.find((b) => b.dataset.markGuitar === "both").getAttribute("aria-pressed"), "true");
+  guitarBtns.find((b) => b.dataset.markGuitar === "lead").click();
+  const input = env.document.getElementById("markText");
+  assert.equal(input.getAttribute("maxlength"), "80");
+  input.value = "лишняя пауза";
+  env.document.getElementById("markDone").click();
+  await env.flushAll(20);
+  assert.equal(editor(), null);
+  assert.deepEqual(savedMarks(env).map((m) => [m.guitar, m.text]), [["lead", "лишняя пауза"]]);
+  assert.deepEqual(markLogs(env).map((l) => l.action), ["mark_add", "mark_edit"]);
+
+  env.press({ key: "Escape" });
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 1, "Esc after Готово must not delete the mark");
+
+  env.press(KEY_M);
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 2);
+  env.document.getElementById("markText").value = "ещё";
+  env.press({ key: "Escape", target: env.document.getElementById("markText") });
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 1, "Esc deletes the mark that was just added");
+  assert.equal(editor(), null);
+  assert.deepEqual(markLogs(env).map((l) => l.action), ["mark_add", "mark_edit", "mark_add", "mark_delete"]);
+
+  env.press(KEY_M);
+  await env.flushAll(20);
+  env.document.getElementById("markText").onkeydown({ key: "Enter" });
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 2, "Enter closes the editor and keeps the mark");
+  assert.equal(editor(), null);
+
+  const id = savedMarks(env)[1].id;
+  byClass(env, "mark-flag").find((f) => f.dataset.markId === id).onclick();
+  await env.flushAll(10);
+  env.document.getElementById("markDelete").click();
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 1);
+  assert.equal(markLogs(env).pop().action, "mark_delete");
+});
+
+test("Marks: flags, list and Russian texts show bar:sixteenth, guitar, text and stale state", async () => {
+  const env = await bootWithMarks([
+    { t: 3, bar: 2, sixteenth: 5, guitar: "lead", text: "лишняя пауза", rev: JSON.stringify({}) },
+    { t: 5, bar: 3, sixteenth: 1, guitar: "rhythm", text: "старая", rev: "other" },
+  ]);
+  assert.equal(env.document.getElementById("marksTitle").textContent, "Отметки (2)");
+  assert.equal(env.document.getElementById("marksHint").textContent, MARK_HINT);
+  const flags = byClass(env, "mark-flag");
+  const rows = byClass(env, "mark-row");
+  assert.equal(flags.length, 2);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].textContent, /2:5/);
+  assert.match(rows[0].textContent, /лишняя пауза/);
+  assert.match(rows[0].textContent, /соло/);
+  assert.doesNotMatch(rows[0].textContent, /до изменения/);
+  assert.match(rows[1].textContent, /3:1/);
+  assert.match(rows[1].textContent, /\(до изменения\)/);
+  assert.equal(flags[0].classList.contains("stale"), false);
+  assert.equal(flags[1].classList.contains("stale"), true);
+  assert.equal(rows[1].classList.contains("stale"), true);
+  assert.match(flags[1].title, /до изменения/);
+  assert.equal(flags[0].style.left, `${(3 / 8) * 100}%`);
+  assert.ok(flags[0].getAttribute("aria-label"));
+});
+
+test("Marks: a mark made before a reroll turns stale after it", async () => {
+  const env = await bootWithPiece();
+  env.press(KEY_M);
+  await env.flushAll(20);
+  assert.equal(byClass(env, "mark-row")[0].classList.contains("stale"), false);
+  const rerollBtn = env.document.getElementById("workspace").querySelectorAll(".reroll-btn").find((b) => b.dataset.layer === "tempo");
+  rerollBtn.click();
+  await env.flushAll(30);
+  const row = byClass(env, "mark-row")[0];
+  assert.equal(row.classList.contains("stale"), true);
+  assert.match(row.textContent, /\(до изменения\)/);
+  assert.equal(savedMarks(env).length, 1, "the reroll keeps the mark");
+});
+
+test("Marks: clicking a flag or a row seeks one bar before the mark and opens its editor", async () => {
+  const env = await bootWithMarks([{ t: 5 }]);
+  const sampler = env.window.__studioDebug.sampler;
+  const flag = byClass(env, "mark-flag")[0];
+  const row = byClass(env, "mark-row")[0];
+  const calls = env.workerMessages.length;
+  flag.onclick();
+  await env.flushAll(10);
+  assert.equal(sampler.currentTime(), 3);
+  assert.ok(env.document.getElementById("markEditor"));
+  env.document.getElementById("markDone").click();
+  await env.flushAll(20);
+  assert.equal(env.document.getElementById("markEditor"), null);
+  await sampler.seek(0, false);
+  const rowOpen = byClass(env, "mark-row")[0].querySelectorAll("button").find((b) => b.classList.contains("mark-open"));
+  rowOpen.onclick();
+  await env.flushAll(10);
+  assert.equal(sampler.currentTime(), 3);
+  assert.ok(env.document.getElementById("markEditor"));
+  assert.equal(env.workerMessages.slice(calls).filter((m) => m.type === "call").length, 0, "seeking changes no state");
+  assert.ok(row);
+});
+
+test("Marks: «Послушать место» plays from one bar before to one bar after the mark, then stops", async () => {
+  const env = await bootWithMarks([{ t: 5 }], { audioInitialState: "running" });
+  const sampler = env.window.__studioDebug.sampler;
+  const ctx = () => env.audioContexts[0];
+  const listen = byClass(env, "mark-audition")[0];
+  assert.equal(listen.textContent, "Послушать место");
+  listen.onclick();
+  await env.flushAll(20);
+  assert.equal(sampler.isPlaying(), true);
+  assert.equal(sampler.currentTime(), 3);
+
+  ctx().currentTime = 1.5;
+  env.tickTimers();
+  assert.equal(sampler.isPlaying(), true, "still inside the range");
+  ctx().currentTime = 4.1;
+  env.tickTimers();
+  assert.equal(sampler.isPlaying(), false, "stops at one bar after the mark");
+  assert.equal(sampler.currentTime(), 7);
+
+  await sampler.seek(0, true);
+  await env.flushAll(10);
+  assert.equal(sampler.isPlaying(), true);
+  ctx().currentTime = ctx().currentTime + 7.5;
+  env.tickTimers();
+  assert.equal(sampler.isPlaying(), true, "a later ordinary play is not cut off by an old range");
+});
+
+test("Marks: marks are in export and import, and a legacy piece without marks loads", async () => {
+  const env = await bootWithMarks([{ t: 5, text: "туда" }]);
+  await env.document.getElementById("exportPiecesBtn").onclick();
+  await env.flushAll(20);
+  const payload = JSON.parse(env.downloads.pop().parts.join(""));
+  assert.equal(payload.pieces[0].state.marks[0].text, "туда");
+
+  const st = JSON.parse(JSON.stringify(payload.pieces[0].state));
+  st.recipe.studio.salts["comp@A"] = 4;
+  const impInput = env.document.getElementById("importPiecesInput");
+  impInput.files = [{ text: async () => JSON.stringify({ version: 1, pieces: [{ id: st.id, state: st }] }) }];
+  await impInput.onchange();
+  await env.flushAll(30);
+  const imported = env.indexedDB._pieces.get("piece_801000_2");
+  assert.equal(imported.state.marks[0].text, "туда");
+  assert.equal(env.document.getElementById("marksTitle").textContent, "Отметки (1)");
+
+  const legacy = await bootWithPiece();
+  assert.equal(legacy.document.getElementById("marksTitle").textContent, "Отметки (0)");
+  assert.equal(byClass(legacy, "mark-flag").length, 0);
+});
+
+test("Marks: «Скачать отметки» saves marks.json of the piece, the sidebar button of all pieces", async () => {
+  const env = await bootWithMarks([{ t: 5, text: "а" }]);
+  await env.document.getElementById("marksDlBtn").onclick();
+  await env.flushAll(20);
+  const one = JSON.parse(env.downloads.pop().parts.join(""));
+  assert.equal(one.seed, 801000);
+  assert.equal(one.id, "piece_801000");
+  assert.ok(one.recipe);
+  assert.deepEqual(one.marks.map((m) => m.text), ["а"]);
+
+  await env.document.getElementById("exportMarksAllBtn").onclick();
+  await env.flushAll(20);
+  const all = JSON.parse(env.downloads.pop().parts.join(""));
+  assert.deepEqual(all.pieces.map((p) => p.id), ["piece_801000"]);
+  assert.equal(all.pieces[0].marks.length, 1);
+});
+
+test("Marks: a failed mark request reaches the banner and leaves the marks as saved", async () => {
+  const env = await bootWithPiece();
+  env.failNextWorkerCall = "disk is full";
+  env.press(KEY_M);
+  await env.flushAll(20);
+  assert.equal(env.document.getElementById("errorBanner").hidden, false);
+  assert.match(env.document.getElementById("errorText").textContent, /disk is full/);
+  assert.equal(savedMarks(env).length, 0);
+  assert.equal(env.document.getElementById("marksTitle").textContent, "Отметки (0)");
+});
+
+test("Marks: production markup has the sidebar button and the page has no alert", () => {
+  const html = fs.readFileSync(path.join(WEB_DIR, "index.html"), "utf8");
+  assert.match(html, /<button id="exportMarksAllBtn">Скачать отметки всех пьес<\/button>/);
+  assert.match(html, /\.mark-flag[^{]*\{/);
+  assert.match(html, /\.mark-flag\.stale|\.stale/);
+});
+
+const markCalls = (env) => env.workerMessages.filter((m) => m.type === "call" && m.cmd.startsWith("mark_"));
+
+test("Marks review: a slow mark write keeps what another tab did meanwhile and only adds its mark", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  env.press(KEY_M);
+  await env.flushAll(10);
+  assert.equal(env.pendingWorkerCalls.length, 1);
+
+  const stored = env.indexedDB._pieces.get("piece_801000");
+  stored.state.recipe.studio.salts["comp@A"] = 3;
+  stored.state.undo = [];
+  stored.state.redo = [makeFakeState(801000).recipe];
+  stored.state.marks = [{ id: "mother", t: 1, bar: 1, sixteenth: 1, section: "A", section_label: "Куплет A", guitar: "both", text: "", notes: [], rev: "x" }];
+
+  const call = env.pendingWorkerCalls.shift();
+  call.resolve(env.runFakePy(call.msg.cmd, call.msg.payload));
+  await env.flushAll(30);
+
+  const after = env.indexedDB._pieces.get("piece_801000").state;
+  assert.equal(after.recipe.studio.salts["comp@A"], 3, "the recipe changed meanwhile must stay");
+  assert.equal(after.redo.length, 1, "redo must not be cleared");
+  assert.equal(after.undo.length, 0);
+  assert.deepEqual(after.marks.map((m) => m.id).sort(), [after.marks.find((m) => m.id !== "mother").id, "mother"].sort());
+  assert.equal(after.marks.length, 2);
+  assert.deepEqual(markLogs(env).map((l) => l.action), ["mark_add"]);
+});
+
+test("Marks review: a mark sends full precision time, a client id and the revision that was loaded", async () => {
+  const env = await bootWithPiece();
+  const sampler = env.window.__studioDebug.sampler;
+  await sampler.seek(1.2345678, false);
+  env.press(KEY_M);
+  await env.flushAll(20);
+  const [call] = markCalls(env);
+  assert.equal(call.payload.t, 1.2345678);
+  assert.match(call.payload.id, /^m[0-9a-f]{6,}$/);
+  assert.equal(call.payload.rev, "{}");
+  assert.equal(savedMarks(env)[0].id, call.payload.id);
+});
+
+test("Marks review: pressing М while a reroll is running names the revision that is playing", async () => {
+  const env = await bootWithPiece();
+  const shown = env.document.getElementById("workspace").querySelectorAll(".reroll-btn").find((b) => b.dataset.layer === "tempo");
+  env.autoRunWorkerCalls = false;
+  shown.click();
+  await env.flushAll(10);
+  env.press(KEY_M);
+  await env.flushAll(10);
+  await resolveAll(env);
+  const [call] = markCalls(env);
+  assert.equal(call.payload.rev, "{}", "the old revision was audible when М was pressed");
+  const row = byClass(env, "mark-row")[0];
+  assert.match(row.textContent, /\(до изменения\)/);
+});
+
+test("Marks review: audition is disabled for a mark outside the current piece and never inverted", async () => {
+  const env = await bootWithMarks([{ t: 100, rev: "0".repeat(12) }, { t: 5 }]);
+  const listen = byClass(env, "mark-audition");
+  assert.equal(listen[0].disabled, true);
+  assert.equal(listen[1].disabled, false);
+  const sampler = env.window.__studioDebug.sampler;
+  await sampler.seek(1, false);
+  listen[0].click();
+  await env.flushAll(10);
+  assert.equal(sampler.currentTime(), 1);
+});
+
+test("Marks review: М works on sliders and buttons but not in text fields", async () => {
+  const env = await bootWithPiece();
+  env.press({ ...KEY_M, target: { tagName: "INPUT", type: "range" } });
+  await env.flushAll(20);
+  env.press({ ...KEY_M, target: { tagName: "BUTTON" } });
+  await env.flushAll(20);
+  env.press({ ...KEY_M, target: { tagName: "INPUT", type: "text" } });
+  env.press({ ...KEY_M, target: { tagName: "INPUT", type: "number" } });
+  env.press({ ...KEY_M, target: { tagName: "TEXTAREA" } });
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 2);
+});
+
+test("Marks review: opening another flag or another piece keeps the typed comment", async () => {
+  const env = await bootWithMarks([{ t: 3 }, { t: 5 }]);
+  const flags = () => byClass(env, "mark-flag");
+  flags()[0].onclick();
+  env.document.getElementById("markText").value = "черновик";
+  flags()[1].onclick();
+  await env.flushAll(20);
+  assert.equal(savedMarks(env)[0].text, "черновик");
+  assert.equal(env.document.getElementById("markEditor").dataset.markId, "m2");
+
+  const env2 = await bootTwoPieces();
+  const st = env2.indexedDB._pieces.get("piece_801000").state;
+  st.marks = [{ id: "m1", t: 3, bar: 2, sixteenth: 5, section: "A", section_label: "Куплет A", guitar: "both", text: "", notes: [], rev: "{}" }];
+  env2.document.getElementById("pieceList").querySelectorAll(".piece-item")[0].click();
+  await env2.flushAll(30);
+  byClass(env2, "mark-flag")[0].onclick();
+  env2.document.getElementById("markText").value = "не потерять";
+  pieceItems(env2)[1].click();
+  await env2.flushAll(40);
+  assert.equal(env2.indexedDB._pieces.get("piece_801000").state.marks[0].text, "не потерять");
+});
+
+test("Marks review: moving a touch more than 10 px cancels the long press", async () => {
+  const env = await bootWithPiece();
+  const blk = env.document.getElementById("timeline").children[1];
+  blk.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  blk.onpointerdown({ pointerType: "touch", clientX: 50, clientY: 10 });
+  blk.onpointermove({ pointerType: "touch", clientX: 70, clientY: 10 });
+  await new Promise((r) => setTimeout(r, 650));
+  await env.flushAll(10);
+  assert.equal(savedMarks(env).length, 0);
+  blk.onpointerup({});
+  blk.onpointerdown({ pointerType: "touch", clientX: 50, clientY: 10 });
+  blk.onpointermove({ pointerType: "touch", clientX: 54, clientY: 13 });
+  await new Promise((r) => setTimeout(r, 650));
+  await env.flushAll(20);
+  assert.equal(savedMarks(env).length, 1);
+});
+
+test("Marks review: importing a piece with marks logs their ids", async () => {
+  const env = await bootWithMarks([{ t: 5 }, { t: 6 }]);
+  const st = JSON.parse(JSON.stringify(env.indexedDB._pieces.get("piece_801000").state));
+  st.recipe.studio.salts["comp@A"] = 4;
+  const impInput = env.document.getElementById("importPiecesInput");
+  impInput.files = [{ text: async () => JSON.stringify({ version: 1, pieces: [{ id: st.id, state: st }] }) }];
+  await impInput.onchange();
+  await env.flushAll(30);
+  const row = env.indexedDB._logs.find((l) => l.action === "mark_import");
+  assert.deepEqual(row.value.ids, ["m1", "m2"]);
+  assert.equal(row.piece_id, "piece_801000_2");
+});
+
+test("Marks review: the editor opens for the newest added mark", async () => {
+  const env = await bootWithPiece();
+  env.press(KEY_M);
+  env.press(KEY_M);
+  await env.flushAll(40);
+  assert.equal(savedMarks(env).length, 2);
+  assert.equal(env.document.getElementById("markEditor").dataset.markId, savedMarks(env)[1].id);
+});
