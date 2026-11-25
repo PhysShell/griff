@@ -25,7 +25,10 @@ SCALES = {
     "mixolydian": [0, 2, 4, 5, 7, 9, 10],
     "dorian": [0, 2, 3, 5, 7, 9, 10],
     "aeolian": [0, 2, 3, 5, 7, 8, 10],
+    "phrygian": [0, 1, 3, 5, 7, 8, 10],
+    "locrian": [0, 1, 3, 5, 6, 8, 10],
 }
+KEY_MODES = ("ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian", "locrian")
 TONICS = {"E": 4, "F#": 6, "A": 9, "B": 11, "D": 2, "G": 7, "C#": 1}
 METERS = {  # name: (sixteenths per bar, numerator, denominator, groupings)
     "4/4": (16, 4, 4, [[3, 3, 3, 3, 4], [3, 3, 2, 3, 3, 2], [4, 4, 4, 4], [3, 3, 4, 3, 3]]),
@@ -710,7 +713,7 @@ def minor_ninth(a, b):
     return abs(a - b) % 12 == 1 and a != b
 
 
-def resolve_minor_ninths(parts, lead, other):
+def resolve_minor_ninths(parts, lead, other, keyed=False):
     """The corpus has many major sevenths between the guitars but almost no
     minor ninths. An accompaniment note sounding a minor ninth or semitone
     against a lead note is cut short before it, or dropped when struck together
@@ -718,6 +721,9 @@ def resolve_minor_ninths(parts, lead, other):
     resolved = []
     keep = []
     for m in sorted(parts[other], key=lambda n: n["start"]):
+        if keyed and "dead" in m["tech"]:
+            keep.append(m)
+            continue
         end = m["start"] + m["dur"]
         hits = [n for n in parts[lead] if m["start"] <= n["start"] < end and minor_ninth(n["pitch"], m["pitch"])]
         under = [n for n in parts[lead] if n["start"] < m["start"] < n["start"] + n["dur"]
@@ -742,6 +748,8 @@ def resolve_minor_ninths(parts, lead, other):
         p = by_string.get(n["string"]) if n.get("dyad") else prev
         legato = {"hammer", "pull", "slide"} & set(n["tech"])
         if legato and (p is None or p["string"] != n["string"] or p["fret"] == n["fret"]
+                       or (keyed and "slide" not in legato
+                           and (p["start"] + p["dur"] < n["start"] - 0.01 or n["start"] - p["start"] > 2))
                        or ("hammer" in legato and n["fret"] < p["fret"])
                        or ("pull" in legato and n["fret"] > p["fret"])):
             n["tech"] = [x for x in n["tech"] if x not in legato]
@@ -749,6 +757,206 @@ def resolve_minor_ninths(parts, lead, other):
         by_string[n["string"]] = n
     parts[other] = keep
     return resolved
+
+
+def map_degree(pitch, old, new):
+    """Pitch of the same scale degree in another scale; a chromatic note keeps
+    its offset above the lower degree, squeezed to stay below the next one.
+    Returns (pitch, merged) with merged set when it had to land on the degree."""
+    octave, rel = divmod(pitch - old.base, 12)
+    i = max(j for j in range(7) if old.scale[j] <= rel)
+    off = rel - old.scale[i]
+    gap = (new.scale[i + 1] if i < 6 else 12) - new.scale[i]
+    merged = off >= gap == 1
+    return new.base + 12 * octave + new.scale[i] + min(off, gap - 1), merged
+
+
+def _place(pitch, near_string, near_fret):
+    cands = [(s, pitch - o) for s, o in enumerate(fretboard.OPEN) if 0 <= pitch - o <= fretboard.MAX_FRET]
+    return min(cands, key=lambda c: (c[0] != near_string, abs(c[1] - near_fret), c[0]))
+
+
+def _place_group(group):
+    options = [[(s, n["pitch"] - o) for s, o in enumerate(fretboard.OPEN) if 0 <= n["pitch"] - o <= fretboard.MAX_FRET]
+               for n in group]
+    best = []
+
+    def walk(i, used, picks, cost):
+        if best and cost >= best[0]:
+            return
+        if i == len(group):
+            fretted = [f for _, f in picks if f]
+            if fretted and max(fretted) - min(fretted) > fretboard.SPAN:
+                return
+            total = cost + 0.5 * (max(fretted) - min(fretted) if fretted else 0)
+            if not best or total < best[0]:
+                best[:] = [total, list(picks)]
+            return
+        near_s, near_f = group[i]["fixed"]
+        for s, f in options[i]:
+            if s not in used:
+                walk(i + 1, used | {s}, picks + [(s, f)], cost + 3 * (s != near_s) + 0.1 * abs(f - near_f))
+
+    walk(0, frozenset(), [], 0.0)
+    return best[1] if best else None
+
+
+def _tidy_chords(parts, g, new, report, lo, hi):
+    """Within one guitar's chord, collapse doubled pitches and move or drop tones
+    that sit a semitone or a minor ninth from another tone or that form a low
+    cluster. The lowest tone and notes that are not fixed chord shapes stay."""
+    scale_pcs = {(new.tonic_pc + x) % 12 for x in new.scale}
+    by_start = {}
+    for n in parts[g]:
+        if "dead" not in n.get("preset_tech", ()):
+            by_start.setdefault(n["start"], []).append(n)
+    gone = set()
+    for group in by_start.values():
+        movable = {id(n) for n in group if n.get("fixed") and not n.get("dyad") and "preset_tech" not in n}
+        if not movable or len(group) < 2:
+            continue
+        live = lambda skip: [m for m in group if id(m) not in gone and m is not skip]
+        seen = set()
+        for n in sorted(group, key=lambda n: id(n) in movable):
+            if n["pitch"] in seen and id(n) in movable:
+                gone.add(id(n))
+                report["chord_collapsed"] += 1
+            seen.add(n["pitch"])
+        lowest = min((n for n in group if id(n) not in gone), key=lambda n: n["pitch"])
+        for n in sorted((n for n in group if id(n) in movable and id(n) not in gone), key=lambda n: -n["pitch"]):
+            if n is lowest or not any(abs(n["pitch"] - m["pitch"]) % 12 == 1 for m in live(n)):
+                continue
+            cands = sorted((p for p in range(n["pitch"] - 7, n["pitch"] + 8)
+                            if lo <= p <= hi and p % 12 in scale_pcs and p != n["pitch"]),
+                           key=lambda p: (abs(p - n["pitch"]), p))
+            fit = next((p for p in cands if all(abs(p - m["pitch"]) % 12 != 1 and p != m["pitch"] for m in live(n))), None)
+            if fit is None:
+                gone.add(id(n))
+                report["chord_dropped"] += 1
+            else:
+                n["pitch"] = fit
+                report["chord_moved"] += 1
+        for _ in range(len(group)):
+            low = sorted((n for n in live(None) if n["pitch"] < 66), key=lambda n: n["pitch"])
+            trio = next((t for t in zip(low, low[1:], low[2:]) if t[2]["pitch"] - t[0]["pitch"] <= 4), None)
+            if trio is None:
+                break
+            mid = trio[1]
+            if id(mid) not in movable:
+                break
+            if mid["pitch"] + 12 <= hi and all(m["pitch"] != mid["pitch"] + 12 for m in live(mid)):
+                mid["pitch"] += 12
+                report["chord_moved"] += 1
+            else:
+                gone.add(id(mid))
+                report["chord_dropped"] += 1
+    parts[g] = [n for n in parts[g] if id(n) not in gone]
+
+
+def _key_octave(old, new, ref):
+    d = new.tonic_pc - old.tonic_pc
+    near = (d + 6) % 12 - 6
+    options = [near] if near != -6 else [-6, 6]
+    mean = sum(ref) / len(ref)
+
+    def drift(x):
+        shifted = sum(map_degree(p, old, new)[0] + x - d for p in ref) / len(ref)
+        return round(abs(shifted - mean), 6), abs(shifted - 63)
+
+    return min(options, key=drift) - d
+
+
+def apply_key_to_parts(parts, chords, total16, old, new, ref):
+    """Map the pitches of an unfingered piece into another key before fingering.
+    One tonic shift of at most a tritone for the whole piece; a run of one guitar
+    inside a section leaving the fretboard moves by an octave as a whole, and only
+    when no octave fits the run are single chords or dyads folded."""
+    report = {"runs_moved": 0, "folded": 0, "merged": 0, "revoiced": 0,
+              "chord_moved": 0, "chord_dropped": 0, "chord_collapsed": 0}
+    shift = _key_octave(old, new, ref)
+    for g in ("g1", "g2"):
+        for n in parts[g]:
+            n["pitch"], merged = map_degree(n["pitch"], old, new)
+            n["pitch"] += shift
+            report["merged"] += merged
+    lo, hi = fretboard.OPEN[0], fretboard.OPEN[5] + fretboard.MAX_FRET
+    bar_starts = [c["start"] for c in chords]
+
+    def bar_of(n):
+        return max(s for s in bar_starts if s <= n["start"])
+
+    def tap_triad(n):
+        return n.get("fixed") and not n.get("dyad") and "preset_tech" in n
+
+    def fits(group, k):
+        return all(lo <= n["pitch"] + 12 * k <= hi for n in group)
+
+    def move(group, k):
+        for n in group:
+            n["pitch"] += 12 * k
+
+    for g in ("g1", "g2"):
+        for _sec, _occ, s0, s1 in _section_runs(chords, total16):
+            run = [n for n in parts[g] if s0 <= n["start"] < s1]
+            if fits(run, 0):
+                continue
+            high = max(n["pitch"] for n in run) > hi
+            order = (-1, 1, -2, 2) if high else (1, -1, 2, -2)
+            k = next((k for k in order if fits(run, k)), None)
+            if k is not None:
+                move(run, k)
+                report["runs_moved"] += 1
+                continue
+            groups = {}
+            for n in run:
+                groups.setdefault(("tap", bar_of(n), n["fixed"][0]) if tap_triad(n) else n["start"], []).append(n)
+            for group in groups.values():
+                if not fits(group, 0):
+                    k = next((k for k in order if fits(group, k)), 0)
+                    move(group, k)
+                    report["folded"] += len(group)
+    for g in ("g1", "g2"):
+        _tidy_chords(parts, g, new, report, lo, hi)
+        by_start = {}
+        for n in parts[g]:
+            if n.get("fixed"):
+                by_start.setdefault(n["start"], []).append(n)
+        gone = set()
+        for group in by_start.values():
+            pos = _place_group(group)
+            for n in sorted(group, key=lambda n: n["pitch"]):
+                if pos is not None or n["pitch"] + 12 > hi:
+                    continue
+                n["pitch"] += 12
+                ps = sorted(m["pitch"] for m in group)
+                if fretboard.low_cluster(ps) or any(b - a < 2 or (b - a) % 12 == 1 for a, b in zip(ps, ps[1:])):
+                    n["pitch"] -= 12
+                    continue
+                report["revoiced"] += 1
+                pos = _place_group(group)
+            while pos is None and len(group) > 1:
+                top = max(group, key=lambda n: n["pitch"])
+                group.remove(top)
+                gone.add(id(top))
+                report["chord_dropped"] += 1
+                pos = _place_group(group)
+            for n, p in zip(group, pos or [_place(n["pitch"], *n["fixed"]) for n in group]):
+                n["fixed"] = p
+        parts[g] = [n for n in parts[g] if id(n) not in gone]
+        triads = sorted((n for n in parts[g] if tap_triad(n)), key=lambda n: n["start"])
+        for prev, n in zip([None] + triads, triads):
+            leg = {"hammer", "pull"} & set(n["preset_tech"])
+            if leg and (prev is None or prev["fixed"][0] != n["fixed"][0] or n["start"] - prev["start"] > 2
+                        or ("hammer" in leg and n["fixed"][1] <= prev["fixed"][1])
+                        or ("pull" in leg and n["fixed"][1] >= prev["fixed"][1])):
+                n["preset_tech"] = [t for t in n["preset_tech"] if t not in leg]
+        for n in triads:
+            if "tap" in n["preset_tech"]:
+                nxt = next((m for m in triads if n["start"] < m["start"] <= n["start"] + 2
+                            and m["fixed"][0] == n["fixed"][0] and "pull" in m["preset_tech"]), None)
+                if nxt is not None and nxt["fixed"][1] >= n["fixed"][1]:
+                    n["preset_tech"] = [t for t in n["preset_tech"] if t != "tap"]
+    return report
 
 
 def apply_rests_and_pushes(parts, lead, other, form, spans, plan):
@@ -1512,6 +1720,7 @@ def _prepare_studio(recipe, arp, v8):
 
     mute_share = max(0.0, min(1.0, float(opts.get("mute_share", 0.0))))
     square_repeat = int(opts.get("square_repeat", 1))
+    key = opts.get("key")
 
     return {
         "hook": hook,
@@ -1526,6 +1735,7 @@ def _prepare_studio(recipe, arp, v8):
         "end_riff": end_riff,
         "mute_share": mute_share,
         "square_repeat": square_repeat,
+        "key": key,
     }
 
 
@@ -1849,6 +2059,13 @@ def compose(recipe, _trace=None):
                 opts = [p for p in range(n["pitch"] - 9, n["pitch"] + 10)
                         if (p - th.tonic_pc) % 12 in th.scale and 40 <= p <= 86]
                 n["pitch"] = crng.choice(opts)
+    key_report = None
+    if st_cfg is not None and st_cfg["key"]:
+        new_th = Theory(TONICS[st_cfg["key"]["tonic"]], st_cfg["key"]["mode"])
+        if (new_th.tonic_pc, new_th.scale) != (th.tonic_pc, th.scale):
+            ref = [n["pitch"] for g in ("g1", "g2") for n in st_cfg["base"]["pre"][g]]
+            key_report = apply_key_to_parts(parts, chords, t, th, new_th, ref)
+            th = new_th
     for g in ("g1", "g2"):
         for n in parts[g]:
             while n["pitch"] > 86:
@@ -1920,10 +2137,15 @@ def compose(recipe, _trace=None):
             for g in ("g1", "g2"):
                 out_parts[g].extend(sec_parts[g])
         parts = out_parts
-        if fix:
-            report["m9_resolved"] = resolve_minor_ninths(parts, lead, other)
+        keyed = key_report is not None
+        if keyed and st_cfg["mute_share"] > 0.0:
+            _apply_mute_share(parts, other, chords, t, recipe["seed"], st_cfg["mute_share"])
+        if fix or keyed:
+            report["m9_resolved"] = resolve_minor_ninths(parts, lead, other, keyed=keyed)
+        if keyed:
+            _strip_legato_from_dead(parts[other])
         _validate_octave_slides(parts)
-        if st_cfg["mute_share"] > 0.0:
+        if not keyed and st_cfg["mute_share"] > 0.0:
             _apply_mute_share(parts, other, chords, t, recipe["seed"], st_cfg["mute_share"])
         if st_cfg["square_repeat"] > 1:
             t = _apply_square_repeat(
@@ -1960,6 +2182,8 @@ def compose(recipe, _trace=None):
         _trace["spans"] = [
             [sec, st0, starts[k + 1][1] if k + 1 < len(starts) else t] for k, (sec, st0) in enumerate(starts)
         ]
+    if key_report is not None:
+        report["key"] = key_report
     return {"tempo": tempo, "meters": meters, "parts": parts,
             "chords": chords,
             "total16": t, "report": report, "theory": th}

@@ -398,7 +398,7 @@ test("Studio controls send option immediately without reroll, refresh UI, and hi
   }
 
   const hints = ws.querySelectorAll(".option-hint");
-  assert.equal(hints.length, 4, "each of the 4 new controls must have a one-line Russian hint");
+  assert.equal(hints.length, 5, "each of the 5 whole-piece controls must have a one-line Russian hint");
   for (const h of hints) {
     assert.match(h.textContent, /применяется сразу/i);
   }
@@ -1101,4 +1101,119 @@ test("Review N4: every pending slider is flushed in the order it was moved", asy
   await env.flushAll(15);
   const sent = env.workerMessages.filter((m) => m.type === "call").map((m) => (m.cmd === "option" ? m.payload.name : m.cmd));
   assert.deepEqual(sent, ["mute_share", "octave_piece", "undo"]);
+});
+
+const keyButtons = (env, option) => env.document.getElementById("workspace").querySelectorAll("button").filter((b) => b.dataset.option === option);
+const keyButton = (env, option, value) => keyButtons(env, option).find((b) => b.dataset.value === value);
+const keyCalls = (env) => env.workerMessages.filter((m) => m.type === "call" && m.cmd === "option" && m.payload.name === "key").map((m) => m.payload.value);
+
+test("Key: Тональность offers tonics and Russian modes, marks the current key and has a reset", async () => {
+  const env = await bootWithPiece();
+  const ws = env.document.getElementById("workspace");
+  assert.match(ws.textContent, /Тональность/);
+  assert.match(ws.textContent, /Переводит все ноты в выбранную тональность по ступеням; ритм и форма не меняются\. Применяется сразу\./);
+  assert.deepEqual(keyButtons(env, "key_tonic").map((b) => b.dataset.value), ["E", "F#", "G", "A", "B", "C#", "D"]);
+  assert.deepEqual(
+    keyButtons(env, "key_mode").map((b) => b.textContent),
+    ["мажор", "дорийский", "фригийский", "лидийский", "миксолидийский", "натуральный минор", "локрийский"],
+  );
+  for (const opt of ["key_tonic", "key_mode", "key"]) {
+    const group = keyButtons(env, opt);
+    assert.equal(group.filter((b) => b.getAttribute("aria-pressed") === "true").length, 1, opt);
+    for (const b of group) assert.ok(["true", "false"].includes(b.getAttribute("aria-pressed")), opt);
+  }
+  assert.equal(keyButton(env, "key_tonic", "E").getAttribute("aria-pressed"), "true");
+  assert.equal(keyButton(env, "key_mode", "lydian").getAttribute("aria-pressed"), "true");
+  assert.equal(keyButton(env, "key", "auto").textContent, "Как в пьесе");
+  assert.equal(keyButton(env, "key", "auto").getAttribute("aria-pressed"), "true");
+});
+
+test("Key: choices send the whole key, the header shows it, undo and redo name it, reset sends null", async () => {
+  const env = await bootWithPiece();
+  keyButton(env, "key_tonic", "D").click();
+  await env.flushAll(15);
+  keyButton(env, "key_mode", "aeolian").click();
+  await env.flushAll(15);
+  assert.deepEqual(keyCalls(env), [{ tonic: "D", mode: "lydian" }, { tonic: "D", mode: "aeolian" }]);
+  assert.match(env.document.getElementById("workspace").textContent, /D минор \(эолийский\)/);
+  assert.equal(keyButton(env, "key", "auto").getAttribute("aria-pressed"), "false");
+  assert.equal(keyButton(env, "key_tonic", "D").getAttribute("aria-pressed"), "true");
+  assert.match(env.document.getElementById("undoBtn").title, /Отменить: тональность: D натуральный минор/);
+  env.document.getElementById("undoBtn").click();
+  await env.flushAll(15);
+  assert.match(env.document.getElementById("redoBtn").title, /Вернуть: тональность: D натуральный минор/);
+  env.document.getElementById("redoBtn").click();
+  await env.flushAll(15);
+  keyButton(env, "key", "auto").click();
+  await env.flushAll(15);
+  assert.deepEqual(keyCalls(env).pop(), null);
+  assert.match(env.document.getElementById("workspace").textContent, /E лидийский/);
+  const saved = env.indexedDB._pieces.get("piece_801000").state;
+  assert.equal(saved.recipe.studio.options.key, null);
+  assert.ok(env.indexedDB._logs.some((l) => l.action === "option" && l.value && "key" in l.value));
+});
+
+test("Key: the pressed choice does nothing, controls are disabled while busy and an error reaches the banner", async () => {
+  const env = await bootWithPiece();
+  keyButton(env, "key_tonic", "E").click();
+  keyButton(env, "key", "auto").click();
+  await env.flushAll(10);
+  assert.deepEqual(keyCalls(env), []);
+  env.autoRunWorkerCalls = false;
+  const btn = keyButton(env, "key_tonic", "G");
+  btn.click();
+  await env.flushAll(10);
+  assert.equal(btn.disabled, true);
+  assert.equal(env.document.getElementById("statusChip").textContent, "Пересчёт…");
+  env.pendingWorkerCalls.shift().reject("key boom");
+  await env.flushAll(15);
+  assert.equal(env.document.getElementById("statusChip").textContent, "");
+  assert.equal(env.document.getElementById("errorBanner").hidden, false);
+  assert.match(env.document.getElementById("errorText").textContent, /key boom/);
+  assert.equal(keyButton(env, "key_tonic", "G").disabled, false);
+});
+
+test("Key: a pending slider is flushed before the key change", async () => {
+  const env = await bootWithPiece();
+  env.workerMessages.length = 0;
+  const mute = findSlider(env, "mute_share");
+  mute.value = "0.35";
+  mute.oninput();
+  keyButton(env, "key_mode", "dorian").click();
+  await env.flushAll(20);
+  await new Promise((r) => setTimeout(r, 700));
+  await env.flushAll(15);
+  const sent = env.workerMessages.filter((m) => m.type === "call").map((m) => (m.cmd === "option" ? m.payload.name : m.cmd));
+  assert.deepEqual(sent, ["mute_share", "key"]);
+});
+
+test("Key: two quick clicks, tonic then mode, end in the combined key", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  env.workerMessages.length = 0;
+  keyButton(env, "key_tonic", "D").click();
+  await env.flushAll(10);
+  keyButton(env, "key_mode", "aeolian").click();
+  await env.flushAll(10);
+  await resolveAll(env);
+  await env.flushAll(15);
+  assert.deepEqual(keyCalls(env), [{ tonic: "D", mode: "lydian" }, { tonic: "D", mode: "aeolian" }]);
+  const saved = env.indexedDB._pieces.get("piece_801000").state;
+  assert.deepEqual(saved.recipe.studio.options.key, { tonic: "D", mode: "aeolian" });
+  assert.match(env.document.getElementById("workspace").textContent, /D минор \(эолийский\)/);
+});
+
+test("Key: Как в пьесе while a key request is pending does not reuse the old key", async () => {
+  const env = await bootWithPiece();
+  env.autoRunWorkerCalls = false;
+  env.workerMessages.length = 0;
+  keyButton(env, "key_tonic", "D").click();
+  await env.flushAll(10);
+  keyButton(env, "key", "auto").click();
+  await env.flushAll(10);
+  keyButton(env, "key_mode", "dorian").click();
+  await env.flushAll(10);
+  await resolveAll(env);
+  await env.flushAll(15);
+  assert.deepEqual(keyCalls(env), [{ tonic: "D", mode: "lydian" }, null, { tonic: "E", mode: "dorian" }]);
 });

@@ -58,6 +58,17 @@ OPTION_LABELS = {
     "octave_sixteenths": "октавы шестнадцатыми",
     "dead_notes": "глухие удары перед акцентами",
     "slide_max": "макс. слайд октав",
+    "key": "тональность",
+}
+
+KEY_MODE_LABELS = {
+    "ionian": "мажор",
+    "dorian": "дорийский",
+    "phrygian": "фригийский",
+    "lydian": "лидийский",
+    "mixolydian": "миксолидийский",
+    "aeolian": "натуральный минор",
+    "locrian": "локрийский",
 }
 
 B_LEAD_LABELS = {"augmented": "медленнее", "same_speed": "в темпе рифа", "rest": "без соло"}
@@ -82,6 +93,7 @@ def default_options():
         "octave_sixteenths": float(composer.V8["octave_sixteenths"]),
         "dead_notes": float(composer.V8["dead_notes"]),
         "slide_max": int(composer.V8["slide_max"]),
+        "key": None,
     }
 
 
@@ -144,6 +156,8 @@ def _option_text(name, value):
     label = OPTION_LABELS.get(name, name)
     if name == "b_lead":
         return f"{label}: {B_LEAD_LABELS.get(value, value)}"
+    if name == "key":
+        return f"{label}: {value['tonic']} {KEY_MODE_LABELS[value['mode']]}" if value else f"{label}: как в пьесе"
     if value is None or value == "auto":
         return f"{label}: авто"
     return f"{label} {value:g}" if isinstance(value, float) else f"{label} {value}"
@@ -245,7 +259,9 @@ def set_lock(recipe, layer, section, locked):
             riffs.pop(key, None)
         elif key not in riffs:
             trace = {}
-            composer.compose(rec, _trace=trace)
+            unkeyed = copy.deepcopy(rec)
+            unkeyed["studio"]["options"]["key"] = None
+            composer.compose(unkeyed, _trace=trace)
             riffs[key] = json.loads(json.dumps(trace["riff"].get("A3") or trace["riff"].get("A") or []))
     return rec
 
@@ -254,6 +270,28 @@ def _number(value, what):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f"{what} must be a finite number")
     return value
+
+
+def parse_key(value):
+    if value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"tonic", "mode"}
+        or not isinstance(value["tonic"], str)
+        or not isinstance(value["mode"], str)
+        or value["tonic"] not in composer.TONICS
+        or value["mode"] not in composer.KEY_MODES
+    ):
+        raise ValueError(f"invalid key: {value}")
+    return {"tonic": value["tonic"], "mode": value["mode"]}
+
+
+def _parse_key(value, intent):
+    key = parse_key(value)
+    if key == {"tonic": intent["tonic"], "mode": intent["mode"]}:
+        return None
+    return key
 
 
 def set_option(recipe, name, value):
@@ -303,6 +341,8 @@ def set_option(recipe, name, value):
         if opts[name] != clamped:
             _backfill_comp_doses(st)
             opts[name] = clamped
+    elif name == "key":
+        opts["key"] = _parse_key(value, rec["intent"])
     else:
         raise ValueError(f"unknown option: {name}")
     return rec
@@ -361,8 +401,9 @@ def piece_detail(piece_id, recipe, piece, undo_stack=(), redo_stack=()):
         "id": piece_id,
         "seed": rec["seed"],
         "meter": rec["intent"]["meter"],
-        "mode": rec["intent"]["mode"],
-        "key": rec["intent"]["tonic"],
+        "mode": (st["options"]["key"] or rec["intent"])["mode"],
+        "key": (st["options"]["key"] or rec["intent"])["tonic"],
+        "own_key": {"tonic": rec["intent"]["tonic"], "mode": rec["intent"]["mode"]},
         "tempo": piece["tempo"],
         "length": round(piece["total16"] * 15.0 / piece["tempo"], 2),
         "sections": sections,

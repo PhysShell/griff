@@ -18,6 +18,16 @@
     locrian: "локрийский",
   };
   const modeLabel = (mode) => MODE_LABELS[mode] || mode;
+  const KEY_TONICS = ["E", "F#", "G", "A", "B", "C#", "D"];
+  const KEY_MODES = [
+    ["ionian", "мажор"],
+    ["dorian", "дорийский"],
+    ["phrygian", "фригийский"],
+    ["lydian", "лидийский"],
+    ["mixolydian", "миксолидийский"],
+    ["aeolian", "натуральный минор"],
+    ["locrian", "локрийский"],
+  ];
 
   const appState = {
     pendingSliders: [],
@@ -1731,16 +1741,11 @@
       grid.appendChild(wrap);
     }
 
-    function addChoiceGroup(grid, title, name, choices, current, hint) {
-      const box = document.createElement("div");
-      const titleEl = document.createElement("div");
-      titleEl.className = "piece-meta";
-      titleEl.style.marginBottom = "6px";
-      titleEl.textContent = title;
+    function makeChoiceRow(label, name, choices, current, pick, force) {
       const row = document.createElement("div");
       row.className = "row";
       row.setAttribute("role", "group");
-      row.setAttribute("aria-label", title);
+      row.setAttribute("aria-label", label);
       for (const [val, txt] of choices) {
         const selected = current === val;
         const b = document.createElement("button");
@@ -1750,13 +1755,69 @@
         b.textContent = txt;
         b.setAttribute("aria-pressed", selected ? "true" : "false");
         b.onclick = () => {
-          if (!selected) sendOption(name, val, b);
+          if (!selected || (force && force())) pick(val, b);
         };
         row.appendChild(b);
       }
+      return row;
+    }
+
+    function addChoiceGroup(grid, title, name, choices, current, hint) {
+      const box = document.createElement("div");
+      const titleEl = document.createElement("div");
+      titleEl.className = "piece-meta";
+      titleEl.style.marginBottom = "6px";
+      titleEl.textContent = title;
       box.appendChild(titleEl);
-      box.appendChild(row);
+      box.appendChild(makeChoiceRow(title, name, choices, current, (val, b) => sendOption(name, val, b)));
       if (hint) addOptionHint(box, hint);
+      grid.appendChild(box);
+    }
+
+    function pendingKey() {
+      return appState.keyPending && appState.keyPending.id === d.id ? appState.keyPending.value : null;
+    }
+
+    function trackKey(value, request) {
+      appState.keyPending = { id: d.id, value };
+      appState.keyBusy = (appState.keyBusy || 0) + 1;
+      return Promise.resolve(request()).finally(() => {
+        if (--appState.keyBusy === 0) appState.keyPending = null;
+      });
+    }
+
+    function sendKey(patch, ctl) {
+      const pending = pendingKey();
+      const next = Object.assign({}, pending || { tonic: d.key, mode: d.mode }, patch);
+      return trackKey(next, () => sendOption("key", next, ctl));
+    }
+
+    function resetKey(ctl) {
+      return trackKey(d.own_key || { tonic: d.key, mode: d.mode }, () => sendOption("key", null, ctl));
+    }
+
+    function addKeyControl(grid) {
+      const title = "Тональность";
+      const box = document.createElement("div");
+      const titleEl = document.createElement("div");
+      titleEl.className = "piece-meta";
+      titleEl.style.marginBottom = "6px";
+      titleEl.textContent = title;
+      box.appendChild(titleEl);
+      box.appendChild(
+        makeChoiceRow(`${title}: основной тон`, "key_tonic", KEY_TONICS.map((t) => [t, t]), d.key, (t, b) =>
+          sendKey({ tonic: t }, b)
+        )
+      );
+      box.appendChild(
+        makeChoiceRow(`${title}: лад`, "key_mode", KEY_MODES, d.mode, (m, b) => sendKey({ mode: m }, b))
+      );
+      box.appendChild(
+        makeChoiceRow(`${title}: как в пьесе`, "key", [["auto", "Как в пьесе"]], opts.key ? null : "auto", (v, b) =>
+          resetKey(b), pendingKey
+        )
+      );
+      addOptionHint(box, "Переводит все ноты в выбранную тональность по ступеням; ритм и форма не меняются. Применяется сразу.");
       grid.appendChild(box);
     }
 
@@ -1852,6 +1913,7 @@
       opts.square_repeat ?? 1,
       "Повторяет 4-тактовый квадрат куплетов A и A2 дважды подряд; применяется сразу."
     );
+    addKeyControl(oGrid);
     addChoiceGroup(
       oGrid,
       "Соло в середине B",

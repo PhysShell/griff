@@ -1,4 +1,5 @@
 import argparse
+import collections
 import copy
 import hashlib
 import json
@@ -2710,6 +2711,567 @@ class TestStudioControls(unittest.TestCase):
                     self.assertEqual(total, num * 16 // den, (s, part.get("id"), m.get("number")))
 
         self.assertLess(bad_clash / max(1, shared_clash), 0.03, (bad_clash, shared_clash))
+
+
+KEY_TARGETS = (
+    ("D", "aeolian"), ("E", "ionian"), ("G", "dorian"), ("F#", "locrian"),
+    ("B", "phrygian"), ("C#", "mixolydian"), ("D", "lydian"),
+)
+KEY_SEEDS = [s * 1000 for s in range(801, 831)]
+KEY_STATS = collections.Counter()
+
+ORACLE_SCALES = {
+    "ionian": (0, 2, 4, 5, 7, 9, 11), "dorian": (0, 2, 3, 5, 7, 9, 10), "phrygian": (0, 1, 3, 5, 7, 8, 10),
+    "lydian": (0, 2, 4, 6, 7, 9, 11), "mixolydian": (0, 2, 4, 5, 7, 9, 10), "aeolian": (0, 2, 3, 5, 7, 8, 10),
+    "locrian": (0, 1, 3, 5, 6, 8, 10),
+}
+ORACLE_PC = {"E": 4, "F#": 6, "A": 9, "B": 11, "D": 2, "G": 7, "C#": 1}
+
+
+def oracle_pitch(p, old, new, shift):
+    t_old = 48 + ORACLE_PC[old[0]]
+    octave, r = divmod(p - t_old, 12)
+    scale = ORACLE_SCALES[old[1]]
+    idx = max(i for i, x in enumerate(scale) if x <= r)
+    new_scale = ORACLE_SCALES[new[1]]
+    gap = (new_scale[idx + 1] if idx < 6 else 12) - new_scale[idx]
+    return t_old + shift + 12 * octave + new_scale[idx] + min(r - scale[idx], gap - 1)
+
+
+def oracle_shift(old, new, ref):
+    diff = (ORACLE_PC[new[0]] - ORACLE_PC[old[0]]) % 12
+    if diff != 6:
+        return diff if diff < 6 else diff - 12
+    mean = sum(ref) / len(ref)
+    return min((-6, 6), key=lambda s: (round(abs(sum(oracle_pitch(p, old, new, s) for p in ref) / len(ref) - mean), 6),
+                                       abs(sum(oracle_pitch(p, old, new, s) for p in ref) / len(ref) - 63)))
+
+
+def map_notes(pitches, old, new, ref=None):
+    parts = {"g1": [{"pitch": p, "start": i, "dur": 1} for i, p in enumerate(pitches)], "g2": []}
+    chords = [{"start": 0, "sec": "A"}]
+    rep = composer.apply_key_to_parts(
+        parts, chords, len(pitches), composer.Theory(composer.TONICS[old[0]], old[1]),
+        composer.Theory(composer.TONICS[new[0]], new[1]), ref or pitches)
+    return [n["pitch"] for n in parts["g1"]], rep
+
+
+def sign(x):
+    return (x > 0) - (x < 0)
+
+
+def keyed(seed, tonic, mode, **opts):
+    rec = studio_engine.new_recipe(seed)
+    for name, val in opts.items():
+        rec = studio_engine.set_option(rec, name, val)
+    return rec, studio_engine.set_option(rec, "key", {"tonic": tonic, "mode": mode})
+
+
+def notes_at(piece, g, start):
+    return [n for n in piece["parts"][g] if n["start"] == start]
+
+
+class TestStudioKey(unittest.TestCase):
+    @classmethod
+    def tearDownClass(cls):
+        if KEY_STATS["pieces"]:
+            print(f"\nkey change: {dict(KEY_STATS)}", file=sys.stderr)
+
+    def assert_playable(self, p, ctx):
+        for g, notes in p["parts"].items():
+            for n in notes:
+                self.assertTrue(40 <= n["pitch"] <= 88, (ctx, g, n))
+                self.assertTrue(0 <= n["fret"] <= fretboard.MAX_FRET, (ctx, g, n))
+                self.assertEqual(fretboard.OPEN[n["string"]] + n["fret"], n["pitch"], (ctx, g, n))
+            seen = {}
+            for n in notes:
+                self.assertNotIn((n["start"], n["string"]), seen, (ctx, g, n))
+                seen[(n["start"], n["string"])] = n
+            chords = {}
+            for n in notes:
+                if "dead" not in n["tech"]:
+                    chords.setdefault(n["start"], []).append(n)
+            for start, group in chords.items():
+                if len(group) < 2:
+                    continue
+                fretted = [n["fret"] for n in group if n["fret"]]
+                self.assertLessEqual(max(fretted) - min(fretted) if fretted else 0, fretboard.SPAN, (ctx, g, start))
+                pitches = sorted(n["pitch"] for n in group)
+                self.assertEqual(len(set(pitches)), len(pitches), (ctx, g, start, pitches))
+                self.assertFalse(any((b - a) % 12 == 1 for a, b in zip(pitches, pitches[1:])), (ctx, g, start, pitches))
+                self.assertFalse(fretboard.low_cluster(pitches), (ctx, g, start, pitches))
+            line = [n for n in notes if not n.get("chordtone") and not n.get("dyad")
+                    and not (n.get("fixed") and "preset_tech" not in n)]
+            for prev, n in zip(line, line[1:]):
+                if {"hammer", "pull", "slide"} & set(n["tech"]):
+                    self.assertEqual(prev["string"], n["string"], (ctx, g, n))
+                if {"hammer", "pull"} & set(n["tech"]):
+                    self.assertGreaterEqual(prev["start"] + prev["dur"], n["start"] - 0.01, (ctx, g, prev, n))
+                if "hammer" in n["tech"]:
+                    self.assertGreater(n["fret"], prev["fret"], (ctx, g, n))
+                if "tap" in n["tech"] and not n.get("fixed"):
+                    self.assertTrue(n["fret"] > 0, (ctx, g, n))
+            for prev, n in zip(notes, notes[1:]):
+                if "tap" in prev["tech"] and n["string"] == prev["string"] and n["fret"] > 0 and not n.get("fixed"):
+                    self.assertGreater(prev["fret"], n["fret"], (ctx, g, prev, n))
+            last = {}
+            for n in sorted((x for x in notes if x.get("dyad")), key=lambda x: x["start"]):
+                if "slide" in n["tech"]:
+                    q = last.get(n["string"])
+                    self.assertTrue(q is not None and q["fret"] != n["fret"], (ctx, g, n))
+                last[n["string"]] = n
+            for n in notes:
+                if "tap" in n.get("tech", []) and n.get("fixed"):
+                    nxt = [m for m in notes if n["start"] < m["start"] <= n["start"] + 2
+                           and m["string"] == n["string"] and "pull" in m.get("tech", [])][:1]
+                    for m in nxt:
+                        self.assertGreater(n["fret"], m["fret"], (ctx, g, n))
+        with tempfile.TemporaryDirectory() as d:
+            composer.export(p, Path(d) / "x")
+            root = ET.parse(Path(d) / "x.musicxml").getroot()
+        for part in root.iter("part"):
+            num = den = None
+            for m in part.iter("measure"):
+                t = m.find("attributes/time")
+                if t is not None:
+                    num, den = int(t.findtext("beats")), int(t.findtext("beat-type"))
+                total = sum(int(n.findtext("duration")) for n in m.iter("note") if n.find("chord") is None)
+                self.assertEqual(total, num * 16 // den, (ctx, part.get("id"), m.get("number")))
+
+    def assert_no_minor_ninth(self, p, ctx):
+        for x, y in (("g1", "g2"), ("g2", "g1")):
+            for n in p["parts"][x]:
+                if "dead" in n["tech"]:
+                    continue
+                for m in p["parts"][y]:
+                    if "dead" not in m["tech"] and m["start"] <= n["start"] < m["start"] + m["dur"]:
+                        self.assertFalse(composer.minor_ninth(n["pitch"], m["pitch"]), (ctx, n, m))
+
+    def test_unset_key_is_byte_identical_and_own_key_is_unset(self):
+        rng = random.Random(20261123)
+        rand_seeds = rng.sample(range(1000, 999999), 20)
+        for seed in [s * 1000 for s in (801, 802, 805, 807, 809, 810)] + rand_seeds:
+            rec = studio_engine.new_recipe(seed)
+            self.assertIsNone(rec["studio"]["options"]["key"])
+            plain = {k: v for k, v in rec.items() if k != "studio"}
+            base = midi_sha256(composer.compose(plain))
+            self.assertEqual(midi_sha256(composer.compose(rec)), base, seed)
+            legacy = copy.deepcopy(rec)
+            del legacy["studio"]["options"]["key"]
+            self.assertEqual(midi_sha256(composer.compose(legacy)), base, seed)
+            own = {"tonic": rec["intent"]["tonic"], "mode": rec["intent"]["mode"]}
+            self.assertEqual(studio_engine.set_option(rec, "key", own), rec, seed)
+            there = studio_engine.set_option(rec, "key", {"tonic": "D", "mode": "locrian"})
+            self.assertEqual(midi_sha256(composer.compose(studio_engine.set_option(there, "key", None))), base, seed)
+
+    def test_hand_checked_degree_mapping(self):
+        cases = (
+            ((("E", "ionian"), ("E", "phrygian")), (64, 68, 71, 66, 65), (64, 67, 71, 65, 64)),
+            ((("A", "aeolian"), ("D", "aeolian")), (69, 72), (74, 77)),
+            ((("E", "ionian"), ("E", "locrian")), (71,), (70,)),
+            ((("D", "locrian"), ("D", "ionian")), (56,), (57,)),
+            ((("A", "phrygian"), ("A", "aeolian")), (58,), (59,)),
+            ((("G", "mixolydian"), ("C#", "ionian")), (77,), (72,)),
+            ((("G", "mixolydian"), ("C#", "phrygian")), (59,), (64,)),
+        )
+        for (old, new), src, expected in cases:
+            for p, e in zip(src, expected):
+                got, _ = map_notes([p], old, new)
+                self.assertEqual(got, [e], (old, new, p))
+        merged = map_notes([65, 66], ("E", "ionian"), ("E", "phrygian"))
+        self.assertEqual(merged, ([64, 65], {"runs_moved": 0, "folded": 0, "merged": 1, "revoiced": 0,
+                                  "chord_moved": 0, "chord_dropped": 0, "chord_collapsed": 0}))
+        wide = map_notes([55, 60, 66, 64, 71, 85], ("E", "ionian"), ("B", "locrian"))[0]
+        self.assertTrue(all(40 <= p <= 86 for p in wide), wide)
+
+    def test_every_mode_pair_matches_the_independent_oracle(self):
+        for pitches in (list(range(48, 85, 3)), list(range(55, 70, 2))):
+            for old_tonic in ("E", "A", "D"):
+                for old_mode in composer.KEY_MODES:
+                    for new_tonic in composer.TONICS:
+                        for new_mode in composer.KEY_MODES:
+                            old, new = (old_tonic, old_mode), (new_tonic, new_mode)
+                            got, rep = map_notes(pitches, old, new)
+                            shift = oracle_shift(old, new, pitches)
+                            want = [oracle_pitch(p, old, new, shift) for p in pitches]
+                            high = max(want) > 86
+                            order = (-1, 1, -2, 2) if high else (1, -1, 2, -2)
+                            if min(want) >= 40 and not high:
+                                expected = want
+                            else:
+                                k = next((k for k in order if all(40 <= p + 12 * k <= 86 for p in want)), None)
+                                expected = want if k is None else [p + 12 * k for p in want]
+                            if rep["folded"] == 0:
+                                self.assertEqual(got, expected, (old, new))
+                            else:
+                                self.assertTrue(all((a - b) % 12 == 0 for a, b in zip(got, want)), (old, new))
+
+    def test_round_trip_restores_pitches_and_fails_when_mapping_is_a_no_op(self):
+        checked = 0
+        for old in (("E", "ionian"), ("G", "mixolydian"), ("A", "aeolian"), ("D", "dorian")):
+            scale = ORACLE_SCALES[old[1]]
+            src = [p for p in range(50, 80) if (p - 48 - ORACLE_PC[old[0]]) % 12 in scale][::2]
+            for new in (("D", "aeolian"), ("C#", "ionian"), ("E", "phrygian"), ("B", "locrian"), ("G", "lydian")):
+                if new == old:
+                    continue
+                there, _ = map_notes(src, old, new)
+                self.assertNotEqual(there, src, (old, new))
+                back, _ = map_notes(there, new, old)
+                self.assertEqual(back, src, (old, new))
+                checked += 1
+        self.assertEqual(map_notes([67], ("G", "ionian"), ("C#", "ionian"))[0], [61])
+        self.assertEqual(map_notes([61], ("C#", "ionian"), ("G", "ionian"))[0], [67])
+        self.assertGreater(checked, 15)
+
+    def test_notes_move_to_the_same_scale_degree_and_nothing_else_changes(self):
+        for seed in KEY_SEEDS:
+            rec = studio_engine.new_recipe(seed)
+            trace = {}
+            src = composer.compose(rec, _trace=trace)
+            pre = trace["pre"]
+            ref = [n["pitch"] for g in ("g1", "g2") for n in pre[g]]
+            old = (rec["intent"]["tonic"], rec["intent"]["mode"])
+            for tonic, mode in KEY_TARGETS:
+                if (tonic, mode) == old:
+                    continue
+                ktrace = {}
+                krec = studio_engine.set_option(rec, "key", {"tonic": tonic, "mode": mode})
+                dst = composer.compose(krec, _trace=ktrace)
+                ctx = (seed, tonic, mode)
+                rep = dst["report"]["key"]
+                resolved = set(dst["report"]["m9_resolved"])
+                shift = oracle_shift(old, (tonic, mode), ref)
+                KEY_STATS["pieces"] += 1
+                for name in ("runs_moved", "folded", "merged", "revoiced", "chord_moved", "chord_dropped", "chord_collapsed"):
+                    KEY_STATS[name] += rep[name]
+                KEY_STATS["pieces_with_moved_run"] += rep["runs_moved"] > 0
+                KEY_STATS["pieces_with_folds"] += rep["folded"] > 0
+                self.assertEqual(dst["total16"], src["total16"], ctx)
+                self.assertEqual(dst["chords"], src["chords"], ctx)
+                moved_notes = 0
+                for g in ("g1", "g2"):
+                    a_notes, b_notes = pre[g], ktrace["pre"][g]
+                    if len(a_notes) != len(b_notes):
+                        self.assertGreater(rep["chord_dropped"] + rep["chord_collapsed"], 0, ctx)
+                        key = lambda n: (n["start"], n["dur"], n["vel"])
+                        self.assertFalse(collections.Counter(map(key, b_notes)) - collections.Counter(map(key, a_notes)), ctx)
+                        continue
+                    deltas = []
+                    off_degree = 0
+                    for a, b in zip(a_notes, b_notes):
+                        self.assertEqual((a["start"], a["dur"], a["vel"]), (b["start"], b["dur"], b["vel"]), (ctx, g, a))
+                        delta = b["pitch"] - oracle_pitch(a["pitch"], old, (tonic, mode), shift)
+                        off_degree += delta % 12 != 0
+                        deltas.append(delta)
+                    self.assertLessEqual(off_degree, rep["chord_moved"], (ctx, g))
+                    moved_notes += sum(x != 0 for x in deltas)  # includes chord tones moved by tidy
+                    for i in range(len(a_notes) - 1):
+                        if deltas[i] == deltas[i + 1] and a_notes[i]["start"] < a_notes[i + 1]["start"]:
+                            self.assertEqual(sign(b_notes[i + 1]["pitch"] - b_notes[i]["pitch"]),
+                                             sign(a_notes[i + 1]["pitch"] - a_notes[i]["pitch"]), (ctx, g, i))
+                adjusted = rep["runs_moved"] + rep["folded"] + rep["revoiced"] + rep["chord_moved"] + rep["chord_dropped"]
+                self.assertEqual(adjusted > 0, moved_notes > 0, ctx)
+                chord_budget = rep["chord_dropped"] + rep["chord_collapsed"]
+                for g in ("g1", "g2"):
+                    pool = collections.Counter((n["start"], n["vel"]) for n in dst["parts"][g])
+                    for n in src["parts"][g]:
+                        KEY_STATS["notes"] += 1
+                        if pool[(n["start"], n["vel"])] > 0:
+                            pool[(n["start"], n["vel"])] -= 1
+                        else:
+                            if n["start"] not in resolved:
+                                chord_budget -= 1
+                                self.assertGreaterEqual(chord_budget, 0, (ctx, g, n))
+                            self.assertNotIn("dead", n["tech"], (ctx, g, n))
+                            KEY_STATS["dropped"] += 1
+                self.assertEqual(
+                    sum("dead" in n["tech"] for g in dst["parts"] for n in dst["parts"][g]),
+                    sum("dead" in n["tech"] for g in src["parts"] for n in src["parts"][g]), ctx)
+                same = [sorted(a["tech"]) == sorted(b["tech"]) for g in ("g1", "g2")
+                        if len(src["parts"][g]) == len(dst["parts"][g])
+                        for a, b in zip(src["parts"][g], dst["parts"][g])]
+                KEY_STATS["tech_differs"] += same.count(False)
+                KEY_STATS["tech_compared"] += len(same)
+                self.assert_playable(dst, ctx)
+                self.assert_no_minor_ninth(dst, ctx)
+
+    def chord(self, pitches, old, new):
+        parts = {"g1": [{"pitch": p, "start": 0, "dur": 4, "vel": 80, "fixed": (1, max(0, p - 45)), "ring": True}
+                        for p in pitches], "g2": []}
+        rep = composer.apply_key_to_parts(
+            parts, [{"start": 0, "sec": "A"}], 16, composer.Theory(composer.TONICS[old[0]], old[1]),
+            composer.Theory(composer.TONICS[new[0]], new[1]), pitches)
+        return parts["g1"], rep
+
+    def test_regression_chord_tones_are_moved_dropped_or_collapsed(self):
+        notes, rep = self.chord([57, 59, 64, 71], ("G", "mixolydian"), ("D", "aeolian"))
+        ps = sorted(n["pitch"] for n in notes)
+        self.assertEqual(len(set(ps)), len(ps))
+        self.assertFalse(any(abs(a - b) % 12 == 1 for a in ps for b in ps), ps)
+        self.assertGreater(rep["chord_moved"] + rep["chord_dropped"], 0)
+        self.assertEqual(ps[0], 52)
+        fretted = [n["fixed"][1] for n in notes if n["fixed"][1]]
+        self.assertLessEqual(max(fretted) - min(fretted), fretboard.SPAN)
+        notes, rep = self.chord([64, 65], ("E", "ionian"), ("E", "phrygian"))
+        self.assertEqual([n["pitch"] for n in notes], [64])
+        self.assertEqual(rep["chord_collapsed"], 1)
+        notes, rep = self.chord([40, 44, 47, 52], ("E", "ionian"), ("E", "ionian"))
+        self.assertEqual(len(notes), 4)
+        cluster, rep = self.chord([55, 57, 60], ("A", "aeolian"), ("A", "dorian"))
+        self.assertFalse(fretboard.low_cluster([n["pitch"] for n in cluster]))
+
+    def test_regression_chords_keep_a_playable_span_and_stay_consonant(self):
+        for seed, tonic, mode, g, start in ((986307, "C#", "ionian", "g2", 128), (801000, "D", "aeolian", "g1", 323)):
+            _, krec = keyed(seed, tonic, mode)
+            p = composer.compose(krec)
+            self.assert_playable(p, (seed, tonic, mode))
+            group = notes_at(p, g, start)
+            self.assertGreaterEqual(len(group), 2)
+            fretted = [n["fret"] for n in group if n["fret"]]
+            self.assertLessEqual(max(fretted) - min(fretted) if fretted else 0, fretboard.SPAN)
+        rec = studio_engine.new_recipe(986307)
+        p = composer.compose(studio_engine.set_option(rec, "key", {"tonic": "D", "mode": "aeolian"}))
+        self.assert_playable(p, 986307)
+
+    def test_runs_move_whole_and_square_copies_decide_alike(self):
+        for seed, tonic, mode in ((801000, "F#", "locrian"), (801000, "D", "aeolian"), (802000, "B", "phrygian")):
+            rec, krec = keyed(seed, tonic, mode, square_repeat=2)
+            p = composer.compose(krec)
+            spans = section_spans(p)
+            a_spans = [(s, e) for sec, s, e in spans if sec == "A"]
+            half = (a_spans[0][1] - a_spans[0][0]) // 2
+            for g in ("g1", "g2"):
+                first = section_notes(p, g, a_spans[0][0], a_spans[0][0] + half)
+                second = section_notes(p, g, a_spans[0][0] + half, a_spans[0][1])
+                self.assertEqual(first, second, (seed, g))
+
+    def test_regression_octave_fold_keeps_descent_and_octave_chord(self):
+        _, krec = keyed(801000, "D", "aeolian")
+        p = composer.compose(krec)
+        a, b = notes_at(p, "g1", 5), notes_at(p, "g1", 6)
+        self.assertTrue(a and b)
+        self.assertGreater(a[0]["pitch"], b[0]["pitch"])
+        rec = studio_engine.set_option(studio_engine.new_recipe(40), "octave_share", 1.0)
+        p = composer.compose(studio_engine.set_option(rec, "key", {"tonic": "C#", "mode": "mixolydian"}))
+        dyads = [n for g in p["parts"] for n in p["parts"][g] if n["start"] == 42 and n.get("dyad")]
+        self.assertEqual(len(dyads), 2)
+        self.assertEqual(abs(dyads[0]["pitch"] - dyads[1]["pitch"]), 12)
+        self.assertNotEqual((dyads[0]["string"], dyads[0]["fret"]), (dyads[1]["string"], dyads[1]["fret"]))
+
+    def test_regression_fingering_never_stacks_or_overlaps_a_string(self):
+        for seed, tonic, mode in ((801000, "F#", "locrian"), (807000, "G", "dorian"), (70, "E", "ionian"),
+                                  (834000, "G", "dorian"), (23, "D", "aeolian")):
+            _, krec = keyed(seed, tonic, mode)
+            p = composer.compose(krec)
+            self.assert_playable(p, (seed, tonic, mode))
+            for g in ("g1", "g2"):
+                by_string = {}
+                for n in sorted(p["parts"][g], key=lambda n: n["start"]):
+                    prev = by_string.get(n["string"])
+                    if prev is not None and prev["start"] < n["start"]:
+                        self.assertLessEqual(prev["start"] + prev["dur"], n["start"], (seed, g, prev, n))
+                    by_string[n["string"]] = n
+
+    def test_regression_locked_intro_keeps_its_register_when_another_section_is_rerolled(self):
+        rec = studio_engine.set_lock(studio_engine.new_recipe(802000), "intro", "intro", True)
+        rec = studio_engine.set_option(rec, "key", {"tonic": "B", "mode": "phrygian"})
+        before = composer.compose(rec)
+        after = composer.compose(studio_engine.reroll(rec, "b", "B"))
+        end = section_spans(before)[0][2]
+        for g in ("g1", "g2"):
+            self.assertEqual(section_notes(before, g, 0, end), section_notes(after, g, 0, end), g)
+
+    def test_regression_dead_strokes_survive_and_legacy_recipes_get_the_minor_ninth_rule(self):
+        _, krec = keyed(801000, "D", "aeolian", mute_share=1.0)
+        p = composer.compose(krec)
+        self.assertTrue(any("dead" in n["tech"] for g in p["parts"] for n in notes_at(p, g, 285)))
+        args = argparse.Namespace(meter=None, mode=None, key=None, tempo=None)
+        legacy = studio_engine._ensure_studio(composer.make_recipe(801000, args))
+        self.assertFalse(legacy.get("fix") or legacy.get("v6"))
+        for tonic, mode in (("F#", "locrian"), ("D", "aeolian")):
+            p = composer.compose(studio_engine.set_option(legacy, "key", {"tonic": tonic, "mode": mode}))
+            self.assert_no_minor_ninth(p, (tonic, mode))
+
+    def test_locking_the_ending_with_a_key_set_does_not_change_the_music(self):
+        rec = studio_engine.set_option(studio_engine.new_recipe(801000), "key", {"tonic": "D", "mode": "aeolian"})
+        locked = studio_engine.set_lock(rec, "ending", "end", True)
+        self.assertEqual(midi_sha256(composer.compose(locked)), midi_sha256(composer.compose(rec)))
+
+    def test_key_option_validation_labels_and_history(self):
+        rec = studio_engine.new_recipe(801000)
+        for bad in ("D", ["D", "aeolian"], {"tonic": "D"}, {"mode": "aeolian"}, {"tonic": "H", "mode": "aeolian"},
+                    {"tonic": "D", "mode": "blues"}, {"tonic": "D", "mode": "aeolian", "x": 1}, True, 0,
+                    {"tonic": 4, "mode": "aeolian"}):
+            with self.assertRaises(ValueError, msg=bad):
+                studio_engine.set_option(rec, "key", bad)
+        r1 = studio_engine.set_option(rec, "key", {"tonic": "D", "mode": "aeolian"})
+        self.assertEqual(r1["studio"]["options"]["key"], {"tonic": "D", "mode": "aeolian"})
+        self.assertEqual(studio_engine.change_label(rec, r1), "тональность: D натуральный минор")
+        self.assertEqual(studio_engine.change_label(r1, rec), "тональность: как в пьесе")
+        r2 = studio_engine.set_option(r1, "key", {"tonic": "F#", "mode": "locrian"})
+        self.assertEqual(studio_engine.change_label(r1, r2), "тональность: F# локрийский")
+        self.assertEqual(studio_engine.set_option(r2, "key", {"tonic": "F#", "mode": "locrian"}), r2)
+
+    def test_store_undo_redo_log_and_detail_show_the_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            render = RecordingRender()
+            store = studio_engine.StudioStore(d, render_fn=render)
+            det0 = store.create_piece(801000)
+            pid = det0["id"]
+            pdir = store._piece_dir(pid)
+            self.assertIsNone(det0["options"]["key"])
+            calls0 = render.calls
+            own = {"tonic": det0["key"], "mode": det0["mode"]}
+            det = store.set_option(pid, "key", own)
+            self.assertFalse(det["can_undo"])
+            self.assertEqual(render.calls, calls0)
+            det1 = store.set_option(pid, "key", {"tonic": "D", "mode": "aeolian"})
+            self.assertEqual((det1["key"], det1["mode"]), ("D", "aeolian"))
+            self.assertEqual(det1["options"]["key"], {"tonic": "D", "mode": "aeolian"})
+            self.assertEqual(det1["undo_label"], "тональность: D натуральный минор")
+            self.assertEqual(store.list_pieces()[0]["key"], "D")
+            self.assertEqual(len(store._read_undo(pdir)), 1)
+            rows = [json.loads(x) for x in (pdir / "history.jsonl").read_text(encoding="utf-8").splitlines() if x]
+            self.assertEqual(rows[-1]["value"], {"key": {"tonic": "D", "mode": "aeolian"}})
+            piece = composer.compose(json.loads((pdir / "recipe.json").read_text(encoding="utf-8")))
+            self.assertEqual(piece["theory"].tonic_pc, composer.TONICS["D"])
+            det2 = store.undo(pid)
+            self.assertIsNone(det2["options"]["key"])
+            self.assertEqual((det2["key"], det2["mode"]), (det0["key"], det0["mode"]))
+            self.assertEqual(det2["redo_label"], "тональность: D натуральный минор")
+            det3 = store.redo(pid)
+            self.assertEqual(det3["options"]["key"], {"tonic": "D", "mode": "aeolian"})
+            self.assertEqual(det3["undo_label"], "тональность: D натуральный минор")
+
+    def test_key_applies_with_other_whole_piece_options(self):
+        for seed in KEY_SEEDS[:8]:
+            rng = random.Random(seed)
+            tonic, mode = rng.choice(KEY_TARGETS)
+            _, krec = keyed(seed, tonic, mode, mute_share=rng.choice([0.3, 1.0]),
+                            octave_share=rng.choice([None, 1.0]), intro_bars=rng.choice([1, 4]),
+                            square_repeat=rng.choice([1, 2]))
+            p = composer.compose(krec)
+            self.assert_playable(p, (seed, tonic, mode))
+            self.assert_no_minor_ninth(p, (seed, tonic, mode))
+
+    def test_server_accepts_and_rejects_key_values_and_page_has_the_controls(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = studio_server.create_server(d, host="127.0.0.1", port=0, render_fn=studio_render.fake_render)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{srv.server_address[1]}"
+            try:
+                with urllib.request.urlopen(base + "/", timeout=10) as resp:
+                    html = resp.read().decode("utf-8")
+                for text in ("Тональность", "Как в пьесе",
+                             "Переводит все ноты в выбранную тональность по ступеням; ритм и форма не меняются. Применяется сразу.",
+                             "натуральный минор"):
+                    self.assertIn(text, html)
+
+                def post(path, body):
+                    req = urllib.request.Request(base + path, data=json.dumps(body).encode("utf-8"), method="POST",
+                                                 headers={"Content-Type": "application/json"})
+                    try:
+                        with urllib.request.urlopen(req, timeout=10) as r:
+                            return r.status, json.loads(r.read())
+                    except urllib.error.HTTPError as exc:
+                        return exc.code, json.loads(exc.read())
+
+                st, det = post("/api/new", {"seed": 801000})
+                pid = det["id"]
+                st, out = post(f"/api/piece/{pid}/option", {"name": "key", "value": {"tonic": "G", "mode": "dorian"}})
+                self.assertEqual(st, 200, out)
+                self.assertEqual((out["key"], out["mode"]), ("G", "dorian"))
+                st, out = post(f"/api/piece/{pid}/option", {"name": "key", "value": None})
+                self.assertEqual(st, 200, out)
+                self.assertIsNone(out["options"]["key"])
+                for bad in ("G", {"tonic": "G"}, {"tonic": "G", "mode": "blues"}, {"tonic": "H", "mode": "dorian"}):
+                    st, out = post(f"/api/piece/{pid}/option", {"name": "key", "value": bad})
+                    self.assertEqual(st, 400, (bad, out))
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+
+class TestStudioKeyPage(unittest.TestCase):
+    def test_key_controls_send_options_and_reflect_the_current_key(self):
+        out = _run_page("""
+show({ key: "A", mode: "aeolian", options: { key: null, octave_share: null, mute_share: 0 } });
+const btns = (o) => findAll((e) => e.dataset && e.dataset.option === o && e.tagName === "button");
+const snap = () => ({
+  tonics: btns("key_tonic").map((b) => [b.dataset.value, b.getAttribute("aria-pressed")]),
+  modes: btns("key_mode").map((b) => [b.dataset.value, b.textContent, b.getAttribute("aria-pressed")]),
+  reset: btns("key").map((b) => [b.textContent, b.getAttribute("aria-pressed")]),
+});
+const first = snap();
+respond = async (url, body) => {
+  if (!url.endsWith("/option")) return { pieces: [] };
+  const v = body.value;
+  return piece({ key: v ? v.tonic : "A", mode: v ? v.mode : "aeolian", options: { key: v, octave_share: null, mute_share: 0 } });
+};
+const click = async (o, v) => { find((e) => e.dataset && e.dataset.option === o && e.dataset.value === v && e.tagName === "button").onclick(); await sleep(20); };
+await click("key_tonic", "D");
+await click("key_mode", "dorian");
+const second = snap();
+await click("key", "auto");
+console.log(JSON.stringify({ first, second, sent: calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body) }));
+""")
+        self.assertEqual([t[0] for t in out["first"]["tonics"]], ["E", "F#", "G", "A", "B", "C#", "D"])
+        self.assertEqual([t[1] for t in out["first"]["tonics"]], ["false", "false", "false", "true", "false", "false", "false"])
+        self.assertEqual(
+            [m[1] for m in out["first"]["modes"]],
+            ["мажор", "дорийский", "фригийский", "лидийский", "миксолидийский", "натуральный минор", "локрийский"],
+        )
+        self.assertEqual([m[2] for m in out["first"]["modes"]].count("true"), 1)
+        self.assertEqual(out["first"]["reset"], [["Как в пьесе", "true"]])
+        self.assertEqual(out["second"]["reset"], [["Как в пьесе", "false"]])
+        self.assertEqual(
+            out["sent"],
+            [{"name": "key", "value": {"tonic": "D", "mode": "aeolian"}},
+             {"name": "key", "value": {"tonic": "D", "mode": "dorian"}},
+             {"name": "key", "value": None}],
+        )
+
+
+    def test_two_quick_key_clicks_end_in_the_combined_key(self):
+        out = _run_page("""
+show({ key: "E", mode: "lydian", options: { key: null, octave_share: null, mute_share: 0 } });
+let held = [];
+respond = (url, body) => {
+  if (!url.endsWith("/option")) return { pieces: [] };
+  const v = body.value;
+  return new Promise((resolve) => held.push(() => resolve(piece({ key: v.tonic, mode: v.mode, options: { key: v, octave_share: null, mute_share: 0 } }))));
+};
+const click = (o, v) => find((e) => e.dataset && e.dataset.option === o && e.dataset.value === v && e.tagName === "button").onclick();
+click("key_tonic", "D");
+await sleep(20);
+click("key_mode", "aeolian");
+await sleep(20);
+while (held.length) { held.shift()(); await sleep(20); }
+console.log(JSON.stringify({ sent: calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body.value) }));
+""")
+        self.assertEqual(out["sent"], [{"tonic": "D", "mode": "lydian"}, {"tonic": "D", "mode": "aeolian"}])
+
+
+    def test_reset_while_a_key_request_is_pending_does_not_reuse_the_old_key(self):
+        out = _run_page("""
+show({ key: "E", mode: "lydian", own_key: { tonic: "E", mode: "lydian" }, options: { key: null, octave_share: null, mute_share: 0 } });
+let held = [];
+respond = (url, body) => {
+  if (!url.endsWith("/option")) return { pieces: [] };
+  const v = body.value || { tonic: "E", mode: "lydian" };
+  return new Promise((resolve) => held.push(() => resolve(piece({ key: v.tonic, mode: v.mode, own_key: { tonic: "E", mode: "lydian" }, options: { key: body.value, octave_share: null, mute_share: 0 } }))));
+};
+const click = (o, v) => find((e) => e.dataset && e.dataset.option === o && e.dataset.value === v && e.tagName === "button").onclick();
+click("key_tonic", "D");
+await sleep(20);
+click("key", "auto");
+await sleep(20);
+click("key_mode", "dorian");
+await sleep(20);
+while (held.length) { held.shift()(); await sleep(20); }
+console.log(JSON.stringify({ sent: calls.filter((c) => c.url.endsWith("/option")).map((c) => c.body.value) }));
+""")
+        self.assertEqual(out["sent"], [{"tonic": "D", "mode": "lydian"}, None, {"tonic": "E", "mode": "dorian"}])
 
 
 if __name__ == "__main__":

@@ -303,6 +303,79 @@ class TestWebApi(unittest.TestCase):
         self.assertEqual(legacy_after["undo"], [])
 
 
+class TestWebApiKey(unittest.TestCase):
+    D_MINOR = {"tonic": "D", "mode": "aeolian"}
+
+    def test_key_sequence_with_undo_and_redo_matches_studio_store(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = studio_engine.StudioStore(d, render_fn=studio_render.fake_render)
+            pid = store.create_piece(801000)["id"]
+            pdir = Path(d) / pid
+            st = web_api.new_piece(801000)
+            steps = [
+                ("option", ("key", self.D_MINOR)),
+                ("option", ("key", {"tonic": "F#", "mode": "locrian"})),
+                ("option", ("intro_bars", 4)),
+                ("option", ("key", None)),
+                ("undo", ()),
+                ("undo", ()),
+                ("redo", ()),
+            ]
+            for kind, args in steps:
+                s_det = getattr(store, "set_option" if kind == "option" else kind)(pid, *args)
+                st = json.loads(json.dumps(getattr(web_api, kind)(st, *args)))
+                self.assertEqual(web_api.detail(st), s_det, (kind, args))
+                self.assertEqual(st["recipe"], json.loads((pdir / "recipe.json").read_text(encoding="utf-8")), (kind, args))
+                self.assertEqual(
+                    base64.b64decode(web_api.export_midi(st)), (pdir / "piece.mid").read_bytes(), (kind, args)
+                )
+
+    def test_key_detail_labels_and_handle_json(self):
+        st = web_api.new_piece(801000)
+        own = {"tonic": web_api.detail(st)["key"], "mode": web_api.detail(st)["mode"]}
+        self.assertEqual(web_api.option(st, "key", own)["undo"], [])
+        st1 = web_api.option(st, "key", self.D_MINOR)
+        det = web_api.detail(st1)
+        self.assertEqual((det["key"], det["mode"]), ("D", "aeolian"))
+        self.assertEqual(det["undo_label"], "тональность: D натуральный минор")
+        out = json.loads(web_api.handle_json(json.dumps({"cmd": "option", "payload": {"state": st, "name": "key", "value": self.D_MINOR}})))
+        self.assertEqual(out["detail"]["options"]["key"], self.D_MINOR)
+        undone = web_api.undo(st1)
+        self.assertEqual(web_api.detail(undone)["redo_label"], "тональность: D натуральный минор")
+        self.assertIsNone(web_api.detail(undone)["options"]["key"])
+
+    def test_key_validation_on_option_and_on_imported_state(self):
+        st = web_api.new_piece(801000)
+        for bad in ("D", {"tonic": "D"}, {"tonic": "D", "mode": "blues"}, {"tonic": "H", "mode": "aeolian"},
+                    {"tonic": "D", "mode": "aeolian", "x": 1}, True, 3, []):
+            with self.assertRaises(ValueError, msg=bad):
+                web_api.option(st, "key", bad)
+            bad_st = copy.deepcopy(st)
+            bad_st["recipe"]["studio"]["options"]["key"] = bad
+            with self.assertRaises(ValueError, msg=("validate", bad)):
+                web_api.detail(bad_st)
+        ok_st = copy.deepcopy(st)
+        ok_st["recipe"]["studio"]["options"]["key"] = self.D_MINOR
+        self.assertEqual(web_api.detail(ok_st)["key"], "D")
+        legacy = copy.deepcopy(st)
+        del legacy["recipe"]["studio"]["options"]["key"]
+        self.assertIsNone(web_api.detail(legacy)["options"]["key"])
+
+
+    def test_import_turns_an_explicit_own_key_into_unset(self):
+        st = web_api.new_piece(801000)
+        det = web_api.detail(st)
+        explicit = copy.deepcopy(st)
+        explicit["recipe"]["studio"]["options"]["key"] = {"tonic": det["key"], "mode": det["mode"]}
+        explicit["undo"] = [copy.deepcopy(explicit["recipe"])]
+        snap = web_api.import_state(explicit)
+        self.assertIsNone(snap["state"]["recipe"]["studio"]["options"]["key"])
+        self.assertIsNone(snap["detail"]["options"]["key"])
+        self.assertIsNone(snap["state"]["undo"][0]["studio"]["options"]["key"])
+        same = web_api.option(snap["state"], "key", None)
+        self.assertEqual(len(same["undo"]), 1)
+
+
 class TestReviewFixesPython(unittest.TestCase):
     def _load_check_site(self):
         path = Path(__file__).resolve().parent / "web" / "check_site.py"
